@@ -34,12 +34,6 @@ pub(super) fn selected<T>(rows: &[T], faction: u64, owner: impl Fn(&T) -> u64) -
     let end = rows[first..].partition_point(|row| owner(row) == faction);
     &rows[first..first + end]
 }
-/// Every table [`extra_tables`] may name.
-pub(super) const EXTRA_TABLES: [TableId; 3] = [
-    TableId::Countries,
-    TableId::CountryLinks,
-    TableId::ReservedCountryNaming,
-];
 pub(super) fn extra_tables(frame: &DecodedFrame, faction: u64) -> Vec<TableId> {
     let mut tables = Vec::new();
     if let Ok(rows) = frame.complete::<tables::FactionManpower>() {

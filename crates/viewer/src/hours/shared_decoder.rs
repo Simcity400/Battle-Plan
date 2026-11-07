@@ -14,7 +14,7 @@ pub(super) struct DecoderState {
     dropper: Option<Arc<Dropper>>,
 }
 impl DecoderState {
-    /// The campaign lane's read setup: its change-run workers and display changes.
+    /// The campaign lane's read setup: its map workers and display changes.
     fn reading(playback: Playback, workers: usize, _dropper: Option<&Arc<Dropper>>) -> Playback {
         playback.with_map_workers(workers).with_display_changes()
     }

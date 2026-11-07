@@ -17,7 +17,7 @@ use tauri::{Manager, State, WebviewWindow};
 
 // Preparation and widget requests contend on the Windows process heap; the viewer ships this too.
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 /// Where WebView2 serves the `artwork` scheme the dashboard's images are named under.
 const ARTWORK_BASE: &str = "http://artwork.localhost/";
@@ -188,7 +188,7 @@ fn seek_map(
 }
 
 fn main() {
-    dashboard::allocator::return_freed_memory_promptly();
+    engine_heap::return_freed_memory_promptly();
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
             "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nViewer options such as --branch, --hour and --camera are forwarded to the\nnative viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"

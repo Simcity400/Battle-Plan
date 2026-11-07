@@ -425,28 +425,14 @@ impl Viewer {
         let layers = match layers {
             Ok(layers) => layers,
             Err(error) => {
-                // An hour not indexed yet draws nothing, and is no failure.
-                let pending = matches!(raid_frame, crate::playback::Current::Pending { .. });
-                let awaiting_index = matches!(
-                    raid_frame,
-                    crate::playback::Current::Pending {
-                        awaiting_index: true,
-                        ..
-                    }
-                );
                 if let Some(scene) = self.scene.as_mut() {
-                    let what = if pending {
-                        "is not indexed yet"
-                    } else {
-                        "failed"
-                    };
                     scene.apply(
                         &state.device,
                         &state.queue,
                         SceneInput::MissingMapTextEvents {
                             at: (branch, hour),
                             seek,
-                            reason: format!("map text presented hour {what}: {error}"),
+                            reason: format!("map text presented hour failed: {error}"),
                         },
                     )?;
                 }
@@ -463,18 +449,11 @@ impl Viewer {
                         viewing: viewing.as_ref(),
                     },
                 );
-                let (error, pending) = if pending {
-                    (None, Some(error))
-                } else {
-                    (Some(error), None)
-                };
                 retired.push(self.shown.replace(ShownHour {
                     epoch,
                     branch,
                     hour,
-                    error,
-                    pending,
-                    awaiting_index,
+                    error: Some(error),
                     political_warnings: Vec::new(),
                     plan_warnings: Vec::new(),
                     building_warnings: Vec::new(),
@@ -827,17 +806,6 @@ impl Viewer {
                     },
                 )?;
             }
-            crate::playback::Current::Pending { reason, .. } => {
-                scene.apply(
-                    &state.device,
-                    &state.queue,
-                    SceneInput::MissingMapTextEvents {
-                        at: (branch, hour),
-                        seek,
-                        reason: format!("map text presented hour is not indexed yet: {reason}"),
-                    },
-                )?;
-            }
             crate::playback::Current::Refused { reason, .. } => {
                 scene.apply(
                     &state.device,
@@ -879,8 +847,6 @@ impl Viewer {
             branch,
             hour,
             error: None,
-            pending: None,
-            awaiting_index: false,
             political_warnings: political.layers.warnings().to_vec(),
             plan_warnings,
             building_warnings,

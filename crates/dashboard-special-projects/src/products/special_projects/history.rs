@@ -833,6 +833,11 @@ impl NameScan {
         let names = &self.names;
         self.provisional
             .retain(|(at, _, _)| !names.counted_at(at, hour));
+        // Only the names observed this hour tell the next anything: let go of the rest.
+        self.previous.retain(|_, (last, _)| *last == hour);
+        self.names.counted.retain(|_, last| *last == hour);
+        let previous = &self.previous;
+        self.evaluations.retain(|at, _| previous.contains_key(at));
         countries.extend(
             before
                 .difference(&self.active)

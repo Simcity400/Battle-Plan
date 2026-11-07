@@ -12,8 +12,8 @@
 use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
 use replay::{
-    columnar_runs::{IndexFile, Snapshots},
     campaign::Replay,
+    columnar_natives::{Cursor, Natives},
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_derive::air_region_derive as derive;
@@ -86,8 +86,8 @@ const SUPERSEDED: &str = "the air roster search was superseded";
 /// it.
 struct Samples {
     replay: Arc<Replay>,
-    columnar: Option<Arc<IndexFile>>,
-    snapshots: OnceLock<Result<Mutex<Snapshots>, String>>,
+    columnar: Option<Arc<Natives>>,
+    cursor: OnceLock<Result<Mutex<Cursor>, String>>,
     hours: Mutex<BTreeMap<(BranchId, Hour), Sample>>,
     distinct: Mutex<HashSet<Arc<Roster>>>,
     /// Blocks read, for the cancellation checks.
@@ -121,23 +121,22 @@ impl Samples {
     }
 
     fn read_columnar(&self, branch: BranchId, hour: Hour) -> Sample {
-        let file = self.columnar.as_ref().expect("columnar source");
-        let snapshots = self
-            .snapshots
+        let natives = self.columnar.as_ref().expect("columnar source");
+        let cursor = self
+            .cursor
             .get_or_init(|| {
-                Snapshots::new(
-                    Arc::clone(file),
+                Cursor::new(
+                    Arc::clone(natives),
                     &[TableId::AirDailyRoster, TableId::CountryLinks],
                     self.replay.format,
                     self.replay.capture_mode,
-                    1,
                 )
                 .map(Mutex::new)
                 .map_err(|error| error.to_string())
             })
             .as_ref()
             .map_err(Clone::clone)?;
-        let mut snapshots = snapshots
+        let mut cursor = cursor
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if (self.superseded)() {
@@ -146,8 +145,8 @@ impl Samples {
         let Some(segment) = self.replay.segment_at(branch, hour) else {
             return Err(format!("hour {hour} of branch {branch} is not recorded"));
         };
-        if !snapshots
-            .move_to_segment(segment, branch, hour, &|| {})
+        if !cursor
+            .move_to(segment, branch, hour, &*self.superseded)
             .map_err(|error| {
                 if (self.superseded)() {
                     SUPERSEDED.into()
@@ -158,7 +157,7 @@ impl Samples {
         {
             return Err(format!("hour {hour} of branch {branch} is not recorded"));
         }
-        self.roster(&snapshots.build(None).map_err(|error| error.to_string())?)
+        self.roster(&cursor.build(None).map_err(|error| error.to_string())?)
     }
 
     fn intern(&self, roster: Roster) -> Arc<Roster> {
@@ -260,11 +259,11 @@ impl RosterSamples for Samples {
 pub struct RosterHistory(Samples);
 
 impl RosterHistory {
-    pub fn new(replay: Arc<Replay>, columnar: Option<Arc<IndexFile>>) -> Self {
+    pub fn new(replay: Arc<Replay>, columnar: Option<Arc<Natives>>) -> Self {
         Self(Samples {
             replay,
             columnar,
-            snapshots: OnceLock::new(),
+            cursor: OnceLock::new(),
             hours: Mutex::default(),
             distinct: Mutex::default(),
             blocks: AtomicUsize::new(0),
@@ -276,7 +275,7 @@ impl RosterHistory {
         &self.0.replay
     }
 
-    pub fn columnar(&self) -> Option<&Arc<IndexFile>> {
+    pub fn columnar(&self) -> Option<&Arc<Natives>> {
         self.0.columnar.as_ref()
     }
 
@@ -455,7 +454,7 @@ impl PassRosters {
 
     pub fn from_columnar(
         replay: Arc<Replay>,
-        file: Arc<IndexFile>,
+        file: Arc<Natives>,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         Self::with_source(replay, wake, true, Some(file))
@@ -473,7 +472,7 @@ impl PassRosters {
         replay: Arc<Replay>,
         wake: impl Fn() + Send + Sync + 'static,
         spawn: bool,
-        columnar: Option<Arc<IndexFile>>,
+        columnar: Option<Arc<Natives>>,
     ) -> Self {
         let demand: Arc<(Mutex<Demand>, Condvar)> = Arc::default();
         let superseded = {
@@ -492,7 +491,7 @@ impl PassRosters {
                 samples: Samples {
                     replay,
                     columnar,
-                    snapshots: OnceLock::new(),
+                    cursor: OnceLock::new(),
                     hours: Mutex::default(),
                     distinct: Mutex::default(),
                     blocks: AtomicUsize::new(0),
@@ -516,7 +515,7 @@ impl PassRosters {
         &self.shared.samples.replay
     }
 
-    pub fn columnar(&self) -> Option<&Arc<IndexFile>> {
+    pub fn columnar(&self) -> Option<&Arc<Natives>> {
         self.shared.samples.columnar.as_ref()
     }
 

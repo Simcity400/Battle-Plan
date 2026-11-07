@@ -325,6 +325,7 @@ impl Pending {
                 late: late_pages,
                 metadata: metadata_pages,
                 held: Some(held_runs),
+                paged: true,
             },
         })
     }

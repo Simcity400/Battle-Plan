@@ -34,7 +34,7 @@ export function physicalRect(rect: Rect, dpr: number): MapBounds {
  * the clock, so the frame's hour and sequences, which change with every frame drawn, are left out;
  * its date is painted, not rendered (`MapViewsStore.paint`). */
 function shownKey(state: DashboardMapState, playing: boolean): string {
-  return JSON.stringify([state.sourceId, state.revision, state.branchId, state.loading, state.error ?? null, state.pending ?? null,
+  return JSON.stringify([state.sourceId, state.revision, state.branchId, state.loading, state.error ?? null,
     state.behindReason ?? null, state.hour == null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
 }
 

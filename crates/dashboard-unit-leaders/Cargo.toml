@@ -32,7 +32,7 @@ ts-rs = "11.1"
 zstd = "0.13"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 engine-executable.workspace = true
 installed-content-image.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }

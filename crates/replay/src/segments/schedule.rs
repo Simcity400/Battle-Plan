@@ -153,9 +153,8 @@ pub(super) struct Schedule {
     begins: Vec<usize>,
     /// Each segment's last walk handed out, as [`Stats::walks`] counted it.
     began: Vec<usize>,
-    /// Segments whose walk's worker holds the tables it left, to go on into the segment after
-    /// once it ran the emits that can go on ([`Self::keep_hot`]).
-    hot: Vec<bool>,
+    /// Walks under way: each handed out and not yet ended, through the segments it goes on into.
+    walking: usize,
     /// Each family's next segment to emit, and whether a worker emits it.
     next: Vec<usize>,
     emitting: Vec<bool>,
@@ -199,7 +198,7 @@ impl Schedule {
             restarts: engine_allocation::filled(segments, None)?,
             begins: engine_allocation::collect_vec(0..segments)?,
             began: engine_allocation::filled(segments, 0)?,
-            hot: engine_allocation::filled(segments, false)?,
+            walking: 0,
             next: engine_allocation::filled(lanes, 0)?,
             emitting: engine_allocation::filled(lanes, false)?,
             live: engine_allocation::filled(segments, 0)?,
@@ -255,7 +254,7 @@ impl Schedule {
     }
 
     /// Whether a walk may take some family of `at` now ([`Self::claimable`]).
-    pub(super) fn takable(&self, plan: &Plan, at: usize) -> bool {
+    fn takable(&self, plan: &Plan, at: usize) -> bool {
         (0..self.lanes).any(|lane| self.claimable(plan, at, lane))
     }
 
@@ -319,19 +318,24 @@ impl Schedule {
         }
     }
 
-    /// When the walk of the segment before `at` in its run was handed out, while it is under way
-    /// or its worker keeps its tables: it goes on into `at` with them ([`Self::chain`]).
+    /// When the walk of the segment before `at` in its run was handed out, while it is under
+    /// way: it goes on into `at` with its tables ([`Self::chain`]).
     fn awaited(&self, plan: &Plan, at: usize) -> Option<usize> {
         let planned = plan.get(at);
         let before = planned.before.filter(|_| planned.follows)?;
-        let running = || (0..self.lanes).any(|lane| self.status(before, lane) == Status::Running);
-        (self.hot[before] || running()).then(|| self.began[before])
+        (0..self.lanes)
+            .any(|lane| self.status(before, lane) == Status::Running)
+            .then(|| self.began[before])
     }
 
-    /// The worker of `at`'s walk keeps the tables it left, or lets them go: while kept, the
-    /// segment after is left to it.
-    pub(super) fn keep_hot(&mut self, at: usize, kept: bool) {
-        self.hot[at] = kept;
+    /// The walks under way.
+    pub(super) fn walking(&self) -> usize {
+        self.walking
+    }
+
+    /// A walk handed out ended, with every segment it went on into.
+    pub(super) fn walked(&mut self) {
+        self.walking -= 1;
     }
 
     /// The next task: an emit that can go on, the family furthest behind first; else, when
@@ -400,6 +404,8 @@ impl Schedule {
             self.stats.walks += 1;
             self.began[at] = self.stats.walks;
             self.running += 1;
+            self.walking += 1;
+            self.stats.walking = self.stats.walking.max(self.walking);
             return Ok(Some(Task::Walk {
                 at,
                 from: self.begins[at],
@@ -572,8 +578,7 @@ impl Schedule {
     /// The families of `next` a walk of the segment before goes on into: those it hands on
     /// (`handed`) that wait or are untaken, and every other it may take, once `next` is
     /// measured, `hold` sizes the walker for it, and going on hands an operator on or saves a
-    /// restart (`hot`). Its worker runs the emits that can go on first ([`super::Run::walk`]):
-    /// going on with its tables alone, it takes the families after those emits.
+    /// restart (`hot`).
     pub(super) fn chain(
         &mut self,
         plan: &Plan,

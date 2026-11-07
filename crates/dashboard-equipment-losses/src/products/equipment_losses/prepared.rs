@@ -61,6 +61,9 @@ struct Country {
     /// In a lens, what it made of the segment's hours.
     #[serde(skip)]
     out: Option<Box<lens::Out>>,
+    /// While bound, what the emit made of the lens's hours handed on so far.
+    #[serde(skip)]
+    mending: Option<Box<lens::Mending>>,
 }
 
 /// The existing naming and uncertainty inputs contain changes, not hourly values.
@@ -388,14 +391,16 @@ fn shared<T: Send, R: Send>(
     }
     let context = replay_frame::cpu::Context::capture();
     let memory = engine_allocation::labels::current();
+    let room = engine_allocation::spill::room();
     let step = &step;
     std::thread::scope(|scope| {
         let handles: Vec<_> = chunks
             .into_iter()
             .map(|chunk| {
-                let context = context.clone();
+                let (context, room) = (context.clone(), room.clone());
                 job_priority::spawn_in(scope, move || {
                     let _memory = engine_allocation::labels::resume(memory);
+                    let _room = engine_allocation::spill::enter(room);
                     let _cpu = context.enter("equipment_losses fold");
                     step(chunk)
                 })
@@ -861,14 +866,13 @@ impl Prepared {
         let _cpu =
             replay_frame::cpu::scope("equipment_losses.columnar.emit", Some("equipment_losses"));
         let at = hour.hour;
-        let begun = match hour.lens.map(|lens| *lens) {
-            Some(lens::Handed::Begun(begun)) => Some(begun),
-            Some(lens::Handed::Part(part)) => {
-                self.splice(part)?;
-                None
-            }
-            None => None,
-        };
+        let (mut begun, mut moved) = (None, None);
+        match hour.lens.map(|lens| *lens) {
+            Some(lens::Handed::Begun(lens)) => begun = Some(lens),
+            Some(lens::Handed::Moved(lens)) => moved = Some(lens),
+            Some(lens::Handed::Part(part)) => self.splice(part)?,
+            None => {}
+        }
         match hour.input {
             Facts::Read(input) => {
                 if let Some(begun) = &begun {
@@ -880,6 +884,10 @@ impl Prepared {
                 }
                 if let Some(begun) = begun {
                     self.bind(begun);
+                }
+                // The hour's input makes the countries born in it, which its moves may name.
+                if let Some(moved) = moved {
+                    self.moved(moved)?;
                 }
             }
             Facts::Other => {
@@ -1062,6 +1070,7 @@ impl Prepared {
                 ticked: self.queue.ticks.len(),
                 lensed,
                 out,
+                mending: None,
             },
         );
         self.queue.made.push((index, identity));

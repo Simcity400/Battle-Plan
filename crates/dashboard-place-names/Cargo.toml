@@ -24,7 +24,7 @@ dashboard-core.workspace = true
 replay-spool.workspace = true
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }

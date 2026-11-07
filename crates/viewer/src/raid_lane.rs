@@ -191,7 +191,7 @@ fn input(current: &Current, viewing: Option<&Arc<crate::hours::ViewingCountry>>)
             frame: Arc::clone(frame),
             viewing: Arc::clone(viewing),
         }),
-        Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
+        Current::Gap { .. } | Current::Refused { .. } => None,
     }
 }
 
@@ -593,8 +593,11 @@ fn serve(shared: &Shared) {
         // A panicking hour must not stop the lane: it is delivered failed,
         // and the cycle starts again at the next hour.
         let icons = &mut chain.icons;
-        let built =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build(shared, job, icons)));
+        // The lane outlives any one recording: each hour reads its own content's tables.
+        let tables = job.content.tables;
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            engine_executable::executable_tables::scope(tables, || build(shared, job, icons))
+        }));
         let _settle_cost = replay_frame::cpu::scope("raids.settle", Some("other"));
         match built {
             Ok(cycle) => settle(&mut chain, &lock(shared), &stamp, hour, cycle),

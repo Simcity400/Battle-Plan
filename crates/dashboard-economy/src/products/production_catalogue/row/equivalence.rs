@@ -347,7 +347,7 @@ impl Reference {
             .keyed
             .flush_values(writer, FAMILY, 1, &AtomicBool::new(false))
             .unwrap();
-        series::write_catalogue(writer, FAMILY, 1, state.keyed.keys(), &meta).unwrap();
+        series::write_catalogue(writer, FAMILY, 1, &state.keyed.keys().unwrap(), &meta).unwrap();
     }
 }
 
@@ -911,11 +911,7 @@ fn a_restored_key_catalogue_numbers_new_fields_as_their_names_would() {
     assert_eq!(restored.key(Field::LicenceVariant(1, 0, 3)), 2);
     assert_eq!(restored.key(Field::MioFunds(9)), 3);
     assert_eq!(restored.lookup(&Field::MioSize(9)), None);
-    let names: Vec<(String, u64)> = restored
-        .keys()
-        .iter()
-        .map(|(name, &key)| (name.clone(), key))
-        .collect();
+    let names: Vec<(String, u64)> = restored.keys().unwrap().into_iter().collect();
     let mut expected: Vec<(String, u64)> = first
         .iter()
         .chain([Field::MioFunds(9)].iter())

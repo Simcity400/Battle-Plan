@@ -1,7 +1,7 @@
 //! Recorded repair queues and live refit work, prepared as day events and read at an hour.
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 pub mod products {
     pub mod naval_refits;

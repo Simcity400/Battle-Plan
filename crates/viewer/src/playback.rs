@@ -9,7 +9,7 @@ use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// What a playback holds for its hour: the decoded frame, shared so the
 /// window can hand it between threads without a copy, the gap it falls in, or
-/// why its map is not read yet.
+/// why its map cannot be shown.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Current {
     Frame(Arc<DecodedFrame>),
@@ -18,18 +18,8 @@ pub enum Current {
         hour: Hour,
         reason: String,
     },
-    /// The recording holds the hour, but its map is not indexed yet: its session is still
-    /// being recorded, or (`awaiting_index`) preparation has not written the change-run index
-    /// its native capture is read through.
-    Pending {
-        branch: BranchId,
-        hour: Hour,
-        reason: String,
-        awaiting_index: bool,
-    },
-    /// The hour's map cannot be shown: the change-run index serving the recording cannot be
-    /// read, or the map needs more memory than its reader may ever hold. Refused by name,
-    /// never the recording's gap.
+    /// The hour's map cannot be shown: the recording's map cannot be read, or none is bound to
+    /// read it. Refused by name, never the recording's gap.
     Refused {
         branch: BranchId,
         hour: Hour,
@@ -60,13 +50,13 @@ pub struct Playback {
     /// Complete views carry change facts, as the display reads them.
     display_changes: bool,
     map_binding: Option<Arc<MapBinding>>,
-    /// The map's hours from the binding's change-run index, which replace the replay's blocks
-    /// once open; `map_failure`, why the index serving the replay could not be read, refuses
-    /// the map until it is bound again.
+    /// The map's hours read from the recording's runs in place, which replace the replay's
+    /// hour reads once open; `map_failure`, why they could not be read, refuses the map until
+    /// it is bound again.
     map: Option<crate::map_source::MapSource>,
     map_failure: Option<String>,
     /// The replay's row frames leave the map tables to its native capture, as a decoded
-    /// frame showed: only a change-run index holds its map, so no block is read for it.
+    /// frame showed: only the bound map reads it, so no hour is read for it without one.
     native_map: bool,
     map_workers: usize,
     source_path: Option<bool>,
@@ -148,10 +138,11 @@ impl Playback {
     pub fn bind_map(&mut self, binding: Arc<MapBinding>) {
         debug_assert!(Arc::ptr_eq(&binding.replay_handle(), &self.replay));
         self.map_binding = Some(binding);
-        // The binding's change-run index, if any, opens again on the next read.
+        // The binding's map opens on the next read.
         self.map = None;
         self.map_failure = None;
-        // A frame read before the binding may hold no map: say so in the binding's terms.
+        self.native_map = false;
+        // A frame read before the binding may hold no map: the hour is read again through it.
         let held = match &self.current {
             Current::Frame(frame) if leaves_map_to_native(frame, self.replay.capture_mode) => {
                 Some((frame.branch, frame.hour))
@@ -159,55 +150,18 @@ impl Playback {
             _ => None,
         };
         if let Some((branch, hour)) = held {
-            self.native_map = true;
-            self.current = self.unindexed(branch, hour);
+            self.current = gap(branch, hour, "hour has not been decoded".into());
+            self.materialized = false;
         }
     }
 
-    /// The hour of a replay whose map only a change-run index holds, while none is open:
-    /// pending while preparation writes it, else refused with why there is none.
+    /// The hour of a replay whose map only its native capture holds, with no map bound: why.
     fn unindexed(&self, branch: BranchId, hour: Hour) -> Current {
-        use crate::map_binding::IndexState;
-        let state = self
-            .map_binding
-            .as_ref()
-            .map_or(IndexState::Unplaced, |binding| binding.index_state());
-        let refused = |reason: String| Current::Refused {
+        Current::Refused {
             branch,
             hour,
-            reason,
-        };
-        let pending = || Current::Pending {
-            branch,
-            hour,
-            reason: "this recording's map is read from the change-run index preparation writes \
-                     from its native capture, which is not written yet"
+            reason: "this recording's map is held only in its native capture, and no map is                      bound to read it"
                 .into(),
-            awaiting_index: true,
-        };
-        match state {
-            IndexState::Preparing => pending(),
-            // Written since this read looked: the next read opens it.
-            IndexState::Written => match self.map_binding.as_ref().map(|binding| binding.columnar()) {
-                Some(Ok(Some(_))) => pending(),
-                Some(Err(error)) => refused(format!(
-                    "the change-run index serving this recording cannot be read: {error}"
-                )),
-                _ => refused(
-                    "the change-run index in this recording's store does not serve it, and its \
-                     map is held only in its native capture"
-                        .into(),
-                ),
-            },
-            IndexState::Refused(why) => refused(format!(
-                "this recording's map is held only in its native capture, which preparation \
-                 refused: {why}"
-            )),
-            IndexState::Unplaced => refused(
-                "this recording's map is held only in its native capture, which is read through \
-                 a change-run index, and none is bound"
-                    .into(),
-            ),
         }
     }
 
@@ -215,8 +169,7 @@ impl Playback {
         self.map_binding.clone()
     }
 
-    /// Opens the binding's change-run index once it serves the replay; cancellation leaves it to
-    /// be opened again.
+    /// Opens the binding's map; cancellation leaves it to be opened again.
     fn refresh_map(&mut self) -> io::Result<()> {
         if self.map.is_some() || self.map_failure.is_some() {
             return Ok(());
@@ -224,18 +177,14 @@ impl Playback {
         let Some(binding) = &self.map_binding else {
             return Ok(());
         };
-        let opened = binding.columnar().and_then(|columnar| {
-            columnar
-                .map(|columnar| columnar.open(Arc::clone(&self.replay), self.map_workers))
-                .transpose()
-        });
+        let opened = binding
+            .columnar()
+            .and_then(|columnar| columnar.open(Arc::clone(&self.replay), self.map_workers));
         match opened {
-            Ok(map) => self.map = map,
+            Ok(map) => self.map = Some(map),
             Err(error) if interrupted(&error) => return Err(error),
             Err(error) => {
-                self.map_failure = Some(format!(
-                    "the change-run index serving this recording cannot be read: {error}"
-                ))
+                self.map_failure = Some(format!("this recording's map cannot be read: {error}"))
             }
         }
         Ok(())
@@ -265,7 +214,7 @@ impl Playback {
         }
     }
 
-    /// Each change of source so far: hour, and whether the change-run index served it.
+    /// Each change of source so far: hour, and whether the bound map served it.
     #[cfg(test)]
     pub(crate) fn source_paths(&self) -> &[(Hour, bool)] {
         &self.source_paths
@@ -276,11 +225,11 @@ impl Playback {
         Arc::clone(&self.replay)
     }
 
-    pub fn air_roster_source(&self) -> Option<Arc<replay::columnar_runs::IndexFile>> {
+    pub fn air_roster_source(&self) -> Option<Arc<replay::columnar_natives::Natives>> {
         self.map.as_ref().map(|map| map.roster_source())
     }
 
-    /// The daily air rosters, read through the map's change-run index once it is open.
+    /// The daily air rosters, read through the map's source once it is open.
     pub fn air_rosters(&self) -> Arc<AirRosters> {
         let source = self.air_roster_source();
         let mut held = self
@@ -327,7 +276,7 @@ impl Playback {
     pub fn frame(&self) -> Option<&DecodedFrame> {
         match &self.current {
             Current::Frame(frame) => Some(frame),
-            Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
+            Current::Gap { .. } | Current::Refused { .. } => None,
         }
     }
 
@@ -466,8 +415,8 @@ impl Playback {
     }
 
     /// Reads `hour` of `branch`, handing `passed` earlier hours on the way: every one a
-    /// block decodes. A change-run map builds the hour alone, so the hours before it a caller
-    /// lacks are asked for after it; an index that cannot be read refuses it by name.
+    /// block decodes. A native map builds the hour alone, so the hours before it a caller lacks
+    /// are asked for after it; a map that cannot be read refuses it by name.
     fn seek_to(
         &mut self,
         branch: BranchId,
@@ -653,11 +602,11 @@ fn unknown_branch(branch: BranchId) -> io::Error {
     )
 }
 
-fn source_path_line(thread: &str, branch: BranchId, hour: Hour, indexed: bool) -> String {
+fn source_path_line(thread: &str, branch: BranchId, hour: Hour, native: bool) -> String {
     format!(
         "PROFILE source_path thread={} branch={branch} hour={hour} path={}",
         thread.replace(char::is_whitespace, "_"),
-        if indexed { "change-run" } else { "ordinary" },
+        if native { "native" } else { "ordinary" },
     )
 }
 
@@ -667,7 +616,7 @@ pub(crate) mod tests {
     fn source_path_line_names_the_thread_and_source() {
         assert_eq!(
             source_path_line("hour decoder", 1, 101, true),
-            "PROFILE source_path thread=hour_decoder branch=1 hour=101 path=change-run"
+            "PROFILE source_path thread=hour_decoder branch=1 hour=101 path=native"
         );
         assert_eq!(
             source_path_line("map source decoder", 7, -3, false),

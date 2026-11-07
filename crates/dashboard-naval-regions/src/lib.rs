@@ -1,7 +1,7 @@
 //! Sparse minefield histories and country-viewpoint naval control.
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 mod operands;
 mod shared;

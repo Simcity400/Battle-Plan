@@ -33,9 +33,10 @@ use input::{Changed, Complete, Hour, Lines, Reads, Variants};
 use replay_data::{format::FormatVersion, rows::Recorded, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
+use store::{Piece, Spill};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    io,
+    io::{self, Read},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -155,7 +156,7 @@ impl Current {
 }
 
 /// Prepared state's layout; another is refused rather than read.
-pub const SCHEMA: u32 = 9;
+pub const SCHEMA: u32 = 10;
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct ProductionAccumulator {
@@ -248,6 +249,8 @@ pub struct ProductionAccumulator {
     batch: Batch,
     #[serde(skip)]
     scratch: Box<Scratch>,
+    #[serde(skip)]
+    spill: Option<Spill>,
     /// Every endpoint completed, with its names hour, for tests' oracles.
     #[cfg(test)]
     #[serde(skip)]
@@ -390,6 +393,15 @@ struct Pending {
     /// compared at its completion.
     #[serde(skip)]
     named: Option<Vec<(u64, Vec<NameCode>)>>,
+    /// It goes on from the endpoint a flush completed ([`facts::Endpoint::continues`]).
+    continues: bool,
+}
+
+impl Pending {
+    /// Whether it holds an hour: a continuation holds none until an hour extends it.
+    fn holds_hours(&self) -> bool {
+        self.page.first_hour <= self.page.last_hour
+    }
 }
 
 /// What changed in one source of a row since the endpoint before: the whole source, or the
@@ -2790,7 +2802,9 @@ impl ProductionAccumulator {
             };
             let (countries, edited) = match self.pending.take() {
                 Some(mut previous) => {
-                    self.complete(&previous)?;
+                    if previous.holds_hours() {
+                        self.complete(&previous)?;
+                    }
                     let scratch = &mut *self.scratch;
                     // The completed endpoint's edit lists are this one's buffers.
                     if let Some((edited, entries)) = previous.edited.take() {
@@ -2856,6 +2870,7 @@ impl ProductionAccumulator {
                 counts,
                 edited,
                 named: Some(named),
+                continues: false,
             });
         }
         self.classes_moved = false;
@@ -3425,7 +3440,7 @@ struct HolderGroup {
     first: u64,
     last: u64,
     events: u32,
-    bytes: Vec<u8>,
+    bytes: Block,
 }
 
 impl HolderStream {
@@ -3485,7 +3500,7 @@ impl HolderStream {
             first: self.first,
             last: self.last,
             events: self.events,
-            bytes: std::mem::take(&mut self.open.0),
+            bytes: Block::Raw(std::mem::take(&mut self.open.0)),
         });
         self.events = 0;
     }
@@ -3495,8 +3510,8 @@ impl HolderStream {
 #[derive(Default)]
 struct Batch {
     first_endpoint: Option<u64>,
-    /// Each endpoint completed, and its ranking block before compression.
-    endpoints: Vec<(Endpoint, Vec<u8>)>,
+    /// Each endpoint completed, and its ranking block.
+    endpoints: Vec<(Endpoint, Block)>,
     /// An endpoint was completed in it.
     started: bool,
     /// Every holder at the batch's last endpoint, by id.
@@ -3509,9 +3524,71 @@ struct Batch {
     /// Each variant's names as last published in this batch.
     named: BTreeMap<u64, Vec<NameCode>>,
     bytes: usize,
+    packed: usize,
+}
+
+/// Raw bytes a batch adds between packings of its finished blocks.
+const PACK_BYTES: usize = 8 << 20;
+
+fn spill_here() -> Option<Spill> {
+    engine_allocation::spill::room().map(|room| Spill::new(room.folder()))
+}
+
+/// A ranking block or closed holder group, spilled once final.
+enum Block {
+    Raw(Vec<u8>),
+    Packed(Vec<u8>),
+    Spilled(Piece),
+}
+
+impl Block {
+    fn len(&self) -> io::Result<u64> {
+        match self {
+            Self::Packed(bytes) => Ok(bytes.len() as u64),
+            Self::Spilled(piece) => Ok(piece.len),
+            Self::Raw(_) => Err(io::Error::other("A production block was never compressed")),
+        }
+    }
+
+    fn place(self, held: &mut Vec<u8>, pieces: &mut Vec<Piece>) {
+        match self {
+            Self::Packed(bytes) => held.extend_from_slice(&bytes),
+            Self::Spilled(piece) => pieces.push(piece),
+            Self::Raw(_) => {}
+        }
+    }
 }
 
 impl Batch {
+    /// Compresses every raw finished block on idle workers, spilling it where there is a spill.
+    fn pack(&mut self, spill: Option<&mut Spill>) -> io::Result<()> {
+        let mut blocks: Vec<&mut Block> = self
+            .streams
+            .values_mut()
+            .flat_map(|stream| stream.groups.iter_mut().map(|group| &mut group.bytes))
+            .chain(self.endpoints.iter_mut().map(|(_, block)| block))
+            .filter(|block| matches!(block, Block::Raw(_)))
+            .collect();
+        shards::chunks(&mut blocks, |_, chunk| {
+            for block in chunk {
+                if let Block::Raw(bytes) = &**block {
+                    **block = Block::Packed(crate::prepared::series::compress(bytes, 3)?);
+                }
+            }
+            Ok(())
+        })?;
+        if let Some(spill) = spill {
+            for block in blocks {
+                if let Block::Packed(bytes) = &*block {
+                    *block = Block::Spilled(spill.append(bytes)?);
+                }
+            }
+            spill.seal()?;
+        }
+        self.packed = self.bytes;
+        Ok(())
+    }
+
     /// Whether the next endpoint's ranking block states every holder.
     fn keyframe(&self) -> bool {
         self.endpoints.len() % facts::RANKING_KEYFRAME == 0
@@ -3540,8 +3617,9 @@ impl Batch {
                 ranking_offset: 0,
                 ranking_len: 0,
                 keyframe,
+                continues: false,
             },
-            block,
+            Block::Raw(block),
         ));
         added
     }
@@ -3557,6 +3635,7 @@ impl ProductionAccumulator {
             names_hour,
             edited,
             named,
+            continues,
             ..
         } = completed;
         let names_hour = *names_hour;
@@ -3572,6 +3651,9 @@ impl ProductionAccumulator {
             }
             None => self.complete_whole(page, endpoint, names_hour)?,
         };
+        if let Some((record, _)) = self.batch.endpoints.last_mut() {
+            record.continues = *continues;
+        }
         // Names (P5), wherever a variant's changed.
         let compared;
         let events = match named {
@@ -3598,6 +3680,14 @@ impl ProductionAccumulator {
         self.batch.bytes += added;
         self.batch.started = true;
         self.batch.names_hour = Some(names_hour);
+        if self.batch.bytes - self.batch.packed >= PACK_BYTES {
+            if self.spill.is_none() {
+                self.spill = spill_here();
+            }
+            if let Some(spill) = &mut self.spill {
+                self.batch.pack(Some(spill))?;
+            }
+        }
         Ok(())
     }
 
@@ -3880,65 +3970,88 @@ fn write_change(
 
 impl ProductionAccumulator {
     /// Completes the open endpoint and appends the batch's facts and spent
-    /// series. Appends begin a new endpoint.
+    /// series. The endpoint goes on past the flush: the hours after it that hold
+    /// it extend it, published as its continuation, so where a flush falls
+    /// changes no endpoint's span.
     pub fn flush(&mut self, writer: &mut store::Writer, cancelled: &AtomicBool) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("production:series_flush");
         self.seal_holders();
-        if let Some(pending) = self.pending.take() {
-            self.complete(&pending)?;
+        if let Some(mut pending) = self.pending.take() {
+            if pending.holds_hours() {
+                self.complete(&pending)?;
+            }
             self.classes_moved = false;
+            let page = &mut pending.page;
+            page.unnamed_before = page.unnamed_at(page.last_hour);
+            page.first_hour = page
+                .last_hour
+                .checked_add(1)
+                .ok_or_else(|| io::Error::other("Production hours exceed their range"))?;
+            pending.edited = None;
+            // It names nothing: the names its readers take are the endpoint's it continues.
+            pending.named = Some(Vec::new());
+            pending.continues = true;
+            self.pending = Some(pending);
         }
         self.spent
             .flush(writer, &spent_section(self.branch), 0, cancelled)?;
-        let range = self.facts_range()?;
-        writer.write(&section(FACTS, self.branch), range.as_slice())?;
+        let (head, pieces) = self.facts_range()?;
+        let section = section(FACTS, self.branch);
+        match (&mut self.spill, pieces) {
+            (Some(spill), Some(pieces)) => {
+                writer.write(&section, io::Cursor::new(head).chain(spill.read(pieces)))?;
+                spill.clear();
+            }
+            _ => {
+                writer.write(&section, head.as_slice())?;
+            }
+        }
         Ok(())
     }
 
-    /// The batch's range: its preamble, head, ranking blocks and holder groups.
-    fn facts_range(&mut self) -> io::Result<Vec<u8>> {
+    /// The batch's range, or its preamble and head and the spilled blocks that follow them.
+    fn facts_range(&mut self) -> io::Result<(Vec<u8>, Option<Vec<Piece>>)> {
         let mut batch = std::mem::take(&mut self.batch);
         let first_endpoint = batch.first_endpoint.unwrap_or(self.pages_written);
-        // Every holder group and ranking block, compressed here and on the run's idle workers.
         for stream in batch.streams.values_mut() {
             stream.close();
         }
-        let mut blocks: Vec<&mut Vec<u8>> = batch
-            .streams
-            .values_mut()
-            .flat_map(|stream| stream.groups.iter_mut().map(|group| &mut group.bytes))
-            .chain(batch.endpoints.iter_mut().map(|(_, block)| block))
-            .collect();
-        shards::chunks(&mut blocks, |_, chunk| {
-            for block in chunk {
-                **block = crate::prepared::series::compress(&block[..], 3)?;
-            }
-            Ok(())
-        })?;
+        if self.spill.is_none() {
+            self.spill = spill_here();
+        }
+        batch.pack(self.spill.as_mut())?;
+        let spilled = self.spill.is_some();
+        let mut pieces = Vec::new();
         let endpoint_count = u32::try_from(batch.endpoints.len())
             .map_err(|_| io::Error::other("Production endpoints exceed their integer range"))?;
         let mut endpoints = Out::default();
         let mut ranking = Vec::new();
+        let mut ranking_len = 0;
         for (mut record, block) in std::mem::take(&mut batch.endpoints) {
-            record.ranking_offset = ranking.len() as u64;
-            record.ranking_len = u32::try_from(block.len())
+            let len = block.len()?;
+            record.ranking_offset = ranking_len;
+            record.ranking_len = u32::try_from(len)
                 .map_err(|_| io::Error::other("A production ranking block exceeds 4 GiB"))?;
-            ranking.extend_from_slice(&block);
+            ranking_len += len;
+            block.place(&mut ranking, &mut pieces);
             record.write(&mut endpoints);
         }
         let mut directory = Out::default();
         let mut groups = Vec::new();
+        let mut holders_len = 0;
         directory.count(batch.streams.len())?;
         for (holder, stream) in std::mem::take(&mut batch.streams) {
             directory.u32(holder);
             directory.count(stream.groups.len())?;
             for group in stream.groups {
+                let len = group.bytes.len()?;
                 directory.u64(group.first);
                 directory.u64(group.last);
-                directory.u64(groups.len() as u64);
-                directory.count(group.bytes.len())?;
+                directory.u64(holders_len);
+                directory.count(usize::try_from(len).map_err(io::Error::other)?)?;
                 directory.count(group.events as usize)?;
-                groups.extend_from_slice(&group.bytes);
+                holders_len += len;
+                group.bytes.place(&mut groups, &mut pieces);
             }
         }
         // Spent series keys (P4) made since the last flush.
@@ -4027,14 +4140,17 @@ impl ProductionAccumulator {
         Preamble {
             first_endpoint,
             head_len: head.len() as u64,
-            ranking_len: ranking.len() as u64,
-            holders_len: groups.len() as u64,
+            ranking_len,
+            holders_len,
         }
         .write(&mut out);
         out.0.extend_from_slice(&head);
+        if spilled {
+            return Ok((out.0, Some(pieces)));
+        }
         out.0.extend_from_slice(&ranking);
         out.0.extend_from_slice(&groups);
-        Ok(out.0)
+        Ok((out.0, None))
     }
 }
 
@@ -4057,6 +4173,7 @@ impl ProductionAccumulator {
             counts: PageCounts::default(),
             edited: None,
             named: Some(named),
+            continues: false,
         })
     }
 

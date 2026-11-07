@@ -262,7 +262,7 @@ fn active_run_observe_boundary_splits_equal_values_without_identity_break_and_se
         Some(Run::new(1, 4, 10, false))
     );
     assert_eq!(
-        values.pending_runs(7),
+        values.pending_runs(7).unwrap(),
         [Run::new(0, 0, 10, true), Run::new(1, 4, 10, false)]
     );
     assert_eq!(values.state(8).unwrap().runs, 1);
@@ -270,7 +270,7 @@ fn active_run_observe_boundary_splits_equal_values_without_identity_break_and_se
         values.state(8).unwrap().last,
         Some(Run::new(0, 4, 10, true))
     );
-    assert_eq!(values.pending_runs(8), [Run::new(0, 4, 10, true)]);
+    assert_eq!(values.pending_runs(8).unwrap(), [Run::new(0, 4, 10, true)]);
     values.advance(5).unwrap();
     values.observe_boundary(7, 5, None, false, true);
     assert!(!values.active.contains(&7), "an unknown never stays active");
@@ -986,7 +986,7 @@ fn pending_runs_complete_committed_history_without_overlap() {
     let mut writer = fixture.writer();
     values.flush(&mut writer, "values", 0, &flag).unwrap();
     writer.commit().unwrap();
-    assert!(values.pending_runs(1).is_empty());
+    assert!(values.pending_runs(1).unwrap().is_empty());
     for (hour, value) in [(4, 10), (5, 10), (6, 20)] {
         values.observe(1, hour, Some(value), false);
     }
@@ -1001,13 +1001,13 @@ fn pending_runs_complete_committed_history_without_overlap() {
     );
     assert_eq!(
         values
-            .pending_runs(1)
+            .pending_runs(1).unwrap()
             .iter()
             .map(|run| (run.first_hour, run.last_hour, run.value))
             .collect::<Vec<_>>(),
         [(4, 5, 10), (6, 6, 20)]
     );
-    assert!(values.pending_runs(2).is_empty());
+    assert!(values.pending_runs(2).unwrap().is_empty());
 }
 
 #[test]
@@ -2792,7 +2792,7 @@ fn equal_observations_extend_once_and_keep_hourly_bytes() {
 fn compact_payload_operands_do_not_expand_constant_spans() {
     let state = KeyState {
         last: Some(Run::new(0, 6, 9, true)),
-        partial: LEVELS.map(|aligned| {
+        partial: Partials::of(LEVELS.map(|aligned| {
             Some(Partial::Span {
                 aligned,
                 first: 0,
@@ -2800,21 +2800,14 @@ fn compact_payload_operands_do_not_expand_constant_spans() {
                 value: 9,
                 first_break: true,
             })
-        }),
-        ..Default::default()
-    };
-    let rows = Rows {
-        state,
+        })),
         ..Default::default()
     };
     let before = SPAN_BUCKET_WORK.with(std::cell::Cell::get);
     let mut identity = Vec::new();
-    let expected = payload_input(&rows.runs, &rows.state, &mut identity);
+    let expected = payload_input(&[], &state, &mut identity);
     for _ in 0..5_000 {
-        assert_eq!(
-            payload_input(&rows.runs, &rows.state, &mut identity),
-            expected
-        );
+        assert_eq!(payload_input(&[], &state, &mut identity), expected);
     }
     assert_eq!(SPAN_BUCKET_WORK.with(std::cell::Cell::get), before);
 }
@@ -4056,14 +4049,14 @@ fn backdated_index_allocation_refusal_propagates_before_roots_change() {
         events: 1,
         ..Default::default()
     };
-    let mut events = [(24, vec![b'1'])];
+    let events = [(24, vec![b'1'])];
     engine_allocation::set_stop_hook(Some(|| true));
     let result = order::publish(
         &mut writer,
         "events",
         0,
         &mut bytes,
-        &mut [(9, &[], &mut events, &mut state)],
+        &mut [(events.iter().map(|row| row.0).collect(), &mut state)],
         &flag,
     );
     engine_allocation::set_stop_hook(None);
@@ -4186,10 +4179,10 @@ fn payload_in_one_pass(
     }
     for (level, size) in LEVELS.into_iter().enumerate() {
         let buckets =
-            summary_buckets(runs, state.partial[level], size, decimals, &cancelled).unwrap();
+            summary_buckets(runs, state.partial.level(level), size, decimals, &cancelled).unwrap();
         var(&mut raw, buckets.len() as u128);
         let mut pending =
-            state.partial[level].map(|partial| (partial.aligned(), partial.bucket(decimals)));
+            state.partial.level(level).map(|partial| (partial.aligned(), partial.bucket(decimals)));
         let mut previous = 0_i64;
         for (aligned, mut bucket) in buckets {
             if let Some(bucket) = &mut bucket {
@@ -4212,9 +4205,12 @@ fn payload_in_one_pass(
         }
         let tail = i64::from(last).div_euclid(size) * size;
         let held = state.last;
-        state.partial[level] = pending
-            .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
-            .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
+        state.partial.set(
+            level,
+            pending
+                .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
+                .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals)),
+        );
         let aligned = |hour: i32| i64::from(hour).div_euclid(size) * size;
         let counts = || events.chunk_by(|a, b| aligned(a.0) == aligned(b.0));
         var(&mut raw, counts().count() as u128);

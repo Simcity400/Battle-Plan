@@ -195,6 +195,11 @@ impl SharedView {
         Arc::try_unwrap(self.0).map_err(|shared| Self(shared, self.1, self.2, self.3))
     }
 
+    /// Whether another view holds this allocation too, so a write would copy it.
+    pub fn is_shared(&self) -> bool {
+        Arc::strong_count(&self.0) > 1
+    }
+
     /// The allocation's address, for counting distinct tables.
     pub fn as_ptr(&self) -> *const TableView {
         Arc::as_ptr(&self.0)

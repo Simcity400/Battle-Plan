@@ -117,6 +117,21 @@ thread_local! {
     static BACKGROUND: Cell<bool> = const { Cell::new(false) };
     /// The processors the thread's confined work runs on, and so do the threads it starts.
     static CONFINED: Cell<Option<Processors>> = const { Cell::new(None) };
+    /// The level the thread entered its job at, and whether it runs lowered ([`follow`]).
+    static LEVEL: Cell<Option<(Level, bool)>> = const { Cell::new(None) };
+}
+
+/// Brings the calling thread's priority up to date with its job: one the user joined since the
+/// thread entered it runs at the thread's own level, no longer lowered. A thread in background
+/// mode, or that entered no job, is left as it is.
+pub fn follow() {
+    let Some((level, lowered)) = LEVEL.get() else {
+        return;
+    };
+    if lowered && !JobPriority::current().background() {
+        set_thread_priority(level, false);
+        LEVEL.set(Some((level, false)));
+    }
 }
 
 /// Runs `work`, and every thread it starts with [`JobPriority::current`] or [`Caller::current`],
@@ -448,8 +463,10 @@ impl JobPriority {
         CONTEXT.set(self.3.0);
         JOB.with(|job| *job.borrow_mut() = self.0);
         if self.1 {
+            LEVEL.set(None);
             background_thread();
         } else {
+            LEVEL.set(Some((level, lowered)));
             set_thread_priority(level, lowered);
         }
     }
@@ -461,6 +478,7 @@ impl JobPriority {
 pub struct Caller {
     job: JobPriority,
     priority: i32,
+    level: Option<(Level, bool)>,
 }
 
 impl Caller {
@@ -475,6 +493,7 @@ impl Caller {
         Self {
             job: JobPriority::current(),
             priority,
+            level: LEVEL.get(),
         }
     }
 
@@ -483,6 +502,7 @@ impl Caller {
         Processors::confine(self.job.2);
         CONTEXT.set(self.job.3.0);
         JOB.with(|job| *job.borrow_mut() = self.job.0);
+        LEVEL.set(self.level);
         #[cfg(windows)]
         unsafe {
             use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority};

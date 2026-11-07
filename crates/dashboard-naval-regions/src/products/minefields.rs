@@ -127,9 +127,6 @@ impl Product for Minefields {
     const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = Params;
     type Reply = Reply;
-    fn native_tables() -> Vec<TableId> {
-        REPORT_TABLES.to_vec()
-    }
     fn validate(p: &Params) -> Result<(), &'static str> {
         shared::validate(&p.branch_id, p.first_hour, p.last_hour)?;
         for tag in p.tags.iter().flatten() {

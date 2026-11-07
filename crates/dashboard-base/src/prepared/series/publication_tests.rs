@@ -195,24 +195,28 @@ fn unchanged_continuation_keys_are_encoded_once_and_public_mutations_invalidate_
     // Equality checks the stored operands, including floating-point sign bits.
     let state = values.states.get_mut(&7).unwrap();
     state.last = Some(Run::new(0, 3, 5, false));
-    state.partial[0] = Some(Partial::Span {
-        aligned: 0,
-        first: 0,
-        last: 3,
-        value: 5,
-        first_break: false,
-    });
+    state.partial.set(
+        0,
+        Some(Partial::Span {
+            aligned: 0,
+            first: 0,
+            last: 3,
+            value: 5,
+            first_break: false,
+        }),
+    );
     assert_eq!(saved(&values, false), saved(&values, true));
     let state = values.states.get_mut(&7).unwrap();
     let mut bucket = constant_bucket(0, 0, 3, false, 0);
     bucket.first_value = -0.0;
-    state.partial[0] = Some(Partial::Bucket { aligned: 0, bucket });
+    state.partial.set(0, Some(Partial::Bucket { aligned: 0, bucket }));
     let negative_zero = saved(&values, false);
-    let Some(Partial::Bucket { bucket, .. }) = &mut values.states.get_mut(&7).unwrap().partial[0]
-    else {
+    let state = values.states.get_mut(&7).unwrap();
+    let Some(Partial::Bucket { aligned, mut bucket }) = state.partial.level(0) else {
         unreachable!()
     };
     bucket.first_value = 0.0;
+    state.partial.set(0, Some(Partial::Bucket { aligned, bucket }));
     let before = saved::SAVED_KEY_WORK.get();
     let positive_zero = saved(&values, false);
     assert_ne!(negative_zero, positive_zero);
@@ -278,7 +282,7 @@ fn nonconstant_partial_buckets_keep_exact_totals_through_restore_and_append() {
             }
             values.through(last);
             flush(&mut values, &mut pages, false, 0);
-            for partial in values.state(0).unwrap().partial {
+            for partial in values.state(0).unwrap().partial.get() {
                 assert_eq!(partial.unwrap().bucket(0).absolute_total, total);
             }
             let continuation = saved(&values, false);
@@ -291,7 +295,7 @@ fn nonconstant_partial_buckets_keep_exact_totals_through_restore_and_append() {
             ] {
                 values.push(0, Run::new(last + 1, last + 1, 3, false));
                 flush(values, pages, false, 0);
-                for partial in values.state(0).unwrap().partial {
+                for partial in values.state(0).unwrap().partial.get() {
                     assert_eq!(partial.unwrap().bucket(0).absolute_total, total + 3);
                 }
             }

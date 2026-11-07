@@ -208,6 +208,46 @@ pub struct RecordsDecoder<'a> {
 }
 
 impl<'a> RecordsDecoder<'a> {
+    /// The bytes its own state holds, its payload aside.
+    pub fn held_bytes(&self) -> usize {
+        8 * self.columns.capacity()
+            + self.statuses.capacity() * std::mem::size_of::<Status>()
+            + 4 * (self.previous_read.capacity() + self.previous_present.capacity())
+            + self
+                .previous_columns
+                .iter()
+                .map(|columns| 8 * columns.capacity())
+                .sum::<usize>()
+            + self.previous_ops.capacity()
+            + self.streams.capacity() * std::mem::size_of::<Reader<'_>>()
+    }
+
+    /// The decoder where it stands, over `to`, a copy of `from`, which its payload lies in.
+    pub fn rebased<'b>(&self, from: &[u8], to: &'b [u8]) -> io::Result<RecordsDecoder<'b>> {
+        let mut streams = engine_allocation::vec(self.streams.len())?;
+        for stream in &self.streams {
+            streams.push(stream.rebased(from, to)?);
+        }
+        let mut previous_columns = engine_allocation::vec(self.previous_columns.len())?;
+        for columns in &self.previous_columns {
+            previous_columns.push(engine_allocation::copy_vec(columns)?);
+        }
+        Ok(RecordsDecoder {
+            columns: engine_allocation::copy_vec(&self.columns)?,
+            hours: self.hours,
+            read_hours: self.read_hours,
+            statuses: engine_allocation::copy_vec(&self.statuses)?,
+            previous_read: engine_allocation::copy_vec(&self.previous_read)?,
+            previous_present: engine_allocation::copy_vec(&self.previous_present)?,
+            previous_columns,
+            previous_ops: engine_allocation::copy_vec(&self.previous_ops)?,
+            previous_pool: self.previous_pool,
+            streams,
+            list: Vec::new(),
+            merged: Vec::new(),
+        })
+    }
+
     pub fn new(columns: &[usize], payload: &'a [u8]) -> io::Result<Self> {
         let mut reader = Reader::new(payload);
         let hours = reader.varint_u32()?;

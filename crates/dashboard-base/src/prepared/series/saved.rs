@@ -23,8 +23,9 @@ fn same(a: &KeyState, b: &KeyState) -> bool {
         && a.events == b.events
         && a.event_order == b.event_order
         && a.partial
+            .get()
             .iter()
-            .zip(&b.partial)
+            .zip(&b.partial.get())
             .all(|(a, b)| match (*a, *b) {
                 (None, None) => true,
                 (

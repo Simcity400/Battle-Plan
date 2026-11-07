@@ -42,7 +42,7 @@ pub(super) fn identity(state: &KeyState, last: i32, decimals: u8, input: [u8; 32
     let last = i64::from(last);
     let mut flags = 0;
     for (level, size) in LEVELS.into_iter().enumerate() {
-        if let Some(partial) = state.partial[level] {
+        if let Some(partial) = state.partial.level(level) {
             let aligned = partial.aligned();
             let end = aligned + size - 1;
             let held = match partial {

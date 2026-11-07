@@ -6,7 +6,7 @@ pub mod columnar_capture;
 pub mod columnar_file;
 pub mod columnar_frames;
 pub mod columnar_journal;
-pub mod columnar_runs;
+pub mod columnar_natives;
 pub mod columns;
 pub mod commands;
 pub mod compression;

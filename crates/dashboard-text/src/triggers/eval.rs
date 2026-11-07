@@ -1802,9 +1802,9 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             // character, whose current role need not be the original handle.
             scope @ (Scope::Character(_) | Scope::Leader(_) | Scope::CountryLeader { .. }) => {
                 let character = self.character_of(scope).map_err(fail)?;
-                let tables = &self.world.character_tables();
-                return tables
-                    .tag(character, tagged, |raw| self.canonical(raw))
+                return self
+                    .world
+                    .character_tag(character, tagged)
                     .map(Eval::from_bool)
                     .map_err(fail);
             }
@@ -1815,22 +1815,13 @@ impl<'e, 'a> Evaluator<'e, 'a> {
 
     /// A raw country link's canonical slot, or why it has none.
     fn canonical(&self, raw: u32) -> Result<u32, Failure> {
-        self.world.slot(raw).ok_or_else(|| -> Failure {
-            format!("country link {raw} has no CountryLinks row").into()
-        })
+        self.world.canonical(raw)
     }
 
     /// Where a character's `has_trait` looks its operand up
     /// (character_scope::TraitNames).
     fn trait_names(&self) -> Result<TraitNames<'_>, Failure> {
-        let (units, country_leaders) = self.world.character_traits.map_err(|why| {
-            Failure::from(why).context(|why| format!("the trait databases are unread: {why}"))
-        })?;
-        Ok(TraitNames {
-            units,
-            country_leaders: Ok(country_leaders),
-            lexer: self.world,
-        })
+        self.world.trait_names()
     }
 
     /// The character a character-kind scope holds: its own, or a unit
@@ -1876,12 +1867,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     .scalar()
                     .and_then(installed_content_core::parser::read_bool)
                     .ok_or("is_country_leader needs yes or no")?;
-                if character == 0
-                    || self
-                        .world
-                        .character_tables()
-                        .retired(character, |raw| self.canonical(raw))?
-                {
+                if character == 0 || self.world.character_retired(character)? {
                     Eval::False
                 } else {
                     let row = self.world.character(character)?.ok_or_else(|| -> Failure {
@@ -1906,7 +1892,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             // scope has no combat, so it is the character's unit leader's
             // skill level, compared as an integer.
             "skill" => {
-                let skill = self.world.character_tables().skill(character)?;
+                let skill = self.world.character_skill(character)?;
                 let required = self.required(bytes, item.quoted(), false, scopes)?;
                 Eval::from_bool(compare(
                     i64::from(skill) * ONE,
@@ -1918,12 +1904,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
             // Ideology compares every held role's
             // current pointer, independently of its map key.
             "has_ideology" => {
-                if character == 0
-                    || self
-                        .world
-                        .character_tables()
-                        .retired(character, |raw| self.canonical(raw))?
-                {
+                if character == 0 || self.world.character_retired(character)? {
                     Eval::False
                 } else {
                     let counts = self
@@ -1966,12 +1947,10 @@ impl<'e, 'a> Evaluator<'e, 'a> {
                     }
                 }
             }
-            "has_trait" => Eval::from_bool(self.world.character_tables().has_trait(
-                character,
-                bytes,
-                &self.trait_names()?,
-                |raw| self.canonical(raw),
-            )?),
+            "has_trait" => {
+                self.trait_names()?;
+                Eval::from_bool(self.world.character_has_trait(character, bytes)?)
+            }
             _ => return Ok(None),
         }))
     }
@@ -1985,6 +1964,7 @@ impl<'e, 'a> Evaluator<'e, 'a> {
         operand: &[u8],
         assigned: impl FnOnce() -> Result<Option<Vec<i32>>, Failure>,
     ) -> Result<bool, Failure> {
+        self.world.read_role_traits();
         self.world.character_tables().character_traits(
             character,
             operand,

@@ -285,8 +285,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             crate::prepared_production::FACTS,
             crate::prepared_production::STATE,
         ],
-        // 9: the emit folds the operator's output changes as they come, sharing with idle workers.
-        version: 9,
+        // 10: an endpoint goes on past a flush, its continuation flagged.
+        version: 10,
         ..family("production")
     },
     Descriptor {

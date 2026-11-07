@@ -983,6 +983,14 @@ pub enum Query {
     Variable(Store, Vec<u8>),
     VariableSeed(Store),
     CharacterExists(u32),
+    /// A character scope's `tag` of a canonical slot.
+    CharacterTag(u32, u32),
+    /// A character scope's `skill`.
+    CharacterSkill(u32),
+    /// Whether a character is retired, as a character scope's gates read it.
+    CharacterRetired(u32),
+    /// A character scope's `has_trait` of a name.
+    CharacterHasTrait(u32, Vec<u8>),
     StateOfValue(i64),
     UnitLeader(u64),
     PartyLeaders(u32),
@@ -1145,6 +1153,18 @@ impl World<'_> {
             }
             Query::CharacterExists(id) => {
                 super::inputs::digest(&self.character_exists_unrecorded(*id))
+            }
+            Query::CharacterTag(character, tagged) => {
+                super::inputs::digest(&self.character_tag_unrecorded(*character, *tagged))
+            }
+            Query::CharacterSkill(character) => {
+                super::inputs::digest(&self.character_skill_unrecorded(*character))
+            }
+            Query::CharacterRetired(character) => {
+                super::inputs::digest(&self.character_retired_unrecorded(*character))
+            }
+            Query::CharacterHasTrait(character, name) => {
+                super::inputs::digest(&self.character_has_trait_unrecorded(*character, name))
             }
             Query::StateOfValue(raw) => {
                 super::inputs::digest(&self.state_of_value_unrecorded(*raw))
@@ -1360,6 +1380,7 @@ impl<'a> World<'a> {
 
     fn state_map(&self) -> &ReferencedRows<State> {
         self.states.get_or_init(|| {
+            let _cpu = replay_frame::cpu::scope_phase("triggers:index");
             let rows = super::refusal::deferred(|| {
                 each::<tables::States>(self.state_rows)
                     .map(|row| {
@@ -1392,6 +1413,7 @@ impl<'a> World<'a> {
 
     fn province_map(&self) -> &ReferencedRows<Province> {
         self.provinces.get_or_init(|| {
+            let _cpu = replay_frame::cpu::scope_phase("triggers:index");
             let rows = super::refusal::deferred(|| {
                 each::<tables::Provinces>(self.province_rows)
                     .map(|row| row.map(|row| (row.id, Province::from(&*row))))
@@ -1424,6 +1446,7 @@ impl<'a> World<'a> {
     pub fn links(&self) -> &BTreeMap<u32, u32> {
         super::inputs::table(self.frame, replay_data::rows::TableId::CountryLinks);
         self.links.get_or_init(|| {
+            let _cpu = replay_frame::cpu::scope_phase("triggers:index");
             let mut links = BTreeMap::new();
             for row in self.link_rows.iter() {
                 // A walked link that does not build resolves no reference.
@@ -1509,13 +1532,11 @@ impl<'a> World<'a> {
         &self.state_provinces
     }
 
-    /// The hour's character tables, read whole: an evaluation depends on
-    /// the fields of all six that they read ([`character_scope::FIELDS`]).
+    /// The hour's character tables, read whole and unrecorded: their readers record what they
+    /// read as queries ([`Self::character_tag`] and the others).
     pub(super) fn character_tables(&self) -> &character_scope::Tables<'a> {
-        for (table, fields) in character_scope::FIELDS {
-            super::inputs::fields(self.frame, table, fields);
-        }
         self.character_tables.get_or_init(|| {
+            let _cpu = replay_frame::cpu::scope_phase("triggers:index");
             super::inputs::unrecorded(|| {
                 super::refusal::deferred(|| character_scope::Tables::read_in(self.frame))
             })
@@ -1780,6 +1801,7 @@ impl<'a> World<'a> {
     /// The hour's scope facts ([`RecordedScopes`]), read on first use.
     pub fn recorded(&self) -> &RecordedScopes<'a> {
         self.recorded.get_or_init(|| {
+            let _cpu = replay_frame::cpu::scope_phase("triggers:index");
             super::inputs::unrecorded(|| {
                 RecordedScopes::read_in(self.frame, Arc::clone(self.aliases))
             })
@@ -3649,6 +3671,85 @@ impl<'a> World<'a> {
         Ok(self.character(id)?.is_some())
     }
 
+    /// Records a read of every character's role traits, for a reader of them outside a query.
+    pub(super) fn read_role_traits(&self) {
+        let (table, names) = character_scope::FIELDS[3];
+        super::inputs::fields(self.frame, table, names);
+    }
+
+    /// A raw country link's canonical slot, or why it has none.
+    pub(super) fn canonical(&self, raw: u32) -> Result<u32, Failure> {
+        self.slot(raw).ok_or_else(|| -> Failure {
+            format!("country link {raw} has no CountryLinks row").into()
+        })
+    }
+
+    /// Where a character's `has_trait` looks its operand up
+    /// ([`character_scope::TraitNames`]).
+    pub(super) fn trait_names(&self) -> Result<character_scope::TraitNames<'_>, Failure> {
+        let (units, country_leaders) = (*self.character_traits).map_err(|why| {
+            Failure::from(why).context(|why| format!("the trait databases are unread: {why}"))
+        })?;
+        Ok(character_scope::TraitNames {
+            units,
+            country_leaders: Ok(country_leaders),
+            lexer: self,
+        })
+    }
+
+    /// A character scope's `tag` of the canonical slot `tagged`
+    /// ([`character_scope::Tables::tag`]).
+    pub(super) fn character_tag(&self, character: u32, tagged: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::CharacterTag(character, tagged)),
+            || self.character_tag_unrecorded(character, tagged),
+        )
+    }
+
+    fn character_tag_unrecorded(&self, character: u32, tagged: u32) -> Result<bool, Failure> {
+        self.character_tables()
+            .tag(character, tagged, |raw| self.canonical(raw))
+    }
+
+    /// A character scope's `skill` ([`character_scope::Tables::skill`]).
+    pub(super) fn character_skill(&self, character: u32) -> Result<i32, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::CharacterSkill(character)),
+            || self.character_skill_unrecorded(character),
+        )
+    }
+
+    fn character_skill_unrecorded(&self, character: u32) -> Result<i32, Failure> {
+        self.character_tables().skill(character)
+    }
+
+    /// Whether a character is retired ([`character_scope::Tables::retired`]).
+    pub(super) fn character_retired(&self, character: u32) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::CharacterRetired(character)),
+            || self.character_retired_unrecorded(character),
+        )
+    }
+
+    fn character_retired_unrecorded(&self, character: u32) -> Result<bool, Failure> {
+        self.character_tables()
+            .retired(character, |raw| self.canonical(raw))
+    }
+
+    /// A character scope's `has_trait` of `name` ([`character_scope::Tables::has_trait`]).
+    pub(super) fn character_has_trait(&self, character: u32, name: &[u8]) -> Result<bool, Failure> {
+        super::inputs::query_resolved(
+            || super::inputs::Key::World(Query::CharacterHasTrait(character, name.to_vec())),
+            || self.character_has_trait_unrecorded(character, name),
+        )
+    }
+
+    fn character_has_trait_unrecorded(&self, character: u32, name: &[u8]) -> Result<bool, Failure> {
+        let names = self.trait_names()?;
+        self.character_tables()
+            .has_trait(character, name, &names, |raw| self.canonical(raw))
+    }
+
     /// The state a variable value names: its
     /// tagged state encoding, else whole-unit rounding
     /// of the value. The list keeps the game state's state pointer for that
@@ -4817,7 +4918,10 @@ impl Links for World<'_> {
 }
 
 fn get<T>(cell: &Index<T>, build: impl FnOnce() -> Result<T, Failure>) -> Result<&T, Failure> {
-    cell.get_or_init(|| super::refusal::Resolved::new(|| super::refusal::deferred(build)))
+    cell.get_or_init(|| {
+        let _cpu = replay_frame::cpu::scope_phase("triggers:index");
+        super::refusal::Resolved::new(|| super::refusal::deferred(build))
+    })
         .value()
         .as_ref()
         .map_err(|failure| {

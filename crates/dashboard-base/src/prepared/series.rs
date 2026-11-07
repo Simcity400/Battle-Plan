@@ -13,6 +13,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+mod finished;
 mod idle;
 mod order;
 mod query;
@@ -153,7 +154,30 @@ pub struct KeyState {
     pub runs: u64,
     pub events: u64,
     event_order: Option<order::Position>,
-    partial: [Option<Partial>; 4],
+    partial: Partials,
+}
+/// A key's open summary buckets by level, held apart only while any is open: most keys a
+/// publication holds are long finished and hold none.
+#[derive(Clone, Debug, Default)]
+struct Partials(Option<Box<[Option<Partial>; 4]>>);
+impl Partials {
+    fn of(levels: [Option<Partial>; 4]) -> Self {
+        Self(levels.iter().any(Option::is_some).then(|| Box::new(levels)))
+    }
+    fn get(&self) -> [Option<Partial>; 4] {
+        self.0.as_deref().copied().unwrap_or([None; 4])
+    }
+    fn level(&self, level: usize) -> Option<Partial> {
+        self.0.as_ref().and_then(|levels| levels[level])
+    }
+    fn set(&mut self, level: usize, partial: Option<Partial>) {
+        let mut levels = self.get();
+        levels[level] = partial;
+        *self = Self::of(levels);
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_none()
+    }
 }
 /// A level's open summary bucket. Most keys hold one value through a bucket's
 /// whole open span, so such a bucket is kept as that span and made again, bit
@@ -303,7 +327,7 @@ struct SavedPartial {
 }
 impl From<KeyState> for SavedKeyState {
     fn from(state: KeyState) -> Self {
-        let partial = state.partial.map(|partial| {
+        let partial = state.partial.get().map(|partial| {
             partial.map(|partial| match partial {
                 Partial::Span {
                     aligned,
@@ -377,22 +401,97 @@ impl TryFrom<SavedKeyState> for KeyState {
             runs: saved.runs,
             events: saved.events,
             event_order: saved.event_order,
-            partial,
+            partial: Partials::of(partial),
         })
     }
 }
-#[derive(Default, Serialize, Deserialize)]
+/// A key's open run and last event hour; what it finished lies in [`finished::Finished`].
+#[derive(Default)]
 struct Rows {
+    open: Option<Run>,
+    last_event: Option<i32>,
+    state: KeyState,
+}
+#[derive(Default, Serialize, Deserialize)]
+struct SavedRows {
     runs: Vec<Run>,
     events: Vec<(i32, Vec<u8>)>,
     state: KeyState,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Batch {
     first: Option<i32>,
     last: i32,
     keys: BTreeMap<u64, Rows>,
+    finished: finished::Finished,
     bytes: usize,
+}
+#[derive(Serialize, Deserialize)]
+struct SavedBatch {
+    first: Option<i32>,
+    last: i32,
+    keys: BTreeMap<u64, SavedRows>,
+    bytes: usize,
+}
+impl Serialize for Batch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut finished = self.finished.every().map_err(serde::ser::Error::custom)?;
+        let keys = self
+            .keys
+            .iter()
+            .map(|(&key, rows)| {
+                let mut saved = SavedRows {
+                    state: rows.state.clone(),
+                    ..SavedRows::default()
+                };
+                for record in finished.remove(&key).unwrap_or_default() {
+                    match record {
+                        finished::Record::Run(run) => saved.runs.push(run),
+                        finished::Record::Event(event) => saved.events.push(event),
+                    }
+                }
+                saved.runs.extend(rows.open);
+                (key, saved)
+            })
+            .collect();
+        SavedBatch {
+            first: self.first,
+            last: self.last,
+            keys,
+            bytes: self.bytes,
+        }
+        .serialize(serializer)
+    }
+}
+impl<'de> Deserialize<'de> for Batch {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let saved = SavedBatch::deserialize(deserializer)?;
+        let mut batch = Batch {
+            first: saved.first,
+            last: saved.last,
+            bytes: saved.bytes,
+            ..Batch::default()
+        };
+        for (key, mut rows) in saved.keys {
+            let open = rows.runs.pop();
+            for run in rows.runs {
+                batch.finished.push_run(key, run);
+            }
+            let last_event = rows.events.last().map(|event| event.0);
+            for (hour, row) in rows.events {
+                batch.finished.push_event(key, hour, &row);
+            }
+            batch.keys.insert(
+                key,
+                Rows {
+                    open,
+                    last_event,
+                    state: rows.state,
+                },
+            );
+        }
+        Ok(batch)
+    }
 }
 /// A product's open keys and the current publication batch.
 #[derive(Default, Deserialize)]
@@ -462,12 +561,26 @@ impl Accumulator {
         self.active.iter().copied()
     }
     /// This batch's runs for `key`, not yet readable through a `Reader`.
-    pub fn pending_runs(&self, key: u64) -> &[Run] {
-        self.batch
-            .keys
-            .get(&key)
-            .map_or(&[], |rows| rows.runs.as_slice())
+    pub fn pending_runs(&self, key: u64) -> io::Result<Vec<Run>> {
+        let Some(rows) = self.batch.keys.get(&key) else {
+            return Ok(Vec::new());
+        };
+        let mut runs: Vec<Run> = self
+            .batch
+            .finished
+            .every()?
+            .remove(&key)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|record| match record {
+                finished::Record::Run(run) => Some(run),
+                finished::Record::Event(_) => None,
+            })
+            .collect();
+        runs.extend(rows.open);
+        Ok(runs)
     }
+
     pub fn through(&mut self, hour: i32) {
         self.record(|series| Call::Through { series, hour });
         self.batch.through(hour);
@@ -557,15 +670,22 @@ impl Accumulator {
                 previous.min(first.first_hour.saturating_sub(1)),
             );
         }
-        let rows = self.batch.keys.entry(key).or_insert_with(|| Rows {
+        let Batch {
+            first: batch_first,
+            last: batch_last,
+            keys,
+            finished,
+            bytes,
+        } = &mut self.batch;
+        let rows = keys.entry(key).or_insert_with(|| Rows {
             state: state.clone(),
             ..Default::default()
         });
         for run in std::iter::once(first).chain(runs) {
             #[cfg(test)]
             OBSERVATION_WORK.with(|work| work.set(work.get() + 1));
-            self.batch.first.get_or_insert(run.first_hour);
-            self.batch.last = run.last_hour;
+            batch_first.get_or_insert(run.first_hour);
+            *batch_last = run.last_hour;
             let canonical = match state.last.filter(|previous| previous.continues(run)) {
                 Some(previous) => Run {
                     last_hour: run.last_hour,
@@ -576,11 +696,13 @@ impl Accumulator {
                     run
                 }
             };
-            if let Some(last) = rows.runs.last_mut().filter(|last| last.continues(run)) {
+            if let Some(last) = rows.open.as_mut().filter(|last| last.continues(run)) {
                 last.last_hour = run.last_hour;
             } else {
-                rows.runs.push(run);
-                self.batch.bytes += size_of::<Run>() * 2;
+                if let Some(done) = rows.open.replace(run) {
+                    finished.push_run(key, done);
+                }
+                *bytes += size_of::<Run>() * 2;
             }
             state.last = Some(canonical);
         }
@@ -746,7 +868,12 @@ impl Accumulator {
         self.batch.through(first);
         let state = self.states.entry(key).or_default();
         let mut held = self.active.remove(&key);
-        let Batch { keys, bytes, .. } = &mut self.batch;
+        let Batch {
+            keys,
+            finished,
+            bytes,
+            ..
+        } = &mut self.batch;
         let rows = keys.entry(key).or_insert_with(|| Rows {
             state: state.clone(),
             ..Default::default()
@@ -761,7 +888,7 @@ impl Accumulator {
             {
                 let through = before.expect("an hour after the open run");
                 let run = Run::new(open.last_hour + 1, through, open.value, false);
-                push_run(rows, state, bytes, run, false);
+                push_run(finished, key, rows, state, bytes, run, false);
             }
             let starts = state
                 .last
@@ -769,15 +896,17 @@ impl Accumulator {
             let equal = state.last.is_some_and(|run| run.value == value);
             // An equal value held on without a break extends, as an observation would.
             let starts = starts && !(held && !boundary && equal);
-            push_run(rows, state, bytes, Run::new(hour, hour, value, starts), boundary);
+            let run = Run::new(hour, hour, value, starts);
+            push_run(finished, key, rows, state, bytes, run, boundary);
             held = true;
             if events {
-                if rows.events.last().is_some_and(|(previous, _)| *previous > hour) {
+                if rows.last_event.is_some_and(|previous| previous > hour) {
                     return Err(invalid("event hours reversed"));
                 }
                 *bytes += 32;
                 state.events += 1;
-                rows.events.push((hour, Vec::new()));
+                finished.push_event(key, hour, &[]);
+                rows.last_event = Some(hour);
                 rows.state.events = state.events;
             }
             last = hour;
@@ -850,12 +979,14 @@ impl Accumulator {
         let register = false;
         #[cfg(test)]
         let register = WHOLE_REGISTRATION.with(std::cell::Cell::get);
-        if register {
+        let next = if register {
             for (&key, state) in &self.states {
                 self.batch.register(key, state);
             }
-            self.states = std::mem::take(&mut self.batch)
+            let (states, next) = std::mem::take(&mut self.batch)
                 .write_inner(writer, section, decimals, cancelled, payloads)?;
+            self.states = states;
+            next
         } else {
             std::mem::take(&mut self.batch).write_accumulated(
                 &mut self.states,
@@ -867,8 +998,9 @@ impl Accumulator {
                     shared: payloads,
                     idle: Some(&mut self.idle),
                 },
-            )?;
-        }
+            )?
+        };
+        self.batch.finished = next;
         Ok(())
     }
     /// A keyless accumulator at this one's hours. A family keeping its keys apart in such
@@ -899,49 +1031,90 @@ impl Accumulator {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("series flush", None);
         self.seal();
-        let batch = std::mem::take(&mut self.batch);
-        let mut held = Vec::new();
-        for (part, names) in parts {
+        let mut batch = std::mem::take(&mut self.batch);
+        self.batch.finished = std::mem::take(&mut batch.finished).into_next();
+        let mut taken = Vec::new();
+        let mut returned = Vec::new();
+        // A part whose names ascend with its keys streams its rows out in name order.
+        let mut ascending = Vec::new();
+        let mut entries: Vec<(u64, usize, u64, &mut KeyState)> = Vec::new();
+        for (index, (part, names)) in parts.enumerate() {
             part.seal();
-            held.push((std::mem::take(&mut part.batch).keys, &mut part.states, names));
-        }
-        let Some(first) = batch.first else {
-            return Ok(());
-        };
-        let mut keys: Vec<KeyRows<'_>> = Vec::new();
-        for (rows, states, names) in &mut held {
-            let mut changed = rows.iter_mut().peekable();
+            let mut held = std::mem::take(&mut part.batch);
+            held.finished.sort()?;
+            taken.push(held);
+            let Accumulator {
+                states,
+                batch: back,
+                ..
+            } = part;
+            returned.push(back);
+            let mut last = None;
+            let mut ascends = true;
             for (&key, state) in states.iter_mut() {
                 let name = *names.get(key as usize).ok_or_else(|| {
                     invalid("A series key has no published name")
                 })?;
-                let (runs, events) = match changed.next_if(|(changed, _)| **changed == key) {
-                    Some((_, Rows { runs, events, .. })) => {
-                        (runs.as_slice(), events.as_mut_slice())
-                    }
-                    None => (&[][..], Default::default()),
-                };
-                keys.push((name, runs, events, state));
+                ascends &= last.is_none_or(|last| last < name);
+                last = Some(name);
+                entries.push((name, index, key, state));
             }
+            ascending.push(ascends);
         }
-        keys.sort_unstable_by_key(|rows| rows.0);
-        if keys.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-            return Err(invalid("Two series keys share a published name"));
+        let written = match batch.first {
+            None => Ok(()),
+            Some(first) => {
+                entries.sort_unstable_by_key(|entry| entry.0);
+                if entries.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+                    return Err(invalid("Two series keys share a published name"));
+                }
+                let mut sources = taken
+                    .iter()
+                    .zip(&ascending)
+                    .map(|(held, &ascends)| {
+                        Ok(if ascends {
+                            Part::Merged(held.finished.merge()?)
+                        } else {
+                            Part::Whole(held.finished.every()?)
+                        })
+                    })
+                    .collect::<io::Result<Vec<_>>>()?;
+                self.idle.begin();
+                let keys = entries.into_iter().map(|(name, part, key, state)| {
+                    let (mut runs, events) = match &mut sources[part] {
+                        Part::Merged(merge) => merge.take(key)?,
+                        Part::Whole(whole) => {
+                            finished::split(whole.remove(&key).unwrap_or_default())
+                        }
+                    };
+                    runs.extend(taken[part].keys.get(&key).and_then(|rows| rows.open));
+                    Ok((name, runs, events, state))
+                });
+                Batch::write_keys(
+                    first,
+                    batch.last,
+                    keys,
+                    writer,
+                    section,
+                    decimals,
+                    cancelled,
+                    Encoding {
+                        shared: None,
+                        idle: Some(&mut self.idle),
+                    },
+                )
+                .and_then(|()| {
+                    sources.iter_mut().try_for_each(|source| match source {
+                        Part::Merged(merge) => merge.done(),
+                        Part::Whole(_) => Ok(()),
+                    })
+                })
+            }
+        };
+        for (held, part) in taken.into_iter().zip(returned) {
+            part.finished = held.finished.into_next();
         }
-        self.idle.begin();
-        Batch::write_keys(
-            first,
-            batch.last,
-            keys.into_iter(),
-            writer,
-            section,
-            decimals,
-            cancelled,
-            Encoding {
-                shared: None,
-                idle: Some(&mut self.idle),
-            },
-        )
+        written
     }
 }
 
@@ -1508,7 +1681,12 @@ pub struct Payloads {
     encoded: HashMap<PayloadIdentity, (Vec<u8>, [Option<Partial>; 4])>,
 }
 
-type KeyRows<'a> = (u64, &'a [Run], &'a mut [EventRow], &'a mut KeyState);
+type KeyRows<'a> = (u64, Vec<Run>, Vec<EventRow>, &'a mut KeyState);
+enum Part {
+    Merged(finished::Merge),
+    Whole(BTreeMap<u64, Vec<finished::Record>>),
+}
+type Ordered<'a> = (Vec<i32>, &'a mut KeyState);
 
 #[derive(Default)]
 struct Encoding<'a> {
@@ -1546,7 +1724,7 @@ impl Batch {
             state: state.clone(),
             ..Default::default()
         });
-        push_run(rows, state, &mut self.bytes, run, boundary);
+        push_run(&mut self.finished, key, rows, state, &mut self.bytes, run, boundary);
     }
     pub fn event(
         &mut self,
@@ -1571,44 +1749,51 @@ impl Batch {
             state: state.clone(),
             ..Default::default()
         });
-        if rows
-            .events
-            .last()
-            .is_some_and(|(previous, _)| *previous > hour)
-        {
+        if rows.last_event.is_some_and(|previous| previous > hour) {
             return Err(invalid("event hours reversed"));
         }
-        rows.events.push((hour, bytes));
+        self.finished.push_event(key, hour, &bytes);
+        rows.last_event = Some(hour);
         rows.state.events = state.events;
         Ok(())
     }
+    /// Writes the batch, handing back its emptied room and spill for the next.
     fn write_accumulated<W: super::pages::Pages + ?Sized>(
-        self,
+        mut self,
         states: &mut BTreeMap<u64, KeyState>,
         writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
         mut encoding: Encoding<'_>,
-    ) -> io::Result<()> {
+    ) -> io::Result<finished::Finished> {
         let Some(first) = self.first else {
-            return Ok(());
+            return Ok(self.finished.into_next());
         };
         if let Some(idle) = &mut encoding.idle {
             idle.begin();
         }
-        let mut rows = self.keys;
-        let mut changed = rows.iter_mut().peekable();
-        let keys = states.iter_mut().map(|(&key, state)| {
-            let (runs, events) = match changed.next_if(|(changed, _)| **changed == key) {
-                Some((_, Rows { runs, events, .. })) => (runs.as_slice(), events.as_mut_slice()),
-                None => (&[][..], Default::default()),
-            };
-            (key, runs, events, state)
-        });
-        Self::write_keys(
-            first, self.last, keys, writer, section, decimals, cancelled, encoding,
-        )
+        self.finished.sort()?;
+        {
+            let mut merge = self.finished.merge()?;
+            let mut changed = self.keys.iter().peekable();
+            let keys = states.iter_mut().map(|(&key, state)| {
+                let (runs, events) = match changed.next_if(|(changed, _)| **changed == key) {
+                    Some((_, rows)) => {
+                        let (mut runs, events) = merge.take(key)?;
+                        runs.extend(rows.open);
+                        (runs, events)
+                    }
+                    None => Default::default(),
+                };
+                Ok((key, runs, events, state))
+            });
+            Self::write_keys(
+                first, self.last, keys, writer, section, decimals, cancelled, encoding,
+            )?;
+            merge.done()?;
+        }
+        Ok(self.finished.into_next())
     }
     pub fn write<W: super::pages::Pages + ?Sized>(
         self,
@@ -1617,209 +1802,212 @@ impl Batch {
         decimals: u8,
         cancelled: &AtomicBool,
     ) -> io::Result<BTreeMap<u64, KeyState>> {
-        self.write_inner(writer, section, decimals, cancelled, None)
+        Ok(self.write_inner(writer, section, decimals, cancelled, None)?.0)
     }
     fn write_inner<W: super::pages::Pages + ?Sized>(
-        self,
+        mut self,
         writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
         shared: Option<&mut Payloads>,
-    ) -> io::Result<BTreeMap<u64, KeyState>> {
+    ) -> io::Result<(BTreeMap<u64, KeyState>, finished::Finished)> {
         let Some(first) = self.first else {
-            return Ok(BTreeMap::new());
+            return Ok((BTreeMap::new(), self.finished.into_next()));
         };
-        let mut rows = self.keys;
-        let keys = rows.iter_mut().map(|(&key, rows)| {
-            (
-                key,
-                rows.runs.as_slice(),
-                rows.events.as_mut_slice(),
-                &mut rows.state,
-            )
-        });
-        Self::write_keys(
-            first,
-            self.last,
-            keys,
-            writer,
-            section,
-            decimals,
-            cancelled,
-            Encoding { shared, idle: None },
-        )?;
-        Ok(rows
+        self.finished.sort()?;
+        let mut rows = std::mem::take(&mut self.keys);
+        {
+            let mut merge = self.finished.merge()?;
+            let keys = rows.iter_mut().map(|(&key, rows)| {
+                let (mut runs, events) = merge.take(key)?;
+                runs.extend(rows.open);
+                Ok((key, runs, events, &mut rows.state))
+            });
+            Self::write_keys(
+                first,
+                self.last,
+                keys,
+                writer,
+                section,
+                decimals,
+                cancelled,
+                Encoding { shared, idle: None },
+            )?;
+            merge.done()?;
+        }
+        let states = rows
             .into_iter()
             .map(|(key, rows)| {
                 #[cfg(test)]
                 STATE_MAP_WORK.with(|work| work.set(work.get() + 1));
                 (key, rows.state)
             })
-            .collect())
+            .collect();
+        Ok((states, self.finished.into_next()))
     }
     // Keep batch bounds, encoding and page-publication operands explicit at this writer boundary.
     #[allow(clippy::too_many_arguments)]
     fn write_keys<'a, W: super::pages::Pages + ?Sized>(
         first: i32,
         last: i32,
-        keys: impl ExactSizeIterator<Item = KeyRows<'a>>,
+        keys: impl ExactSizeIterator<Item = io::Result<KeyRows<'a>>>,
         writer: &mut W,
         section: &str,
         decimals: u8,
         cancelled: &AtomicBool,
         mut encoding: Encoding<'_>,
     ) -> io::Result<()> {
-        let mut keys: Vec<_> = keys.collect();
         let count = keys.len();
+        let mut ordered: Vec<Ordered<'a>> = Vec::with_capacity(count);
         let mut empty_keys = 0_usize;
-        let mut bytes = vec![0; (HEADER + DIRECTORY * keys.len() as u64) as usize];
+        let mut bytes = vec![0; (HEADER + DIRECTORY * count as u64) as usize];
         #[cfg(any(test, feature = "test-support"))]
         let mut framing = bytes.len();
         put(&mut bytes, 0, &first.to_le_bytes());
         put(&mut bytes, 4, &last.to_le_bytes());
-        put(&mut bytes, 8, &(keys.len() as u64).to_le_bytes());
+        put(&mut bytes, 8, &(count as u64).to_le_bytes());
         let mut blobs = HashMap::new();
         let mut payloads = HashMap::<[u8; 32], (usize, usize, [Option<Partial>; 4])>::new();
         let mut identity = Vec::new();
         let mut empty: Option<(usize, usize)> = None;
-        for (index, &mut (key, runs, ref mut events, ref mut state)) in keys.iter_mut().enumerate()
-        {
-            check_cancel(cancelled)?;
-            let at = HEADER as usize + index * DIRECTORY as usize;
-            put(&mut bytes, at, &key.to_le_bytes());
-            put(&mut bytes, at + 24, &(runs.len() as u64).to_le_bytes());
-            put(&mut bytes, at + 32, &state.runs.to_le_bytes());
-            put(
-                &mut bytes,
-                at + 40,
-                &(state.events - events.len() as u64).to_le_bytes(),
-            );
-            put(&mut bytes, at + 48, &(events.len() as u64).to_le_bytes());
-            put(
-                &mut bytes,
-                at + 56,
-                &state.last.map_or(first, |run| run.last_hour).to_le_bytes(),
-            );
-            #[cfg(any(test, feature = "test-support"))]
-            let empty_payload = runs.is_empty()
-                && events.is_empty()
-                && state.partial.iter().all(Option::is_none);
-            #[cfg(not(test))]
-            let inactive = true;
-            #[cfg(test)]
-            let inactive = !WHOLE_PAYLOADS.with(std::cell::Cell::get);
-            if inactive
-                && runs.is_empty()
-                && events.is_empty()
-                && state.partial.iter().all(Option::is_none)
-            {
-                empty_keys += 1;
-                let offset = bytes.len();
-                if let Some((start, length)) = empty {
+        for (index, key) in keys.enumerate() {
+            let (key, runs, mut events, state) = key?;
+            let runs = runs.as_slice();
+            let events = events.as_mut_slice();
+            let dates = events.iter().map(|row| row.0).collect();
+            'key: {
+                check_cancel(cancelled)?;
+                let at = HEADER as usize + index * DIRECTORY as usize;
+                put(&mut bytes, at, &key.to_le_bytes());
+                put(&mut bytes, at + 24, &(runs.len() as u64).to_le_bytes());
+                put(&mut bytes, at + 32, &state.runs.to_le_bytes());
+                put(
+                    &mut bytes,
+                    at + 40,
+                    &(state.events - events.len() as u64).to_le_bytes(),
+                );
+                put(&mut bytes, at + 48, &(events.len() as u64).to_le_bytes());
+                put(
+                    &mut bytes,
+                    at + 56,
+                    &state.last.map_or(first, |run| run.last_hour).to_le_bytes(),
+                );
+                #[cfg(any(test, feature = "test-support"))]
+                let empty_payload = runs.is_empty() && events.is_empty() && state.partial.is_empty();
+                #[cfg(not(test))]
+                let inactive = true;
+                #[cfg(test)]
+                let inactive = !WHOLE_PAYLOADS.with(std::cell::Cell::get);
+                if inactive && runs.is_empty() && events.is_empty() && state.partial.is_empty() {
+                    empty_keys += 1;
+                    let offset = bytes.len();
+                    if let Some((start, length)) = empty {
+                        bytes.extend_from_within(start..start + length);
+                        put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                        put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
+                    } else {
+                        // Four levels, each with no numeric bucket and no events.
+                        blob(&mut bytes, at + 8, vec![0; LEVELS.len() * 2], &mut blobs)?;
+                        empty = Some((offset, bytes.len() - offset));
+                    }
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        framing += bytes.len() - offset;
+                    }
+                    break 'key;
+                }
+                // Numeric keys often hold the same runs and incoming summaries.
+                // Reuse their payload before building its buckets, keeping every
+                // key's directory, canonical counters and separate byte extent.
+                let input = events
+                    .is_empty()
+                    .then(|| payload_input(runs, state, &mut identity));
+                #[cfg(test)]
+                let input = input.filter(|_| !WHOLE_PAYLOADS.with(std::cell::Cell::get));
+                if let Some((start, length, partial)) =
+                    input.and_then(|input| payloads.get(&input).copied())
+                {
+                    let offset = bytes.len();
                     bytes.extend_from_within(start..start + length);
                     put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
                     put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
-                } else {
-                    // Four levels, each with no numeric bucket and no events.
-                    blob(&mut bytes, at + 8, vec![0; LEVELS.len() * 2], &mut blobs)?;
-                    empty = Some((offset, bytes.len() - offset));
+                    state.partial = Partials::of(partial);
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        framing += super::pages::framing::compressed(&bytes[offset..]);
+                    }
+                    break 'key;
                 }
+                let idle_identity = input
+                    .filter(|_| runs.is_empty())
+                    .map(|input| idle::identity(state, last, decimals, input));
+                if let Some((payload, partial)) =
+                    idle_identity.and_then(|identity| encoding.idle.as_mut()?.reuse(identity))
+                {
+                    let offset = bytes.len();
+                    bytes.extend_from_slice(payload);
+                    put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                    put(&mut bytes, at + 16, &(payload.len() as u64).to_le_bytes());
+                    payloads.insert(
+                        input.expect("numeric payload identity"),
+                        (offset, payload.len(), *partial),
+                    );
+                    state.partial = Partials::of(*partial);
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        framing += super::pages::framing::compressed(&bytes[offset..]);
+                    }
+                    break 'key;
+                }
+                let identity = input.map(|input| (first, last, decimals, input));
+                if let Some((payload, partial)) =
+                    identity.and_then(|identity| encoding.shared.as_ref()?.encoded.get(&identity))
+                {
+                    let offset = bytes.len();
+                    bytes.extend_from_slice(payload);
+                    put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
+                    put(&mut bytes, at + 16, &(payload.len() as u64).to_le_bytes());
+                    payloads.insert(
+                        input.expect("numeric payload identity"),
+                        (offset, payload.len(), *partial),
+                    );
+                    if let Some((identity, idle)) = idle_identity.zip(encoding.idle.as_mut()) {
+                        idle.insert(identity, payload.clone(), *partial);
+                    }
+                    state.partial = Partials::of(*partial);
+                    #[cfg(any(test, feature = "test-support"))]
+                    {
+                        framing += super::pages::framing::compressed(&bytes[offset..]);
+                    }
+                    break 'key;
+                }
+                #[cfg(test)]
+                PAYLOAD_WORK.with(|work| work.set(work.get() + 1));
+                let raw = payload(runs, events, state, (first, last), decimals, cancelled)?;
+                let offset = bytes.len();
+                blob(&mut bytes, at + 8, raw, &mut blobs)?;
                 #[cfg(any(test, feature = "test-support"))]
                 {
-                    framing += bytes.len() - offset;
+                    framing += if empty_payload {
+                        bytes.len() - offset
+                    } else {
+                        super::pages::framing::compressed(&bytes[offset..])
+                    };
                 }
-                continue;
-            }
-            // Numeric keys often hold the same runs and incoming summaries.
-            // Reuse their payload before building its buckets, keeping every
-            // key's directory, canonical counters and separate byte extent.
-            let input = events
-                .is_empty()
-                .then(|| payload_input(runs, state, &mut identity));
-            #[cfg(test)]
-            let input = input.filter(|_| !WHOLE_PAYLOADS.with(std::cell::Cell::get));
-            if let Some((start, length, partial)) =
-                input.and_then(|input| payloads.get(&input).copied())
-            {
-                let offset = bytes.len();
-                bytes.extend_from_within(start..start + length);
-                put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
-                put(&mut bytes, at + 16, &(length as u64).to_le_bytes());
-                state.partial = partial;
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    framing += super::pages::framing::compressed(&bytes[offset..]);
+                if let Some(input) = input {
+                    payloads.insert(input, (offset, bytes.len() - offset, state.partial.get()));
                 }
-                continue;
-            }
-            let idle_identity = input
-                .filter(|_| runs.is_empty())
-                .map(|input| idle::identity(state, last, decimals, input));
-            if let Some((payload, partial)) =
-                idle_identity.and_then(|identity| encoding.idle.as_mut()?.reuse(identity))
-            {
-                let offset = bytes.len();
-                bytes.extend_from_slice(payload);
-                put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
-                put(&mut bytes, at + 16, &(payload.len() as u64).to_le_bytes());
-                payloads.insert(
-                    input.expect("numeric payload identity"),
-                    (offset, payload.len(), *partial),
-                );
-                state.partial = *partial;
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    framing += super::pages::framing::compressed(&bytes[offset..]);
-                }
-                continue;
-            }
-            let identity = input.map(|input| (first, last, decimals, input));
-            if let Some((payload, partial)) =
-                identity.and_then(|identity| encoding.shared.as_ref()?.encoded.get(&identity))
-            {
-                let offset = bytes.len();
-                bytes.extend_from_slice(payload);
-                put(&mut bytes, at + 8, &(offset as u64).to_le_bytes());
-                put(&mut bytes, at + 16, &(payload.len() as u64).to_le_bytes());
-                payloads.insert(
-                    input.expect("numeric payload identity"),
-                    (offset, payload.len(), *partial),
-                );
                 if let Some((identity, idle)) = idle_identity.zip(encoding.idle.as_mut()) {
-                    idle.insert(identity, payload.clone(), *partial);
+                    idle.insert(identity, bytes[offset..].to_vec(), state.partial.get());
                 }
-                state.partial = *partial;
-                #[cfg(any(test, feature = "test-support"))]
-                {
-                    framing += super::pages::framing::compressed(&bytes[offset..]);
+                if let Some((identity, shared)) = identity.zip(encoding.shared.as_mut()) {
+                    shared
+                        .encoded
+                        .insert(identity, (bytes[offset..].to_vec(), state.partial.get()));
                 }
-                continue;
             }
-            #[cfg(test)]
-            PAYLOAD_WORK.with(|work| work.set(work.get() + 1));
-            let raw = payload(runs, events, state, (first, last), decimals, cancelled)?;
-            let offset = bytes.len();
-            blob(&mut bytes, at + 8, raw, &mut blobs)?;
-            #[cfg(any(test, feature = "test-support"))]
-            {
-                framing += if empty_payload {
-                    bytes.len() - offset
-                } else {
-                    super::pages::framing::compressed(&bytes[offset..])
-                };
-            }
-            if let Some(input) = input {
-                payloads.insert(input, (offset, bytes.len() - offset, state.partial));
-            }
-            if let Some((identity, idle)) = idle_identity.zip(encoding.idle.as_mut()) {
-                idle.insert(identity, bytes[offset..].to_vec(), state.partial);
-            }
-            if let Some((identity, shared)) = identity.zip(encoding.shared.as_mut()) {
-                shared
-                    .encoded
-                    .insert(identity, (bytes[offset..].to_vec(), state.partial));
-            }
+            ordered.push((dates, state));
         }
         if let Some(idle) = &mut encoding.idle {
             idle.finish();
@@ -1828,7 +2016,7 @@ impl Batch {
         let _cpu = ::replay_frame::cpu::scope_phase("series:write_page");
         let _range = writer.write(section, bytes.as_slice())?;
         let _order_bytes =
-            order::publish(writer, section, _range, &mut bytes, &mut keys, cancelled)?;
+            order::publish(writer, section, _range, &mut bytes, &mut ordered, cancelled)?;
         #[cfg(any(test, feature = "test-support"))]
         {
             framing += _order_bytes;
@@ -1850,7 +2038,15 @@ impl Batch {
 
 /// Pushes `run` onto a key's batch `rows` and its canonical `state`; a boundary keeps it apart
 /// from an equal run before it.
-fn push_run(rows: &mut Rows, state: &mut KeyState, bytes: &mut usize, run: Run, boundary: bool) {
+fn push_run(
+    finished: &mut finished::Finished,
+    key: u64,
+    rows: &mut Rows,
+    state: &mut KeyState,
+    bytes: &mut usize,
+    run: Run,
+    boundary: bool,
+) {
     #[cfg(test)]
     OBSERVATION_WORK.with(|work| work.set(work.get() + 1));
     let canonical = if let Some(previous) = state
@@ -1866,13 +2062,15 @@ fn push_run(rows: &mut Rows, state: &mut KeyState, bytes: &mut usize, run: Run, 
         run
     };
     if let Some(last) = rows
-        .runs
-        .last_mut()
+        .open
+        .as_mut()
         .filter(|last| !boundary && last.continues(run))
     {
         last.last_hour = run.last_hour;
     } else {
-        rows.runs.push(run);
+        if let Some(done) = rows.open.replace(run) {
+            finished.push_run(key, done);
+        }
         *bytes += std::mem::size_of::<Run>() * 2;
     }
     state.last = Some(canonical);
@@ -1908,10 +2106,10 @@ fn payload(
     }
     let mut summaries = Vec::new();
     for (level, size) in LEVELS.into_iter().enumerate() {
-        let buckets = summary_buckets(runs, state.partial[level], size, decimals, cancelled)?;
+        let buckets = summary_buckets(runs, state.partial.level(level), size, decimals, cancelled)?;
         var(&mut summaries, buckets.len() as u128);
         let mut pending =
-            state.partial[level].map(|partial| (partial.aligned(), partial.bucket(decimals)));
+            state.partial.level(level).map(|partial| (partial.aligned(), partial.bucket(decimals)));
         let mut previous = 0_i64;
         for (aligned, mut bucket) in buckets {
             if let Some(bucket) = &mut bucket {
@@ -1934,9 +2132,12 @@ fn payload(
         }
         let tail = i64::from(last).div_euclid(size) * size;
         let held = state.last;
-        state.partial[level] = pending
-            .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
-            .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals));
+        state.partial.set(
+            level,
+            pending
+                .filter(|(aligned, _)| *aligned == tail && i64::from(last) < tail + size - 1)
+                .map(|(aligned, bucket)| Partial::of(aligned, bucket, held, decimals)),
+        );
         let aligned = |hour: i32| i64::from(hour).div_euclid(size) * size;
         let counts = || events.chunk_by(|a, b| aligned(a.0) == aligned(b.0));
         var(&mut summaries, counts().count() as u128);
@@ -2087,7 +2288,7 @@ fn payload_input(runs: &[Run], state: &KeyState, bytes: &mut Vec<u8>) -> [u8; 32
         bytes.push(u8::from(run.break_before));
     }
     bytes.push(u8::from(state.last.is_some()));
-    for partial in state.partial {
+    for partial in state.partial.get() {
         bytes.push(u8::from(partial.is_some()));
         if let Some(partial) = partial {
             let aligned = partial.aligned();
@@ -2140,7 +2341,7 @@ fn put(bytes: &mut [u8], at: usize, value: &[u8]) {
 /// small payloads (one per key) don't each allocate a full streaming window.
 pub fn compress(raw: &[u8], level: i32) -> io::Result<Vec<u8>> {
     thread_local! {
-        static COMPRESSORS: std::cell::RefCell<BTreeMap<i32, zstd::bulk::Compressor<'static>>> =
+        static COMPRESSORS: std::cell::RefCell<BTreeMap<i32, engine_allocation::zstd::Compressor>> =
             const { std::cell::RefCell::new(BTreeMap::new()) };
     }
     COMPRESSORS.with(|compressors| {
@@ -2148,18 +2349,23 @@ pub fn compress(raw: &[u8], level: i32) -> io::Result<Vec<u8>> {
         let compressor = match compressors.entry(level) {
             std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(zstd::bulk::Compressor::new(level)?)
+                entry.insert(engine_allocation::zstd::Compressor::new(&PAYLOADS, level)?)
             }
         };
-        compressor.compress(raw)
+        let mut out = engine_allocation::vec(engine_allocation::zstd::bound(raw.len()))?;
+        compressor.compress_append(raw, &mut out)?;
+        Ok(out)
     })
 }
+
+static PAYLOADS: engine_allocation::zstd::Holder =
+    engine_allocation::zstd::Holder::new("zstd: series payloads");
 /// Decompresses one prepared payload. A single frame that records its content
 /// size reuses this thread's context and allocates its output once; anything
 /// else (several frames, an unrecorded size) takes the streaming decoder.
 pub fn decompress(bytes: &[u8]) -> io::Result<Vec<u8>> {
     thread_local! {
-        static DECOMPRESSOR: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> =
+        static DECOMPRESSOR: std::cell::RefCell<Option<engine_allocation::zstd::Decompressor>> =
             const { std::cell::RefCell::new(None) };
     }
     let single = zstd::zstd_safe::find_frame_compressed_size(bytes).ok() == Some(bytes.len());
@@ -2175,12 +2381,14 @@ pub fn decompress(bytes: &[u8]) -> io::Result<Vec<u8>> {
     DECOMPRESSOR.with(|decompressor| {
         let mut decompressor = decompressor.borrow_mut();
         if decompressor.is_none() {
-            *decompressor = Some(zstd::bulk::Decompressor::new()?);
+            *decompressor = Some(engine_allocation::zstd::Decompressor::new(&PAYLOADS)?);
         }
+        let mut out = engine_allocation::vec(size)?;
         decompressor
             .as_mut()
             .expect("decompressor created above")
-            .decompress(bytes, size)
+            .decompress_append(bytes, &mut out)?;
+        Ok(out)
     })
 }
 /// Equal per-key payloads share compression work, while each keeps its own

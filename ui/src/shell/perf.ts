@@ -6,7 +6,7 @@ import { attributeCommits, takeCommits } from './commitCount.ts';
 export interface QueryTiming { received?: number; parsed?: number; bytes?: number; through?: number }
 
 interface MapStateSample { id: string; hour: number | null; fraction: number | null; sequence: number; requestedSequence: number; loading: boolean;
-  behind?: number | null; behindReason?: string | null; error: string | null; pending?: string | null }
+  behind?: number | null; behindReason?: string | null; error: string | null }
 
 /** Where a dashboard map should be now, in its own recording's hours. */
 export interface MapExpectation { position: number; follow: boolean }
@@ -185,7 +185,7 @@ export class PerfRecorder {
       const expected = expect(state.id);
       this.push({ t: 'map_state', at, view: state.id, hour: state.hour, fraction: state.fraction, seq: state.sequence, req: state.requestedSequence,
         loading: state.loading, behind: state.behind ?? null, behind_reason: state.behindReason ?? null,
-        blank: state.error != null || state.pending != null, playing: this.playing,
+        blank: state.error != null, playing: this.playing,
         follow: expected?.follow ?? null, expected: expected ? round(expected.position) : null });
     }
   }

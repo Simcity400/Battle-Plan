@@ -371,7 +371,6 @@ fn run(
     let walk = Walk {
         shape,
         members,
-        index: None,
         world: (FormatVersion::CURRENT, CaptureMode::Full),
         settings: &Settings::new(threads),
         spool: &spool,
@@ -1684,7 +1683,6 @@ fn a_family_prepared_ahead_serves_the_last_hour_before_the_union_run() {
             let walk = Walk {
                 shape: &shape,
                 members: &mut members,
-                index: None,
                 world: (FormatVersion::CURRENT, CaptureMode::Full),
                 settings: &settings,
                 spool: &spool,

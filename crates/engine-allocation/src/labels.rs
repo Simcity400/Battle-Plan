@@ -33,27 +33,26 @@ pub enum Kind {
     Walker = 7,
     /// The segment executor's own work: scheduling, filing, parking.
     Executor = 8,
-    /// The change-run index outside its lane: its preparation and directory.
-    Index = 9,
     /// The attribution's own tag on each allocation.
-    Headers = 10,
+    Headers = 9,
     /// What a series writer keeps of every key it defined: it grows with the publication.
-    Keys = 11,
+    Keys = 10,
     /// Sealing a family's series segments and batches: scratch, and the stage written.
-    Seal = 12,
-    /// The change-run index's open pages: where each stands, and the cells its changes are
-    /// taken against.
-    IndexCursors = 13,
-    /// What the change-run index gathers for disk, and reads back from it, as its walks write.
-    IndexSpill = 14,
-    /// The change-run index's segment directories, until they are stitched.
-    IndexPieces = 15,
+    Seal = 11,
     /// The walker's tables, as each hour applies and each restart restores them.
-    WalkerTables = 16,
+    WalkerTables = 12,
+    /// zstd contexts, each owned by its holder ([`crate::zstd::Holder`]), not a family.
+    Zstd = 13,
+    /// What blocks hold past the bytes asked for, rounded up to the allocator's size classes:
+    /// counted apart, never in the tracked total.
+    Rounding = 14,
+    /// What the attribution's tags add to that, pushing blocks into larger size classes, past
+    /// the tags themselves: only in a counting build, apart from the tracked total.
+    TagRounding = 15,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 17] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Unlabelled,
         Kind::Operator,
         Kind::Restore,
@@ -63,14 +62,13 @@ impl Kind {
         Kind::World,
         Kind::Walker,
         Kind::Executor,
-        Kind::Index,
         Kind::Headers,
         Kind::Keys,
         Kind::Seal,
-        Kind::IndexCursors,
-        Kind::IndexSpill,
-        Kind::IndexPieces,
         Kind::WalkerTables,
+        Kind::Zstd,
+        Kind::Rounding,
+        Kind::TagRounding,
     ];
 
     pub fn name(self) -> &'static str {
@@ -84,14 +82,13 @@ impl Kind {
             Kind::World => "world",
             Kind::Walker => "walker",
             Kind::Executor => "executor",
-            Kind::Index => "index",
             Kind::Headers => "headers",
             Kind::Keys => "keys",
             Kind::Seal => "seal",
-            Kind::IndexCursors => "index cursors",
-            Kind::IndexSpill => "index spill",
-            Kind::IndexPieces => "index pieces",
             Kind::WalkerTables => "walker tables",
+            Kind::Zstd => "zstd",
+            Kind::Rounding => "size classes",
+            Kind::TagRounding => "tag size classes",
         }
     }
 
@@ -217,6 +214,9 @@ mod off {
     pub fn measure_allocator(_: fn() -> Option<usize>) {}
 
     #[inline(always)]
+    pub fn measure_sizes(_: fn(usize) -> usize) {}
+
+    #[inline(always)]
     pub fn phases() -> Vec<Phase> {
         Vec::new()
     }
@@ -242,6 +242,8 @@ mod on {
     const LABELS: usize = OWNERS * KINDS;
     const OTHER: usize = OWNERS - 1;
     const HEADERS: u32 = Kind::Headers as u32;
+    const ROUNDING: u32 = Kind::Rounding as u32;
+    const TAG_ROUNDING: u32 = Kind::TagRounding as u32;
     /// Marks a batch entry as bytes of the label's output its emit freed ([`IN_FLIGHT`]).
     const FLIGHT: u32 = 1 << 31;
     /// The tag before each allocation: its label, and the peak reading it was made after.
@@ -271,6 +273,7 @@ mod on {
     static GATE: RwLock<()> = RwLock::new(());
     static OS_AT_PEAK: [AtomicUsize; READINGS] = [const { AtomicUsize::new(MISSING) }; READINGS];
     static COMMITTED: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+    static SIZES: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
     static OPEN: Mutex<Option<(&'static str, Option<Os>)>> = Mutex::new(Some(("startup", None)));
     static PHASES: Mutex<Vec<Phase>> = Mutex::new(Vec::new());
 
@@ -281,8 +284,8 @@ mod on {
     /// What one allocator call adds, before it goes to its thread's counts.
     #[derive(Default)]
     struct Tally {
-        keys: [u32; 6],
-        deltas: [i64; 6],
+        keys: [u32; 8],
+        deltas: [i64; 8],
         used: usize,
         moved: u64,
     }
@@ -538,7 +541,9 @@ mod on {
             if before {
                 AT_PEAK[label].fetch_add(delta, Ordering::Relaxed);
             }
-            sum += delta;
+            if key != ROUNDING && key != TAG_ROUNDING {
+                sum += delta;
+            }
         }
         sum != 0 && {
             let total = TOTAL.fetch_add(sum, Ordering::Relaxed) + sum;
@@ -648,6 +653,7 @@ mod on {
         let projects = kind == Kind::Operator as u32 || kind == Kind::Restore as u32;
         tally.add(label, -(bytes as i64));
         tally.add(HEADERS, -(header as i64));
+        rounded(tally, bytes, header, -1);
         if projects && tagged < epoch {
             let (by, freeing) = of(self::label());
             let emits = freeing == Kind::Emit as u32 || freeing == Kind::Publish as u32;
@@ -681,6 +687,31 @@ mod on {
     /// that allocates nothing, as the readings are taken inside the allocator.
     pub fn measure_allocator(committed: fn() -> Option<usize>) {
         COMMITTED.store(committed as *mut (), Ordering::Release);
+    }
+
+    /// Has each block counted at the size class `good` gives what is asked of the wrapped
+    /// allocator ([`Kind::Rounding`], [`Kind::TagRounding`]): a function that allocates nothing.
+    pub fn measure_sizes(good: fn(usize) -> usize) {
+        SIZES.store(good as *mut (), Ordering::Release);
+    }
+
+    /// Counts, by `sign`, the size classes' rounding of a block of `size` bytes after a tag of
+    /// `tag` bytes.
+    #[inline]
+    fn rounded(tally: &mut Tally, size: usize, tag: usize, sign: i64) {
+        let good = SIZES.load(Ordering::Relaxed);
+        if good.is_null() {
+            return;
+        }
+        // SAFETY: only `measure_sizes` stores here, a function of this type.
+        let good = unsafe { std::mem::transmute::<*mut (), fn(usize) -> usize>(good) };
+        let alone = good(size);
+        let tagged = good(size + tag);
+        tally.add(ROUNDING, sign * (alone - size) as i64);
+        tally.add(
+            TAG_ROUNDING,
+            sign * (tagged as i64 - alone as i64 - tag as i64),
+        );
     }
 
     fn committed() -> Option<usize> {
@@ -924,6 +955,7 @@ mod on {
         }
         tally.add(label, size as i64);
         tally.add(HEADERS, offset as i64);
+        rounded(tally, size, offset, 1);
         pointer
     }
 

@@ -558,7 +558,7 @@ pub(crate) fn read_pages(
             for &ordinal in unique.keys() {
                 if let Some(at) = source_of(index, &unique, ordinal, false)?
                     && at.head.spending_since <= run.first_hour
-                    && run.first_hour <= index.endpoint(ordinal).last_hour
+                    && run.first_hour <= index.span(ordinal).1
                 {
                     run.empty_census_hour = Some(at.read_hour);
                     break;

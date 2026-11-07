@@ -30,6 +30,34 @@ fn raw_ids() -> TableRead {
     TableRead::fields(TableId::Countries, &["canonical_slot"])
 }
 
+/// The fields a character scope reads of `table` (`crate::character_scope::FIELDS`), of every row.
+fn character_fields(table: TableId) -> TableRead {
+    let (_, names) = crate::character_scope::FIELDS
+        .iter()
+        .find(|(held, _)| *held == table)
+        .expect("a character table");
+    TableRead::fields(table, names)
+}
+
+/// A character's unit leader (`character_scope::Tables::unit_leader`): every UnitLeaders row's
+/// character and leader fields, which index it, else its own CharacterOperatives row.
+fn character_leader(character: u32) -> Vec<TableRead> {
+    vec![
+        character_fields(TableId::UnitLeaders),
+        character_fields(TableId::CharacterOperatives).row(character.into()),
+    ]
+}
+
+/// Whether a character is retired (`character_scope::Tables::retired`): its country and every
+/// retired record's character and name, with the links that compare countries.
+fn character_retired() -> Vec<TableRead> {
+    vec![
+        character_fields(TableId::Characters),
+        character_fields(TableId::CountryRetiredCharacters),
+        links(),
+    ]
+}
+
 /// The lexer's folds over every literal (`World::token_of`).
 fn folds() -> TableRead {
     TableRead::fields(TableId::LexicalTokens, &["literal"])
@@ -396,6 +424,27 @@ impl Query {
             Query::StateOfValue(_) => vec![TableRead::keys(T::States)],
             &Query::Character(id) => vec![TableRead::all(T::Characters).row(id.into())],
             &Query::CharacterExists(id) => vec![TableRead::keys(T::Characters).row(id.into())],
+            &Query::CharacterTag(character, _) => [
+                character_leader(character),
+                vec![
+                    TableRead::fields(T::Characters, &["country"]).row(character.into()),
+                    links(),
+                ],
+            ]
+            .concat(),
+            &Query::CharacterSkill(character) => character_leader(character),
+            &Query::CharacterRetired(_) => character_retired(),
+            Query::CharacterHasTrait(character, _) => [
+                character_leader(*character),
+                character_retired(),
+                vec![
+                    character_fields(T::UnitLeaderTraits),
+                    // Keyed by (character, kind, role): a character's rows are one key range.
+                    prefixed(character_fields(T::CharacterRoleTraits), u128::from(*character), 40),
+                    folds(),
+                ],
+            ]
+            .concat(),
             &Query::UnitLeader(reference) => {
                 vec![
                     TableRead::fields(T::UnitLeaders, replay_frame::frame::Leader::FIELDS)

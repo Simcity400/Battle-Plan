@@ -33,7 +33,7 @@ store = { path = "../store" }
 ts-rs = "11.1"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
 replay = { workspace = true, features = ["test-support"] }
 # Prepared files publish without disk flushes, which no test can observe.

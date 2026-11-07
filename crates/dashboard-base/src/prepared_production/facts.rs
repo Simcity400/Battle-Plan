@@ -555,6 +555,8 @@ pub(crate) struct Endpoint {
     pub ranking_offset: u64,
     pub ranking_len: u32,
     pub keyframe: bool,
+    /// It goes on from the endpoint before, which a flush completed: they are one span.
+    pub continues: bool,
 }
 
 impl Endpoint {
@@ -575,6 +577,7 @@ impl Endpoint {
         out.u64(self.ranking_offset);
         out.u32(self.ranking_len);
         out.bool(self.keyframe);
+        out.bool(self.continues);
     }
 
     pub fn read(input: &mut In<'_>) -> io::Result<Self> {
@@ -591,6 +594,7 @@ impl Endpoint {
             ranking_offset: input.u64()?,
             ranking_len: input.u32()?,
             keyframe: input.bool()?,
+            continues: input.bool()?,
         })
     }
 

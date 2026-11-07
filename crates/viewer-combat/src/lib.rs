@@ -3,7 +3,7 @@
 /// Tests run on the allocator the viewer ships with.
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 use std::time::Duration;
 use std::time::Instant;
@@ -368,7 +368,7 @@ impl Window {
     pub fn prepare_air(
         &mut self,
         replay: &Arc<replay::campaign::Replay>,
-        columnar: Option<Arc<replay::columnar_runs::IndexFile>>,
+        columnar: Option<Arc<replay::columnar_natives::Natives>>,
         wake: impl Fn() + Send + Sync + 'static,
     ) {
         if matches!(self.selection, Some(Selection::AirRegion(_)))

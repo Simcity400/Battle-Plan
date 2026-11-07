@@ -38,7 +38,7 @@ ts-rs = "11.1"
 zstd = "0.13"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-country-names = { workspace = true, features = ["test-support"] }
 installed-content-gfx = { workspace = true, features = ["test-support"] }

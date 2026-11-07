@@ -27,7 +27,7 @@ sha2.workspace = true
 zstd = "0.13"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 installed-content-image = { workspace = true, features = ["test-support"] }
 
 [features]
@@ -49,7 +49,7 @@ windows-sys = { workspace = true, features = ["Win32_System_IO", "Win32_System_I
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
-engine-allocation = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 installed-content-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

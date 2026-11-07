@@ -1,11 +1,10 @@
-//! The map's tables: what the change-run index must hold for the viewer's map, and what the
-//! viewer reads from it.
+//! The map's tables: what the viewer reads of a native recording for its map.
 
 use replay_data::rows::TableId;
 
 /// Native map inputs and shared authored-trigger and hover-description operands.
-/// The change-run index and the viewer share this selection; the source census in the tests
-/// checks the viewer and its shared recorded-input readers for missing tables.
+/// The source census in the tests checks the viewer and its shared recorded-input readers for
+/// missing tables.
 pub fn selected_tables() -> &'static [TableId] {
     static SELECTED: std::sync::LazyLock<Vec<TableId>> = std::sync::LazyLock::new(|| {
         const NATIVE: &[TableId] = &[

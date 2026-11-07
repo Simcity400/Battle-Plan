@@ -32,7 +32,7 @@ fn layout(original: Layout) -> (Layout, usize) {
 unsafe impl GlobalAlloc for MeasuredAllocator {
     unsafe fn alloc(&self, original: Layout) -> *mut u8 {
         let (layout, offset) = layout(original);
-        let pointer = unsafe { mimalloc::MiMalloc.alloc(layout) };
+        let pointer = unsafe { engine_heap::Heap.alloc(layout) };
         if pointer.is_null() {
             return pointer;
         }
@@ -57,7 +57,7 @@ unsafe impl GlobalAlloc for MeasuredAllocator {
             LIVE.fetch_sub(header.bytes, Ordering::Relaxed);
         }
         unsafe {
-            mimalloc::MiMalloc.dealloc(base, layout);
+            engine_heap::Heap.dealloc(base, layout);
         }
     }
 }

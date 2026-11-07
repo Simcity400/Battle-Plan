@@ -696,6 +696,20 @@ impl Index {
             .map(|_| at as u64)
     }
 
+    /// The hours of endpoint `ordinal` and those it continues or that continue it: the span
+    /// over which it holds, wherever flushes fell.
+    pub(crate) fn span(&self, ordinal: u64) -> (i32, i32) {
+        let mut first = ordinal as usize;
+        while first > 0 && self.endpoints[first].continues {
+            first -= 1;
+        }
+        let mut last = ordinal as usize;
+        while self.endpoints.get(last + 1).is_some_and(|next| next.continues) {
+            last += 1;
+        }
+        (self.endpoints[first].first_hour, self.endpoints[last].last_hour)
+    }
+
     pub(crate) fn endpoint(&self, ordinal: u64) -> &Endpoint {
         &self.endpoints[ordinal as usize]
     }

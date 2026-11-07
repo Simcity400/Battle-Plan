@@ -1,6 +1,9 @@
 //! Checked heap growth shared by native capture and its replay writer.
 
 pub mod labels;
+pub mod spill;
+#[cfg(feature = "zstd")]
+pub mod zstd;
 
 use std::alloc::{Layout, alloc};
 use std::collections::{HashMap, HashSet};
@@ -12,6 +15,41 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 thread_local! {
     static ADVISORY_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     static GROWTHS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static COLLECTED: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+static COLLECT: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+/// How often a worker returns what it freed, at most.
+const COLLECT_EVERY: std::time::Duration = std::time::Duration::from_millis(25);
+
+/// Has [`collect`] call `collect`: what returns the memory the calling thread freed and holds
+/// for reuse.
+pub fn set_collect(collect: Option<fn()>) {
+    COLLECT.store(
+        collect.map_or(std::ptr::null_mut(), |f| f as *mut ()),
+        Ordering::Release,
+    );
+}
+
+/// Returns what this thread freed and holds for reuse, but where it did so less than
+/// [`COLLECT_EVERY`] ago: for a worker between tasks. The allocator otherwise purges a
+/// segment's freed pages only as it next takes a page of that segment.
+pub fn collect() {
+    let callback = COLLECT.load(Ordering::Acquire);
+    if callback.is_null() {
+        return;
+    }
+    let now = std::time::Instant::now();
+    if COLLECTED
+        .get()
+        .is_some_and(|at| now.duration_since(at) < COLLECT_EVERY)
+    {
+        return;
+    }
+    COLLECTED.set(Some(now));
+    // Only set_collect stores this function pointer.
+    unsafe { std::mem::transmute::<*mut (), fn()>(callback)() };
 }
 
 /// Checked heap growth attempts admitted on the calling thread, including advisory work.

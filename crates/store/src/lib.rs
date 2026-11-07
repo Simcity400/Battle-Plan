@@ -31,6 +31,9 @@ use windows_sys::Win32::{
     },
 };
 
+mod spill;
+pub use spill::{Piece, Pieces, Spill};
+
 const MANIFEST: &str = "manifest";
 
 pub fn durable_writes_enabled() -> bool {

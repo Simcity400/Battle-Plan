@@ -20,7 +20,7 @@ use std::{
 };
 
 /// The recording-wide jobs a native preparation runs before its run: the campaign map, which the
-/// viewer reads from the change-run index ([`crate::prepared::change_runs`]). Those its run
+/// viewer reads from the recording's runs in place ([`replay::columnar_natives`]). Those its run
 /// prepares among the families are the plan's ([`Plan::jobs`]).
 pub(crate) const JOBS: &[&str] = &["map"];
 

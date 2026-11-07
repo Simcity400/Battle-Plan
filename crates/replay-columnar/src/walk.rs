@@ -10,7 +10,39 @@ use crate::{
     section::{self, Changes, Scratch},
     state::{Column, Kind, Table},
 };
-use std::{collections::HashMap, fmt, io, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt, io,
+    sync::{Arc, Mutex, PoisonError},
+};
+
+/// Runs `job` for each index below `count`, on any threads, every one before it returns.
+pub type Spread<'s> = dyn Fn(usize, &(dyn Fn(usize) + Sync)) + 's;
+
+/// Runs each job on the calling thread, in turn.
+fn serial(count: usize, job: &(dyn Fn(usize) + Sync)) {
+    (0..count).for_each(job);
+}
+
+/// `job` of each index below `count`, run on `spread`, each in its place.
+fn spread_each<T: Send>(
+    spread: &Spread<'_>,
+    count: usize,
+    job: impl Fn(usize) -> T + Sync,
+) -> io::Result<Vec<T>> {
+    let cells = engine_allocation::collect_vec((0..count).map(|_| Mutex::new(None)))?;
+    spread(count, &|at| {
+        *cells[at].lock().unwrap_or_else(PoisonError::into_inner) = Some(job(at));
+    });
+    cells
+        .into_iter()
+        .map(|cell| {
+            cell.into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .ok_or_else(|| invalid("A part of a spread never ran"))
+        })
+        .collect()
+}
 
 #[cfg(test)]
 mod tests;
@@ -24,6 +56,15 @@ pub struct Packed {
 }
 
 impl Packed {
+    /// A copy of its strings.
+    fn copied(&self) -> io::Result<Self> {
+        Ok(Self {
+            first: self.first,
+            bytes: engine_allocation::copy_vec(&self.bytes)?,
+            ends: engine_allocation::copy_vec(&self.ends)?,
+        })
+    }
+
     /// A dictionary chunk's strings as ids `first..`: a count, then each string
     /// length-prefixed. The strings keep the chunk's own allocation.
     pub fn read(first: usize, mut bytes: Vec<u8>) -> io::Result<Self> {
@@ -124,6 +165,16 @@ struct Sparse {
 }
 
 impl Sparse {
+    fn copied(&self) -> io::Result<Self> {
+        let mut ranges = HashMap::with_hasher(self.ranges.hasher().clone());
+        engine_allocation::reserve_map(&mut ranges, self.ranges.len())?;
+        ranges.extend(self.ranges.iter().map(|(&id, &range)| (id, range)));
+        Ok(Self {
+            bytes: engine_allocation::copy_vec(&self.bytes)?,
+            ranges,
+        })
+    }
+
     fn get(&self, id: u32) -> Option<&[u8]> {
         if self.ranges.is_empty() {
             return None;
@@ -237,6 +288,28 @@ impl Dictionary {
             *held = Some(chunks.chunk(id)?);
         }
         Ok(held.as_deref().and_then(|chunk| chunk.get(id)))
+    }
+
+    /// A copy holding the same strings at the same ids, its chunks and pins shared.
+    pub fn share(&self) -> io::Result<Self> {
+        let mut pins = engine_allocation::vec(self.pins.len())?;
+        pins.extend(self.pins.iter().map(|pin| Pin {
+            strings: Arc::clone(&pin.strings),
+            held: pin.held,
+        }));
+        Ok(Self {
+            log: self.log.copied()?,
+            pins,
+            sparse: self.sparse.copied()?,
+            gaps: self.gaps,
+            chunks: self.chunks.clone(),
+            trimmed: self.trimmed,
+        })
+    }
+
+    /// The bytes it holds of its own: its log and single strings, not the pins it shares.
+    pub fn owned_bytes(&self) -> usize {
+        self.log.held() + self.sparse.held() + self.pins.capacity() * size_of::<Pin>()
     }
 
     /// The bytes its strings hold, chunks it shares with other walkers included.
@@ -492,6 +565,258 @@ impl Charged {
 }
 
 /// What one table's changes of an hour apply to.
+/// The rows a truncated table's hour read: those its `changes` read that are still live in
+/// `table`, and those it inserted.
+fn view_read(view: &mut Vec<u32>, changes: &Changes, table: &Table) -> io::Result<()> {
+    let live = table.live();
+    view.clear();
+    engine_allocation::reserve(view, changes.read.len() + changes.inserted.len())?;
+    // A read row the hour deleted is gone; a slot it deleted and filled again holds the
+    // inserted row, once.
+    view.extend(changes.read.iter().copied().filter(|&slot| live.get(slot)));
+    view.extend_from_slice(&changes.inserted);
+    view.sort_unstable();
+    view.dedup();
+    Ok(())
+}
+
+/// Calls `hold` with every string `changes`, the last hour's to `held`, name in its text
+/// columns `text`.
+fn changed_text(
+    held: &Table,
+    changes: &Changes,
+    text: &[usize],
+    mut hold: impl FnMut(u32) -> io::Result<()>,
+) -> io::Result<()> {
+    let written = changes
+        .masks
+        .iter()
+        .chain(&changes.fill_masks)
+        .fold(0_u64, |bits, &mask| bits | mask);
+    for &column in text {
+        // Masks hold the first 64 columns; the others count as written.
+        if changes.inserted.is_empty() && column < 64 && written >> column & 1 == 0 {
+            continue;
+        }
+        let Some(Column::Bytes(ids)) = held.column(column) else {
+            continue;
+        };
+        let wrote = |mask: u64| column >= 64 || mask >> column & 1 != 0;
+        let changed = changes
+            .changed
+            .iter()
+            .zip(&changes.masks)
+            .filter(|(_, mask)| wrote(**mask))
+            .map(|(&slot, _)| slot);
+        let filled = changes
+            .fill_slots
+            .iter()
+            .zip(&changes.fill_masks)
+            .filter(|(_, mask)| wrote(**mask))
+            .map(|(&slot, _)| slot);
+        for slot in changed
+            .chain(changes.inserted.iter().copied())
+            .chain(filled)
+        {
+            if held.live().get(slot)
+                && held.recorded(column, slot)
+                && let Some(&id) = ids.get(slot as usize)
+            {
+                hold(id)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Clears the hour before's `changes`.
+fn clear_hour(changes: &mut Changes) {
+    changes.truncated = false;
+    changes.read.clear();
+    changes.changed.clear();
+    changes.deleted.clear();
+    changes.inserted.clear();
+    changes.touched.clear();
+    changes.filled.clear();
+    changes.fill_slots.clear();
+    changes.masks.clear();
+    changes.written.clear();
+    changes.deleted_keys.clear();
+    changes.fill_masks.clear();
+}
+
+/// What a span's hours hold for every table ([`State::apply_span`]): by hour, then table.
+struct SpanHours<'m> {
+    manifests: &'m [Manifest<'m>],
+    tables: usize,
+    /// Each table's section's place among its hour's, or none.
+    sections: Vec<u32>,
+    sampled: Vec<Option<i32>>,
+}
+
+const NO_SECTION: u32 = u32::MAX;
+
+/// One table's hours of a span, applied apart from the others' ([`State::apply_span`]): its
+/// hours one after another, each as [`State::apply`] applies it.
+pub struct SpanPart<'s> {
+    table: usize,
+    hours: &'s SpanHours<'s>,
+    kinds: &'s [Kind],
+    recorded: usize,
+    keeps: bool,
+    text: &'s [usize],
+    gaps: bool,
+    rows: &'s mut Table,
+    changes: &'s mut Changes,
+    last: &'s mut Option<Last>,
+    view: &'s mut Vec<u32>,
+    /// The strings its hours' changes name, held once the span is applied.
+    named: Vec<u32>,
+}
+
+impl SpanPart<'_> {
+    pub fn table(&self) -> usize {
+        self.table
+    }
+
+    /// How many hours the span holds.
+    pub fn hours(&self) -> usize {
+        self.hours.manifests.len()
+    }
+
+    /// The table's status at the span's `hour`th hour.
+    pub fn status(&self, hour: usize) -> Status {
+        self.hours.manifests[hour].statuses[self.table]
+    }
+
+    /// The table's section of the span's `hour`th hour, if any.
+    pub fn section(&self, hour: usize) -> Option<&crate::manifest::Section> {
+        let at = self.hours.sections[hour * self.hours.tables + self.table];
+        (at != NO_SECTION).then(|| &self.hours.manifests[hour].sections[at as usize])
+    }
+
+    /// The table's rows and changes as the hour applied last left them.
+    pub fn applied(&self) -> (&Table, &Changes) {
+        (self.rows, self.changes)
+    }
+
+    /// Applies the span's `hour`th hour, the hour after the one applied last, its section's
+    /// changes by `changes` as [`Part::apply`] applies them.
+    pub fn apply_hour(
+        &mut self,
+        hour: usize,
+        changes: impl FnOnce(
+            &crate::manifest::Section,
+            &[Kind],
+            bool,
+            &mut Table,
+            &mut Changes,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let status = self.status(hour);
+        let truncated = matches!(status, Status::Truncated { .. });
+        clear_hour(self.changes);
+        if !truncated {
+            self.view.clear();
+        }
+        let hours = self.hours;
+        let at = hours.sections[hour * hours.tables + self.table];
+        let sectioned = at != NO_SECTION;
+        if sectioned {
+            let entry = &hours.manifests[hour].sections[at as usize];
+            if self.keeps && matches!(self.last, Some(Last::Held(_))) {
+                Last::before(self.last, self.rows, status)?;
+            }
+            changes(
+                entry,
+                &self.kinds[..self.recorded],
+                truncated,
+                self.rows,
+                self.changes,
+            )?;
+            // The columns past the recording's hold no inserted row's cell.
+            for column in self.recorded..self.kinds.len() {
+                self.rows.unrecord(column, &self.changes.inserted)?;
+            }
+            if truncated {
+                view_read(self.view, self.changes, self.rows)?;
+            }
+            if self.gaps {
+                let named = &mut self.named;
+                changed_text(self.rows, self.changes, self.text, |id| {
+                    engine_allocation::reserve(named, 1)?;
+                    named.push(id);
+                    Ok(())
+                })?;
+            }
+        }
+        if self.keeps {
+            let sampled = hours.sampled[hour * hours.tables + self.table];
+            Last::after(self.last, status, sectioned, sampled);
+        }
+        Ok(())
+    }
+}
+
+/// One table's changes of an hour, applied apart from the others' ([`State::apply_parts`]).
+pub struct Part<'s> {
+    index: usize,
+    entry: &'s crate::manifest::Section,
+    kinds: &'s [Kind],
+    recorded: usize,
+    truncated: bool,
+    keeps: bool,
+    status: Status,
+    rows: &'s mut Table,
+    changes: &'s mut Changes,
+    last: &'s mut Option<Last>,
+    view: &'s mut Vec<u32>,
+}
+
+impl Part<'_> {
+    /// Its entry's place among the manifest's.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    pub fn table(&self) -> usize {
+        self.entry.table
+    }
+
+    /// Applies its table's changes by `changes`, given its entry, the kinds of the columns the
+    /// recording holds, whether the hour read the table in part, the table and what it changed;
+    /// and what follows them, as [`State::apply`] does.
+    pub fn apply(
+        &mut self,
+        changes: impl FnOnce(
+            &crate::manifest::Section,
+            &[Kind],
+            bool,
+            &mut Table,
+            &mut Changes,
+        ) -> io::Result<()>,
+    ) -> io::Result<()> {
+        if self.keeps && matches!(self.last, Some(Last::Held(_))) {
+            Last::before(self.last, self.rows, self.status)?;
+        }
+        changes(
+            self.entry,
+            &self.kinds[..self.recorded],
+            self.truncated,
+            self.rows,
+            self.changes,
+        )?;
+        // The columns past the recording's hold no inserted row's cell.
+        for column in self.recorded..self.kinds.len() {
+            self.rows.unrecord(column, &self.changes.inserted)?;
+        }
+        if self.truncated {
+            view_read(self.view, self.changes, self.rows)?;
+        }
+        Ok(())
+    }
+}
+
 struct Apply<'a> {
     kinds: &'a [Kind],
     truncated: bool,
@@ -528,6 +853,8 @@ pub struct State {
     named: Vec<u32>,
     scratch: Scratch,
     charged: Charged,
+    /// Whether each table is counted again as an hour applies it ([`Self::charge_hours`]).
+    charges: bool,
 }
 
 impl State {
@@ -577,7 +904,45 @@ impl State {
                 total: 0,
                 peak: 0,
             },
+            charges: true,
         })
+    }
+
+    /// What its tables' storage takes that no other state shares, as last counted: each table
+    /// is counted again as an hour applies it, or all at once ([`Self::recharge`]).
+    pub fn charged_bytes(&self) -> usize {
+        self.charged.total
+    }
+
+    /// Counts what each table holds as an hour applies it ([`Self::charged_bytes`]), or stops,
+    /// for a walk no reader asks: counted all again once started.
+    pub fn charge_hours(&mut self, charges: bool) -> io::Result<()> {
+        let started = charges && !self.charges;
+        self.charges = charges;
+        if started {
+            self.recharge()?;
+        }
+        Ok(())
+    }
+
+    /// Counts again what every table holds alone: after a share, both hold none of the pages.
+    pub fn recharge(&mut self) -> io::Result<()> {
+        self.recharge_spread(&serial)
+    }
+
+    /// [`Self::recharge`], its tables counted on `spread`.
+    pub fn recharge_spread(&mut self, spread: &Spread<'_>) -> io::Result<()> {
+        if !self.charges {
+            return Ok(());
+        }
+        let count = self.tables.len();
+        let this = &*self;
+        let charges = spread_each(spread, count, |table| this.charges_of(table))?;
+        for (table, charges) in charges.into_iter().enumerate() {
+            self.set_charges(table, charges);
+        }
+        self.charged.peak = self.charged.total;
+        Ok(())
     }
 
     /// The most its tables' storage took at once since this was last taken, or it was made.
@@ -601,12 +966,22 @@ impl State {
         }
     }
 
-    /// Counts what `table` and its last complete read held apart hold, each page once.
-    fn charge_both(&mut self, table: usize) -> io::Result<()> {
-        let live = self.tables[table].owned_bytes();
-        let apart = self.apart_bytes(table);
+    /// What `table` and its last complete read held apart hold alone, each page once.
+    fn charges_of(&self, table: usize) -> [usize; 2] {
+        [self.tables[table].owned_bytes(), self.apart_bytes(table)]
+    }
+
+    fn set_charges(&mut self, table: usize, [live, apart]: [usize; 2]) {
         let at = self.tables.len() + table;
         self.charged.set_both((table, live), (at, apart));
+    }
+
+    /// Counts what `table` and its last complete read held apart hold, each page once.
+    fn charge_both(&mut self, table: usize) -> io::Result<()> {
+        if self.charges {
+            let charges = self.charges_of(table);
+            self.set_charges(table, charges);
+        }
         Ok(())
     }
 
@@ -712,6 +1087,91 @@ impl State {
         &self.dictionary
     }
 
+    /// A copy whose tables share their pages with these, copied before either writes one: the
+    /// walk as it stands after its last hour, that hour's changes aside.
+    pub fn share(&self) -> io::Result<Self> {
+        self.share_spread(&serial)
+    }
+
+    /// [`Self::share`], its tables shared and counted on `spread`.
+    pub fn share_spread(&self, spread: &Spread<'_>) -> io::Result<Self> {
+        let count = self.tables.len();
+        let parts = spread_each(spread, count, |at| -> io::Result<(Table, Option<Last>)> {
+            Ok((
+                self.tables[at].share()?,
+                self.last[at].as_ref().map(Last::share).transpose()?,
+            ))
+        })?;
+        let mut kinds = engine_allocation::vec(count)?;
+        let mut text = engine_allocation::vec(count)?;
+        let mut tables = engine_allocation::vec(count)?;
+        let mut views = engine_allocation::vec(count)?;
+        let mut last = engine_allocation::vec(count)?;
+        let mut withheld = engine_allocation::vec(count)?;
+        for (at, part) in parts.into_iter().enumerate() {
+            let (table, kept) = part?;
+            kinds.push(engine_allocation::copy_vec(&self.kinds[at])?);
+            text.push(engine_allocation::copy_vec(&self.text[at])?);
+            tables.push(table);
+            views.push(engine_allocation::copy_vec(&self.views[at])?);
+            last.push(kept);
+            withheld.push(self.withheld[at].as_deref().map(engine_allocation::string).transpose()?);
+        }
+        let mut shared = Self {
+            kinds,
+            columns: engine_allocation::copy_vec(&self.columns)?,
+            text,
+            tables,
+            changes: engine_allocation::collect_vec((0..count).map(|_| Changes::default()))?,
+            statuses: engine_allocation::copy_vec(&self.statuses)?,
+            sampled: engine_allocation::copy_vec(&self.sampled)?,
+            views,
+            present: Vec::new(),
+            skipped: engine_allocation::copy_vec(&self.skipped)?,
+            keeps: engine_allocation::copy_vec(&self.keeps)?,
+            last,
+            withheld,
+            dictionary: self.dictionary.share()?,
+            named: Vec::new(),
+            scratch: Scratch::default(),
+            charged: Charged {
+                tables: engine_allocation::copy_vec(&self.charged.tables)?,
+                total: self.charged.total,
+                peak: self.charged.total,
+            },
+            charges: self.charges,
+        };
+        shared.recharge_spread(spread)?;
+        Ok(shared)
+    }
+
+    /// The bytes it holds apart from `other`, a state shared from it or it from: its tables'
+    /// pages not at the same place in `other`, its views and its dictionary's own strings;
+    /// counted table by table on `spread`.
+    pub fn unshared_bytes(&self, other: &Self, spread: &Spread<'_>) -> io::Result<usize> {
+        let apart = |mine: &Table, theirs: Option<&Table>| {
+            mine.held_bytes() - theirs.map_or(0, |theirs| mine.common_bytes(theirs))
+        };
+        let count = self.tables.len().min(other.tables.len());
+        let tables = spread_each(spread, count, |at| {
+            apart(&self.tables[at], Some(&other.tables[at]))
+                + match (&self.last[at], &other.last[at]) {
+                    (Some(Last::Apart(mine, _)), Some(Last::Apart(theirs, _))) => {
+                        apart(mine, Some(theirs))
+                    }
+                    (Some(Last::Apart(mine, _)), _) => apart(mine, None),
+                    _ => 0,
+                }
+        })?;
+        Ok(tables.into_iter().sum::<usize>()
+            + self
+                .views
+                .iter()
+                .map(|view| view.capacity() * size_of::<u32>())
+                .sum::<usize>()
+            + self.dictionary.owned_bytes())
+    }
+
     /// The bytes its tables and dictionary hold, chunks shared with other walkers included.
     pub fn held_bytes(&self) -> usize {
         self.tables.iter().map(Table::held_bytes).sum::<usize>()
@@ -795,57 +1255,18 @@ impl State {
         Ok(())
     }
 
-    /// Holds every string `table`'s last changes name, and its status's reason: what a run's
-    /// dictionary holds once a move other than an hour's changed the table.
-    pub(crate) fn hold_text(&mut self, table: usize) -> io::Result<()> {
-        if let Some(&Status::Unavailable { reason }) = self.statuses.get(table) {
-            self.dictionary.hold(reason)?;
-        }
-        self.hold_changed_text(table)
-    }
-
     /// Holds every string the last hour's changes to `table` name.
     fn hold_changed_text(&mut self, table: usize) -> io::Result<()> {
-        let (held, changes) = (&self.tables[table], &self.changes[table]);
-        let written = changes
-            .masks
-            .iter()
-            .chain(&changes.fill_masks)
-            .fold(0_u64, |bits, &mask| bits | mask);
-        for &column in &self.text[table] {
-            // Masks hold the first 64 columns; the others count as written.
-            if changes.inserted.is_empty() && column < 64 && written >> column & 1 == 0 {
-                continue;
-            }
-            let Some(Column::Bytes(ids)) = held.column(column) else {
-                continue;
-            };
-            let wrote = |mask: u64| column >= 64 || mask >> column & 1 != 0;
-            let changed = changes
-                .changed
-                .iter()
-                .zip(&changes.masks)
-                .filter(|(_, mask)| wrote(**mask))
-                .map(|(&slot, _)| slot);
-            let filled = changes
-                .fill_slots
-                .iter()
-                .zip(&changes.fill_masks)
-                .filter(|(_, mask)| wrote(**mask))
-                .map(|(&slot, _)| slot);
-            for slot in changed
-                .chain(changes.inserted.iter().copied())
-                .chain(filled)
-            {
-                if held.live().get(slot)
-                    && held.recorded(column, slot)
-                    && let Some(&id) = ids.get(slot as usize)
-                {
-                    self.dictionary.hold(id)?;
-                }
-            }
-        }
-        Ok(())
+        let Self {
+            tables,
+            changes,
+            text,
+            dictionary,
+            ..
+        } = self;
+        changed_text(&tables[table], &changes[table], &text[table], |id| {
+            dictionary.hold(id)
+        })
     }
 
     /// Replaces `table` with a restart's.
@@ -864,12 +1285,25 @@ impl State {
     /// `table` as a restart's `bytes` hold it, for [`Self::restore_restored`]: the columns past
     /// the recording's hold every row's cell unrecorded.
     pub fn decode(&mut self, table: usize, bytes: &[u8]) -> io::Result<Restored> {
+        let mut scratch = std::mem::take(&mut self.scratch);
+        let restored = self.decode_with(table, bytes, &mut scratch);
+        self.scratch = scratch;
+        restored
+    }
+
+    /// [`Self::decode`] with `scratch` of the caller's, so tables decode apart.
+    pub fn decode_with(
+        &self,
+        table: usize,
+        bytes: &[u8],
+        scratch: &mut Scratch,
+    ) -> io::Result<Restored> {
         let kinds = self
             .kinds
             .get(table)
             .ok_or_else(|| invalid("Restart names a table past the schema"))?;
         let (held, appended) = kinds.split_at(self.columns[table]);
-        let mut restored = restart::read(bytes, held, &mut self.scratch)?;
+        let mut restored = restart::read(bytes, held, scratch)?;
         restored.table.widen(appended)?;
         if let Some(Last::Apart(apart, _)) = &mut restored.last {
             apart.widen(appended)?;
@@ -965,6 +1399,208 @@ impl State {
         })
     }
 
+    /// [`Self::apply`], each present section of a table it does not skip applied as a
+    /// [`Part`] by `run`, which applies every part once, on any threads.
+    pub fn apply_parts(
+        &mut self,
+        manifest: &Manifest<'_>,
+        run: impl FnOnce(&mut [Part<'_>]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.begin_hour(manifest)?;
+        {
+            let Self {
+                kinds,
+                columns,
+                tables,
+                changes,
+                statuses,
+                views,
+                skipped,
+                keeps,
+                last,
+                ..
+            } = self;
+            let mut parts = engine_allocation::vec(manifest.sections.len())?;
+            let mut sections = manifest.sections.iter().enumerate().peekable();
+            let held = tables.iter_mut().zip(changes.iter_mut());
+            let held = held.zip(last.iter_mut()).zip(views.iter_mut());
+            for (table, (((rows, changes), last), view)) in held.enumerate() {
+                let Some((index, entry)) = sections.next_if(|(_, entry)| entry.table == table)
+                else {
+                    continue;
+                };
+                if skipped[table] {
+                    continue;
+                }
+                parts.push(Part {
+                    index,
+                    entry,
+                    kinds: &kinds[table],
+                    recorded: columns[table],
+                    truncated: matches!(statuses[table], Status::Truncated { .. }),
+                    keeps: keeps[table],
+                    status: statuses[table],
+                    rows,
+                    changes,
+                    last,
+                    view,
+                });
+            }
+            if sections.next().is_some() {
+                return Err(invalid("A manifest's sections are not in table order"));
+            }
+            run(&mut parts)?;
+        }
+        for entry in &manifest.sections {
+            if !self.skipped[entry.table] {
+                self.applied(entry.table)?;
+            }
+        }
+        self.end_hour()
+    }
+
+    /// Applies `manifests`' hours, one after another, each table's hours by `run` as one
+    /// [`SpanPart`] apart from the others': as [`Self::apply_parts`] applies each hour, with the
+    /// table-wide part of every hour (its appends, statuses and samples) taken first. Each
+    /// manifest's sections are in table order.
+    pub fn apply_span(
+        &mut self,
+        manifests: &[Manifest<'_>],
+        run: impl FnOnce(&mut [SpanPart<'_>]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let count = self.tables.len();
+        let hours = manifests.len();
+        if hours == 0 {
+            return Ok(());
+        }
+        let mut sections = engine_allocation::filled(hours * count, NO_SECTION)?;
+        let mut sampled = engine_allocation::vec(hours * count)?;
+        let mut held = engine_allocation::copy_vec(&self.sampled)?;
+        for (hour, manifest) in manifests.iter().enumerate() {
+            if manifest.statuses.len() != count || manifest.read.len() != count.div_ceil(64) {
+                return Err(invalid("Manifest disagrees with the schema's tables"));
+            }
+            let row = &mut sections[hour * count..(hour + 1) * count];
+            let mut previous = None;
+            for (at, entry) in manifest.sections.iter().enumerate() {
+                if entry.table >= count {
+                    return Err(invalid("A section names a table past the schema"));
+                }
+                if previous.is_some_and(|previous| previous >= entry.table) {
+                    return Err(invalid("A manifest's sections are not in table order"));
+                }
+                previous = Some(entry.table);
+                row[entry.table] = at as u32;
+            }
+            for table in 0..count {
+                let truncated = matches!(manifest.statuses[table], Status::Truncated { .. });
+                if truncated && row[table] == NO_SECTION {
+                    return Err(invalid("A partly read table names no rows it read"));
+                }
+            }
+            for append in &manifest.appends {
+                self.dictionary.append(append)?;
+            }
+            if self.dictionary.gaps {
+                for (table, status) in manifest.statuses.iter().enumerate() {
+                    if let Status::Unavailable { reason } = *status
+                        && !self.skipped[table]
+                    {
+                        self.dictionary.hold(reason)?;
+                    }
+                }
+            }
+            for (table, sample) in held.iter_mut().enumerate() {
+                if manifest.read[table / 64] >> (table % 64) & 1 != 0 {
+                    *sample = Some(manifest.hour);
+                }
+            }
+            for &(table, hour) in &manifest.samples {
+                *held
+                    .get_mut(table)
+                    .ok_or_else(|| invalid("A sample names a table past the schema"))? = hour;
+            }
+            sampled.extend_from_slice(&held);
+        }
+        let span = SpanHours {
+            manifests,
+            tables: count,
+            sections,
+            sampled,
+        };
+        let gaps = self.dictionary.gaps;
+        let mut named = Vec::new();
+        {
+            let Self {
+                kinds,
+                columns,
+                text,
+                tables,
+                changes,
+                views,
+                skipped,
+                keeps,
+                last,
+                ..
+            } = self;
+            let mut parts = engine_allocation::vec(count)?;
+            let held = tables.iter_mut().zip(changes.iter_mut());
+            let held = held.zip(last.iter_mut()).zip(views.iter_mut());
+            for (table, (((rows, changes), last), view)) in held.enumerate() {
+                if skipped[table] {
+                    continue;
+                }
+                parts.push(SpanPart {
+                    table,
+                    hours: &span,
+                    kinds: &kinds[table],
+                    recorded: columns[table],
+                    keeps: keeps[table],
+                    text: &text[table],
+                    gaps,
+                    rows,
+                    changes,
+                    last,
+                    view,
+                    named: Vec::new(),
+                });
+            }
+            run(&mut parts)?;
+            for part in &mut parts {
+                if gaps {
+                    engine_allocation::reserve(&mut named, part.named.len())?;
+                    named.append(&mut part.named);
+                }
+            }
+        }
+        for id in named {
+            self.dictionary.hold(id)?;
+        }
+        // A skipped table's rows read are kept only while it is partly read.
+        for (table, view) in self.views.iter_mut().enumerate() {
+            if self.skipped[table]
+                && !matches!(manifests[hours - 1].statuses[table], Status::Truncated { .. })
+            {
+                view.clear();
+            }
+        }
+        let last = &manifests[hours - 1];
+        self.statuses.copy_from_slice(&last.statuses);
+        self.sampled.copy_from_slice(&span.sampled[(hours - 1) * count..]);
+        self.present.clear();
+        engine_allocation::reserve(&mut self.present, last.sections.len())?;
+        self.present.extend(
+            last.sections
+                .iter()
+                .map(|entry| entry.table)
+                .filter(|&table| !self.skipped[table]),
+        );
+        if self.charges {
+            self.recharge()?;
+        }
+        Ok(())
+    }
+
     /// [`Self::apply`], each present table's changes applied by `section` with the manifest's
     /// index of its entry, the entry, and the table it changes.
     fn apply_with(
@@ -972,23 +1608,70 @@ impl State {
         manifest: &Manifest<'_>,
         mut section: impl FnMut(usize, &crate::manifest::Section, Apply<'_>) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.begin_hour(manifest)?;
+        for (index, entry) in manifest.sections.iter().enumerate() {
+            let table = entry.table;
+            if self.skipped[table] {
+                continue;
+            }
+            let truncated = matches!(self.statuses[table], Status::Truncated { .. });
+            let recorded = self.columns[table];
+            if self.keeps[table] && matches!(self.last[table], Some(Last::Held(_))) {
+                Last::before(
+                    &mut self.last[table],
+                    &self.tables[table],
+                    self.statuses[table],
+                )?;
+                if matches!(self.last[table], Some(Last::Apart(..))) {
+                    self.charge_both(table)?;
+                }
+            }
+            section(
+                index,
+                entry,
+                Apply {
+                    kinds: &self.kinds[table][..recorded],
+                    truncated,
+                    table: &mut self.tables[table],
+                    scratch: &mut self.scratch,
+                    changes: &mut self.changes[table],
+                },
+            )?;
+            // The columns past the recording's hold no inserted row's cell.
+            for column in recorded..self.kinds[table].len() {
+                self.tables[table].unrecord(column, &self.changes[table].inserted)?;
+            }
+            if truncated {
+                view_read(
+                    &mut self.views[table],
+                    &self.changes[table],
+                    &self.tables[table],
+                )?;
+            }
+            self.applied(table)?;
+        }
+        self.end_hour()
+    }
+
+    /// Counts what `table` holds once the hour applied its section, and keeps what its changes
+    /// name.
+    fn applied(&mut self, table: usize) -> io::Result<()> {
+        self.charge_both(table)?;
+        engine_allocation::reserve(&mut self.present, 1)?;
+        self.present.push(table);
+        if self.dictionary.gaps {
+            self.hold_changed_text(table)?;
+        }
+        Ok(())
+    }
+
+    /// An hour's start: last hour's changes cleared, its appends, statuses and samples taken.
+    fn begin_hour(&mut self, manifest: &Manifest<'_>) -> io::Result<()> {
         if manifest.statuses.len() != self.tables.len() {
             return Err(invalid("Manifest disagrees with the schema's tables"));
         }
         for &table in &self.present {
-            let changes = &mut self.changes[table];
-            changes.truncated = false;
-            changes.read.clear();
-            changes.changed.clear();
-            changes.deleted.clear();
-            changes.inserted.clear();
-            changes.touched.clear();
-            changes.filled.clear();
-            changes.fill_slots.clear();
-            changes.masks.clear();
-            changes.written.clear();
-            changes.deleted_keys.clear();
-            changes.fill_masks.clear();
+            clear_hour(&mut self.changes[table]);
         }
         self.present.clear();
         for append in &manifest.appends {
@@ -1029,58 +1712,11 @@ impl State {
                 view.clear();
             }
         }
-        for (index, entry) in manifest.sections.iter().enumerate() {
-            let table = entry.table;
-            if self.skipped[table] {
-                continue;
-            }
-            let truncated = matches!(self.statuses[table], Status::Truncated { .. });
-            let recorded = self.columns[table];
-            if self.keeps[table] && matches!(self.last[table], Some(Last::Held(_))) {
-                Last::before(
-                    &mut self.last[table],
-                    &self.tables[table],
-                    self.statuses[table],
-                )?;
-                if matches!(self.last[table], Some(Last::Apart(..))) {
-                    self.charge_both(table)?;
-                }
-            }
-            section(
-                index,
-                entry,
-                Apply {
-                    kinds: &self.kinds[table][..recorded],
-                    truncated,
-                    table: &mut self.tables[table],
-                    scratch: &mut self.scratch,
-                    changes: &mut self.changes[table],
-                },
-            )?;
-            // The columns past the recording's hold no inserted row's cell.
-            for column in recorded..self.kinds[table].len() {
-                self.tables[table].unrecord(column, &self.changes[table].inserted)?;
-            }
-            self.charge_both(table)?;
-            if truncated {
-                let changes = &self.changes[table];
-                let live = self.tables[table].live();
-                let view = &mut self.views[table];
-                view.clear();
-                engine_allocation::reserve(view, changes.read.len() + changes.inserted.len())?;
-                // A read row the hour deleted is gone; a slot it deleted and filled again holds
-                // the inserted row, once.
-                view.extend(changes.read.iter().copied().filter(|&slot| live.get(slot)));
-                view.extend_from_slice(&changes.inserted);
-                view.sort_unstable();
-                view.dedup();
-            }
-            engine_allocation::reserve(&mut self.present, 1)?;
-            self.present.push(table);
-            if self.dictionary.gaps {
-                self.hold_changed_text(table)?;
-            }
-        }
+        Ok(())
+    }
+
+    /// An hour's end: each kept last complete read follows what the hour read.
+    fn end_hour(&mut self) -> io::Result<()> {
         let count = self.tables.len();
         for table in 0..count {
             if !self.keeps[table] || self.skipped[table] {

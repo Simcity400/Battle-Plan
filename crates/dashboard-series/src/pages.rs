@@ -4,11 +4,11 @@ use crate::{
     shared::Shared,
     types::{NONE, PageId},
 };
+use engine_allocation::zstd::{self, Compressor, Decompressor, Holder};
 use std::{
     io::{self, Read, Seek, SeekFrom},
     sync::{Arc, Mutex},
 };
-use zstd::bulk::{Compressor, Decompressor};
 
 pub const PAGE_BYTES: usize = 256 * 1024;
 const HEADER: usize = 56;
@@ -124,12 +124,13 @@ pub(crate) fn shared(io: &mut impl PageRead, id: PageId, kind: Kind) -> io::Resu
 }
 
 struct Encoder {
-    compressor: Compressor<'static>,
+    compressor: Compressor,
     buffer: Vec<u8>,
 }
+static CONTEXTS: Holder = Holder::new("zstd: series pages");
 // Contexts are pooled: their count follows the number of concurrent sealers and readers.
 static ENCODERS: Mutex<Vec<Encoder>> = Mutex::new(Vec::new());
-static DECODERS: Mutex<Vec<Decompressor<'static>>> = Mutex::new(Vec::new());
+static DECODERS: Mutex<Vec<Decompressor>> = Mutex::new(Vec::new());
 
 fn pooled<T>(pool: &Mutex<Vec<T>>) -> Option<T> {
     pool.lock().unwrap_or_else(|e| e.into_inner()).pop()
@@ -145,7 +146,7 @@ pub(crate) fn seal(io: &mut impl PageWrite, kind: Kind, raw: &[u8]) -> io::Resul
     let mut encoder = match pooled(&ENCODERS) {
         Some(encoder) => encoder,
         None => Encoder {
-            compressor: Compressor::new(1)?,
+            compressor: Compressor::new(&CONTEXTS, 1)?,
             buffer: Vec::new(),
         },
     };
@@ -159,13 +160,13 @@ fn seal_with(
     raw: &[u8],
     encoder: &mut Encoder,
 ) -> io::Result<PageId> {
-    let bound = HEADER + zstd::zstd_safe::compress_bound(raw.len());
+    let bound = HEADER + zstd::bound(raw.len());
     if encoder.buffer.len() < bound {
         engine_allocation::resize(&mut encoder.buffer, bound, 0)?;
     }
     let compressed = encoder
         .compressor
-        .compress_to_buffer(raw, &mut encoder.buffer[HEADER..bound])?;
+        .compress(&mut encoder.buffer[HEADER..bound], raw)?;
     let codec = u8::from(compressed + 32 < raw.len());
     let stored = if codec == 1 {
         compressed
@@ -224,9 +225,9 @@ pub(crate) fn open(io: &mut impl PageRead, id: PageId, kind: Kind) -> io::Result
         let mut raw = engine_allocation::vec(raw_len)?;
         let mut decoder = match pooled(&DECODERS) {
             Some(decoder) => decoder,
-            None => Decompressor::new()?,
+            None => Decompressor::new(&CONTEXTS)?,
         };
-        let result = decoder.decompress_to_buffer(&packed, &mut raw);
+        let result = decoder.decompress_append(&packed, &mut raw);
         restore(&DECODERS, decoder);
         if result? != raw_len || raw.len() != raw_len {
             return Err(invalid("series compressed frame extent"));

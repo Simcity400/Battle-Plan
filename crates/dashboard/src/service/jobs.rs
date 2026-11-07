@@ -1563,11 +1563,11 @@ impl Inner {
                     Ok(receiver) => receiver,
                     Err(TryLockError::Poisoned(error)) => error.into_inner(),
                     Err(TryLockError::WouldBlock) => {
-                        crate::allocator::return_freed();
+                        engine_heap::return_freed();
                         jobs.lock().unwrap_or_else(|error| error.into_inner())
                     }
                 };
-                receiver.recv_idle(crate::allocator::return_freed)
+                receiver.recv_idle(engine_heap::return_freed)
             };
             let Ok(job) = job else {
                 return;

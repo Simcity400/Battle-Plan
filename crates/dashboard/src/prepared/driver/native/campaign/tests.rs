@@ -63,7 +63,6 @@ fn prepared(later: &[u8]) -> (io::Result<()>, bool) {
         &source,
         None,
         native(later),
-        None,
         Some(&[][..]),
         1,
         false,

@@ -443,7 +443,7 @@ fn left_to_native(mut frame: DecodedFrame, tables: &[TableId]) -> DecodedFrame {
 }
 
 #[test]
-fn an_hour_left_to_the_native_capture_is_read_from_its_index_never_shown_as_unrecorded() {
+fn an_hour_left_to_the_native_capture_is_read_from_its_recording_never_shown_as_unrecorded() {
     let cut = left_to_native(frame(), &[TableId::CombatLogGroups, TableId::CombatLogManpower]);
     let (source, root) = dashboard_base::test_fixtures::file_source(dashboard_base::test_fixtures::replay(vec![cut]));
     let error = ArmyLosses::load(
@@ -458,7 +458,7 @@ fn an_hour_left_to_the_native_capture_is_read_from_its_index_never_shown_as_unre
     std::fs::remove_dir_all(root).ok();
     assert_eq!(
         error,
-        "The recording holds [CombatLogGroups, CombatLogManpower] in its native capture, whose change-run index is not prepared yet"
+        "session 1 is still being recorded: its hours are read once its native recording lands"
     );
 }
 

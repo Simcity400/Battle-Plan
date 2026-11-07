@@ -246,7 +246,7 @@ fn priority_names_are_the_effective_interface_tooltips_of_the_priority_buttons()
 }
 
 #[test]
-fn a_queue_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
+fn a_queue_left_to_the_native_capture_is_read_from_its_recording_never_refused_as_unrecorded() {
     let mut cut = frame();
     // Full leaves DivisionModelInputs out, so a frame in its mode marks it so.
     for table in [TableId::DeploymentLines, TableId::DivisionModelInputs] {
@@ -265,6 +265,6 @@ fn a_queue_left_to_the_native_capture_is_read_from_its_index_never_refused_as_un
     std::fs::remove_dir_all(root).ok();
     assert_eq!(
         error,
-        "The recording holds [DeploymentLines] in its native capture, whose change-run index is not prepared yet"
+        "session 1 is still being recorded: its hours are read once its native recording lands"
     );
 }

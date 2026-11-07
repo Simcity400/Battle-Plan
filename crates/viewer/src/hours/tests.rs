@@ -241,30 +241,6 @@ fn the_window_follows_the_measured_throughput_and_the_live_memory_gate() {
 }
 
 #[test]
-fn a_changed_map_source_drops_the_pending_hours_read_before_it() {
-    let mut state = LaneState::default();
-    let pending = |hour| Current::Pending {
-        branch: 1,
-        hour,
-        reason: "synthetic index not written".into(),
-        awaiting_index: true,
-    };
-    state.frames.insert((1, 10), pending(10));
-    state.frames.insert((1, 11), pending(11));
-    state.frames.insert((1, 12), sized_frame(12, 1));
-    // Read with no source to stamp, and none now: nothing changed.
-    state.renew_pending(None);
-    assert_eq!(state.frames.pending, 2);
-    // Read under another stamp than the source holds now: every pending hour is read again.
-    state.pending_source = Some(crate::map_binding::SourceStamp::default());
-    state.renew_pending(None);
-    assert_eq!(state.frames.pending, 0);
-    assert!(!state.frames.contains_key(&(1, 10)) && !state.frames.contains_key(&(1, 11)));
-    assert!(state.frames.contains_key(&(1, 12)));
-    assert_eq!(state.pending_source, None);
-}
-
-#[test]
 fn the_frame_cache_keeps_only_the_required_hours_and_a_pause_releases_the_grid() {
     let grid: Vec<(BranchId, Hour)> = (0..20).map(|step| (1, 400 + step * 40)).collect();
     for ahead in [1, 2, 8] {
@@ -644,7 +620,7 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
     lane.want(vec![(1, 100), (1, 101), (1, 105)], 2);
     let decoded = |current: Current| match current {
         Current::Frame(frame) => Some(frame.hour),
-        Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
+        Current::Gap { .. } | Current::Refused { .. } => None,
     };
     assert_eq!(decoded(frame_within(&lane, 1, 105)), Some(105));
     // Decoded ahead, in want order: already there.

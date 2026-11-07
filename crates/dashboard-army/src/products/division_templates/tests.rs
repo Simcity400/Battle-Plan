@@ -151,7 +151,7 @@ fn an_unlinked_country_leaves_its_divisions_templates_unknown_and_its_templates_
 }
 
 #[test]
-fn a_roster_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
+fn a_roster_left_to_the_native_capture_is_read_from_its_recording_never_refused_as_unrecorded() {
     let mut cut = frame();
     // Full leaves DivisionModelInputs out, so a frame in its mode marks it so.
     for table in [TableId::DivisionTemplates, TableId::DivisionModelInputs] {
@@ -170,6 +170,6 @@ fn a_roster_left_to_the_native_capture_is_read_from_its_index_never_refused_as_u
     std::fs::remove_dir_all(root).ok();
     assert_eq!(
         error,
-        "The recording holds [DivisionTemplates] in its native capture, whose change-run index is not prepared yet"
+        "session 1 is still being recorded: its hours are read once its native recording lands"
     );
 }

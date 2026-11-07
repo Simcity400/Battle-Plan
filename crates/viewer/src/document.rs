@@ -1352,30 +1352,19 @@ impl Document {
             None,
         )?;
         document.bind_source(&source);
+        // The hour read before the binding could not read a native map: read it again.
+        if !matches!(document.playback.current(), crate::playback::Current::Frame(_)) {
+            let (branch, hour) = (document.playback.branch(), document.playback.hour());
+            document.playback.seek(branch, hour)?;
+        }
         Ok(document)
     }
 
-    /// Binds worker playback to the change-run index preparation writes in `source`'s store.
+    /// Binds worker playback to the native recordings published beside `source`'s replay.
     /// It does not start preparation or read a campaign's hourly history.
     pub fn bind_source(&mut self, source: &dashboard::Source) {
         self.playback
             .bind_map(crate::map_binding::MapBinding::new(source));
-    }
-
-    /// Serves the map from `index`, a change-run index of this replay's native columnar
-    /// recording, in place of the one preparation writes in the replay's store. False, the
-    /// binding unchanged, when it is of another campaign, does not hold exactly the hours the
-    /// replay records, or lacks a map table.
-    pub fn bind_columnar(&mut self, index: replay::columnar_runs::IndexFile) -> bool {
-        let replay = self.playback.replay_handle();
-        let Some(columnar) = crate::map_source::Columnar::verify(&replay, Arc::new(index)) else {
-            return false;
-        };
-        self.playback
-            .bind_map(crate::map_binding::MapBinding::columnar_only(
-                replay, columnar,
-            ));
-        true
     }
 
     /// Load verified presentation assets using the same immutable recording
@@ -3019,8 +3008,8 @@ impl Document {
         self.hour()?.demilitarized_zone(regions, &override_ids)
     }
 
-    /// The decoded frame of the hour on screen, or a named error for a recorded gap, an hour not
-    /// indexed yet, or one refused.
+    /// The decoded frame of the hour on screen, or a named error for a recorded gap or a refused
+    /// hour.
     pub fn frame(&self) -> io::Result<&DecodedFrame> {
         match self.playback.current() {
             crate::playback::Current::Frame(frame) => Ok(frame),
@@ -3030,14 +3019,6 @@ impl Document {
                 reason,
             } => Err(invalid(format!(
                 "branch {branch}, hour {hour} is a gap: {reason}"
-            ))),
-            crate::playback::Current::Pending {
-                branch,
-                hour,
-                reason,
-                ..
-            } => Err(invalid(format!(
-                "branch {branch}, hour {hour} is not indexed yet: {reason}"
             ))),
             crate::playback::Current::Refused {
                 branch,

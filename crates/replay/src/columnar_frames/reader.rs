@@ -10,11 +10,15 @@ use super::{
 use crate::rows::{TABLE_COUNT, TableId};
 use replay_columnar::{
     block::TableDecoder,
-    envelope::{self, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, Root, RunDirectory},
+    envelope::{
+        self, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, Root,
+        RunDirectory,
+    },
+    section::Scratch,
     manifest::Manifest,
     restart::WeakRestored,
     records::RecordsDecoder,
-    walk::{Chunks, Dictionary, Packed, State},
+    walk::{Chunks, Dictionary, Packed, Part, SpanPart, State},
 };
 use std::{
     collections::HashMap,
@@ -474,8 +478,9 @@ pub struct Recording {
     verify: bool,
     /// The tables walks restore and apply.
     selected: [bool; TABLE_COUNT],
-    restarts: Restarts,
-    raws: Raws,
+    /// Shared with the recordings selecting from it ([`Self::selecting`]).
+    restarts: Arc<Restarts>,
+    raws: Arc<Raws>,
 }
 
 /// Restart tables' raw bytes as walks decoded them, by run, restart ordinal and table: a
@@ -606,14 +611,14 @@ impl Recording {
             damage: engine_allocation::boxed_slice(damage)?,
             verify: false,
             selected: [true; TABLE_COUNT],
-            restarts: Restarts::default(),
-            raws: Raws::default(),
+            restarts: Arc::default(),
+            raws: Arc::default(),
         })
     }
 
-    /// The recording as read from the same file, its runs and pages shared with this one, whose
-    /// walks read only `tables` ([`Self::select`]): for walks of a few tables beside the walks of
-    /// this one.
+    /// The recording as read from the same file, its runs, pages and the restarts its walks
+    /// decoded shared with this one, whose walks read only `tables` ([`Self::select`]): for
+    /// walks of a few tables beside the walks of this one.
     pub fn selecting(&self, tables: &[TableId]) -> io::Result<Self> {
         let mut damage = engine_allocation::vec(self.damage.len())?;
         for held in &*self.damage {
@@ -643,18 +648,20 @@ impl Recording {
             recorded: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.recorded)?)?,
             damage: engine_allocation::boxed_slice(damage)?,
             verify: self.verify,
-            selected: [true; TABLE_COUNT],
-            restarts: Restarts::default(),
-            raws: Raws::default(),
+            selected: [false; TABLE_COUNT],
+            restarts: Arc::clone(&self.restarts),
+            raws: Arc::clone(&self.raws),
         };
-        recording.select(tables);
+        for table in tables {
+            recording.selected[table.index()] = true;
+        }
         Ok(recording)
     }
 
     /// Walks restore, read and apply only `tables`, the tables their readers read; the others
     /// keep their statuses and no rows. A walk that verifies still reads every unit.
     pub fn select(&mut self, tables: &[TableId]) {
-        self.restarts = Restarts::default();
+        self.restarts = Arc::default();
         self.selected = [false; TABLE_COUNT];
         for table in tables {
             self.selected[table.index()] = true;
@@ -1204,6 +1211,92 @@ fn skipped(recording: &Recording, lost: &[(usize, io::Error)]) -> [bool; TABLE_C
     })
 }
 
+/// Runs `job` for each index below `count`, on any threads, every one before it returns.
+pub(crate) type Spread<'s> = dyn Fn(usize, &(dyn Fn(usize) + Sync)) + 's;
+
+thread_local! {
+    /// The zstd context a thread decodes restart tables apart with, kept between restores.
+    static RESTORING: std::cell::RefCell<Option<Decoder>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `job` of each index below `count`, run on `spread`, each in its place.
+fn restore_apart<T: Send>(
+    spread: &Spread<'_>,
+    count: usize,
+    job: impl Fn(usize) -> io::Result<T> + Sync,
+) -> io::Result<Vec<io::Result<T>>> {
+    let cells = engine_allocation::collect_vec((0..count).map(|_| Mutex::new(None)))?;
+    spread(count, &|at| {
+        *cells[at].lock().unwrap_or_else(PoisonError::into_inner) = Some(job(at));
+    });
+    Ok(cells
+        .into_iter()
+        .map(|cell| {
+            cell.into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unwrap_or_else(|| Err(invalid("A restart table was never decoded")))
+        })
+        .collect())
+}
+
+/// [`State::apply_block`], each of `parts` applied by its table's decoder of `decoders` through
+/// `spread`; what fails is met in the parts' order, as one after another would meet it.
+fn apply_spread(
+    parts: &mut [Part<'_>],
+    decoders: &mut [Option<TableDecoder<'_>>],
+    lost: Option<&mut Vec<(usize, io::Error)>>,
+    spread: &Spread<'_>,
+) -> io::Result<()> {
+    use engine_allocation::labels::{self, Kind, Owner};
+    use std::sync::{Mutex, PoisonError};
+    let isolate = lost.is_some();
+    let mut held = engine_allocation::collect_vec(decoders.iter_mut().map(Option::as_mut))?;
+    let mut jobs = engine_allocation::vec(parts.len())?;
+    for part in parts.iter_mut() {
+        let decoder = held.get_mut(part.table()).and_then(Option::take);
+        jobs.push(Mutex::new((part, decoder, None)));
+    }
+    spread(jobs.len(), &|at| {
+        let _memory = labels::enter(Owner::RUN, Kind::WalkerTables);
+        let mut job = jobs[at].lock().unwrap_or_else(PoisonError::into_inner);
+        let (part, decoder, outcome) = &mut *job;
+        // Damage of the table's own block loses it once the hour is applied.
+        let mut damage = None;
+        let applied = part.apply(|entry, _, truncated, table, changes| {
+            let decoder = decoder
+                .as_mut()
+                .ok_or_else(|| invalid("An hour names a table its block does not hold"))?;
+            match decoder.hour(table, changes, entry, truncated) {
+                Err(error) if isolate && error.kind() == io::ErrorKind::InvalidData => {
+                    damage = Some(error);
+                    Ok(())
+                }
+                applied => applied,
+            }
+        });
+        *outcome = Some(applied.map(|()| damage));
+    });
+    let mut damaged = engine_allocation::vec(jobs.len())?;
+    for job in jobs {
+        let (part, _, outcome) = job.into_inner().unwrap_or_else(PoisonError::into_inner);
+        match outcome {
+            Some(Ok(None)) => {}
+            Some(Ok(Some(error))) => damaged.push((part.table(), error)),
+            Some(Err(error)) => return Err(error),
+            None => return Err(io::Error::other("A part of an hour never ran")),
+        }
+    }
+    drop(held);
+    if let Some(lost) = lost {
+        for (table, error) in damaged {
+            decoders[table] = None;
+            engine_allocation::reserve(lost, 1)?;
+            lost.push((table, error));
+        }
+    }
+    Ok(())
+}
+
 /// A timed walk's time, by part.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Timings {
@@ -1243,6 +1336,10 @@ pub struct Walker<'r> {
     /// The page before's arena and units: what its next page's chained blocks change.
     previous: Vec<u8>,
     previous_units: Vec<Option<Range<usize>>>,
+    /// The page before's units in their place while a checkpoint shares them.
+    prior: Option<Arc<Units>>,
+    /// Where restores decode their tables apart; none decodes them in turn.
+    restore_spread: Option<fn(usize, &(dyn Fn(usize) + Sync))>,
     /// Tables an isolating walk lost to damage of their own since it began, with the damage.
     lost: Vec<(usize, io::Error)>,
     /// The walk its buffers are sized for ([`Self::hold`]), and what it counts of them.
@@ -1272,6 +1369,8 @@ impl<'r> Walker<'r> {
             starts: Vec::new(),
             previous: Vec::new(),
             previous_units: engine_allocation::collect_vec((0..=TABLE_COUNT).map(|_| None))?,
+            prior: None,
+            restore_spread: None,
             lost: Vec::new(),
             reads: None,
             tally: None,
@@ -1310,6 +1409,7 @@ impl<'r> Walker<'r> {
     pub fn park(&mut self) {
         self.previous = Vec::new();
         self.previous_units.fill(None);
+        self.prior = None;
         self.release();
     }
 
@@ -1335,6 +1435,7 @@ impl<'r> Walker<'r> {
         self.units.fill(None);
         self.previous = Vec::new();
         self.previous_units.fill(None);
+        self.prior = None;
         self.lost.clear();
         Ok(())
     }
@@ -1530,7 +1631,8 @@ impl<'r> Walker<'r> {
             self.lose(&extent, error, isolate)?;
         }
         // A chained page's blocks change the page before's, which stays beside it.
-        if page.chained.count() != 0 {
+        let prior = self.prior.take();
+        if page.chained.count() != 0 && prior.is_none() {
             std::mem::swap(&mut self.arena, &mut self.previous);
             std::mem::swap(&mut self.units, &mut self.previous_units);
         }
@@ -1545,10 +1647,15 @@ impl<'r> Walker<'r> {
             let chained = extent.kind == envelope::Kind::Block && page.chained.get(extent.stream);
             let base = match chained {
                 false => Ok(None),
-                true => self.previous_units[extent.stream as usize + 1]
-                    .clone()
-                    .map(|range| Some(&self.previous[range]))
-                    .ok_or_else(|| invalid("changes a block the walk did not read")),
+                true => match &prior {
+                    Some(prior) => prior.at[extent.stream as usize + 1]
+                        .clone()
+                        .map(|range| Some(&prior.arena[range])),
+                    None => self.previous_units[extent.stream as usize + 1]
+                        .clone()
+                        .map(|range| Some(&self.previous[range])),
+                }
+                .ok_or_else(|| invalid("changes a block the walk did not read")),
             };
             let decoded = base.and_then(|base| match self.starts.get(slot) {
                 Some(&at) if gathered && at != usize::MAX => {
@@ -1575,6 +1682,9 @@ impl<'r> Walker<'r> {
     /// empty tables at its run's start.
     pub fn begin(&mut self, segment: &Segment, state: &mut State) -> io::Result<()> {
         self.fit()?;
+        // A segment's first page changes no block before it.
+        self.previous_units.fill(None);
+        self.prior = None;
         self.lose_withheld()?;
         let Some(at) = segment.restart else {
             let recording = self.recording;
@@ -1644,9 +1754,10 @@ impl<'r> Walker<'r> {
         // One walk decodes a restart while the others starting there wait to share it.
         let entry = recording.restarts.entry(run, at)?;
         let mut decoded = locked(&entry);
-        let mut declared = Vec::new();
+        // Each table's chunks pinned, and the tables no walk shares decoded after.
+        let mut wanted: Vec<(&RestartTable, Vec<(u32, u32)>)> = Vec::new();
         for table in tables() {
-            declared.clear();
+            let mut declared = Vec::new();
             for &ordinal in &table.chunks {
                 let at = held.chunk_at(ordinal)?;
                 state.pin_strings(held.load(at)?)?;
@@ -1654,24 +1765,61 @@ impl<'r> Walker<'r> {
                 declared.push(held.restarts[at].ids);
             }
             let index = table.table as usize;
-            let damaged = |error: io::Error| Damage::wrap(scope(table.table), error);
-            let restoring =
-                engine_allocation::labels::kind(engine_allocation::labels::Kind::WalkerTables);
             let shared = match decoded.iter().find(|(held, _)| *held == index) {
                 Some((_, restored)) => restored.upgrade()?,
                 None => None,
             };
-            if let Some(restored) = shared {
-                state.restore_restored(index, restored).map_err(damaged)?;
-                continue;
+            match shared {
+                Some(restored) => {
+                    let damaged = |error: io::Error| Damage::wrap(scope(table.table), error);
+                    state.restore_restored(index, restored).map_err(damaged)?;
+                }
+                None => {
+                    engine_allocation::reserve(&mut wanted, 1)?;
+                    wanted.push((table, declared));
+                }
             }
-            let raw = recording
-                .restart_table(run, &chain, table.table, &mut self.decoder)
-                .map_err(damaged)?;
-            let restored = state.decode(index, &raw).map_err(damaged)?;
+        }
+        let made = match self.restore_spread {
+            Some(spread) => {
+                let state = &*state;
+                restore_apart(&spread, wanted.len(), |at| {
+                    let _restoring = engine_allocation::labels::kind(
+                        engine_allocation::labels::Kind::WalkerTables,
+                    );
+                    let table = wanted[at].0;
+                    RESTORING.with(|cell| {
+                        let mut cell = cell.borrow_mut();
+                        if cell.is_none() {
+                            *cell = Some(Decoder::new()?);
+                        }
+                        let decoder = cell.as_mut().ok_or_else(|| invalid("No restart decoder"))?;
+                        let raw = recording.restart_table(run, &chain, table.table, decoder)?;
+                        state.decode_with(table.table as usize, &raw, &mut Scratch::default())
+                    })
+                })?
+            }
+            None => {
+                let mut made = engine_allocation::vec(wanted.len())?;
+                for (table, _) in &wanted {
+                    let _restoring = engine_allocation::labels::kind(
+                        engine_allocation::labels::Kind::WalkerTables,
+                    );
+                    made.push(
+                        recording
+                            .restart_table(run, &chain, table.table, &mut self.decoder)
+                            .and_then(|raw| state.decode(table.table as usize, &raw)),
+                    );
+                }
+                made
+            }
+        };
+        for ((table, declared), restored) in wanted.iter().zip(made) {
+            let index = table.table as usize;
+            let damaged = |error: io::Error| Damage::wrap(scope(table.table), error);
+            let restored = restored.map_err(damaged)?;
             let weak = restored.downgrade()?;
             state.restore_restored(index, restored).map_err(damaged)?;
-            drop(restoring);
             state
                 .text_ids(index, |id| {
                     let at = declared.partition_point(|&(first, _)| first <= id);
@@ -1728,7 +1876,7 @@ impl<'r> Walker<'r> {
         state: &mut State,
         mut visit: impl FnMut(&State, &Manifest<'_>, bool) -> io::Result<bool>,
     ) -> io::Result<bool> {
-        self.walk_with(segment, state, false, |state, manifest, first, _| {
+        self.walk_with(segment, state, false, None, |state, manifest, first, _| {
             visit(state, manifest, first)
         })
     }
@@ -1745,7 +1893,19 @@ impl<'r> Walker<'r> {
         state: &mut State,
         visit: impl FnMut(&State, &Manifest<'_>, bool, &[(usize, io::Error)]) -> io::Result<bool>,
     ) -> io::Result<bool> {
-        self.walk_with(segment, state, true, visit)
+        self.walk_with(segment, state, true, None, visit)
+    }
+
+    /// [`Self::walk_isolated`], each hour's tables applied apart by `spread`, which runs `job`
+    /// for each index below `count`, on any threads, every one before it returns.
+    pub(crate) fn walk_spread(
+        &mut self,
+        segment: &Segment,
+        state: &mut State,
+        spread: &Spread<'_>,
+        visit: impl FnMut(&State, &Manifest<'_>, bool, &[(usize, io::Error)]) -> io::Result<bool>,
+    ) -> io::Result<bool> {
+        self.walk_with(segment, state, true, Some(spread), visit)
     }
 
     fn walk_with<V>(
@@ -1753,6 +1913,7 @@ impl<'r> Walker<'r> {
         segment: &Segment,
         state: &mut State,
         isolate: bool,
+        spread: Option<&Spread<'_>>,
         mut visit: V,
     ) -> io::Result<bool>
     where
@@ -1762,52 +1923,130 @@ impl<'r> Walker<'r> {
         let recording = self.recording;
         let isolate = isolate && !recording.verify;
         let run = recording.run(segment.run)?;
-        let columns = engine_allocation::copy_vec(state.columns())?;
-        let kinds = schema()?;
-        let mut chain = match segment.restart {
-            Some(at) => recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)?.chain,
-            None => [0; 32],
-        };
-        let hour = |ordinal: u64| i64::from(run.first_hour) + ordinal as i64;
+        let mut chain = self.chain_before(segment)?;
         let mut first = true;
         for at in run.pages_of(segment) {
-            let page = recording.read_page(segment.run, at, &mut self.decoder, &mut self.raw)?;
-            let scope = DamageScope::Page {
-                run: page.run,
-                first: page.first,
-                hours: page.hours,
-            };
-            let damaged = |error: io::Error| Damage::wrap(scope.clone(), error);
-            // A table's own damage names its block.
-            let unit = |table: usize| {
-                page.table(table as u32)
-                    .map_or_else(|| scope.clone(), |extent| DamageScope::Extent(*extent))
-            };
-            let end = u64::from(page.first) + u64::from(page.hours);
-            if i64::from(page.first_hour) != hour(page.first.into())
-                || i64::from(page.last_hour) != hour(end - 1)
-            {
-                return Err(damaged(invalid("names hours off its ordinals")));
+            let mut page = self.open_page(
+                segment.run,
+                at,
+                segment.branch,
+                segment.last,
+                &mut chain,
+                state,
+                isolate,
+            )?;
+            while !page.done() {
+                self.page_hour(&mut page, state, isolate, spread)?;
+                if page.done() && page.whole() {
+                    self.check_page(&page, state, isolate)?;
+                }
+                let go = page.manifest(|manifest| visit(state, manifest, first, &self.lost))?;
+                // The visit's time is no part of the walk's.
+                lap(&mut page.clock);
+                if !go {
+                    self.leave(page);
+                    return Ok(false);
+                }
+                first = false;
             }
-            chain = envelope::chain_block(&chain, &page.records, &page.tables);
-            if chain != page.chain {
-                return Err(damaged(invalid("differs from its chain")));
+            self.close_page(page, state)?;
+        }
+        Ok(true)
+    }
+
+    /// The hour digest chain a walk of `segment` starts from: its restart page's, or none at
+    /// its run's start.
+    fn chain_before(&mut self, segment: &Segment) -> io::Result<[u8; 32]> {
+        Ok(match segment.restart {
+            Some(at) => {
+                self.recording
+                    .read_page(segment.run, at, &mut self.decoder, &mut self.raw)?
+                    .chain
             }
-            let mut clock = self.timed.then(Instant::now);
-            let losing = self.lost.len();
-            self.load(&page, isolate)?;
-            if self.lost.len() != losing {
-                state.skip(&skipped(recording, &self.lost))?;
+            None => [0; 32],
+        })
+    }
+
+    /// Opens page `at` of run `run` once the hours before it are applied to `state`: its hours
+    /// checked against its ordinals and its chain against `chain`, the chain through the page
+    /// before, which then holds its own; its units decoded into the arena, which the page
+    /// holds until it is closed ([`Self::close_page`]) or left ([`Self::leave`]). Its hours
+    /// read as `branch`'s, through ordinal `last` at most.
+    #[allow(clippy::too_many_arguments)]
+    fn open_page(
+        &mut self,
+        run: u32,
+        at: usize,
+        branch: u64,
+        last: u32,
+        chain: &mut [u8; 32],
+        state: &mut State,
+        isolate: bool,
+    ) -> io::Result<Page> {
+        let recording = self.recording;
+        let held = recording.run(run)?;
+        let page = recording.read_page(run, at, &mut self.decoder, &mut self.raw)?;
+        let scope = page_scope(&page);
+        let damaged = |error: io::Error| Damage::wrap(scope.clone(), error);
+        let hour = |ordinal: u64| i64::from(held.first_hour) + ordinal as i64;
+        let end = u64::from(page.first) + u64::from(page.hours);
+        if i64::from(page.first_hour) != hour(page.first.into())
+            || i64::from(page.last_hour) != hour(end - 1)
+        {
+            return Err(damaged(invalid("names hours off its ordinals")));
+        }
+        let next = envelope::chain_block(chain, &page.records, &page.tables);
+        if next != page.chain {
+            return Err(damaged(invalid("differs from its chain")));
+        }
+        *chain = next;
+        let mut clock = self.timed.then(Instant::now);
+        let losing = self.lost.len();
+        self.load(&page, isolate)?;
+        if self.lost.len() != losing {
+            state.skip(&skipped(recording, &self.lost))?;
+        }
+        self.timings.decompress_ns += lap(&mut clock);
+        let columns = engine_allocation::copy_vec(state.columns())?;
+        let kinds = schema()?;
+        let records = self.units[0]
+            .clone()
+            .ok_or_else(|| damaged(invalid("holds no hour records")))?;
+        let units = Units {
+            arena: std::mem::take(&mut self.arena),
+            at: engine_allocation::collect_vec(self.units.iter().cloned())?,
+        };
+        let lost = &mut self.lost;
+        let decoding = Decoding::try_new::<io::Error>(Arc::new(units), |units| {
+            let records = RecordsDecoder::new(&columns, &units.arena[records]).map_err(damaged)?;
+            if records.hours() != page.hours {
+                return Err(damaged(invalid("holds hour records of other hours")));
             }
-            self.timings.decompress_ns += lap(&mut clock);
-            let arena = std::mem::take(&mut self.arena);
-            let walked = (|| -> io::Result<bool> {
-                let records = self.units[0]
-                    .clone()
-                    .ok_or_else(|| damaged(invalid("holds no hour records")))?;
-                let mut records = RecordsDecoder::new(&columns, &arena[records]).map_err(damaged)?;
-                let mut manifest = Manifest {
-                    branch: segment.branch,
+            if page.hours == 0 {
+                return Err(damaged(invalid("holds no hours")));
+            }
+            let mut tables: Vec<Option<TableDecoder<'_>>> =
+                engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
+            for table in 0..TABLE_COUNT {
+                let Some(range) = units.at[table + 1].clone() else {
+                    continue;
+                };
+                match TableDecoder::new(&kinds[table][..columns[table]], &units.arena[range]) {
+                    Ok(decoder) => tables[table] = Some(decoder),
+                    Err(error) if !isolate => {
+                        return Err(Damage::wrap(unit_scope(&page, table), error));
+                    }
+                    Err(error) => {
+                        engine_allocation::reserve(lost, 1)?;
+                        lost.push((table, Damage::wrap(unit_scope(&page, table), error)));
+                        state.skip(&skipped(recording, lost))?;
+                    }
+                }
+            }
+            Ok(Decoders {
+                records,
+                manifest: Manifest {
+                    branch,
                     hour: 0,
                     flags: 0,
                     total_ns: 0,
@@ -1818,95 +2057,533 @@ impl<'r> Walker<'r> {
                     read: Vec::new(),
                     samples: Vec::new(),
                     sections: Vec::new(),
-                };
-                if records.hours() != page.hours {
-                    return Err(damaged(invalid("holds hour records of other hours")));
+                },
+                tables,
+            })
+        })?;
+        Ok(Page {
+            next: u64::from(page.first),
+            end,
+            // A segment brought earlier ends inside its last page.
+            through: end.min(u64::from(last) + 1),
+            branch,
+            index: page,
+            decoding,
+            failed: Vec::new(),
+            clock,
+        })
+    }
+
+    /// Applies `page`'s next hour to `state`, its tables apart through `spread` when given; the
+    /// page's manifest is then that hour's.
+    fn page_hour(
+        &mut self,
+        page: &mut Page,
+        state: &mut State,
+        isolate: bool,
+        spread: Option<&Spread<'_>>,
+    ) -> io::Result<()> {
+        let recording = self.recording;
+        let held = recording.run(page.index.run)?;
+        let Page {
+            index,
+            decoding,
+            next,
+            failed,
+            clock,
+            branch,
+            ..
+        } = page;
+        let scope = page_scope(index);
+        let damaged = |error: io::Error| Damage::wrap(scope.clone(), error);
+        let at = i32::try_from(i64::from(held.first_hour) + *next as i64)
+            .map_err(|_| damaged(invalid("names an hour past 2^31")))?;
+        let (lost, timings) = (&mut self.lost, &mut self.timings);
+        decoding.with_dependent_mut(|_, decoders| -> io::Result<()> {
+            let Decoders {
+                records,
+                manifest,
+                tables,
+            } = decoders;
+            records.hour(*branch, at, manifest).map_err(damaged)?;
+            for section in &manifest.sections {
+                if (recording.verify || !state.skips(section.table))
+                    && tables[section.table].is_none()
+                {
+                    return Err(damaged(invalid("names a table its block does not hold")));
                 }
-                if page.hours == 0 {
-                    return Err(damaged(invalid("holds no hours")));
-                }
-                let mut decoders: Vec<Option<TableDecoder<'_>>> = engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
-                for table in 0..TABLE_COUNT {
-                    let Some(range) = self.units[table + 1].clone() else {
-                        continue;
-                    };
-                    match TableDecoder::new(&kinds[table][..columns[table]], &arena[range]) {
-                        Ok(decoder) => decoders[table] = Some(decoder),
-                        Err(error) if !isolate => return Err(Damage::wrap(unit(table), error)),
-                        Err(error) => {
-                            engine_allocation::reserve(&mut self.lost, 1)?;
-                            self.lost.push((table, Damage::wrap(unit(table), error)));
-                            state.skip(&skipped(recording, &self.lost))?;
-                        }
-                    }
-                }
-                // Tables whose own block failed inside an hour, which an isolating walk loses.
-                let mut failed = Vec::new();
-                // A segment brought earlier ends inside its last page.
-                let through = end.min(u64::from(segment.last) + 1);
-                for ordinal in u64::from(page.first)..through {
-                    let at = i32::try_from(hour(ordinal)).map_err(|_| damaged(invalid("names an hour past 2^31")))?;
-                    records.hour(segment.branch, at, &mut manifest).map_err(damaged)?;
-                    for section in &manifest.sections {
-                        if (recording.verify || !state.skips(section.table)) && decoders[section.table].is_none() {
-                            return Err(damaged(invalid("names a table its block does not hold")));
-                        }
-                    }
-                    self.timings.manifest_ns += lap(&mut clock);
-                    let applying = engine_allocation::labels::kind(
-                        engine_allocation::labels::Kind::WalkerTables,
-                    );
-                    state
-                        .apply_block(&manifest, &mut decoders, isolate.then_some(&mut failed))
-                        .map_err(damaged)?;
-                    drop(applying);
-                    if !failed.is_empty() {
-                        engine_allocation::reserve(&mut self.lost, failed.len())?;
-                        for (table, error) in failed.drain(..) {
-                            self.lost.push((table, Damage::wrap(unit(table), error)));
-                        }
-                        state.skip(&skipped(recording, &self.lost))?;
-                    }
-                    self.timings.apply_ns += lap(&mut clock);
-                    // The page is checked whole before its last hour is handed on, so a reader
-                    // that stops there has had every check of what it read.
-                    if ordinal + 1 == end {
-                        records.finish().map_err(damaged)?;
-                        let losing = self.lost.len();
-                        for (table, decoder) in decoders.iter().enumerate() {
-                            if decoder.as_ref().is_some_and(|decoder| decoder.finish().is_err()) {
-                                let error = invalid("does not hold exactly its hours");
-                                if !isolate {
-                                    return Err(damaged(error));
-                                }
-                                // What the walk applied of a block holding more than its hours
-                                // is not to be trusted.
-                                engine_allocation::reserve(&mut self.lost, 1)?;
-                                self.lost.push((table, Damage::wrap(unit(table), error)));
-                            }
-                        }
-                        if self.lost.len() != losing {
-                            state.skip(&skipped(recording, &self.lost))?;
-                        }
-                    }
-                    if !visit(state, &manifest, first, &self.lost)? {
-                        return Ok(false);
-                    }
-                    // The visit's time is no part of the walk's.
-                    lap(&mut clock);
-                    first = false;
-                }
-                Ok(true)
-            })();
-            self.arena = arena;
-            if !walked? {
-                return Ok(false);
             }
-            if page.restart.is_some() {
-                state.freeze_dictionary()?;
+            timings.manifest_ns += lap(clock);
+            let applying =
+                engine_allocation::labels::kind(engine_allocation::labels::Kind::WalkerTables);
+            let ordered = manifest
+                .sections
+                .windows(2)
+                .all(|pair| pair[0].table < pair[1].table);
+            let failing = isolate.then_some(&mut *failed);
+            match spread.filter(|_| ordered) {
+                Some(spread) => state.apply_parts(manifest, |parts| {
+                    apply_spread(parts, tables, failing, spread)
+                }),
+                None => state.apply_block(manifest, tables, failing),
             }
-            state.trim_dictionary().map_err(damaged)?;
+            .map_err(damaged)?;
+            drop(applying);
+            if !failed.is_empty() {
+                engine_allocation::reserve(lost, failed.len())?;
+                for (table, error) in failed.drain(..) {
+                    lost.push((table, Damage::wrap(unit_scope(index, table), error)));
+                }
+                state.skip(&skipped(recording, lost))?;
+            }
+            timings.apply_ns += lap(clock);
+            Ok(())
+        })?;
+        *next += 1;
+        Ok(())
+    }
+
+    /// Checks `page` whole once its last hour is applied, before that hour is handed on, so a
+    /// reader that stops there has had every check of what it read: its units hold exactly its
+    /// hours.
+    fn check_page(&mut self, page: &Page, state: &mut State, isolate: bool) -> io::Result<()> {
+        let recording = self.recording;
+        let index = &page.index;
+        let scope = page_scope(index);
+        let damaged = |error: io::Error| Damage::wrap(scope.clone(), error);
+        let lost = &mut self.lost;
+        let checked = page.decoding.with_dependent(|_, decoders| -> io::Result<bool> {
+            decoders.records.finish().map_err(damaged)?;
+            let losing = lost.len();
+            for (table, decoder) in decoders.tables.iter().enumerate() {
+                if decoder.as_ref().is_some_and(|decoder| decoder.finish().is_err()) {
+                    let error = invalid("does not hold exactly its hours");
+                    if !isolate {
+                        return Err(damaged(error));
+                    }
+                    // What the walk applied of a block holding more than its hours is not
+                    // to be trusted.
+                    engine_allocation::reserve(lost, 1)?;
+                    lost.push((table, Damage::wrap(unit_scope(index, table), error)));
+                }
+            }
+            Ok(lost.len() != losing)
+        })?;
+        if checked {
+            state.skip(&skipped(recording, &self.lost))?;
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Closes `page` once its every hour is applied and checked ([`Self::check_page`]): its
+    /// arena goes back to the walker for the page after it.
+    fn close_page(&mut self, page: Page, state: &mut State) -> io::Result<()> {
+        let Page {
+            index, decoding, ..
+        } = page;
+        self.hand_back(decoding.into_owner());
+        if index.restart.is_some() {
+            state.freeze_dictionary()?;
+        }
+        state
+            .trim_dictionary()
+            .map_err(|error| Damage::wrap(page_scope(&index), error))
+    }
+
+    /// Gives back the arena of `page`, left before its every hour was applied.
+    fn leave(&mut self, page: Page) {
+        self.hand_back(page.decoding.into_owner());
+    }
+
+    /// Takes back a closed page's units as its arena and their places, or, while a checkpoint
+    /// shares them, holds them for the next page's chained blocks.
+    fn hand_back(&mut self, units: Arc<Units>) {
+        match Arc::try_unwrap(units) {
+            Ok(units) => {
+                // A checkpoint's page may not be the page the walker loaded last.
+                self.units = units.at;
+                self.arena = units.arena;
+                self.prior = None;
+            }
+            Err(shared) => self.prior = Some(shared),
+        }
+    }
+
+    /// Steps through `segment`'s run from the segment's first hour, once [`Self::begin`] put
+    /// what that hour applies to into `state`.
+    pub(crate) fn steps(&mut self, segment: &Segment) -> io::Result<Steps> {
+        Ok(Steps {
+            run: segment.run,
+            branch: segment.branch,
+            next: segment.first,
+            chain: self.chain_before(segment)?,
+            page: None,
+        })
+    }
+
+    /// Restores decode their tables apart on `spread`: for a walker that has the threads to
+    /// itself.
+    pub(crate) fn restore_apart(&mut self, spread: fn(usize, &(dyn Fn(usize) + Sync))) {
+        self.restore_spread = Some(spread);
+    }
+
+    /// Readies it for steps forked from a checkpoint ([`Steps::fork`]), its state shared from
+    /// the checkpoint's.
+    pub(crate) fn take_up(&mut self) -> io::Result<()> {
+        self.fit()?;
+        self.lose_withheld()?;
+        self.previous_units.fill(None);
+        self.prior = None;
+        Ok(())
+    }
+
+    /// Applies the hours of `steps` up to ordinal `until` (past the next) within its page to
+    /// `state`, each table's hours one after another apart from the others' on `spread`, each
+    /// hour of a table given to its `notes` entry by `note` once applied; then reads the last
+    /// hour by `visit`. How many hours it applied and whether every note took, none past its
+    /// run's last hour: a note failing leaves the walk whole. A page is closed before the next
+    /// page's first hour, as [`Self::walk`] closes it.
+    pub(crate) fn step_span<N: Send, T>(
+        &mut self,
+        steps: &mut Steps,
+        state: &mut State,
+        until: u32,
+        spread: &Spread<'_>,
+        notes: &mut [Option<N>],
+        note: &(dyn Fn(&mut N, &SpanPart<'_>, usize) -> io::Result<()> + Sync),
+        visit: impl FnOnce(&State, &Manifest<'_>) -> T,
+    ) -> io::Result<Option<(u32, io::Result<()>, T)>> {
+        if steps.page.as_ref().is_some_and(Page::done)
+            && let Some(page) = steps.page.take()
+        {
+            self.close_page(page, state)?;
+        }
+        let run = self.recording.run(steps.run)?;
+        if steps.next >= run.ordinals {
+            return Ok(None);
+        }
+        let mut page = match steps.page.take() {
+            Some(page) => page,
+            None => {
+                let at = run
+                    .pages
+                    .partition_point(|page| page.first <= steps.next)
+                    .checked_sub(1)
+                    .filter(|&at| run.pages[at].first == steps.next)
+                    .ok_or_else(|| invalid("A step starts inside a page it did not walk"))?;
+                // Steps walk on through their run's later segments.
+                self.open_page(steps.run, at, steps.branch, u32::MAX, &mut steps.chain, state, false)?
+            }
+        };
+        let hours = (page.through - page.next).min(u64::from(until.saturating_sub(steps.next)).max(1));
+        let noted = match self
+            .page_span(&mut page, state, hours as usize, spread, notes, note)
+            .and_then(|noted| {
+                if page.done() {
+                    self.check_page(&page, state, false)?;
+                }
+                Ok(noted)
+            }) {
+            Ok(noted) => noted,
+            Err(error) => {
+                self.leave(page);
+                return Err(error);
+            }
+        };
+        let visited = page.manifest(|manifest| visit(state, manifest));
+        steps.page = Some(page);
+        steps.next += hours as u32;
+        Ok(Some((hours as u32, noted, visited)))
+    }
+
+    /// Applies `page`'s next `hours` hours to `state` as [`Self::step_span`] does; the page's
+    /// manifest is then the last hour's. Whether every note took.
+    fn page_span<N: Send>(
+        &mut self,
+        page: &mut Page,
+        state: &mut State,
+        hours: usize,
+        spread: &Spread<'_>,
+        notes: &mut [Option<N>],
+        note: &(dyn Fn(&mut N, &SpanPart<'_>, usize) -> io::Result<()> + Sync),
+    ) -> io::Result<io::Result<()>> {
+        use std::sync::{Mutex, PoisonError};
+        let recording = self.recording;
+        let held = recording.run(page.index.run)?;
+        let Page {
+            index,
+            decoding,
+            next,
+            clock,
+            branch,
+            ..
+        } = page;
+        let scope = page_scope(index);
+        let damaged = |error: io::Error| Damage::wrap(scope.clone(), error);
+        let timings = &mut self.timings;
+        let mut noted = Ok(());
+        decoding.with_dependent_mut(|_, decoders| -> io::Result<()> {
+            let Decoders {
+                records,
+                manifest,
+                tables,
+            } = decoders;
+            let mut manifests = engine_allocation::vec(hours)?;
+            for hour in 0..hours {
+                let at = i32::try_from(i64::from(held.first_hour) + (*next + hour as u64) as i64)
+                    .map_err(|_| damaged(invalid("names an hour past 2^31")))?;
+                let mut read = manifest.clone();
+                records.hour(*branch, at, &mut read).map_err(damaged)?;
+                for section in &read.sections {
+                    if (recording.verify || !state.skips(section.table))
+                        && tables[section.table].is_none()
+                    {
+                        return Err(damaged(invalid("names a table its block does not hold")));
+                    }
+                }
+                manifests.push(read);
+            }
+            timings.manifest_ns += lap(clock);
+            let applying =
+                engine_allocation::labels::kind(engine_allocation::labels::Kind::WalkerTables);
+            state
+                .apply_span(&manifests, |parts| {
+                    let mut held =
+                        engine_allocation::collect_vec(tables.iter_mut().map(Option::as_mut))?;
+                    let mut noters =
+                        engine_allocation::collect_vec(notes.iter_mut().map(Option::as_mut))?;
+                    let mut jobs = engine_allocation::vec(parts.len())?;
+                    for part in parts.iter_mut() {
+                        let table = part.table();
+                        let decoder = held.get_mut(table).and_then(Option::take);
+                        let noter = noters.get_mut(table).and_then(Option::take);
+                        jobs.push(Mutex::new((part, decoder, noter, None)));
+                    }
+                    spread(jobs.len(), &|at| {
+                        use engine_allocation::labels::{self, Kind, Owner};
+                        let _memory = labels::enter(Owner::RUN, Kind::WalkerTables);
+                        let mut job = jobs[at].lock().unwrap_or_else(PoisonError::into_inner);
+                        let (part, decoder, noter, outcome) = &mut *job;
+                        let mut noting = Ok(());
+                        let mut walk = || -> io::Result<()> {
+                            for hour in 0..part.hours() {
+                                part.apply_hour(hour, |entry, _, truncated, table, changes| {
+                                    decoder
+                                        .as_mut()
+                                        .ok_or_else(|| {
+                                            invalid("An hour names a table its block does not hold")
+                                        })?
+                                        .hour(table, changes, entry, truncated)
+                                })?;
+                                if let Some(noter) = noter.as_mut()
+                                    && noting.is_ok()
+                                {
+                                    noting = note(noter, &**part, hour);
+                                }
+                            }
+                            Ok(())
+                        };
+                        let applied = walk();
+                        *outcome = Some((applied, noting));
+                    });
+                    for job in jobs {
+                        let (_, _, _, outcome) = job.into_inner().unwrap_or_else(PoisonError::into_inner);
+                        match outcome {
+                            Some((Ok(()), noting)) => {
+                                if noted.is_ok() {
+                                    noted = noting;
+                                }
+                            }
+                            Some((Err(error), _)) => return Err(error),
+                            None => return Err(io::Error::other("A part of a span never ran")),
+                        }
+                    }
+                    Ok(())
+                })
+                .map_err(damaged)?;
+            drop(applying);
+            if let Some(last) = manifests.pop() {
+                *manifest = last;
+            }
+            timings.apply_ns += lap(clock);
+            Ok(())
+        })?;
+        *next += hours as u64;
+        Ok(noted)
+    }
+
+    /// Ends `steps`, giving back the arena of the page they hold.
+    pub(crate) fn stop(&mut self, steps: Steps) {
+        if let Some(page) = steps.page {
+            self.leave(page);
+        }
+    }
+}
+
+/// The damage scope of `page`.
+fn page_scope(page: &IndexPage) -> DamageScope {
+    DamageScope::Page {
+        run: page.run,
+        first: page.first,
+        hours: page.hours,
+    }
+}
+
+/// The damage scope of `table`'s own block on `page`: its extent, else the page.
+fn unit_scope(page: &IndexPage, table: usize) -> DamageScope {
+    page.table(table as u32)
+        .map_or_else(|| page_scope(page), |extent| DamageScope::Extent(*extent))
+}
+
+/// A page's decoded units: the walker's arena and where each sits in it, shared by the
+/// checkpoints taken inside the page.
+struct Units {
+    arena: Vec<u8>,
+    at: Vec<Option<Range<usize>>>,
+}
+
+/// A page's decoders, each at its next hour, and the manifest of the hour applied last.
+struct Decoders<'a> {
+    records: RecordsDecoder<'a>,
+    manifest: Manifest<'a>,
+    tables: Vec<Option<TableDecoder<'a>>>,
+}
+
+impl Decoders<'_> {
+    /// The decoders where they stand, over `to`, a copy of `from`, which they read.
+    fn rebased<'b>(&self, from: &[u8], to: &'b [u8]) -> io::Result<Decoders<'b>> {
+        let mut tables = engine_allocation::vec(self.tables.len())?;
+        for decoder in &self.tables {
+            tables.push(decoder.as_ref().map(|decoder| decoder.rebased(from, to)).transpose()?);
+        }
+        Ok(Decoders {
+            records: self.records.rebased(from, to)?,
+            manifest: Manifest {
+                branch: self.manifest.branch,
+                hour: 0,
+                flags: 0,
+                total_ns: 0,
+                pool_bytes: 0,
+                dropped_frames: 0,
+                appends: Vec::new(),
+                statuses: Vec::new(),
+                read: Vec::new(),
+                samples: Vec::new(),
+                sections: Vec::new(),
+            },
+            tables,
+        })
+    }
+}
+
+self_cell::self_cell!(
+    struct Decoding {
+        owner: Arc<Units>,
+        #[not_covariant]
+        dependent: Decoders,
+    }
+);
+
+/// A page under way: its decoders over its units, and the ordinal they apply next.
+struct Page {
+    index: IndexPage,
+    decoding: Decoding,
+    next: u64,
+    end: u64,
+    /// Past the last ordinal its walk applies: `end`, unless its segment ends inside it.
+    through: u64,
+    /// The branch its hours are read as.
+    branch: u64,
+    /// The tables whose block failed inside an hour, which an isolating walk loses.
+    failed: Vec<(usize, io::Error)>,
+    clock: Option<Instant>,
+}
+
+impl Page {
+    fn done(&self) -> bool {
+        self.next == self.through
+    }
+
+    /// Whether its walk applies its every hour.
+    fn whole(&self) -> bool {
+        self.through == self.end
+    }
+
+    /// `read` of the manifest of the hour applied last.
+    fn manifest<T>(&self, read: impl FnOnce(&Manifest<'_>) -> T) -> T {
+        self.decoding
+            .with_dependent(|_, decoders| read(&decoders.manifest))
+    }
+
+    /// A copy where it stands, its decoders over the same units.
+    fn fork(&self) -> io::Result<Self> {
+        let units = Arc::clone(self.decoding.borrow_owner());
+        let decoding = self.decoding.with_dependent(|from, decoders| {
+            Decoding::try_new::<io::Error>(units, |to| decoders.rebased(&from.arena, &to.arena))
+        })?;
+        Ok(Self {
+            index: self.index.clone(),
+            decoding,
+            next: self.next,
+            end: self.end,
+            through: self.through,
+            branch: self.branch,
+            failed: Vec::new(),
+            clock: None,
+        })
+    }
+}
+
+/// A walk of one run going on hour by hour as it is asked ([`Walker::step`]): the ordinal it
+/// applies next, the hour digest chain through its pages so far, and the page under way.
+pub(crate) struct Steps {
+    run: u32,
+    /// The branch its hours are read as.
+    branch: u64,
+    next: u32,
+    chain: [u8; 32],
+    page: Option<Page>,
+}
+
+impl Steps {
+    /// The ordinal applied next.
+    pub(crate) fn next(&self) -> u32 {
+        self.next
+    }
+
+    /// A copy where it stands, sharing the units of the page under way, for a walk to go on
+    /// from later ([`Walker::take_up`]); none between pages, where the page before is not held.
+    pub(crate) fn fork(&self) -> io::Result<Option<Self>> {
+        let Some(page) = &self.page else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            run: self.run,
+            branch: self.branch,
+            next: self.next,
+            chain: self.chain,
+            page: Some(page.fork()?),
+        }))
+    }
+
+    /// The bytes its decoders hold of their own, the units they read aside.
+    pub(crate) fn decoder_bytes(&self) -> usize {
+        self.page.as_ref().map_or(0, |page| {
+            page.decoding.with_dependent(|_, decoders| {
+                decoders.records.held_bytes()
+                    + decoders
+                        .tables
+                        .iter()
+                        .flatten()
+                        .map(TableDecoder::held_bytes)
+                        .sum::<usize>()
+            })
+        })
+    }
+
+    /// The units of the page under way, by their place in memory, and the bytes they hold.
+    pub(crate) fn units(&self) -> Option<(usize, usize)> {
+        let units = self.page.as_ref()?.decoding.borrow_owner();
+        Some((Arc::as_ptr(units) as usize, units.arena.capacity()))
     }
 }

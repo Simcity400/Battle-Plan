@@ -1,4 +1,5 @@
-//! Work a family's emit shares with the run's workers waiting idle ([`share`]).
+//! Work a family's emit, or its operator's hour, shares with the run's workers waiting idle
+//! ([`share`]).
 
 use super::crew::{Board, Joined};
 use engine_allocation::labels;
@@ -7,14 +8,20 @@ use std::{
     cell::{Cell, OnceCell},
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     ptr::NonNull,
-    sync::{Mutex, PoisonError},
+    sync::{
+        Mutex, PoisonError,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Instant,
 };
 
-/// An emit's board, and its crew once it first shares.
+/// An emit's or an operator's hour's board, and its crew once it first shares.
 pub(super) struct Sharing<'b> {
     board: &'b Board,
     at: usize,
     crew: OnceCell<Option<Joined<'b>>>,
+    /// Nanoseconds other workers spent on what it shared.
+    helped: Cell<u64>,
 }
 
 thread_local! {
@@ -38,7 +45,13 @@ impl<'b> Sharing<'b> {
             board,
             at,
             crew: OnceCell::new(),
+            helped: Cell::new(0),
         }
+    }
+
+    /// Nanoseconds other workers spent on what it shared.
+    pub(super) fn helped(&self) -> u64 {
+        self.helped.get()
     }
 
     /// Runs `emit` on this thread, its shares going to this board.
@@ -73,28 +86,39 @@ pub fn share(count: usize, job: &(dyn Fn(usize) + Sync)) {
     let taken = SHARING.with(Cell::take);
     let _restored = Restore(taken);
     // SAFETY: as in `ways`; taken meanwhile, so a share inside one runs where it is.
-    let crew = taken
+    let sharing = taken
         .filter(|_| count > 1)
-        .and_then(|sharing| unsafe { sharing.as_ref() }.crew());
-    let Some(crew) = crew else {
+        .map(|sharing| unsafe { sharing.as_ref() });
+    let Some((sharing, crew)) = sharing.and_then(|sharing| Some((sharing, sharing.crew()?)))
+    else {
         for index in 0..count {
             job(index);
         }
         return;
     };
     let label = labels::current();
+    let room = engine_allocation::spill::room();
     let cpu = replay_frame::cpu::Context::capture();
     let panicked: Mutex<Option<Box<dyn Any + Send>>> = Mutex::new(None);
+    let (sharer, elsewhere) = (std::thread::current().id(), AtomicU64::new(0));
     crew.hour(count, count, &|index| {
         let _memory = labels::resume(label);
+        let _room = engine_allocation::spill::enter(room.clone());
         let _cpu = cpu.clone().enter("shared");
+        let began = (std::thread::current().id() != sharer).then(Instant::now);
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| job(index))) {
             panicked
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .get_or_insert(payload);
         }
+        if let Some(began) = began {
+            let spent = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            elsewhere.fetch_add(spent, Ordering::Relaxed);
+        }
     });
+    let helped = sharing.helped.get().saturating_add(elsewhere.into_inner());
+    sharing.helped.set(helped);
     if let Some(payload) = panicked
         .into_inner()
         .unwrap_or_else(PoisonError::into_inner)

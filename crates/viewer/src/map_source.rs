@@ -1,82 +1,101 @@
-//! The map's hours from a recording's change-run index: frames of the map tables moved to and
-//! built at any hour.
+//! The map's hours from a replay's recording: frames of the map tables moved to and built at
+//! any hour, read from the recording's runs in place.
 
 use crate::playback::Current;
 use replay::{
-    columnar_runs::{IndexFile, Snapshots},
     campaign::{Parallel, Replay},
+    columnar_frames::Pool,
+    columnar_natives::{Costs, Cursor, Natives},
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, TableView};
-use std::{io, sync::Arc};
+use std::{
+    io,
+    sync::{Arc, OnceLock},
+};
 
-/// A change-run index of a replay's native columnar recordings, holding exactly the hours the
-/// replay records but those of its sessions still being recorded, and every map table, shared
-/// by every playback serving the replay's map.
+/// The threads the map's background reads work on, below normal priority from their start, so
+/// none competes with a frame the user waits for.
+static BACKGROUND: OnceLock<Arc<Pool>> = OnceLock::new();
+
+fn background() -> io::Result<Arc<Pool>> {
+    if let Some(pool) = BACKGROUND.get() {
+        return Ok(Arc::clone(pool));
+    }
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let pool = Arc::new(Pool::new(
+        threads,
+        "map background",
+        viewer_foundation::worker_priority::background_priority,
+    )?);
+    Ok(Arc::clone(BACKGROUND.get_or_init(|| pool)))
+}
+
+/// A replay's recording, its runs placed for reading in place, shared by every playback serving
+/// the replay's map.
 pub struct Columnar {
-    file: Arc<IndexFile>,
+    natives: Arc<Natives>,
 }
 
 impl Columnar {
-    /// `file` as `replay`'s map source; none when it is of another campaign, does not hold
-    /// exactly the hours the recording holds now, or lacks a map table.
-    pub fn verify(replay: &Replay, file: Arc<IndexFile>) -> Option<Arc<Self>> {
-        (file.records(replay) && file.holds(dashboard_base::map_tables::selected_tables()))
-            .then(|| Arc::new(Self { file }))
+    pub fn new(natives: Arc<Natives>) -> Self {
+        Self { natives }
     }
 
-    /// A playback's source of `replay`'s map, its views carrying change facts, moving and
-    /// building views on `workers` threads.
+    /// A playback's source of `replay`'s map, its views carrying change facts, building views
+    /// on `workers` threads.
     pub fn open(&self, replay: Arc<Replay>, workers: usize) -> io::Result<MapSource> {
-        let snapshots = Snapshots::new(
-            Arc::clone(&self.file),
+        let cursor = Cursor::new(
+            Arc::clone(&self.natives),
             dashboard_base::map_tables::selected_tables(),
             replay.format,
             replay.capture_mode,
-            workers,
         )?
-        .with_change_facts();
+        .with_change_facts()
+        .with_costs(Costs {
+            // Scrubbing back takes up the map's checkpoints.
+            checkpoints: true,
+            ..Costs::default()
+        });
         Ok(MapSource {
-            snapshots,
+            cursor,
             replay,
             workers: workers.max(1),
         })
     }
 }
 
-/// One playback's map hours from a [`Columnar`] index.
+/// One playback's map hours from a [`Columnar`] source.
 pub struct MapSource {
-    snapshots: Snapshots,
+    cursor: Cursor,
     replay: Arc<Replay>,
     workers: usize,
 }
 
 impl MapSource {
-    pub fn roster_source(&self) -> Arc<IndexFile> {
-        Arc::clone(self.snapshots.file())
+    pub fn roster_source(&self) -> Arc<Natives> {
+        Arc::clone(self.cursor.natives())
     }
 
     pub fn set_workers(&mut self, workers: usize) {
         self.workers = workers.max(1);
-        self.snapshots.set_workers(self.workers);
     }
 
-    /// The hour a read of `hour` of `branch` starts from: the hour itself, which no walk
-    /// precedes; none outside every run.
+    /// The hour a read of `hour` of `branch` starts from: the hour itself, which no walk of the
+    /// caller's precedes; none outside every run.
     pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
         let segment = self.replay.segment_at(branch, hour)?;
-        self.snapshots
-            .file()
-            .index
+        self.cursor
+            .natives()
             .find(segment, hour)
             .map(|_| i64::from(hour))
     }
 
     /// `hour` of `branch`: with `materialize`, its frame; without, the move taken there and no
     /// frame built. It builds no other hour: the hours before it that a window lacks are read
-    /// as hours of their own, after it, and the cursor moves on from whichever it read last.
-    /// An hour no run holds is the replay's gap there. Cancellation leaves the source to be
-    /// asked again; damage is the hour's gap.
+    /// as hours of their own, after it, and the cursor walks on from whichever it read last.
+    /// An hour no run holds is the replay's gap there. Cancellation leaves the source where its
+    /// walk stopped, to be asked again; damage is the hour's gap.
     pub fn read(
         &mut self,
         branch: BranchId,
@@ -85,11 +104,9 @@ impl MapSource {
         cancelled: &dyn Fn() -> bool,
     ) -> io::Result<Current> {
         let priority = viewer_foundation::worker_priority::current_priority();
-        let on_worker = move || {
-            if priority.is_some_and(|priority| priority < 0) {
-                viewer_foundation::worker_priority::background_priority();
-            }
-        };
+        let behind = priority.is_some_and(|priority| priority < 0);
+        self.cursor.set_pool(if behind { Some(background()?) } else { None });
+        let on_worker = || {};
         let parallel = Parallel {
             workers: self.workers,
             on_worker: &on_worker,
@@ -102,17 +119,14 @@ impl MapSource {
         let Some(segment) = self
             .replay
             .segment_at(branch, hour)
-            .filter(|segment| self.snapshots.file().index.find(*segment, hour).is_some())
+            .filter(|segment| self.cursor.natives().find(*segment, hour).is_some())
         else {
             return Ok(gap(crate::playback::gap_reason(&self.replay, branch, hour)));
         };
         let read = (|| -> io::Result<Option<DecodedFrame>> {
-            if cancelled() {
-                return Err(io::ErrorKind::Interrupted.into());
-            }
-            self.snapshots.move_to_segment(segment, branch, hour, &on_worker)?;
+            self.cursor.move_to(segment, branch, hour, cancelled)?;
             materialize
-                .then(|| self.snapshots.build(Some(&parallel)))
+                .then(|| self.cursor.build(Some(&parallel)))
                 .transpose()
         })();
         match read {
@@ -124,7 +138,7 @@ impl MapSource {
             )),
             Ok(None) => Ok(gap("hour has not been decoded".into())),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => Err(error),
-            Err(error) => Ok(gap(format!("unreadable change-run hour: {error}"))),
+            Err(error) => Ok(gap(format!("unreadable hour: {error}"))),
         }
     }
 }

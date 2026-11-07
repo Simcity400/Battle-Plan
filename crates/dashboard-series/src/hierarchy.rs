@@ -28,6 +28,8 @@ pub(crate) struct Built {
     /// The run each held entry with a run continues, by key; None for a node a resumed writer
     /// reads back, whose held runs are read from the segments that began them.
     pub held: Option<Vec<HeldRun>>,
+    /// Its pages are held: once let go ([`Self::let_go`]), they are read back when it merges.
+    pub paged: bool,
 }
 
 /// The value and scale of the run a held entry continues.
@@ -49,7 +51,29 @@ impl Built {
             metadata: listed(io, reader, node.metadata.list)?,
             node,
             held: None,
+            paged: true,
         })
+    }
+
+    /// Lets go of its pages, which it reads back when it merges ([`Self::page_in`]); its held
+    /// runs stay, which would be read from the segments that began them.
+    pub(crate) fn let_go(&mut self) {
+        self.entries = Vec::new();
+        self.domains = Vec::new();
+        self.late = Vec::new();
+        self.metadata = Vec::new();
+        self.paged = false;
+    }
+
+    /// Reads back the pages [`Self::let_go`] let go.
+    fn page_in(&mut self, io: &mut impl PageRead, reader: &mut Reader) -> io::Result<()> {
+        let node = Arc::clone(&self.node);
+        self.entries = listed(io, reader, node.entries.list)?;
+        self.domains = listed(io, reader, node.domains.list)?;
+        self.late = listed(io, reader, node.late.list)?;
+        self.metadata = listed(io, reader, node.metadata.list)?;
+        self.paged = true;
+        Ok(())
     }
 }
 
@@ -98,14 +122,18 @@ pub(crate) fn settle(
             return Ok(());
         }
         for index in at..nodes.len() {
-            if built[index].is_none() {
-                if reader.is_none() {
-                    reader = Some(Reader::frontier(nodes)?);
-                }
-                let reader = reader
-                    .as_mut()
-                    .ok_or_else(|| invalid("series frontier reader"))?;
-                built[index] = Some(Built::load(io, reader, nodes[index])?);
+            if built[index].as_ref().is_some_and(|built| built.paged) {
+                continue;
+            }
+            if reader.is_none() {
+                reader = Some(Reader::frontier(nodes)?);
+            }
+            let reader = reader
+                .as_mut()
+                .ok_or_else(|| invalid("series frontier reader"))?;
+            match &mut built[index] {
+                Some(kept) => kept.page_in(io, reader)?,
+                None => built[index] = Some(Built::load(io, reader, nodes[index])?),
             }
         }
         let (node, merged) = merge(io, &mut reader, &nodes[at..], &built[at..])?;
@@ -566,6 +594,7 @@ fn merge(
             late: late_pages,
             metadata: metadata_pages,
             held: Some(held),
+            paged: true,
         },
     ))
 }

@@ -244,7 +244,7 @@ fn balances_without_the_tables_refuse_by_name() {
 }
 
 #[test]
-fn a_table_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
+fn a_table_left_to_the_native_capture_is_read_from_its_recording_never_refused_as_unrecorded() {
     use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records, source};
     use replay::campaign::Replay;
     use replay_data::scope::CaptureMode;
@@ -263,7 +263,7 @@ fn a_table_left_to_the_native_capture_is_read_from_its_index_never_refused_as_un
         std::fs::remove_dir_all(root).ok();
         reply
     };
-    // A row frame's own refusal stands, read without the index.
+    // A row frame's own refusal stands, read without the native recording.
     let row = load(source(1, 1, Some(1))).unwrap();
     assert_eq!(row.unavailable[0].label, "exile status");
     let mut cut = source(1, 1, Some(1));
@@ -275,6 +275,6 @@ fn a_table_left_to_the_native_capture_is_read_from_its_index_never_refused_as_un
     }
     assert_eq!(
         load(cut).unwrap_err().to_string(),
-        "The recording holds [CountryStabilityInputs] in its native capture, whose change-run index is not prepared yet"
+        "session 1 is still being recorded: its hours are read once its native recording lands"
     );
 }

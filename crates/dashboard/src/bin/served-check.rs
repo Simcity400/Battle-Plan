@@ -31,7 +31,7 @@ mod process;
 mod shader_compiler;
 
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 const USAGE: &str =
     "served-check record --families all|F1,F2,... --recording R --store S --work W --out-dir D [--columnar C] [--threads N]
@@ -260,7 +260,7 @@ fn record_family(
     branches: &[dashboard_base::prepared::served::Branch],
     shader_compiler: &'static str,
 ) -> Recorded {
-    let _returned = dashboard::allocator::ReturnFreed;
+    let _returned = engine_heap::ReturnFreed;
     let started = Instant::now();
     let mut summary = Recorded {
         shader_compiler,
@@ -594,7 +594,7 @@ fn run() -> io::Result<bool> {
 }
 
 fn main() -> ExitCode {
-    dashboard::allocator::return_freed_memory_promptly();
+    engine_heap::return_freed_memory_promptly();
     match run() {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(1),

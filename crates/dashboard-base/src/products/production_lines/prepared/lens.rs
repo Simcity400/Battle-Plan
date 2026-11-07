@@ -602,6 +602,7 @@ impl Lenses {
             let mut state = CountryState {
                 last_output_due: self.output_due,
                 marking: Some(Box::new(Marking::started())),
+                events: record::Record::journal(),
                 ..CountryState::new()
             };
             state.observe_input(input, Some(Country::Found(slot, id)), &mut ctx)?;
@@ -643,6 +644,7 @@ impl Lenses {
             });
             // What it held before rolls over: a history's own chunk holds the census.
             state.take_events(true, &mut ctx)?;
+            state.events.forget_taken();
             state.counters = index::Counters::default();
             if let Some(marking) = &mut state.marking {
                 marking.at_start = false;
@@ -684,9 +686,24 @@ impl Lenses {
         let mut ctx = Ctx::new(&mut self.pages, &mut self.trees, 1);
         let countries = input.countries.is_some();
         let mut held = 0_usize;
+        super::super::columnar::FLOOR.add(6, 1);
+        super::super::columnar::FLOOR.add(7, self.lenses.iter().filter(|lens| lens.live).count() as u64);
         for lens in self.lenses.iter_mut().filter(|lens| lens.live) {
             let (slot, id) = lens.identity;
             let selected = countries.then_some(Country::Found(slot, id));
+            // A country with no line held or listed folds only what every country does.
+            let idle = input.lines_read
+                && lens.state.open.is_empty()
+                && lens.state.broken.is_empty()
+                && !input.lines.contains_key(&slot);
+            if idle {
+                super::super::columnar::FLOOR.add(14, 1);
+            }
+            let _cpu = replay_frame::cpu::scope_phase(if idle {
+                "production-lines:lens_idle"
+            } else {
+                "production-lines:lens_lines"
+            });
             lens.state.observe_input(input, selected, &mut ctx)?;
             held = held.saturating_add(lens.state.pending_bytes());
         }
@@ -701,6 +718,8 @@ impl Lenses {
         };
         let mut ctx = Ctx::new(&mut self.pages, &mut self.trees, 1);
         let mut held = 0_usize;
+        super::super::columnar::FLOOR.add(6, 1);
+        super::super::columnar::FLOOR.add(7, self.lenses.iter().filter(|lens| lens.live).count() as u64);
         for lens in self.lenses.iter_mut().filter(|lens| lens.live) {
             let (slot, id) = lens.identity;
             let selected = span.countries.then_some(Country::Found(slot, id));
@@ -711,18 +730,16 @@ impl Lenses {
         Ok(())
     }
 
-    /// Ends each live lens's piece: its parts, versions and conditions, and what it goes on
-    /// with from the next.
+    /// Ends each live lens's chunk: journals its cut, what it goes on with from the next, and
+    /// its piece's conditions, of which the emit makes the piece.
     fn roll(&mut self) -> io::Result<Flush> {
         let mut ctx = Ctx::new(&mut self.pages, &mut self.trees, 1);
-        let mut flush = Flush::default();
-        for (index, lens) in self.lenses.iter_mut().enumerate() {
+        for lens in self.lenses.iter_mut() {
             if !lens.live {
                 continue;
             }
-            let lens_index = index as u32;
             lens.state.materialize();
-            let events = lens.state.take_events(true, &mut ctx)?;
+            lens.state.take_events(true, &mut ctx)?;
             let marking = lens
                 .state
                 .marking
@@ -731,24 +748,30 @@ impl Lenses {
             let marks = std::mem::take(&mut marking.marks);
             let conds = std::mem::take(&mut marking.conds);
             let handles = std::mem::take(&mut marking.handles).into_iter().collect();
-            let id = lens_id(lens_index);
-            let mut parts = index::encode_history(id, &events)?;
-            parts.push(index::encode_part(id, index::Part::Marks, 0, &marks)?);
-            flush.pieces.push(Piece {
-                lens: lens_index,
-                parts: parts
-                    .into_iter()
-                    .map(|part| (part.part as u32, part.key, part.bytes))
-                    .collect(),
-                versions: events.versions,
-                conds,
-                handles,
-            });
+            lens.state.events.piece(marks, conds, handles);
         }
         self.sent = 0;
         // Each live lens's events went with its piece.
         self.held = 0;
-        Ok(flush)
+        Ok(Flush::default())
+    }
+
+    /// What each lens journaled since last asked, encoded, in lens order: the emit makes their
+    /// chunks again from it, before the flush that ends them.
+    pub(in crate::products::production_lines) fn take_ops(&mut self) -> io::Result<Option<Vec<u8>>> {
+        let ops: Vec<(u32, Vec<record::Op>)> = self
+            .lenses
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, lens)| {
+                let ops = lens.state.events.take_ops();
+                (!ops.is_empty()).then_some((index as u32, ops))
+            })
+            .collect();
+        if ops.is_empty() {
+            return Ok(None);
+        }
+        index::pack(&ops).map(Some)
     }
 
     fn snapshot(&self, lens: u32) -> io::Result<Snapshot> {
@@ -764,6 +787,29 @@ impl Lenses {
                 .collect(),
         })
     }
+}
+
+/// Lens `lens`'s piece of the chunk `events` held, with what its binding resolves.
+pub(super) fn piece(
+    lens: u32,
+    events: Events,
+    marks: index::Marks,
+    conds: Vec<(u32, u8, u64, u32)>,
+    handles: Vec<u64>,
+) -> io::Result<Piece> {
+    let id = lens_id(lens);
+    let mut parts = index::encode_history(id, &events)?;
+    parts.push(index::encode_part(id, index::Part::Marks, 0, &marks)?);
+    Ok(Piece {
+        lens,
+        parts: parts
+            .into_iter()
+            .map(|part| (part.part as u32, part.key, part.bytes))
+            .collect(),
+        versions: events.versions,
+        conds,
+        handles,
+    })
 }
 
 /// A history reading a lens: how the lens's ids read as its own, and the history's last
@@ -1160,7 +1206,7 @@ impl Bound {
                 state.dirty.organisations.insert(id);
             }
         }
-        state.events = Events::default();
+        state.events = record::Record::default();
         state.last = core.last;
         state.open = open;
         state.carried = core.carried;

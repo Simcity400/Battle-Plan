@@ -176,6 +176,8 @@ def toml_list(items):
 
 def third_party_spec(name, version, features):
     package = f'package = "{name}", ' if name else ""
+    # Cargo ignores, and warns of, build metadata in a requirement.
+    version = version.split("+")[0]
     return f'{{ {package}version = "{version}", default-features = false, features = {toml_list(features)} }}'
 
 

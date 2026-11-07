@@ -19,7 +19,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 dashboard.workspace = true
 shader-pipeline = { path = "../shader-pipeline" }
-mimalloc.workspace = true
+engine-heap.workspace = true
 rfd.workspace = true
 tokio = { version = "1", features = ["sync"] }
 # Controllers through Windows.Gaming.Input: Xbox, PlayStation and other gamepads.

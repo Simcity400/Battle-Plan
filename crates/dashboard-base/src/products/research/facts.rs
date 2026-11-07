@@ -1375,6 +1375,10 @@ impl Projector {
             self.inventories.insert(owner, (changed, Arc::clone(&rows)));
             return Ok(Inventory::Owner(rows));
         }
+        // Whole inventories serve only the segment's first hours.
+        if !self.inventories.is_empty() {
+            self.inventories = HashMap::new();
+        }
         let mut covered: BTreeSet<u32> = occurrences(inputs).collect();
         for (hour, held) in self.seen.get(&slot).into_iter().flatten() {
             if *hour >= at.saturating_sub(REACH) {

@@ -88,7 +88,7 @@ pub(super) fn series(
             }
         }
         let runs = accumulator
-            .pending_runs(0)
+            .pending_runs(0)?
             .iter()
             .map(|run| {
                 (

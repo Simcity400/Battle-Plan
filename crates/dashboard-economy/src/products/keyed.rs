@@ -98,7 +98,6 @@ pub const EDIT_MARGIN: usize = 32;
 ))]
 pub struct Keyed<F, X> {
     pub values: Accumulator,
-    keys: BTreeMap<String, u64>,
     pub meta: Metadata<F, X>,
     last: Option<i32>,
     /// `meta.fields` inverted; rebuilt after a restore.
@@ -116,7 +115,6 @@ impl<F, X: Default> Default for Keyed<F, X> {
     fn default() -> Self {
         Self {
             values: Accumulator::default(),
-            keys: BTreeMap::new(),
             meta: Metadata {
                 fields: BTreeMap::new(),
                 tags: BTreeMap::new(),
@@ -148,17 +146,20 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
             return key;
         }
         let name = serde_json::to_string(&field).expect("field keys serialize");
-        let key = self.keys.len() as u64;
+        let key = self.meta.fields.len() as u64;
         self.changed += 2 * name.len() + 20 + EDIT_MARGIN;
-        self.keys.insert(name, key);
         self.meta.fields.insert(key, field.clone());
         self.index.insert(field, key);
         key
     }
 
-    #[cfg(test)]
-    pub fn keys(&self) -> &BTreeMap<String, u64> {
-        &self.keys
+    /// Each key by its published name: its field's text.
+    pub fn keys(&self) -> io::Result<BTreeMap<String, u64>> {
+        self.meta
+            .fields
+            .iter()
+            .map(|(&key, field)| Ok((serde_json::to_string(field)?, key)))
+            .collect()
     }
 
     /// The field's key, without giving one.
@@ -282,7 +283,7 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
     ) -> io::Result<()> {
         self.values
             .flush(writer, &values_section(family, branch), 0, cancelled)?;
-        series::write_catalogue(writer, family, branch, &self.keys, &self.meta)
+        series::write_catalogue(writer, family, branch, &self.keys()?, &self.meta)
             .map_err(structural)?;
         self.published();
         Ok(())
@@ -317,7 +318,7 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
             extra,
         };
         catalogue
-            .write(&mut BaseWatch { writer, base }, family, branch, &self.keys, &meta)
+            .write(&mut BaseWatch { writer, base }, family, branch, &self.keys()?, &meta)
             .map_err(structural)
     }
 
@@ -326,11 +327,6 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
         self.refused.clear();
     }
 
-    /// Bytes the key catalogue and index hold, roughly.
-    pub fn catalogue_bytes(&self) -> usize {
-        self.keys.keys().map(|name| name.len() + 64).sum::<usize>()
-            + self.meta.fields.len() * (2 * size_of::<F>() + 96)
-    }
 }
 
 /// A malformed stored catalogue ends the run rather than refusing the family.

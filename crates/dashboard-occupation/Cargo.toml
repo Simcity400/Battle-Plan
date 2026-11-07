@@ -31,7 +31,7 @@ serde_json.workspace = true
 ts-rs = "11.1"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 installed-content-gfx.workspace = true
 installed-content-image.workspace = true
 installed-content-localisation.workspace = true

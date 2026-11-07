@@ -2,15 +2,17 @@
 //! every country from the segment's first hour, each from what the restart before it held of the
 //! amounts it keeps ([`Seen`]); its totals, read version and spans count from nothing, and what
 //! it read before the segment is left for the emit. With the first hour it hands the emit what
-//! it began each country from ([`Begun`]); at the segment's end, or where it stops short (a gap,
-//! another campaign's hour, a refusal), what each country made of the hours it folded
-//! ([`Given`]).
+//! it began each country from ([`Begun`]); with each later hour, the leaves, changes, first reads
+//! and read versions each country made of that hour ([`Moved`]), keeping none of them; at
+//! the segment's end, or where it stops short (a gap, another campaign's hour, a refusal), the
+//! rest of what each country made of the hours it folded ([`Given`]).
 //!
 //! The emit binds each country whose state is the one the lens began it from
-//! ([`Prepared::bind`]) and folds the others itself. At the hand-over it adds each bound
-//! country's carried totals, read version and spans once ([`Prepared::splice`]), numbers the
-//! keys the segment made, and mends the first reads of amounts the country kept from before the
-//! segment that the restart no longer held ([`Fresh`]). Ships are the emit's own throughout.
+//! ([`Prepared::bind`]) and folds the others itself. As each bound country's moves come it adds
+//! its carried totals and read version to them, numbers the keys they made, and mends the first
+//! reads of amounts the country kept from before the segment that the restart no longer held
+//! ([`Fresh`]); at the hand-over it takes up the rest ([`Prepared::splice`]). Ships are the
+//! emit's own throughout.
 
 use super::*;
 use dashboard_world::Roster;
@@ -155,83 +157,34 @@ pub(crate) struct Prior {
     pub(super) read: bool,
 }
 
-/// A leaf a lens's country changed: its hour made, its total and its changes, from nothing.
+/// What a lens's country made of the hours since it last handed them on: the leaves it made,
+/// in the order made, with their hours; each change of a leaf's total from nothing, in hour
+/// order; its first reads of amounts it held none of; and the hours its read version went up,
+/// with its first read once made.
+#[derive(Default, replay_spool::Spooled)]
+pub(crate) struct Moving {
+    pub(super) identity: Identity,
+    pub(super) leaves: Vec<(LeafKey, i32)>,
+    pub(super) changes: Vec<(LeafKey, i32, i128)>,
+    pub(super) fresh: Vec<Fresh>,
+    pub(super) versions: Vec<i32>,
+    pub(super) first_read: Option<(i32, String)>,
+}
+
+impl Moving {
+    fn is_empty(&self) -> bool {
+        self.leaves.is_empty()
+            && self.changes.is_empty()
+            && self.fresh.is_empty()
+            && self.versions.is_empty()
+            && self.first_read.is_none()
+    }
+}
+
+/// What a lens hands on of every country after an hour it folded.
 #[derive(replay_spool::Spooled)]
-pub(crate) struct Leaf {
-    pub(super) leaf: LeafKey,
-    pub(super) made: i32,
-    pub(super) total: i128,
-    pub(super) changes: Changes,
-}
-
-/// A leaf's totals at the hours that changed it, ascending, each kept as its hour's and total's
-/// differences from the change before, zigzagged and in variable-length bytes.
-#[derive(Clone, Default, replay_spool::Spooled)]
-pub(crate) struct Changes {
-    bytes: Vec<u8>,
-    last: (i32, i128),
-}
-
-fn put_varint(bytes: &mut Vec<u8>, mut value: u128) {
-    while value >= 0x80 {
-        bytes.push(value as u8 | 0x80);
-        value >>= 7;
-    }
-    bytes.push(value as u8);
-}
-
-fn take_varint(bytes: &[u8], at: &mut usize) -> u128 {
-    let mut value = 0_u128;
-    let mut shift = 0;
-    while let Some(&byte) = bytes.get(*at) {
-        *at += 1;
-        if shift < 128 {
-            value |= u128::from(byte & 0x7f) << shift;
-        }
-        if byte < 0x80 {
-            break;
-        }
-        shift += 7;
-    }
-    value
-}
-
-impl Changes {
-    /// The total `total` from `hour`, past every change it holds.
-    pub(super) fn push(&mut self, hour: i32, total: i128) {
-        let (last_hour, last_total) = self.last;
-        let step = i64::from(hour) - i64::from(last_hour);
-        put_varint(&mut self.bytes, u128::from((step << 1 ^ step >> 63) as u64));
-        let delta = total.wrapping_sub(last_total);
-        put_varint(&mut self.bytes, (delta << 1 ^ delta >> 127) as u128);
-        self.last = (hour, total);
-    }
-
-    pub(super) fn iter(&self) -> impl Iterator<Item = (i32, i128)> + '_ {
-        let (mut at, mut hour, mut total) = (0, 0_i64, 0_i128);
-        std::iter::from_fn(move || {
-            if at >= self.bytes.len() {
-                return None;
-            }
-            let step = take_varint(&self.bytes, &mut at) as u64;
-            hour += (step >> 1) as i64 ^ -((step & 1) as i64);
-            let delta = take_varint(&self.bytes, &mut at);
-            total = total.wrapping_add((delta >> 1) as i128 ^ -((delta & 1) as i128));
-            Some((hour as i32, total))
-        })
-    }
-
-    /// Lets go of every change after hour `last`.
-    fn through(&mut self, last: i32) {
-        if self.last.0 <= last {
-            return;
-        }
-        let mut kept = Self::default();
-        for (hour, total) in self.iter().take_while(|&(hour, _)| hour <= last) {
-            kept.push(hour, total);
-        }
-        *self = kept;
-    }
+pub(crate) struct Moved {
+    pub(super) countries: Vec<Moving>,
 }
 
 /// What a lens's country made of the hours it folded.
@@ -246,13 +199,12 @@ pub(crate) struct Given {
     pub(super) exchanges: Vec<(u32, i32, Vec<(u8, u32)>)>,
     pub(super) exchanges_read: Option<i32>,
     pub(super) withheld: Option<String>,
-    pub(super) leaves: Vec<Leaf>,
-    /// The hours its read version went up, and its first read with its hour.
-    pub(super) versions: Vec<i32>,
-    pub(super) first_read: Option<(i32, String)>,
+    /// What it made since it last handed its hours on.
+    pub(super) rest: Moving,
+    /// Each leaf it made, in the order made, with its total.
+    pub(super) totals: Vec<(LeafKey, i128)>,
     pub(super) last_read: Option<String>,
     pub(super) read_key: Option<(Option<Coverage>, Option<String>, u8)>,
-    pub(super) fresh: Vec<Fresh>,
     pub(super) prior: Vec<Prior>,
     pub(super) variants: Vec<u32>,
 }
@@ -267,6 +219,7 @@ pub(crate) struct Part {
 #[derive(replay_spool::Spooled)]
 pub(crate) enum Handed {
     Begun(Begun),
+    Moved(Moved),
     Part(Part),
 }
 
@@ -279,8 +232,13 @@ pub(crate) struct Out {
     pub(super) taken: bool,
     pub(super) versions: Vec<i32>,
     pub(super) first_read: Option<(i32, String)>,
-    /// Each leaf's hour made and changes, by its key less one.
-    pub(super) leaves: Vec<(i32, Changes)>,
+    /// Whether `first_read` was handed on.
+    first_handed: bool,
+    /// Each leaf's hour made, by its key less one.
+    made: Vec<i32>,
+    /// What it made since it last handed its hours on.
+    leaves: Vec<(LeafKey, i32)>,
+    changes: Vec<(LeafKey, i32, i128)>,
     pub(super) fresh: Vec<Fresh>,
     /// The hour's first reads of amounts it held none of, until the hour publishes.
     touches: Vec<Fresh>,
@@ -436,15 +394,15 @@ impl Out {
             *totals.entry(leaf).or_default() += delta;
             if !leaves.contains_key(&leaf) {
                 leaves.insert(leaf, leaves.len() as u64 + 1);
-                self.leaves.push((hour, Changes::default()));
+                self.made.push(hour);
+                self.leaves.push((leaf, hour));
             }
             if changed.last() != Some(&leaf) {
                 changed.push(leaf);
             }
         }
         for leaf in changed {
-            let local = leaves[&leaf] as usize;
-            self.leaves[local - 1].1.push(hour, totals[&leaf]);
+            self.changes.push((leaf, hour, totals[&leaf]));
         }
         if !self.touches.is_empty() {
             let touches = std::mem::take(&mut self.touches);
@@ -459,6 +417,37 @@ impl Out {
             }
         }
         Ok(())
+    }
+}
+
+impl Out {
+    /// What it made since it last handed its hours on, of the hours through `last` (every
+    /// hour where None), letting go of all of it.
+    fn take(&mut self, identity: Identity, last: Option<i32>) -> Moving {
+        let keep = |hour: i32| last.is_none_or(|last| hour <= last);
+        let mut leaves = std::mem::take(&mut self.leaves);
+        leaves.retain(|&(_, made)| keep(made));
+        let mut changes = std::mem::take(&mut self.changes);
+        changes.retain(|&(_, hour, _)| keep(hour));
+        let mut fresh = std::mem::take(&mut self.fresh);
+        fresh.retain(|touch| keep(touch.hour));
+        let mut versions = std::mem::take(&mut self.versions);
+        versions.retain(|&hour| keep(hour));
+        let first_read = match &self.first_read {
+            Some((hour, _)) if !self.first_handed && keep(*hour) => {
+                self.first_handed = true;
+                self.first_read.clone()
+            }
+            _ => None,
+        };
+        Moving {
+            identity,
+            leaves,
+            changes,
+            fresh,
+            versions,
+            first_read,
+        }
     }
 }
 
@@ -591,7 +580,7 @@ impl Lens {
             return Err(Failed { part, error });
         }
         if self.started {
-            return Ok(None);
+            return Ok(self.moved().map(|moved| Box::new(Handed::Moved(moved))));
         }
         self.started = true;
         Ok(Some(Box::new(Handed::Begun(self.begun(at)))))
@@ -645,6 +634,20 @@ impl Lens {
         }
     }
 
+    /// What every country made of the hour it folded last.
+    fn moved(&mut self) -> Option<Moved> {
+        let countries: Vec<Moving> = self
+            .fold
+            .countries
+            .iter_mut()
+            .filter_map(|(&identity, country)| {
+                let moving = country.out.as_mut()?.take(identity, None);
+                (!moving.is_empty()).then_some(moving)
+            })
+            .collect();
+        (!countries.is_empty()).then_some(Moved { countries })
+    }
+
     /// Hands back every country through hour `last`.
     fn give(&mut self, last: i32) -> Option<(i32, Box<Handed>)> {
         let countries = self
@@ -661,42 +664,26 @@ impl Lens {
 }
 
 /// What `country` made through hour `last`, as `out` recorded it.
-fn given(identity: Identity, country: &mut Country, out: Out, last: i32) -> Given {
-    let Out {
-        seen,
-        mut versions,
-        first_read,
-        leaves: made,
-        mut fresh,
-        prior,
-        variants,
-        ..
-    } = out;
+fn given(identity: Identity, country: &mut Country, mut out: Out, last: i32) -> Given {
+    let rest = out.take(identity, Some(last));
     let mut by_local: Vec<Option<LeafKey>> = vec![None; country.leaves.len()];
     for (&leaf, &local) in &country.leaves {
         if let Some(held) = by_local.get_mut((local as usize).wrapping_sub(1)) {
             *held = Some(leaf);
         }
     }
-    let leaves = made
-        .into_iter()
+    let totals = out
+        .made
+        .iter()
         .zip(by_local)
-        .filter_map(|((made, mut changes), leaf)| {
+        .filter_map(|(&made, leaf)| {
             let leaf = leaf.filter(|_| made <= last)?;
-            changes.through(last);
-            Some(Leaf {
-                leaf,
-                made,
-                total: country.totals.get(&leaf).copied().unwrap_or(0),
-                changes,
-            })
+            Some((leaf, country.totals.get(&leaf).copied().unwrap_or(0)))
         })
         .collect();
-    versions.retain(|hour| *hour <= last);
-    fresh.retain(|touch| touch.hour <= last);
     Given {
         identity,
-        kept: changed(&country.state, &seen),
+        kept: changed(&country.state, &out.seen),
         exchanges: country
             .state
             .exchanges
@@ -706,14 +693,12 @@ fn given(identity: Identity, country: &mut Country, out: Out, last: i32) -> Give
         exchanges_read: country.state.exchanges_read,
         withheld: country.state.destruction_withheld.clone(),
         scanned: std::mem::take(&mut country.scanned),
-        leaves,
-        versions,
-        first_read: first_read.filter(|(hour, _)| *hour <= last),
+        rest,
+        totals,
         last_read: country.last_read.clone(),
         read_key: country.read_key.clone(),
-        fresh,
-        prior,
-        variants: variants.into_iter().collect(),
+        prior: out.prior,
+        variants: out.variants.into_iter().collect(),
     }
 }
 
@@ -807,14 +792,35 @@ struct Correction {
     serial: bool,
 }
 
-/// A lens's changes of a leaf, from nothing, mended by `fixes`: the changes the emit's own fold
-/// would have made, and what they add to the lens's total.
-fn mend(changes: &[(i32, i128)], fixes: &[Correction]) -> (Vec<(i32, i128)>, i128) {
-    if fixes.is_empty() {
-        return (changes.to_vec(), 0);
-    }
-    let mut mended = Vec::with_capacity(changes.len() + fixes.len());
-    let (mut offset, mut value) = (0_i128, 0_i128);
+/// What the emit made of a bound country's leaves from the lens's hours handed on so far.
+#[derive(Default)]
+pub(crate) struct Mending {
+    leaves: BTreeMap<LeafKey, Mended>,
+    /// Its read version before the segment, and whether the lens's first read repeated the one
+    /// it published last; none before the lens's read version first went up.
+    version: Option<(i128, bool)>,
+    /// How many times the lens's read version went up.
+    versions: i128,
+    drops: usize,
+}
+
+/// A leaf the lens changed, or mended: its total before the segment, the lens's total from
+/// nothing and what the mends add, and its changes waiting for a key the lens has yet to make.
+struct Mended {
+    base: i128,
+    value: i128,
+    offset: i128,
+    waiting: Vec<(i32, i128)>,
+}
+
+/// A lens's changes of a leaf, from nothing, mended by `fixes` after those `held` took: the
+/// changes the emit's own fold would have made, pushed onto `out`.
+fn mend(
+    held: &mut Mended,
+    changes: &[(i32, i128)],
+    fixes: &[Correction],
+    out: &mut Vec<(i32, i128)>,
+) {
     let (mut changes, mut fixes) = (changes.iter().peekable(), fixes.iter().peekable());
     loop {
         let hour = match (changes.peek(), fixes.peek()) {
@@ -824,19 +830,18 @@ fn mend(changes: &[(i32, i128)], fixes: &[Correction]) -> (Vec<(i32, i128)>, i12
             (None, Some(fix)) => fix.hour,
         };
         if let Some(change) = changes.next_if(|change| change.0 == hour) {
-            value = change.1;
+            held.value = change.1;
         }
         match fixes.next_if(|fix| fix.hour == hour) {
-            None => mended.push((hour, value + offset)),
+            None => out.push((hour, held.base + held.value + held.offset)),
             Some(fix) => {
-                offset += fix.delta;
+                held.offset += fix.delta;
                 if fix.serial {
-                    mended.push((hour, value + offset));
+                    out.push((hour, held.base + held.value + held.offset));
                 }
             }
         }
     }
-    (mended, offset)
 }
 
 /// A span of hours a lens dates from the segment's first.
@@ -984,34 +989,26 @@ fn merge(carried: &mut Scanned, lens: Scanned, first: i32, withheld: Option<&str
     carried.last_hour = lens.last_hour.or(carried.last_hour);
 }
 
-/// Adds what a lens made of bound `country` in `span` to what the emit carried of it.
-fn splice_country(
+/// Adds what a lens made of bound `country` in the hours `moving` holds of `span` to what the
+/// emit carried of it: its new leaves, its changes mended, and its read version's.
+fn moving(
     span: &Span,
-    given: Given,
+    moving: Moving,
     country: &mut Country,
     names: &mut Vec<Name>,
-    variants: &mut BTreeSet<u32>,
 ) -> io::Result<()> {
-    let Given {
+    let Moving {
         identity,
-        scanned,
-        kept,
-        exchanges,
-        exchanges_read,
-        withheld,
         leaves,
+        changes,
+        mut fresh,
         versions,
         first_read,
-        last_read,
-        read_key,
-        mut fresh,
-        prior,
-        variants: lost,
-    } = given;
+    } = moving;
     let first = span.first;
+    let mut mending = country.mending.take().unwrap_or_default();
     // Amounts the country kept from before the segment that the restart did not hold: the
     // lens counted their first reads from nothing.
-    let mut drops = 0_usize;
     let mut corrections: BTreeMap<LeafKey, Vec<Correction>> = BTreeMap::new();
     fresh.sort_by_key(|touch| (touch.leaf, touch.hour));
     for touches in fresh.chunk_by(|a, b| (a.leaf, a.hour) == (b.leaf, b.hour)) {
@@ -1027,7 +1024,7 @@ fn splice_country(
             let own = touch.key.scale()
                 * match touch.key {
                     Key::Convoy(_) if touch.amount < held => {
-                        drops += 1;
+                        mending.drops += 1;
                         i128::from(touch.amount)
                     }
                     _ => i128::from(touch.amount) - i128::from(held),
@@ -1048,61 +1045,112 @@ fn splice_country(
     }
     // Its read version goes up at the lens's first read only where that read differs from the
     // one it published last.
-    let version = country
-        .values
-        .state(0)
-        .and_then(|state| state.last)
-        .map_or(0, |run| run.value);
-    let same = first_read.as_ref().is_some_and(|(hour, read)| {
-        versions.first() == Some(hour) && country.last_read.as_ref() == Some(read)
-    });
-    let ups = versions[usize::from(same)..]
-        .iter()
-        .zip(1_i128..)
-        .map(|(&hour, up)| (hour, version + up));
-    country.values.changes(0, ups, false, false)?;
+    if let Some(&hour) = versions.first() {
+        let (version, same) = *mending.version.get_or_insert_with(|| {
+            let version = country
+                .values
+                .state(0)
+                .and_then(|state| state.last)
+                .map_or(0, |run| run.value);
+            let same = first_read.as_ref().is_some_and(|(first, read)| {
+                *first == hour && country.last_read.as_ref() == Some(read)
+            });
+            (version, same)
+        });
+        let mut ups = Vec::with_capacity(versions.len());
+        for hour in versions {
+            mending.versions += 1;
+            let up = mending.versions - i128::from(same);
+            if up > 0 {
+                ups.push((hour, version + up));
+            }
+        }
+        country.values.changes(0, ups, false, false)?;
+    }
     let packed = u64::from(identity.0) << 32 | u64::from(identity.1);
     let step = |hour: i32| {
         span.index + u64::try_from(i64::from(hour) - i64::from(first)).unwrap_or(0)
     };
-    for leaf in leaves {
-        let local = match country.leaves.get(&leaf.leaf) {
-            Some(&local) => local,
-            None => {
-                let local = country.leaves.len() as u64 + 1;
-                country.leaves.insert(leaf.leaf, local);
-                names.push(((step(leaf.made), 1, packed, local), identity, Some(leaf.leaf)));
-                local
-            }
+    for (leaf, made) in leaves {
+        if country.leaves.contains_key(&leaf) {
+            continue;
+        }
+        let local = country.leaves.len() as u64 + 1;
+        country.leaves.insert(leaf, local);
+        names.push(((step(made), 1, packed, local), identity, Some(leaf)));
+        if let Some(held) = mending.leaves.get_mut(&leaf) {
+            country
+                .values
+                .changes(local, std::mem::take(&mut held.waiting), true, true)?;
+        }
+    }
+    let mut moved: BTreeMap<LeafKey, (Vec<(i32, i128)>, Vec<Correction>)> = BTreeMap::new();
+    for (leaf, hour, total) in changes {
+        moved.entry(leaf).or_default().0.push((hour, total));
+    }
+    for (leaf, fixes) in corrections {
+        moved.entry(leaf).or_default().1 = fixes;
+    }
+    let mut out = Vec::new();
+    for (leaf, (changes, fixes)) in moved {
+        let held = mending.leaves.entry(leaf).or_insert_with(|| Mended {
+            base: country.totals.get(&leaf).copied().unwrap_or(0),
+            value: 0,
+            offset: 0,
+            waiting: Vec::new(),
+        });
+        mend(held, &changes, &fixes, &mut out);
+        match country.leaves.get(&leaf) {
+            Some(&local) => country.values.changes(local, out.drain(..), true, true)?,
+            None => held.waiting.append(&mut out),
+        }
+    }
+    country.mending = Some(mending);
+    Ok(())
+}
+
+/// Adds what a lens made of bound `country` in `span` to what the emit carried of it.
+fn splice_country(
+    span: &Span,
+    given: Given,
+    country: &mut Country,
+    names: &mut Vec<Name>,
+    variants: &mut BTreeSet<u32>,
+) -> io::Result<()> {
+    let Given {
+        identity: _,
+        scanned,
+        kept,
+        exchanges,
+        exchanges_read,
+        withheld,
+        rest,
+        totals,
+        last_read,
+        read_key,
+        prior,
+        variants: lost,
+    } = given;
+    let first = span.first;
+    moving(span, rest, country, names)?;
+    let mut mending = country.mending.take().unwrap_or_default();
+    for (leaf, total) in totals {
+        let (base, offset) = match mending.leaves.remove(&leaf) {
+            Some(held) => (held.base, held.offset),
+            None => (country.totals.get(&leaf).copied().unwrap_or(0), 0),
         };
-        let base = country.totals.get(&leaf.leaf).copied().unwrap_or(0);
-        let offset = match corrections.remove(&leaf.leaf) {
-            None => {
-                let changes = leaf.changes.iter().map(|(hour, total)| (hour, base + total));
-                country.values.changes(local, changes, true, true)?;
-                0
-            }
-            Some(fixes) => {
-                let held: Vec<(i32, i128)> = leaf.changes.iter().collect();
-                let (changes, offset) = mend(&held, &fixes);
-                let changes = changes.into_iter().map(|(hour, total)| (hour, base + total));
-                country.values.changes(local, changes, true, true)?;
-                offset
-            }
-        };
-        country.totals.insert(leaf.leaf, base + leaf.total + offset);
+        country.totals.insert(leaf, base + total + offset);
     }
     // A leaf the lens saw no change of, which an amount kept from before changed.
-    for (leaf, fixes) in corrections {
-        let local = *country.leaves.get(&leaf).ok_or_else(|| {
-            io::Error::other("An equipment loss kept from before its segment has no leaf")
-        })?;
-        let base = country.totals.get(&leaf).copied().unwrap_or(0);
-        let (changes, offset) = mend(&[], &fixes);
-        let changes = changes.into_iter().map(|(hour, total)| (hour, base + total));
-        country.values.changes(local, changes, true, true)?;
-        country.totals.insert(leaf, base + offset);
+    for (leaf, held) in mending.leaves {
+        if !country.leaves.contains_key(&leaf) {
+            return Err(io::Error::other(
+                "An equipment loss kept from before its segment has no leaf",
+            ));
+        }
+        country.totals.insert(leaf, held.base + held.offset);
     }
+    let drops = mending.drops;
     // The lens's first take of a country it began left its lend-lease read date to the emit.
     let begun = country.born <= span.index;
     let before = country.state.exchanges_read;
@@ -1238,6 +1286,22 @@ impl Prepared {
         }
     }
 
+    /// Adds what the lens made of each bound country in the hours it handed on.
+    pub(super) fn moved(&mut self, moved: Moved) -> io::Result<()> {
+        let Some(span) = self.span.as_deref().filter(|span| span.live) else {
+            return Ok(());
+        };
+        for given in moved.countries {
+            let Some(country) = self.countries.get_mut(&given.identity) else {
+                continue;
+            };
+            if country.lensed {
+                moving(span, given, country, &mut self.names)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Adds what the lens made of each bound country, every country the emit's again.
     pub(super) fn splice(&mut self, part: Part) -> io::Result<()> {
         self.drain()?;
@@ -1281,6 +1345,7 @@ impl Prepared {
         }
         for country in self.countries.values_mut() {
             country.lensed = false;
+            country.mending = None;
         }
         self.name()
     }

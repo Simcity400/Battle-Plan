@@ -131,9 +131,6 @@ impl Product for Wargoals {
             WargoalStateName::decl(),
         ]
     }
-    fn native_tables() -> Vec<TableId> {
-        read_tables()
-    }
     fn load(
         source: &Source,
         p: &Self::Params,

@@ -575,7 +575,7 @@ fn each_publication_only_appends_and_keeps_only_carried_entries_pending() {
             }
         }
         for history in prepared.histories() {
-            let events = &history.state.events;
+            let events = history.state.events.held();
             assert_eq!(events.detail.runs.len(), 0);
             assert!(events.detail.outputs.is_empty());
             assert!(events.overview.reads.is_empty());
@@ -1746,7 +1746,7 @@ fn closed_handles_and_retired_lifetimes_keep_only_their_ledger_entries() {
             // A closed handle keeps its lifetime and appearance, never its reads.
             assert!(country.state.open.len() + country.state.broken.len() <= 1);
             assert!(country.state.keys.handles.len() <= offset as usize + 1);
-            assert_eq!(country.state.events.detail.runs.len(), 0);
+            assert_eq!(country.state.events.held().detail.runs.len(), 0);
         }
         // A retired lifetime is put away whole at the flush after it retires.
         assert!(
@@ -3536,7 +3536,7 @@ fn dormant_countries_waking_after_many_gaps_hold_no_copied_spans() {
             prepared
                 .histories()
                 .map(|history| {
-                    history.state.events.overview.unread_output.len()
+                    history.state.events.held().overview.unread_output.len()
                         + history
                             .state
                             .stream
@@ -3548,7 +3548,7 @@ fn dormant_countries_waking_after_many_gaps_hold_no_copied_spans() {
         let woken = prepared
             .native
             .values()
-            .filter(|country| country.state.events.overview.wakes.len() == 1)
+            .filter(|country| country.state.events.held().overview.wakes.len() == 1)
             .count();
         assert_eq!(woken, countries as usize - 2);
         prepared.save(&mut pages, &flag).unwrap();

@@ -13,7 +13,9 @@
 //! one another and the walks. An emit shares parts of its work with the workers waiting idle
 //! ([`share`]). Nothing but work to do decides what starts: an emit that can go on first, then
 //! help for an emit's shared work, then for a walk under way, then the first segment some
-//! family has yet to walk. A walk's operators share a
+//! family has yet to walk, while the walks under way keep fewer workers busy than the run has
+//! ([`Pace`]). What a walk holds, its tables, world and operators, lives only while it walks:
+//! a segment it finished waits for its emits on disk. A walk's operators share a
 //! [`World`] built for the walk and advanced once an hour before them ([`run_in`]). A family
 //! goes on in a branch from where an earlier run of the recording, as it stood then, left it:
 //! no walk takes it to the segments before, and its operator takes up there what it carried
@@ -46,7 +48,7 @@ use std::{
     path::Path,
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Instant,
 };
@@ -69,7 +71,6 @@ pub use share::{share, ways};
 use crew::Board;
 use lane::{Context, Erased, Kept, Walking};
 use schedule::{Closing, Gone, Plan, Schedule, Status, Task};
-pub(crate) use spool::temporary;
 use spool::Folder;
 use store::{Parked, Store};
 
@@ -328,6 +329,10 @@ pub struct Outcome {
     pub settled: usize,
     /// The most it spooled in one walk of a segment.
     pub largest_output: Option<usize>,
+    /// Nanoseconds its operators' hours took, all told, and of those the hours that were the
+    /// costliest of their walk's hour.
+    pub hour_ns: u64,
+    pub costliest_ns: u64,
 }
 
 /// What a run did, and what became of each family, in the order of their lanes.
@@ -525,17 +530,71 @@ impl<'a, W: 'a> Lane<'a, W> {
 }
 
 /// How a run works: on how many workers. Nothing else bounds it: its items wait on disk.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Settings {
     /// Workers, walking segments and running the families' emits alike.
     pub threads: usize,
+    /// Background mode while its job is ahead of the user ([`Background`]).
+    pub background: Option<Arc<Background>>,
 }
 
 impl Settings {
     pub fn new(threads: usize) -> Self {
         Self {
             threads: threads.max(1),
+            background: None,
         }
+    }
+
+    /// Whether the run is in background mode now.
+    pub fn in_background(&self) -> bool {
+        self.background.as_ref().is_some_and(|background| background.holds())
+    }
+
+    /// The workers at work now: [`BACKGROUND_WORKERS`] in background mode, else all of them.
+    pub fn working(&self) -> usize {
+        if self.in_background() {
+            BACKGROUND_WORKERS.min(self.threads)
+        } else {
+            self.threads
+        }
+    }
+}
+
+/// The workers of a run in background mode: one walking, one emitting beside it.
+pub const BACKGROUND_WORKERS: usize = 2;
+
+/// Background mode, for a run whose job is ahead of the user, as when a finished recording is
+/// prepared while the user plays: one walk at a time on [`BACKGROUND_WORKERS`] workers, its
+/// threads lowered with its job, and every family's batch committing at each segment's end, so
+/// it holds one walk and one segment's output. The rest of the run's workers wait. Once the
+/// user joins the job it ends for good: every worker works, walks pace by them, and batches
+/// commit as they do in any run.
+#[derive(Debug)]
+pub struct Background {
+    job: job_priority::JobPriority,
+    /// It ended, as a worker saw first ([`Self::promoted`]).
+    ended: AtomicBool,
+}
+
+impl Background {
+    /// Background mode for `job`, while it is ahead of the user; None when it is not.
+    pub fn of(job: job_priority::JobPriority) -> Option<Self> {
+        job.background().then(|| Self {
+            job,
+            ended: AtomicBool::new(false),
+        })
+    }
+
+    pub fn holds(&self) -> bool {
+        !self.ended.load(Ordering::Relaxed) && self.job.background()
+    }
+
+    /// Whether the user joined the job and no one saw it before: the caller wakes the run.
+    fn promoted(&self) -> bool {
+        !self.ended.load(Ordering::Relaxed)
+            && !self.job.background()
+            && !self.ended.swap(true, Ordering::Relaxed)
     }
 }
 
@@ -550,6 +609,14 @@ pub struct Stats {
     pub deferred: usize,
     /// Segments walked or waiting for emit at once.
     pub segments: usize,
+    /// Walks under way at once, each through the segments it went on into.
+    pub walking: usize,
+    /// The walks the workers keep busy, by every walk's hours as the run ended ([`Pace`]).
+    pub paced: usize,
+    /// What the walks' hours took, in nanoseconds all told ([`Chain`]).
+    pub chain: Chain,
+    /// Nanoseconds workers waited with nothing to do, all told.
+    pub idle_ns: u64,
     /// The most the spool held on disk at once, items and parked operators, and what it
     /// wrote in all: as stored, and raw.
     pub spool_bytes: u64,
@@ -576,6 +643,49 @@ pub struct Stats {
     pub walker_bytes: usize,
     /// The most one walk's tables were charged at once.
     pub table_bytes: usize,
+}
+
+/// What the walks' hours took, in nanoseconds all told: each hour's part its walk's worker
+/// holds up the walk for, and its families' hours.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Chain {
+    pub hours: u64,
+    /// From the hour before's families to this hour's: decoding its tables and applying
+    /// them, the world, and what comes before its families.
+    pub own_ns: u64,
+    /// Of that, the walker's pages read and decompressed, their manifests and sections read,
+    /// and the tables applied ([`crate::columnar_frames::Timings`]); applying spread over the
+    /// walk's helpers counts its time there, and `parts_ns` the work it spread.
+    pub decompress_ns: u64,
+    pub read_ns: u64,
+    pub apply_ns: u64,
+    pub parts_ns: u64,
+    pub world_ns: u64,
+    /// The families' hours, all told and the costliest of each hour, and how long the walk
+    /// waited for them.
+    pub families_ns: u64,
+    pub costliest_ns: u64,
+    pub families_wall_ns: u64,
+    /// Their work, and how long they take at the fastest, as [`Pace`] counts them.
+    pub work_ns: u64,
+    pub fastest_ns: u64,
+}
+
+impl Chain {
+    fn add(&mut self, other: &Self) {
+        self.hours += other.hours;
+        self.own_ns += other.own_ns;
+        self.decompress_ns += other.decompress_ns;
+        self.read_ns += other.read_ns;
+        self.apply_ns += other.apply_ns;
+        self.parts_ns += other.parts_ns;
+        self.world_ns += other.world_ns;
+        self.families_ns += other.families_ns;
+        self.costliest_ns += other.costliest_ns;
+        self.families_wall_ns += other.families_wall_ns;
+        self.work_ns += other.work_ns;
+        self.fastest_ns += other.fastest_ns;
+    }
 }
 
 /// Stops the runs it is handed, from any thread, waking each wait they are in.
@@ -815,8 +925,7 @@ struct Job<'r, W> {
     at: usize,
     /// The segment its walk begins at, as its share was measured.
     from: usize,
-    /// None yet where the walk before goes on with its tables alone: it takes its families
-    /// once its worker ran the emits that can go on ([`Run::go_on`]).
+    /// Each with the operator the walk before handed on, if any.
     lanes: Vec<(usize, Option<Box<dyn Walking<W> + 'r>>)>,
     /// The state holds the tables the walk of the segment before, of the same run, left.
     hot: bool,
@@ -908,6 +1017,8 @@ struct Turn<'t, 'r, W> {
     index: usize,
     attached: &'t mut Attached<'r, W>,
     called: Option<Called>,
+    /// Nanoseconds other workers spent on what its hour shared.
+    helped: u64,
 }
 
 /// What a family's hour returned, or its panic, the family's own or the run's.
@@ -930,26 +1041,32 @@ fn width(costs: impl Iterator<Item = u64>) -> usize {
     usize::try_from(sum.div_ceil(most)).map_or(count, |width| width.min(count))
 }
 
-/// `operator`'s `hour` of segment `at`, on this worker.
+/// `operator`'s `hour` of segment `at`, on this worker, what it shares going to the idle
+/// workers of `board` ([`share`]): what it came to, and the nanoseconds others spent on it.
 fn hour_on<W>(
     operator: &mut (dyn Walking<W> + '_),
     at: usize,
     hour: &Hour<'_, W>,
     folder: &Folder,
-) -> Called {
+    board: &Board,
+) -> (Called, u64) {
     // Cleared while the run's own code it calls back into runs.
     let culprit = Cell::new(Some(0));
     let context = Context {
         folder,
         culprit: &culprit,
     };
-    match catch_unwind(AssertUnwindSafe(|| operator.hour(at, hour, &context))) {
+    let sharing = share::Sharing::new(board, at);
+    let result =
+        sharing.during(|| catch_unwind(AssertUnwindSafe(|| operator.hour(at, hour, &context))));
+    let called = match result {
         Ok(result) => Called::Returned(result.map_err(|error| Fault::of(Operation::Hour, error))),
         Err(payload) => Called::Panicked {
             family: culprit.get().is_some(),
             payload,
         },
-    }
+    };
+    (called, sharing.helped())
 }
 
 /// The first ordinal of its run that damage `error` covers; its run's first when it names none.
@@ -1006,6 +1123,52 @@ enum Begun {
 /// Builds a walk's world for its segment and the lanes whose operators it visits.
 pub type Worlds<'w, W> = dyn Fn(&Segment, &[usize]) -> io::Result<W> + Sync + 'w;
 
+/// Nanoseconds every walk's hours took, all told: their work, its walk's worker's part (decoding,
+/// the world), its tables' parts wherever they ran and its families' hours summed, and how long
+/// they take at the fastest, that part and the costliest family's hour. A walk keeps busy the workers its work comes to
+/// over its time at the fastest; a new walk starts only while those under way keep fewer busy
+/// than the run has.
+#[derive(Default)]
+struct Pace {
+    work: AtomicU64,
+    fastest: AtomicU64,
+}
+
+impl Pace {
+    /// The walks `threads` workers keep busy, walking at their fastest: one before any hour.
+    fn walks(work: u64, fastest: u64, threads: usize) -> usize {
+        if work == 0 {
+            return 1;
+        }
+        let busy = (threads as u128 * u128::from(fastest)).div_ceil(u128::from(work));
+        usize::try_from(busy).unwrap_or(usize::MAX).max(1)
+    }
+
+    fn room(&self, threads: usize) -> usize {
+        let fastest = self.fastest.load(Ordering::Relaxed);
+        Self::walks(self.work.load(Ordering::Relaxed), fastest, threads)
+    }
+
+    /// Adds an hour: its `work`, and how long it takes at the `fastest`. Whether the walks the
+    /// workers keep busy grew.
+    fn hour(&self, work: u64, fastest: u64, threads: usize) -> bool {
+        let before = (
+            self.work.fetch_add(work, Ordering::Relaxed),
+            self.fastest.fetch_add(fastest, Ordering::Relaxed),
+        );
+        let after = Self::walks(
+            before.0.saturating_add(work),
+            before.1.saturating_add(fastest),
+            threads,
+        );
+        after > Self::walks(before.0, before.1, threads)
+    }
+}
+
+fn nanoseconds(since: Instant) -> u64 {
+    u64::try_from(since.elapsed().as_nanos()).unwrap_or(u64::MAX)
+}
+
 /// What a run's workers share.
 struct Run<'r, 'a, W> {
     recording: &'r Recording,
@@ -1018,6 +1181,11 @@ struct Run<'r, 'a, W> {
     walkers: Arc<Tally>,
     folder: &'r Folder,
     store: Store<'r, W>,
+    settings: Settings,
+    pace: Pace,
+    chain: Mutex<Chain>,
+    /// Each lane's hours, all told and those costliest of their walk's hour, in nanoseconds.
+    costs: Box<[(AtomicU64, AtomicU64)]>,
     /// What the families of walks given back after a panic did of their segment, by segment,
     /// for the walk of it handed out again.
     resumed: Mutex<Vec<(usize, Attached<'r, W>)>>,
@@ -1035,14 +1203,62 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         &*lanes[lane].erased
     }
 
-    fn work(&self) {
+    /// The walks under way that new ones wait behind: one in background mode, else as many as
+    /// the workers keep busy.
+    fn walks(&self) -> usize {
+        if self.settings.in_background() {
+            1
+        } else {
+            self.pace.room(self.settings.threads)
+        }
+    }
+
+    /// Brings the calling thread up to its job's priority and, once the user joined the job,
+    /// ends background mode and wakes the run.
+    fn promote(&self) {
+        job_priority::follow();
+        if let Some(background) = &self.settings.background
+            && background.promoted()
+        {
+            drop(replay_frame::timeline::span("promoted"));
+            self.signal.changed();
+        }
+    }
+
+    /// Waits, helping nothing, while background mode keeps worker `index` out of the run: false
+    /// once the run ended meanwhile.
+    fn turn(&self, index: usize) -> bool {
+        loop {
+            let seen = self.signal.board.changes();
+            self.promote();
+            if index < self.settings.working() {
+                return true;
+            }
+            {
+                let schedule = self.signal.lock();
+                if schedule.failure.is_some()
+                    || self.signal.stopped.load(Ordering::SeqCst)
+                    || schedule.finished()
+                {
+                    return false;
+                }
+            }
+            self.signal.board.rest(seen);
+        }
+    }
+
+    fn work(&self, index: usize) {
         let _unwinding = Unwinding(self.signal);
+        if !self.turn(index) {
+            return;
+        }
         let _memory = labels::enter(Owner::RUN, Kind::Executor);
         let walking = labels::enter(Owner::RUN, Kind::Walker);
         let mut walker = match Walker::counted(self.recording, &self.walkers) {
             Ok(walker) => walker,
             Err(error) => return self.signal.fail(error),
         };
+        walker.time();
         let mut state = match schema().and_then(State::new) {
             Ok(state) => state,
             Err(error) => return self.signal.fail(error),
@@ -1054,16 +1270,15 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 loop {
                     // Read before asking: a change since sends this worker back to ask again.
                     let seen = self.signal.board.changes();
+                    self.promote();
                     if schedule.failure.is_some()
                         || self.signal.stopped.load(Ordering::SeqCst)
                         || schedule.finished()
                     {
                         return;
                     }
-                    // The emits take segments in order, so the earliest walk is helped first.
-                    let front = self.signal.board.front();
-                    let picked =
-                        schedule.pick(&self.plan, front.is_none(), &mut |reads| walker.hold(reads));
+                    let ahead = schedule.walking() < self.walks();
+                    let picked = schedule.pick(&self.plan, ahead, &mut |reads| walker.hold(reads));
                     match picked {
                         Ok(Some(task)) => {
                             if matches!(task, Task::Emit { .. }) && walker.holds() {
@@ -1079,22 +1294,6 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                             return self.signal.fail(error);
                         }
                     }
-                    if let Some(shared) = self.signal.board.shared() {
-                        drop(schedule);
-                        shared.help(&self.signal.board, seen);
-                        schedule = self.signal.lock();
-                        continue;
-                    }
-                    if let Some(front) = front {
-                        if walker.holds() {
-                            walker.park();
-                            self.signal.changed();
-                        }
-                        drop(schedule);
-                        front.help(&self.signal.board, seen);
-                        schedule = self.signal.lock();
-                        continue;
-                    }
                     if walker.holds() {
                         // Its share goes back before it waits, for another's walk.
                         walker.park();
@@ -1106,6 +1305,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     schedule = self.signal.lock();
                 }
             };
+            let walks = matches!(task, Task::Walk { .. });
             let done = match task {
                 Task::Measure { at } => self.measure(&mut walker, at),
                 Task::Emit { lane, at } => self.emit(lane, at),
@@ -1113,11 +1313,19 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     self.walk(&mut walker, &mut state, at, from, lanes)
                 }
             };
-            self.signal.lock().done();
+            {
+                let mut schedule = self.signal.lock();
+                schedule.done();
+                if walks {
+                    schedule.walked();
+                }
+            }
             self.signal.changed();
             if let Err(error) = done {
                 return self.signal.fail(error);
             }
+            let _cpu = replay_frame::cpu::scope("allocator collect", None);
+            engine_allocation::collect();
         }
     }
 
@@ -1132,6 +1340,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             let Some(crew) = crew else {
                 return;
             };
+            job_priority::follow();
             crew.help(&self.signal.board, seen);
         }
     }
@@ -1229,12 +1438,6 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         let walked = (|| -> io::Result<()> {
             while let Some(next) = job.take() {
                 job = self.segment(walker, state, next)?;
-                if job.is_some() {
-                    self.emit_ready()?;
-                }
-                if let Some(going) = job.take_if(|going| going.lanes.is_empty()) {
-                    job = self.go_on(walker, going)?;
-                }
             }
             Ok(())
         })();
@@ -1243,65 +1446,6 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         let _memory = labels::enter(Owner::RUN, Kind::Walker);
         let emptied = schema().and_then(State::new).map(|empty| *state = empty);
         walked.and(emptied)
-    }
-
-    /// `going`'s walk, with the tables the walk before left, which its worker kept while it ran
-    /// the emits that can go on: of every family it may take now, none taking its tables away.
-    fn go_on(
-        &self,
-        walker: &mut Walker<'_>,
-        going: Job<'r, W>,
-    ) -> io::Result<Option<Job<'r, W>>> {
-        let Job { at, from, .. } = going;
-        let before = self.plan.get(at).before.ok_or_else(|| {
-            io::Error::other("A walk went on into a segment beginning its branch")
-        })?;
-        let chained = {
-            let mut schedule = self.signal.lock();
-            schedule.keep_hot(before, false);
-            if schedule.failure.is_some() || self.stopped() {
-                Vec::new()
-            } else {
-                schedule.chain(&self.plan, at, &[], true, &mut |reads| walker.hold(reads))?
-            }
-        };
-        // Its segment is another's to take now, if it did not.
-        self.signal.changed();
-        if chained.is_empty() {
-            return Ok(None);
-        }
-        let lanes = engine_allocation::collect_vec(chained.into_iter().map(|lane| (lane, None)))?;
-        Ok(Some(Job {
-            at,
-            from,
-            lanes,
-            hot: true,
-        }))
-    }
-
-    /// Runs the emits that can go on now, before a walk goes on into the segment after with the
-    /// tables it holds: what it sealed reaches its emits as soon as it would have had the walk
-    /// ended there, and the walk after begins from no restart.
-    fn emit_ready(&self) -> io::Result<()> {
-        loop {
-            let picked = {
-                let mut schedule = self.signal.lock();
-                if schedule.failure.is_some() || self.stopped() {
-                    return Ok(());
-                }
-                schedule.pick(&self.plan, false, &mut |_| false)?
-            };
-            let Some(task) = picked else {
-                return Ok(());
-            };
-            let Task::Emit { lane, at } = task else {
-                unreachable!("a pick not ahead hands out emits alone");
-            };
-            let done = self.emit(lane, at);
-            self.signal.lock().done();
-            self.signal.changed();
-            done?;
-        }
     }
 
     /// Parks `operator` of `lane`, holding `bytes`, for segment `at`, and writes out, with no
@@ -1830,6 +1974,14 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         }
         let mut charged = 0;
         let next = self.walk_segment(walker, state, job, &mut charged);
+        let timings = walker.timings();
+        walker.time();
+        {
+            let mut chain = lock(&self.chain);
+            chain.decompress_ns += timings.decompress_ns;
+            chain.read_ns += timings.manifest_ns;
+            chain.apply_ns += timings.apply_ns;
+        }
         charged = charged.max(state.take_charge_peak());
         span.bytes(charged);
         self.signal.lock().charged(at, charged);
@@ -2047,10 +2199,38 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             folder: self.folder,
             culprit: &culprit,
         };
-        // Its hours go to the workers that help it while it has families to share.
+        // Its hours, its tables' and its families', go to the workers that help it.
         let crew = match walking.len() {
-            0 | 1 => None,
+            0 => None,
             _ => Some(self.signal.board.join(at, false)?),
+        };
+        // What the walk's hours took, and its tables' parts spread over its helpers this hour:
+        // their wall, work, and costliest, and the last hour's for how widely to spread.
+        let mut chain = Chain::default();
+        let (parts_wall, parts_work, parts_most) =
+            (Cell::new(0_u64), AtomicU64::new(0), AtomicU64::new(0));
+        let parts_last = Cell::new((0_u64, 0_u64));
+        let spread = |count: usize, job: &(dyn Fn(usize) + Sync)| {
+            let began = Instant::now();
+            let timed = |index: usize| {
+                let began = Instant::now();
+                job(index);
+                let spent = nanoseconds(began);
+                parts_work.fetch_add(spent, Ordering::Relaxed);
+                parts_most.fetch_max(spent, Ordering::Relaxed);
+            };
+            match crew.as_ref().filter(|_| count > 1) {
+                Some(crew) => {
+                    let (sum, most) = parts_last.get();
+                    let wide = match most {
+                        0 => count,
+                        _ => usize::try_from(sum.div_ceil(most)).unwrap_or(count),
+                    };
+                    crew.hour(count, wide.clamp(1, count), &timed);
+                }
+                None => (0..count).for_each(timed),
+            }
+            parts_wall.set(parts_wall.get().saturating_add(nanoseconds(began)));
         };
         let stopped = &self.signal.stopped;
         // The walk reached the segment's end with some family, leaving its last tables, and
@@ -2077,12 +2257,20 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             // The hour being walked, and what of a family's code, for a panic there.
             let (mut now, mut doing) = (planned.first, Operation::Hour);
             let attempt = catch_unwind(AssertUnwindSafe(|| {
-                walker.walk_isolated(segment, state, |state, manifest, first, lost| {
+                // Where the walk's worker began the part of the hour that is its alone.
+                let mut mark = Instant::now();
+                let visit = |state: &State,
+                             manifest: &Manifest<'_>,
+                             first: bool,
+                             lost: &[(usize, io::Error)]| {
                     now = manifest.hour;
                     // The run's own, before any family: no family is blamed for it.
                     let advanced = {
                         let _memory = labels::enter(Owner::RUN, Kind::World);
-                        world.hour(state, manifest)
+                        let began = Instant::now();
+                        let advanced = world.hour(state, manifest);
+                        chain.world_ns += nanoseconds(began);
+                        advanced
                     };
                     advanced?;
                     // A table lost to its own damage is lost to the families reading it.
@@ -2153,6 +2341,11 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     };
                     let when = (manifest.hour, ordinal);
                     let mut panicked = None;
+                    let own = nanoseconds(mark);
+                    let families = Instant::now();
+                    let board = &self.signal.board;
+                    // The families' hours, all told and the costliest, with whose that was.
+                    let (mut sum, mut most, mut costliest) = (0_u64, 0_u64, None);
                     let shared_out = walking.iter().filter(|&attached| due(attached)).count() > 1;
                     let crewed = crew.as_ref().filter(|_| shared_out);
                     if let Some(crew) = crewed {
@@ -2163,6 +2356,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                                     index,
                                     attached,
                                     called: None,
+                                    helped: 0,
                                 });
                             }
                         }
@@ -2174,14 +2368,17 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         crew.hour(slots.len(), width, &|slot: usize| {
                             let mut turn = lock(&slots[slot]);
                             let Turn {
-                                attached, called, ..
+                                attached,
+                                called,
+                                helped,
+                                ..
                             } = &mut *turn;
                             let began = Instant::now();
                             let hour = hour_of(&**attached);
                             let operator = &mut *attached.operator;
-                            *called = Some(hour_on(operator, at, &hour, folder));
-                            attached.cost =
-                                u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                            let (came, others) = hour_on(operator, at, &hour, folder, board);
+                            (*called, *helped) = (Some(came), others);
+                            attached.cost = nanoseconds(began);
                         });
                         let mut turns: Vec<&mut Turn<'_, 'r, W>> =
                             engine_allocation::collect_vec(slots.iter_mut().map(|slot| {
@@ -2193,6 +2390,16 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                                 && let Some(Called::Panicked { payload, .. }) = turn.called.take()
                             {
                                 resume_unwind(payload);
+                            }
+                        }
+                        for turn in &turns {
+                            let cost = turn.attached.cost;
+                            sum = sum.saturating_add(cost).saturating_add(turn.helped);
+                            self.costs[turn.attached.lane]
+                                .0
+                                .fetch_add(cost, Ordering::Relaxed);
+                            if costliest.is_none() || cost > most {
+                                (most, costliest) = (cost, Some(turn.attached.lane));
                             }
                         }
                         // In lane order, as run serially: the first panic begins the walk again.
@@ -2212,7 +2419,14 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         .find(|(_, attached)| due(&**attached))
                     {
                         let hour = hour_of(&*attached);
-                        let called = hour_on(&mut *attached.operator, at, &hour, folder);
+                        let began = Instant::now();
+                        let (called, helped) =
+                            hour_on(&mut *attached.operator, at, &hour, folder, board);
+                        attached.cost = nanoseconds(began);
+                        let cost = attached.cost;
+                        (sum, most) = (cost.saturating_add(helped), cost);
+                        costliest = Some(attached.lane);
+                        self.costs[attached.lane].0.fetch_add(cost, Ordering::Relaxed);
                         if let Some(payload) = self.settle(attached, called, true, (when, hours))? {
                             panicked = Some((index, payload));
                         }
@@ -2221,11 +2435,39 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                         culprit.set(Some(index));
                         resume_unwind(payload);
                     }
+                    if let Some(lane) = costliest {
+                        self.costs[lane].1.fetch_add(most, Ordering::Relaxed);
+                    }
+                    // Its tables' parts count as the work they were, not the time they took.
+                    let spread_out = parts_work.swap(0, Ordering::Relaxed);
+                    let spread_wall = parts_wall.replace(0);
+                    parts_last.set((spread_out, parts_most.swap(0, Ordering::Relaxed)));
+                    let own_work = own.saturating_sub(spread_wall).saturating_add(spread_out);
+                    let (work, fastest) = (own_work.saturating_add(sum), own.saturating_add(most));
+                    chain.work_ns += work;
+                    chain.fastest_ns += fastest;
+                    if self.pace.hour(work, fastest, self.settings.threads) {
+                        self.signal.changed();
+                    }
+                    if self.settings.background.is_some() {
+                        self.promote();
+                    }
+                    chain.hours += 1;
+                    chain.own_ns += own;
+                    chain.parts_ns += spread_out;
+                    chain.families_ns += sum;
+                    chain.costliest_ns += most;
+                    chain.families_wall_ns += nanoseconds(families);
+                    mark = Instant::now();
                     let going = walking.iter().any(Attached::walks);
                     ordinal += 1;
                     hours += 1;
                     Ok(going && !stopped.load(Ordering::Relaxed))
-                })
+                };
+                match crew {
+                    Some(_) => walker.walk_spread(segment, state, &spread, visit),
+                    None => walker.walk_isolated(segment, state, visit),
+                }
             }));
             match attempt {
                 Ok(walked) => {
@@ -2274,6 +2516,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                 }
             }
         };
+        lock(&self.chain).add(&chain);
         let tables = walker.take_lost();
         // A table the recording withholds is lost to every walk alike.
         intact &= tables
@@ -2387,7 +2630,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
         let mut gone = Gone::default();
         let mut dropped: Vec<Attached<'r, W>> = engine_allocation::vec(walking.len())?;
         let mut kept: Vec<Attached<'r, W>> = engine_allocation::vec(walking.len())?;
-        let (chained, begins, next, deferred) = {
+        let (chained, begins, next) = {
             let mut schedule = self.signal.lock();
             // Faults its families met as it ended, the run stopped, are none of theirs.
             if self.stopped() {
@@ -2485,17 +2728,9 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
                     .filter(|attached| attached.hands)
                     .map(|attached| attached.lane),
             )?;
-            // Handing nothing on, it takes the families of `next` only after its worker ran the
-            // emits that can go on, `next` left to it meanwhile.
-            let deferred = hot && handed.is_empty() && schedule.takable(&self.plan, next);
-            let chained = if deferred {
-                schedule.keep_hot(at, true);
-                Vec::new()
-            } else {
-                schedule.chain(&self.plan, next, &handed, hot, &mut |reads| {
-                    walker.hold(reads)
-                })?
-            };
+            // It goes on at once, holding nothing idle: the other workers run its emits.
+            let chained =
+                schedule.chain(&self.plan, next, &handed, hot, &mut |reads| walker.hold(reads))?;
             for lane in schedule.started_without(next, &handed, &chained)? {
                 let error = invalid(format!(
                     "{} went on into segment {next}, which started without it",
@@ -2524,7 +2759,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             )?;
             schedule.sealed(at, &unparked);
             // Where the walk it goes on into begins, as its share was measured.
-            (chained, schedule.begins(next), next, deferred)
+            (chained, schedule.begins(next), next)
         };
         self.signal.changed();
         self.drop_gone(gone);
@@ -2617,12 +2852,7 @@ impl<'r, 'a, W: World> Run<'r, 'a, W> {
             }
         }
         if chain.is_empty() {
-            return Ok(deferred.then_some(Job {
-                at: next,
-                from: begins,
-                lanes: chain,
-                hot,
-            }));
+            return Ok(None);
         }
         chain.sort_unstable_by_key(|(lane, _)| *lane);
         Ok(Some(Job {
@@ -2711,7 +2941,10 @@ pub fn run_in<W: World>(
     if let Some(damage) = recording.unlocated() {
         return Err(damage);
     }
-    let settings = Settings::new(settings.threads);
+    let settings = Settings {
+        threads: settings.threads.max(1),
+        background: settings.background.clone(),
+    };
     let segments = recording.segments();
     if segments.is_empty() {
         return Ok(Ran {
@@ -2759,19 +2992,33 @@ pub fn run_in<W: World>(
         walkers: Arc::new(Tally::default()),
         folder: &folder,
         store: Store::new(),
+        settings: settings.clone(),
+        pace: Pace::default(),
+        chain: Mutex::new(Chain::default()),
+        costs: engine_allocation::collect_vec(
+            (0..lanes.len()).map(|_| (AtomicU64::new(0), AtomicU64::new(0))),
+        )?
+        .into_boxed_slice(),
         resumed: Mutex::new(Vec::new()),
         joins,
         #[cfg(test)]
         cancellation,
     };
+    // Every worker runs at the level of the job it works for: lowered for one ahead of the user.
+    let job = job_priority::JobPriority::current();
     std::thread::scope(|scope| {
         // First, so a failed spawn also wakes the workers already started.
         let _unwinding = Unwinding(&signal);
-        for _ in 0..settings.threads {
-            job_priority::spawn_in(scope, || run.work());
+        let run = &run;
+        for index in 0..settings.threads {
+            let job = job.clone();
+            job_priority::spawn_in(scope, move || {
+                job.enter(job_priority::Level::Normal);
+                run.work(index)
+            });
         }
     });
-    let (outcomes, mut stats, tables) = {
+    let (mut outcomes, mut stats, tables) = {
         let mut schedule = signal.lock();
         if let Some(error) = schedule.failure.take() {
             return Err(error);
@@ -2784,6 +3031,13 @@ pub fn run_in<W: World>(
         run.store.finish(&lanes)?;
     }
     stats.walker_bytes = run.walkers.peak();
+    stats.paced = run.pace.room(settings.threads);
+    stats.chain = *lock(&run.chain);
+    stats.idle_ns = signal.board.waited();
+    for (outcome, (spent, costliest)) in outcomes.iter_mut().zip(&run.costs) {
+        outcome.hour_ns = spent.load(Ordering::Relaxed);
+        outcome.costliest_ns = costliest.load(Ordering::Relaxed);
+    }
     folder.count(&mut stats);
     run.store.count(&mut stats);
     Ok(Ran {

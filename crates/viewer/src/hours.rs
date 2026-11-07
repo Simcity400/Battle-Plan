@@ -391,7 +391,7 @@ fn carry_colour(
     for current in frames {
         colour = match current {
             Current::Frame(frame) => fill(&frame, colour.as_deref())?,
-            Current::Gap { .. } | Current::Pending { .. } | Current::Refused { .. } => None,
+            Current::Gap { .. } | Current::Refused { .. } => None,
         };
     }
     Ok(colour)
@@ -1008,7 +1008,7 @@ impl Resources {
     }
 }
 
-/// The change-run reader's workers: the threads the builder pool leaves free.
+/// The native map reader's workers: the threads the builder pool leaves free.
 fn map_workers(pool: &Pool) -> usize {
     viewer_foundation::parallel::usable_processors()
         .saturating_sub(viewer_foundation::parallel::Spawn::threads(pool))
@@ -1280,9 +1280,6 @@ struct FrameCache {
     bytes: u64,
     // Bytes newly held by the last insert, used to size the next decode's headroom.
     added_bytes: u64,
-    /// How many held results are pending: read before their source held the hour, so a
-    /// change of that source drops them ([`Self::drop_pending`]).
-    pending: usize,
 }
 
 impl FrameCache {
@@ -1302,9 +1299,6 @@ impl FrameCache {
     }
 
     fn hold(&mut self, current: &Current) -> u64 {
-        if matches!(current, Current::Pending { .. }) {
-            self.pending += 1;
-        }
         let Current::Frame(frame) = current else {
             return 0;
         };
@@ -1324,9 +1318,6 @@ impl FrameCache {
     }
 
     fn release(&mut self, current: &Current) {
-        if matches!(current, Current::Pending { .. }) {
-            self.pending -= 1;
-        }
         let Current::Frame(frame) = current else {
             return;
         };
@@ -1338,21 +1329,6 @@ impl FrameCache {
                     self.bytes = self.bytes.saturating_sub(entry.1);
                     self.tables.remove(&key);
                 }
-            }
-        }
-    }
-
-    /// Forgets every pending result, so the hours are read again from the source now.
-    fn drop_pending(&mut self) {
-        let gone: Vec<_> = self
-            .frames
-            .iter()
-            .filter(|(_, current)| matches!(current, Current::Pending { .. }))
-            .map(|(key, _)| *key)
-            .collect();
-        for key in gone {
-            if let Some(current) = self.frames.remove(&key) {
-                self.release(&current);
             }
         }
     }
@@ -1487,24 +1463,9 @@ struct LaneState {
     throughput: Throughput,
     gate: Option<&'static str>,
     rewant: bool,
-    /// The map source the held pending results were read from.
-    pending_source: Option<crate::map_binding::SourceStamp>,
 }
 
 impl LaneState {
-    /// Drops the held pending results once their source has changed: the index they waited
-    /// for landed, or was refused.
-    fn renew_pending(&mut self, binding: Option<&crate::map_binding::MapBinding>) {
-        if self.frames.pending == 0 {
-            return;
-        }
-        let now = binding.map(crate::map_binding::MapBinding::source_stamp);
-        if now != self.pending_source {
-            self.frames.drop_pending();
-            self.pending_source = None;
-        }
-    }
-
     fn window(&self) -> &[(BranchId, Hour)] {
         let served = self
             .served
@@ -1640,14 +1601,12 @@ impl DecodeLane {
 
     fn run(shared: &LaneShared, mut playback: Playback) {
         'next: loop {
-            let binding = playback.map_binding();
             let (target, behind, read) = {
                 let mut state = Self::lock(shared);
                 loop {
                     if state.stop {
                         return;
                     }
-                    state.renew_pending(binding.as_deref());
                     if state.rewant {
                         state.evict(Self::pending(shared));
                     }
@@ -1686,8 +1645,6 @@ impl DecodeLane {
             let decode_clock =
                 trace::DecodeClock::start(viewer_foundation::profile_writer::profiling());
             let started = Instant::now();
-            // Read before the hour: a source changing during its read makes it stale.
-            let source = binding.as_ref().map(|binding| binding.source_stamp());
             let walked = Self::walk_for(shared, &mut playback, target, read.as_ref());
             let mut passed = Vec::new();
             let cancelled = || {
@@ -1739,9 +1696,6 @@ impl DecodeLane {
                         keys.push((branch, at));
                     }
                 }
-            }
-            if matches!(current, Current::Pending { .. }) {
-                state.pending_source = source;
             }
             state.frames.insert(target, current.clone());
             state.decoded = Some(target);
@@ -2093,9 +2047,7 @@ impl coordinator::BuildTarget for Coordinator {
         let branch = want.branch;
         let frame = match &current {
             Current::Frame(frame) => Arc::clone(frame),
-            Current::Gap { reason, .. }
-            | Current::Pending { reason, .. }
-            | Current::Refused { reason, .. } => {
+            Current::Gap { reason, .. } | Current::Refused { reason, .. } => {
                 let reason = reason.clone();
                 trace.assembled();
                 return PreparedTarget::Ready(Box::new(Built {

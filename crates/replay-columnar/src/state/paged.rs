@@ -231,6 +231,16 @@ impl<T: Copy> Paged<T> {
             .sum()
     }
 
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    pub fn common_bytes(&self, other: &Self) -> usize {
+        self.pages
+            .iter()
+            .zip(&other.pages)
+            .filter(|(mine, theirs)| Arc::ptr_eq(mine, theirs))
+            .map(|(page, _)| page_bytes(page))
+            .sum()
+    }
+
     pub(crate) fn downgrade(&self) -> io::Result<WeakPaged<T>> {
         Ok(WeakPaged {
             pages: engine_allocation::collect_vec(self.pages.iter().map(Arc::downgrade))?,
@@ -379,6 +389,11 @@ impl PagedBits {
         self.words.shared_bytes(&other.words)
     }
 
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    pub fn common_bytes(&self, other: &Self) -> usize {
+        self.words.common_bytes(&other.words)
+    }
+
     pub(crate) fn downgrade(&self) -> io::Result<WeakPaged<u64>> {
         self.words.downgrade()
     }
@@ -464,6 +479,11 @@ impl Bools {
 
     pub fn shared_bytes(&self, other: &Self) -> usize {
         self.bits.shared_bytes(&other.bits)
+    }
+
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    pub fn common_bytes(&self, other: &Self) -> usize {
+        self.bits.common_bytes(&other.bits)
     }
 
     pub(crate) fn downgrade(&self) -> io::Result<(WeakPaged<u64>, usize)> {
@@ -906,6 +926,16 @@ impl<T: Copy> Lists<T> {
             .iter()
             .zip(&other.pages)
             .filter(|(mine, theirs)| Arc::strong_count(mine) == 2 && Arc::ptr_eq(mine, theirs))
+            .map(|(page, _)| page.bytes())
+            .sum()
+    }
+
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    pub fn common_bytes(&self, other: &Self) -> usize {
+        self.pages
+            .iter()
+            .zip(&other.pages)
+            .filter(|(mine, theirs)| Arc::ptr_eq(mine, theirs))
             .map(|(page, _)| page.bytes())
             .sum()
     }

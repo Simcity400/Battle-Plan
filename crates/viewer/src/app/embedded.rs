@@ -602,9 +602,6 @@ impl Viewer {
                 crate::playback::Current::Gap { reason, .. } => {
                     messages.push(format!("Gap: {reason}"))
                 }
-                crate::playback::Current::Pending { reason, .. } => {
-                    messages.push(format!("Not indexed yet: {reason}"))
-                }
                 crate::playback::Current::Refused { reason, .. } => {
                     messages.push(format!("Refused: {reason}"))
                 }

@@ -34,7 +34,8 @@ use std::{
     sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
 
-/// Segments of a branch a batch goes through at most.
+/// Segments of a branch a batch goes through at most; one in background mode
+/// ([`Publisher::with_background`]).
 const BATCH_SEGMENTS: u64 = 32;
 
 /// Whether a batch ends after a branch's `through`th segment (counted from 1) with a budget of
@@ -333,6 +334,8 @@ struct Inner {
 /// The one root writer of a prepared store, and the coordinator of every family's batches.
 pub(crate) struct Publisher<'s> {
     store: &'s store::Store,
+    /// Where every emit spills what it finished before its flush, shared by the whole run.
+    room: engine_allocation::spill::Room,
     /// The inputs its commits are made from.
     key: store::SourceKey,
     binding: Binding,
@@ -341,6 +344,7 @@ pub(crate) struct Publisher<'s> {
     inner: Mutex<Inner>,
     changed: Condvar,
     on_commit: Option<Box<dyn Fn() + Send + Sync + 's>>,
+    background: Option<Arc<replay::segments::Background>>,
     #[cfg(test)]
     fault: Mutex<Option<Fault>>,
     /// What changes the sources once a [`Fault::ChangedAfterRoot`] published its root.
@@ -438,6 +442,7 @@ impl<'s> Publisher<'s> {
         Ok((
             Self {
                 store,
+                room: engine_allocation::spill::Room::new(store.folder()),
                 key,
                 binding,
                 plan,
@@ -459,6 +464,7 @@ impl<'s> Publisher<'s> {
                 }),
                 changed: Condvar::new(),
                 on_commit: None,
+                background: None,
                 #[cfg(test)]
                 fault: Mutex::new(None),
                 #[cfg(test)]
@@ -473,6 +479,16 @@ impl<'s> Publisher<'s> {
     /// Calls `on_commit` after every commit, once what it published is proven durable.
     pub(crate) fn with_commits(mut self, on_commit: impl Fn() + Send + Sync + 's) -> Self {
         self.on_commit = Some(Box::new(on_commit));
+        self
+    }
+
+    /// Ends every family's batch at each segment's end while the run is in `background` mode:
+    /// no segment's output waits in memory for the next.
+    pub(crate) fn with_background(
+        mut self,
+        background: Option<Arc<replay::segments::Background>>,
+    ) -> Self {
+        self.background = background;
         self
     }
 
@@ -1059,6 +1075,7 @@ impl<'s> Publisher<'s> {
     fn serve(&self) {
         let mut inner = self.lock();
         while inner.sealing {
+            job_priority::follow();
             let next = inner
                 .lines
                 .iter()
@@ -1249,6 +1266,26 @@ impl<'s> Publisher<'s> {
         }
     }
 
+    /// Does `family`'s line's work here, or waits for the sealer doing it, until no more than one
+    /// piece waits: a lane handing off faster than the sealers take its work never holds more
+    /// than the segment it just cut beside the one being sealed.
+    fn keep_up(&self, family: FamilyId) {
+        let mut inner = self.lock();
+        loop {
+            let Some(line) = inner.lines.get(&family) else {
+                return;
+            };
+            if line.work.len() <= 1 {
+                return;
+            }
+            inner = if line.busy {
+                self.wait_changed(inner)
+            } else {
+                self.step(inner, family)
+            };
+        }
+    }
+
     /// Drops what `family`'s lane handed off that no one took, once the work under way on its
     /// line is done, with the outcome of `handed`, its last batch.
     fn abandon(&self, family: FamilyId, handed: Option<u64>) {
@@ -1424,6 +1461,10 @@ impl Stage<'_, '_> {
         self.writer()
     }
 
+    pub(crate) fn room(&self) -> engine_allocation::spill::Room {
+        self.publisher.room.clone()
+    }
+
     /// The name of the family whose lane it is.
     pub(crate) fn family(&self) -> &'static str {
         self.family.id.name()
@@ -1494,6 +1535,13 @@ impl Stage<'_, '_> {
             .get(&branch)
             .and_then(|branch| branch.series.as_ref())
             .is_some_and(roots::Series::holds)
+    }
+
+    /// Whether the family's output on `branch` went into a series writer in this run.
+    pub(crate) fn series_open(&self, branch: u64) -> bool {
+        self.branches
+            .get(&branch)
+            .is_some_and(|branch| branch.series.is_some())
     }
 
     /// The series writer the family's output on `branch` goes into, its hours starting at
@@ -1662,7 +1710,8 @@ impl Stage<'_, '_> {
         self.ends |= boundary
             || !hours.ends_segment
             || hours.ends_branch
-            || (hours.ends_segment && ends_batch(segments, BATCH_SEGMENTS));
+            || ends_batch(segments, BATCH_SEGMENTS)
+            || self.publisher.background.as_ref().is_some_and(|background| background.holds());
         if hours.ends_segment {
             let mut inner = publisher.lock();
             inner.progress.entry(family.id).or_default().emitted += 1;
@@ -1721,6 +1770,7 @@ impl Stage<'_, '_> {
                 tree,
             },
         );
+        self.publisher.keep_up(self.family.id);
         Ok(())
     }
 

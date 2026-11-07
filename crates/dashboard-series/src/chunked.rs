@@ -97,6 +97,10 @@ impl<T> Chunked<T> {
         (at < self.len).then(|| &self.chunks[at >> Self::SHIFT][at & Self::MASK])
     }
 
+    pub(crate) fn get_mut(&mut self, at: usize) -> Option<&mut T> {
+        (at < self.len).then(|| &mut self.chunks[at >> Self::SHIFT][at & Self::MASK])
+    }
+
     pub(crate) fn first(&self) -> Option<&T> {
         self.get(0)
     }

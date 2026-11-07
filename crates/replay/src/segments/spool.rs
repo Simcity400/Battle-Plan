@@ -10,6 +10,7 @@
 //! shared allocations across the segments its operator goes on into, its lineage, and the
 //! emit's reader keeps them for the lineage alike.
 
+use engine_allocation::zstd::{self, Compressor, Decompressor, Holder};
 use replay_spool::{Reader, Restored, Shared, Spooled, Writer};
 use std::{
     cell::RefCell,
@@ -21,7 +22,6 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use zstd::zstd_safe::{CCtx, CParameter, DCtx, compress_bound};
 
 const ITEM: u8 = 0;
 const RELEASED: u8 = 1;
@@ -152,9 +152,8 @@ impl Folder {
             stored: 0,
         };
         self.counts.raw.wrote(bytes.len() as u64);
-        let mut packed = Vec::new();
         for raw in bytes.chunks(BUFFER) {
-            let stored = frame(&mut packed, &mut file, raw)?;
+            let stored = frame(&mut file, raw)?;
             self.counts.stored.wrote(stored);
             spilled.stored += stored;
         }
@@ -185,14 +184,13 @@ impl Spilled {
         let mut input = File::open(&self.path)?;
         let mut frames = Frames::default();
         frames.start()?;
-        let mut context = decompressor()?;
         let mut at = 0_usize;
         while let Some((raw, stored)) = frames.next(&mut input)? {
             let end = at
                 .checked_add(raw)
                 .filter(|&end| end <= self.length)
                 .ok_or_else(|| super::invalid("A spill reads back at another length"))?;
-            unpack(&mut context, stored, &mut out[at..end])?;
+            unpack(stored, &mut out[at..end])?;
             at = end;
         }
         if at != self.length {
@@ -210,38 +208,39 @@ impl Drop for Spilled {
     }
 }
 
-fn zstd_error(code: usize) -> io::Error {
-    super::invalid(zstd::zstd_safe::get_error_name(code))
-}
+static FRAMES: Holder = Holder::new("zstd: spool frames");
+static READS: Holder = Holder::new("zstd: spool reads");
 
 thread_local! {
-    // One per worker, not per walk's family: each holds about 300 KB the allocator never sees.
-    static COMPRESSOR: RefCell<Option<CCtx<'static>>> = const { RefCell::new(None) };
+    // One of each per worker, never per family, segment or lineage.
+    static COMPRESSOR: RefCell<Option<Compressor>> = const { RefCell::new(None) };
+    static DECOMPRESSOR: RefCell<Option<Decompressor>> = const { RefCell::new(None) };
+    static PACKED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
-fn decompressor() -> io::Result<DCtx<'static>> {
-    DCtx::try_create().ok_or_else(engine_allocation::oom)
-}
-
-/// Writes `raw` to `file` as a frame, compressed into `packed` by the thread's context: the
+/// Writes `raw` to `file` as a frame, compressed by the thread's context into its buffer: the
 /// bytes it stored.
-fn frame(packed: &mut Vec<u8>, file: &mut File, raw: &[u8]) -> io::Result<u64> {
+fn frame(file: &mut File, raw: &[u8]) -> io::Result<u64> {
     if raw.is_empty() {
         return Ok(0);
     }
-    let bound = FRAME_HEADER + compress_bound(raw.len());
+    PACKED.with_borrow_mut(|packed| packed_frame(packed, file, raw))
+}
+
+fn packed_frame(packed: &mut Vec<u8>, file: &mut File, raw: &[u8]) -> io::Result<u64> {
+    let bound = FRAME_HEADER + zstd::bound(raw.len());
     if packed.len() < bound {
         engine_allocation::resize(packed, bound, 0)?;
     }
     let body = &mut packed[FRAME_HEADER..];
     let mut stored = COMPRESSOR.with_borrow_mut(|context| {
         if context.is_none() {
-            let mut made = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
-            made.set_parameter(CParameter::CompressionLevel(LEVEL)).map_err(zstd_error)?;
-            *context = Some(made);
+            *context = Some(Compressor::new(&FRAMES, LEVEL)?);
         }
         let context = context.as_mut().expect("the thread's context is made");
-        context.compress2(&mut *body, raw).map_err(zstd_error)
+        context
+            .compress(&mut *body, raw)
+            .map_err(zstd::Error::invalid)
     })?;
     if stored >= raw.len() {
         body[..raw.len()].copy_from_slice(raw);
@@ -259,13 +258,23 @@ fn frame(packed: &mut Vec<u8>, file: &mut File, raw: &[u8]) -> io::Result<u64> {
     Ok((used + stored) as u64)
 }
 
-/// A frame's `stored` bytes as the `out` they hold: as they are when as long.
-fn unpack(context: &mut DCtx<'static>, stored: &[u8], out: &mut [u8]) -> io::Result<()> {
+/// A frame's `stored` bytes as the `out` they hold, by the thread's context: as they are when
+/// as long.
+fn unpack(stored: &[u8], out: &mut [u8]) -> io::Result<()> {
     if stored.len() == out.len() {
         out.copy_from_slice(stored);
         return Ok(());
     }
-    if context.decompress(out, stored).map_err(zstd_error)? != out.len() {
+    let written = DECOMPRESSOR.with_borrow_mut(|context| {
+        if context.is_none() {
+            *context = Some(Decompressor::new(&READS)?);
+        }
+        let context = context.as_mut().expect("the thread's context is made");
+        context
+            .decompress(out, stored)
+            .map_err(zstd::Error::invalid)
+    })?;
+    if written != out.len() {
         return Err(super::invalid("A spooled frame holds another length"));
     }
     Ok(())
@@ -370,13 +379,12 @@ struct Open {
     file: File,
     path: PathBuf,
     buffer: Vec<u8>,
-    packed: Vec<u8>,
 }
 
 impl Open {
     /// Writes out what it buffered as a frame: the bytes it stored.
     fn out(&mut self) -> io::Result<u64> {
-        let stored = frame(&mut self.packed, &mut self.file, &self.buffer)?;
+        let stored = frame(&mut self.file, &self.buffer)?;
         self.buffer.clear();
         Ok(stored)
     }
@@ -488,7 +496,6 @@ impl Spooling {
                 file,
                 path,
                 buffer: engine_allocation::vec(BUFFER)?,
-                packed: Vec::new(),
             });
         }
         let Self {
@@ -518,7 +525,7 @@ impl Spooling {
             written += (open.buffer.len() - before + bytes.len()) as u64;
             if bytes.len() > BUFFER / 2 {
                 counted(open.out()?);
-                counted(frame(&mut open.packed, &mut open.file, bytes)?);
+                counted(frame(&mut open.file, bytes)?);
                 out = true;
             } else {
                 open.buffer.extend_from_slice(bytes);
@@ -618,14 +625,12 @@ fn header(bytes: &[u8]) -> io::Result<Option<(u8, usize, usize)>> {
 }
 
 /// A family's emit's readers: each lineage's shared allocations, the raw bytes held of the file
-/// being read and the frames it reads them from, its decompression context, and the codes a
-/// record released.
+/// being read and the frames it reads them from, and the codes a record released.
 #[derive(Default)]
 pub(super) struct Readers {
     lineages: std::collections::HashMap<u64, Restored>,
     buffer: Vec<u8>,
     frames: Frames,
-    context: Option<DCtx<'static>>,
     codes: Vec<u64>,
 }
 
@@ -663,9 +668,6 @@ impl Readers {
                 engine_allocation::resize(&mut self.buffer, BUFFER + RECORD_HEADER, 0)?;
             }
             self.frames.start()?;
-            if self.context.is_none() {
-                self.context = Some(decompressor()?);
-            }
         }
         Ok(Unspooling {
             readers: self,
@@ -694,12 +696,7 @@ impl Unspooling<'_> {
             let Some(input) = self.input.as_mut() else {
                 break;
             };
-            let Readers {
-                buffer,
-                frames,
-                context,
-                ..
-            } = &mut *self.readers;
+            let Readers { buffer, frames, .. } = &mut *self.readers;
             let Some((raw, stored)) = frames.next(input)? else {
                 break;
             };
@@ -711,8 +708,7 @@ impl Unspooling<'_> {
             if buffer.len() < end {
                 engine_allocation::resize(buffer, end, 0)?;
             }
-            let context = context.as_mut().expect("an open file's context is made");
-            unpack(context, stored, &mut buffer[self.end..end])?;
+            unpack(stored, &mut buffer[self.end..end])?;
             self.end = end;
         }
         Ok(self.end - self.start)

@@ -47,7 +47,7 @@ use std::{
 
 mod input;
 mod reader;
-pub(crate) use reader::Reads;
+pub(crate) use reader::{Reads, Spread, Steps};
 pub use reader::{Damage, DamageScope, Recording, RootFile, Run, Tally, Timings, Walker};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -172,6 +172,62 @@ pub fn view_heap_bytes(view: &TableView) -> usize {
 /// The bytes `frame`'s views hold, each counted though another frame shares it.
 pub fn frame_heap_bytes(frame: &DecodedFrame) -> usize {
     frame.tables.iter().map(|view| view_heap_bytes(view)).sum()
+}
+
+/// One table's noting of the hours a walk applies to it apart ([`Views::notes`]).
+pub struct Note<'v> {
+    pending: &'v mut Pending,
+    by_slot: bool,
+    previous: Option<&'v TableView>,
+}
+
+impl Note<'_> {
+    /// Notes an hour of `status`, which sectioned the table when `present`, once applied:
+    /// `changes` it made to `table`.
+    pub fn hour(
+        &mut self,
+        status: Status,
+        present: bool,
+        changes: &Changes,
+        table: &Table,
+    ) -> io::Result<()> {
+        if note_status(self.pending, self.by_slot, status, present) {
+            note_edits(changes, table, self.pending, self.by_slot, self.previous)?;
+        }
+        Ok(())
+    }
+}
+
+/// A complete view of an earlier build, and its edits since: one per key, in key order, to the
+/// view built after it ([`Views::spares`]).
+struct Spare {
+    view: SharedView,
+    since: Vec<Noted>,
+}
+
+/// Threads of their own that a reader's work runs on in place of rayon's, for work that must
+/// not compete with the rest at its priority: each started once, set by `start`.
+pub struct Pool(rayon::ThreadPool);
+
+impl Pool {
+    /// `threads` threads named `name`, each running `start` first.
+    pub fn new(threads: usize, name: &'static str, start: fn()) -> io::Result<Self> {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads.max(1))
+            .thread_name(move |at| format!("{name} {at}"))
+            .start_handler(move |_| start())
+            .build()
+            .map(Self)
+            .map_err(io::Error::other)
+    }
+}
+
+/// `work`, its rayon work on `pool`'s threads when given, else on rayon's.
+pub(crate) fn on_pool<R: Send>(pool: Option<&Pool>, work: impl FnOnce() -> R + Send) -> R {
+    match pool {
+        Some(pool) => pool.0.install(work),
+        None => work(),
+    }
 }
 
 /// One table's hours noted since its view was built ([`Views::note`]).
@@ -530,6 +586,11 @@ fn change_fields(id: TableId, mask: u64, recorded: usize) -> u64 {
 pub struct Views {
     selected: Vec<TableId>,
     views: Vec<Option<SharedView>>,
+    /// By table, a view of an earlier build a frame may still hold, to patch in place once
+    /// none does instead of copying the view the frame of the build after holds.
+    spares: Vec<Option<Spare>>,
+    /// The threads builds work on, rayon's when none ([`Self::set_pool`]).
+    pool: Option<Arc<Pool>>,
     /// The format opaque cells were encoded at.
     format: u16,
     mode: CaptureMode,
@@ -539,6 +600,7 @@ pub struct Views {
     /// Each patched row's key, slot and the columns written to it.
     patches: Vec<(u128, u32, u64)>,
     masks: Vec<(u128, u64)>,
+    union: Vec<Noted>,
     /// Whether [`Self::advance_recorded`] asked for the hour's change facts, and each selected
     /// table's, in selection order.
     record: bool,
@@ -554,6 +616,10 @@ pub struct Views {
     times: BuildTimes,
     /// Hours are noted by slot ([`Self::by_slot`]).
     by_slot: bool,
+    /// Each hour's tables are noted apart, on rayon's threads ([`Self::apart`]).
+    apart: bool,
+    /// The positions of the tables an hour edits, kept between hours.
+    edited: Vec<usize>,
 }
 
 impl Views {
@@ -596,6 +662,8 @@ impl Views {
             pending: engine_allocation::collect_vec(selected.iter().map(|_| Pending::default()))?,
             selected,
             views: engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?,
+            spares: engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?,
+            pool: None,
             format: format.version(),
             mode,
             slots: Vec::new(),
@@ -603,6 +671,7 @@ impl Views {
             deleted: Vec::new(),
             patches: Vec::new(),
             masks: Vec::new(),
+            union: Vec::new(),
             record: false,
             facts: Vec::new(),
             built: None,
@@ -610,6 +679,8 @@ impl Views {
             timed: false,
             times: BuildTimes::default(),
             by_slot: false,
+            apart: false,
+            edited: Vec::new(),
         })
     }
 
@@ -621,11 +692,23 @@ impl Views {
         self
     }
 
+    /// Views noting each hour's tables apart, on rayon's threads, and building their patches
+    /// apart: for a walker that has the threads to itself, as a playback does.
+    pub fn apart(mut self) -> Self {
+        self.apart = true;
+        self
+    }
+
     /// Complete views carrying change facts and field stamps, as a decoder with change facts
     /// makes them.
     pub fn with_change_facts(mut self) -> Self {
         self.changes = true;
         self
+    }
+
+    /// Builds work on `pool`'s threads from now on, or on rayon's.
+    pub fn set_pool(&mut self, pool: Option<Arc<Pool>>) {
+        self.pool = pool;
     }
 
     /// The tables viewed, Campaign among them, in table order.
@@ -651,6 +734,7 @@ impl Views {
 
     /// Forgets the views and the hours noted: the next views are built anew, as at a restart.
     pub fn reset(&mut self) {
+        self.spares.fill_with(|| None);
         for pending in &mut self.pending {
             pending.edits.clear();
             *pending = Pending {
@@ -770,6 +854,7 @@ impl Views {
     /// for its hour, in place of those held: the next build goes on from them as it would
     /// have from the views that frame was taken of.
     pub fn load(&mut self, frame: &DecodedFrame) {
+        self.spares.fill_with(|| None);
         for pending in &mut self.pending {
             pending.edits.clear();
             *pending = Pending {
@@ -821,7 +906,9 @@ impl Views {
         if restart {
             self.reset();
         }
-        let by_slot = self.by_slot;
+        // The tables whose edits the hour adds to, found first; their edits made after.
+        let mut edited = std::mem::take(&mut self.edited);
+        edited.clear();
         for (at, pending) in self.pending.iter_mut().enumerate() {
             let id = self.selected[at];
             if !noted(id) {
@@ -837,86 +924,58 @@ impl Views {
             let status = state
                 .status(index)
                 .ok_or_else(|| invalid("The walker holds no such table"))?;
-            pending.hours += 1;
-            match pending.status {
-                None => pending.status = Some(status),
-                Some(first) => pending.varied |= first != status,
+            if note_status(pending, self.by_slot, status, present[index]) {
+                engine_allocation::reserve(&mut edited, 1)?;
+                edited.push(at);
             }
-            if !present[index] {
-                continue;
-            }
-            pending.sectioned = true;
-            if pending.anew || pending.varied || status != Status::Complete {
-                pending.edits.clear();
-                if by_slot {
-                    pending.marks = std::mem::take(&mut pending.marks).emptied();
-                }
-                continue;
-            }
+        }
+        let (by_slot, selected, views) = (self.by_slot, &self.selected, &self.views);
+        let edit = |at: usize, pending: &mut Pending| {
+            let index = selected[at].index();
             let changes = state
                 .changes(index)
                 .ok_or_else(|| invalid("The walker holds no such table"))?;
             let table = state
                 .table(index)
                 .ok_or_else(|| invalid("The walker holds no such table"))?;
-            if changes.masks.len() != changes.changed.len()
-                || changes.fill_masks.len() != changes.fill_slots.len()
-            {
-                return Err(invalid("A table's change masks miss its changed slots"));
-            }
-            if by_slot {
-                pending.marks.note(changes, table)?;
+            note_edits(changes, table, pending, by_slot, views[index].as_deref())
+        };
+        let noted = if self.apart && edited.len() > 1 {
+            use rayon::prelude::*;
+            self.pending
+                .par_iter_mut()
+                .enumerate()
+                .filter(|(at, _)| edited.binary_search(at).is_ok())
+                .try_for_each(|(at, pending)| edit(at, pending))
+        } else {
+            edited
+                .iter()
+                .try_for_each(|&at| edit(at, &mut self.pending[at]))
+        };
+        self.edited = edited;
+        noted
+    }
+
+    /// Each selected table's noter, by table index, for a walk noting its hours table by table
+    /// ([`Self::note`] of each hour, as `state` stands before them); none for a table withheld.
+    pub fn notes(&mut self, state: &State) -> io::Result<Vec<Option<Note<'_>>>> {
+        let mut notes = engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
+        let (by_slot, views) = (self.by_slot, &self.views);
+        for (pending, id) in self.pending.iter_mut().zip(&self.selected) {
+            let index = id.index();
+            if state.withheld(index).is_some() {
                 continue;
             }
-            engine_allocation::reserve(
-                &mut pending.edits,
-                changes.deleted_keys.len()
-                    + changes.inserted.len()
-                    + changes.changed.len()
-                    + changes.fill_slots.len(),
-            )?;
-            // Each edit's place is its index, so a sort by key keeps each key's in hour order.
-            let place = |edits: &Vec<Noted>| u32::try_from(edits.len()).unwrap_or(PLACES);
-            // A key deleted and inserted again in one hour is set, not removed.
-            for &key in &changes.deleted_keys {
-                let at = place(&pending.edits);
-                pending.edits.push(Noted::new(key, at, Edit::Deleted)?);
+            if state.skips(index) {
+                return Err(invalid(format!("{id:?} is not read by this walk")));
             }
-            for &slot in &changes.inserted {
-                let key = table
-                    .key(slot)
-                    .ok_or_else(|| invalid("An inserted slot holds no row"))?;
-                let at = place(&pending.edits);
-                pending
-                    .edits
-                    .push(Noted::new(key, at, Edit::Inserted(slot))?);
-            }
-            let written = changes
-                .changed
-                .iter()
-                .zip(&changes.masks)
-                .chain(changes.fill_slots.iter().zip(&changes.fill_masks));
-            for (&slot, &mask) in written.filter(|(_, mask)| **mask != 0) {
-                let key = table
-                    .key(slot)
-                    .ok_or_else(|| invalid("A changed slot holds no row"))?;
-                let at = place(&pending.edits);
-                pending
-                    .edits
-                    .push(Noted::new(key, at, Edit::Written(mask, slot))?);
-            }
-            // Edits stay within twice the table's slots and what the last compaction left.
-            if pending.edits.len() > table.slots().max(2 * pending.compacted) {
-                match self.views[index].as_deref() {
-                    Some(TableView::Complete(previous)) => {
-                        compact(&mut pending.edits, previous)?;
-                        pending.compacted = pending.edits.len();
-                    }
-                    _ => pending.edits.clear(),
-                }
-            }
+            notes[index] = Some(Note {
+                pending,
+                by_slot,
+                previous: views[index].as_deref(),
+            });
         }
-        Ok(())
+        Ok(notes)
     }
 
     /// The frame of `hour` of `branch` from every hour noted since the views were built last,
@@ -1076,23 +1135,29 @@ impl Views {
         if let Some(started) = started {
             self.times.anew.1 = started.elapsed();
         }
+        let mut made = self.patch_apart(state, &plans, positions, hour, parallel)?;
         // A continuing walk's deltas apply to the hour the views were built for.
         let baseline = self.built.unwrap_or(hour.saturating_sub(1));
-        for (plan, &at) in plans.into_iter().zip(positions) {
+        for (place, (plan, &at)) in plans.into_iter().zip(positions).enumerate() {
             let id = self.selected[at];
             let index = id.index();
             let started = self.timed.then(Instant::now);
             let mut pending = std::mem::take(&mut self.pending[at]);
-            let previous = self.views[index].take().filter(|_| !pending.anew);
-            let view = self.make(
-                state,
-                id,
-                plan,
-                &pending,
-                previous,
-                &mut anew,
-                (baseline, hour),
-            );
+            let view = match made[place].take() {
+                Some(view) => view,
+                None => {
+                    let previous = self.views[index].take().filter(|_| !pending.anew);
+                    self.make(
+                        state,
+                        id,
+                        plan,
+                        &pending,
+                        previous,
+                        &mut anew,
+                        (baseline, hour),
+                    )
+                }
+            };
             pending.edits.clear();
             self.pending[at] = Pending {
                 edits: pending.edits,
@@ -1117,8 +1182,98 @@ impl Views {
         Ok(())
     }
 
-    /// Every row the walker holds of each of `tables`, built from its columns: on `parallel`'s
-    /// workers when given, the largest tables first, each table on one worker.
+    /// The views of the tables `plans` patch, at `positions`, made on rayon's threads, at most
+    /// `parallel`'s workers at once, the most edited first, each on one; none for the others, or when facts are recorded,
+    /// whose order the serial build keeps, or when fewer than two tables are patched.
+    fn patch_apart(
+        &mut self,
+        state: &State,
+        plans: &[Plan],
+        positions: &[usize],
+        hour: i32,
+        parallel: Option<&Parallel<'_>>,
+    ) -> io::Result<Vec<Option<io::Result<SharedView>>>> {
+        let mut made = engine_allocation::collect_vec(plans.iter().map(|_| None))?;
+        let jobs = engine_allocation::collect_vec(
+            (0..plans.len()).filter(|&place| matches!(plans[place], Plan::Patch { .. })),
+        )?;
+        let workers = parallel.map_or(1, |parallel| parallel.workers.min(jobs.len()));
+        if workers < 2 || self.record {
+            return Ok(made);
+        }
+        let mut previous = engine_allocation::vec(jobs.len())?;
+        for &place in &jobs {
+            let index = self.selected[positions[place]].index();
+            previous.push(Mutex::new((self.views[index].take(), self.spares[index].take())));
+        }
+        let mut order = engine_allocation::collect_vec(0..jobs.len())?;
+        order.sort_by_key(|&job| {
+            std::cmp::Reverse(match plans[jobs[job]] {
+                Plan::Patch { changed, deleted } => changed + deleted,
+                _ => 0,
+            })
+        });
+        let results = engine_allocation::collect_vec(
+            (0..jobs.len()).map(|_| Mutex::new(None::<io::Result<(SharedView, Option<Spare>)>>)),
+        )?;
+        let next = AtomicUsize::new(0);
+        let (format, changes) = (self.format, self.changes);
+        let (selected, pending, pool) = (&self.selected, &self.pending, &self.pool);
+        let (label, context) = (engine_allocation::labels::current(), job_priority::context());
+        // The pool's threads, which the walk works on too: no thread is started per build.
+        on_pool(pool.as_deref(), || rayon::scope(|scope| {
+            for _ in 0..workers {
+                scope.spawn(|_| job_priority::with_context(context, || {
+                    let _memory = engine_allocation::labels::resume(label);
+                    let mut scratch = PatchScratch::default();
+                    while let Some(&job) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                        let (place, at) = (jobs[job], positions[jobs[job]]);
+                        let id = selected[at];
+                        let made = (|| {
+                            let Plan::Patch { changed, deleted } = plans[place] else {
+                                return Err(invalid("A table patched apart is not patched"));
+                            };
+                            let (previous, spare) = std::mem::take(
+                                &mut *previous[job].lock().unwrap_or_else(PoisonError::into_inner),
+                            );
+                            let previous =
+                                previous.ok_or_else(|| invalid("A patched table has no view"))?;
+                            let table = state
+                                .table(id.index())
+                                .ok_or_else(|| invalid("The walker holds no such table"))?;
+                            patch_table(
+                                (id, table, state.dictionary()),
+                                previous,
+                                spare,
+                                true,
+                                &pending[at].edits,
+                                (changed, deleted),
+                                &mut scratch,
+                                (format, changes),
+                                (hour, state.sampled_at(id.index())),
+                            )
+                        })();
+                        *results[job].lock().unwrap_or_else(PoisonError::into_inner) = Some(made);
+                    }
+                }));
+            }
+        }));
+        for (job, result) in results.into_iter().enumerate() {
+            let result = result
+                .into_inner()
+                .unwrap_or_else(PoisonError::into_inner)
+                .unwrap_or_else(|| Err(invalid("A worker left a table unpatched")));
+            made[jobs[job]] = Some(result.map(|(view, spare)| {
+                self.spares[self.selected[positions[jobs[job]]].index()] = spare;
+                view
+            }));
+        }
+        Ok(made)
+    }
+
+    /// Every row the walker holds of each of `tables`, built from its columns: on rayon's
+    /// threads, at most `parallel`'s workers at once, when given, the largest tables first,
+    /// each table on one.
     fn rows_anew(
         &mut self,
         state: &State,
@@ -1144,10 +1299,10 @@ impl Views {
             rows_at(id, table, state.dictionary(), slots, keys, format)
         };
         let workers = parallel.map_or(1, |parallel| parallel.workers.min(tables.len()));
-        let Some(parallel) = parallel.filter(|_| workers > 1) else {
+        if workers < 2 {
             let (slots, keys) = (&mut self.slots, &mut self.keys);
             return tables.iter().map(|&id| build(id, slots, keys)).collect();
-        };
+        }
         let mut order = engine_allocation::collect_vec(0..tables.len())?;
         order.sort_by_key(|&at| {
             std::cmp::Reverse(
@@ -1157,23 +1312,24 @@ impl Views {
             )
         });
         let next = AtomicUsize::new(0);
+        let pool = &self.pool;
         let built = engine_allocation::collect_vec(
             (0..tables.len()).map(|_| Mutex::new(None::<io::Result<TableRows>>)),
         )?;
-        let label = engine_allocation::labels::current();
-        std::thread::scope(|scope| {
+        let (label, context) = (engine_allocation::labels::current(), job_priority::context());
+        // The pool's threads, which the walk works on too: no thread is started per build.
+        on_pool(pool.as_deref(), || rayon::scope(|scope| {
             for _ in 0..workers {
-                job_priority::spawn_in(scope, || {
+                scope.spawn(|_| job_priority::with_context(context, || {
                     let _memory = engine_allocation::labels::resume(label);
-                    (parallel.on_worker)();
                     let (mut slots, mut keys) = (Vec::new(), Vec::new());
                     while let Some(&at) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
                         let rows = build(tables[at], &mut slots, &mut keys);
                         *built[at].lock().unwrap_or_else(PoisonError::into_inner) = Some(rows);
                     }
-                });
+                }));
             }
-        });
+        }));
         built
             .into_iter()
             .map(|cell| {
@@ -1207,6 +1363,9 @@ impl Views {
             .table(index)
             .ok_or_else(|| invalid("The walker holds no such table"))?;
         let dictionary = state.dictionary();
+        if !matches!(plan, Plan::Carry | Plan::Patch { .. }) {
+            self.spares[index] = None;
+        }
         match plan {
             Plan::Withheld => {
                 let reason = state
@@ -1310,113 +1469,355 @@ impl Views {
             }
             Plan::Patch { changed, deleted } => {
                 let previous = previous.ok_or_else(|| invalid("A patched table has no view"))?;
-                let TableView::Complete(rows) = &*previous else {
-                    return Err(invalid("A patched table's view is not complete"));
+                let mut scratch = PatchScratch {
+                    slots: std::mem::take(&mut self.slots),
+                    keys: std::mem::take(&mut self.keys),
+                    deleted: std::mem::take(&mut self.deleted),
+                    patches: std::mem::take(&mut self.patches),
+                    masks: std::mem::take(&mut self.masks),
+                    union: std::mem::take(&mut self.union),
                 };
-                self.slots.clear();
-                self.deleted.clear();
-                self.patches.clear();
-                {
-                    let (slots, removed, patches) =
-                        (&mut self.slots, &mut self.deleted, &mut self.patches);
-                    fold(&pending.edits, |key, edit| {
-                        match edit {
-                            Edit::Inserted(slot) => {
-                                let slot = held_slot(table, key, slot)
-                                    .ok_or_else(|| invalid("An inserted key holds no slot"))?;
-                                engine_allocation::reserve(slots, 1)?;
-                                slots.push((key, slot));
-                            }
-                            Edit::Deleted => {
-                                if rows.contains_key(key) {
-                                    engine_allocation::reserve(removed, 1)?;
-                                    removed.push(key);
-                                }
-                            }
-                            Edit::Written(mask, slot) => {
-                                let slot = held_slot(table, key, slot)
-                                    .ok_or_else(|| invalid("A changed key holds no slot"))?;
-                                engine_allocation::reserve(patches, 1)?;
-                                patches.push((key, slot, mask));
-                            }
-                        }
-                        Ok(())
-                    })?;
-                }
-                // Inserted rows are built whole; a key deleted and inserted again is set.
-                let inserted = rows_at(
-                    id,
-                    table,
-                    dictionary,
-                    &mut self.slots,
-                    &mut self.keys,
-                    self.format,
-                )?;
-                if self.keys.len() + self.patches.len() != changed || self.deleted.len() != deleted
-                {
-                    return Err(invalid("A table's edits differ from their plan"));
-                }
-                let stamp = if self.changes {
-                    let recorded = id.last_change().fields(id, self.format);
-                    let mut rows_changed = engine_allocation::vec(changed)?;
-                    for &key in &self.keys {
-                        rows_changed.push(RowChange {
-                            key,
-                            fields: change_fields(id, full_mask(recorded), recorded),
-                            inserted: !rows.contains_key(key),
-                        });
-                    }
-                    for &(key, _, mask) in &self.patches {
-                        rows_changed.push(RowChange {
-                            key,
-                            fields: change_fields(id, mask, recorded),
-                            inserted: false,
-                        });
-                    }
-                    rows_changed.sort_unstable_by_key(|row| row.key);
-                    Some(previous.edited(
-                        rows_changed,
-                        engine_allocation::copy_vec(&self.deleted)?,
-                        hour,
-                    ))
-                } else {
-                    None
-                };
+                let spare = self.spares[index].take();
+                let made = patch_table(
+                    (id, table, dictionary),
+                    previous,
+                    spare,
+                    !self.record,
+                    &pending.edits,
+                    (changed, deleted),
+                    &mut scratch,
+                    (self.format, self.changes),
+                    (hour, sampled),
+                );
+                let PatchScratch {
+                    slots,
+                    keys,
+                    deleted,
+                    patches,
+                    masks,
+                    union,
+                } = scratch;
+                (self.slots, self.keys, self.deleted, self.patches, self.masks, self.union) =
+                    (slots, keys, deleted, patches, masks, union);
+                let (view, spare) = made?;
+                self.spares[index] = spare;
                 if self.record {
                     let delta = self.delta(id, baseline)?;
                     self.fact(|| Ok(delta))?;
                 }
-                let mut held = match previous.try_unwrap() {
-                    Ok(TableView::Complete(rows)) => rows,
-                    Ok(_) => unreachable!("only complete views are patched"),
-                    Err(shared) => match &*shared {
-                        TableView::Complete(rows) => rows.try_clone_validated()?,
-                        _ => unreachable!("only complete views are patched"),
-                    },
-                };
-                if !self.keys.is_empty() || !self.deleted.is_empty() {
-                    let deleted = engine_allocation::copy_vec(&self.deleted)?;
-                    held = held.apply_changes(RowChanges::new(inserted, deleted))?;
-                }
-                // Every other changed or filled row gets the columns written to it.
-                if !self.patches.is_empty() {
-                    self.masks.clear();
-                    engine_allocation::reserve(&mut self.masks, self.patches.len())?;
-                    self.masks
-                        .extend(self.patches.iter().map(|&(key, _, mask)| (key, mask)));
-                    let (patches, format) = (&self.patches, self.format);
-                    held.patch_from_wire(&self.masks, &mut |at, column| {
-                        wire(table, dictionary, patches[at].1, column, format)
-                    })?;
-                }
-                let view = SharedView::from(TableView::Complete(held)).with_sampled_at(sampled);
-                Ok(match stamp {
-                    Some(stamp) => view.with_stamp(stamp),
-                    None => view,
-                })
+                Ok(view)
             }
         }
     }
+}
+
+
+/// Notes an hour of `status`, which sectioned the table when `present`, in its `pending`:
+/// whether the hour's edits are to be noted too ([`note_edits`]).
+fn note_status(pending: &mut Pending, by_slot: bool, status: Status, present: bool) -> bool {
+    pending.hours += 1;
+    match pending.status {
+        None => pending.status = Some(status),
+        Some(first) => pending.varied |= first != status,
+    }
+    if !present {
+        return false;
+    }
+    pending.sectioned = true;
+    if pending.anew || pending.varied || status != Status::Complete {
+        pending.edits.clear();
+        if by_slot {
+            pending.marks = std::mem::take(&mut pending.marks).emptied();
+        }
+        return false;
+    }
+    true
+}
+
+/// Adds `changes`, what the last hour did to complete `table`, to `pending`, its hours noted
+/// since its view, `previous`, was built: by slot, or as keyed edits compacted against it.
+fn note_edits(
+    changes: &Changes,
+    table: &Table,
+    pending: &mut Pending,
+    by_slot: bool,
+    previous: Option<&TableView>,
+) -> io::Result<()> {
+    if changes.masks.len() != changes.changed.len()
+        || changes.fill_masks.len() != changes.fill_slots.len()
+    {
+        return Err(invalid("A table's change masks miss its changed slots"));
+    }
+    if by_slot {
+        return pending.marks.note(changes, table);
+    }
+    engine_allocation::reserve(
+        &mut pending.edits,
+        changes.deleted_keys.len()
+            + changes.inserted.len()
+            + changes.changed.len()
+            + changes.fill_slots.len(),
+    )?;
+    // Each edit's place is its index, so a sort by key keeps each key's in hour order.
+    let place = |edits: &Vec<Noted>| u32::try_from(edits.len()).unwrap_or(PLACES);
+    // A key deleted and inserted again in one hour is set, not removed.
+    for &key in &changes.deleted_keys {
+        let at = place(&pending.edits);
+        pending.edits.push(Noted::new(key, at, Edit::Deleted)?);
+    }
+    for &slot in &changes.inserted {
+        let key = table
+            .key(slot)
+            .ok_or_else(|| invalid("An inserted slot holds no row"))?;
+        let at = place(&pending.edits);
+        pending
+            .edits
+            .push(Noted::new(key, at, Edit::Inserted(slot))?);
+    }
+    let written = changes
+        .changed
+        .iter()
+        .zip(&changes.masks)
+        .chain(changes.fill_slots.iter().zip(&changes.fill_masks));
+    for (&slot, &mask) in written.filter(|(_, mask)| **mask != 0) {
+        let key = table
+            .key(slot)
+            .ok_or_else(|| invalid("A changed slot holds no row"))?;
+        let at = place(&pending.edits);
+        pending
+            .edits
+            .push(Noted::new(key, at, Edit::Written(mask, slot))?);
+    }
+    // Edits stay within twice the table's slots and what the last compaction left.
+    if pending.edits.len() > table.slots().max(2 * pending.compacted) {
+        match previous {
+            Some(TableView::Complete(previous)) => {
+                compact(&mut pending.edits, previous)?;
+                pending.compacted = pending.edits.len();
+            }
+            _ => pending.edits.clear(),
+        }
+    }
+    Ok(())
+}
+
+/// A [`Views::update`] scratch for one patched table at a time.
+#[derive(Default)]
+struct PatchScratch {
+    slots: Vec<(u128, u32)>,
+    keys: Vec<u128>,
+    deleted: Vec<u128>,
+    patches: Vec<(u128, u32, u64)>,
+    masks: Vec<(u128, u64)>,
+    /// A spare's edits since, then the hours noted since the view after it.
+    union: Vec<Noted>,
+}
+
+/// [`patched`] of `previous`, keeping it as the next spare while a frame holds it, and patching
+/// `spare` in its place when no frame holds that: the view, and the spare to keep. Without
+/// `spares`, every view is patched from `previous`.
+#[allow(clippy::too_many_arguments)]
+fn patch_table(
+    held: (TableId, &Table, &Dictionary),
+    previous: SharedView,
+    spare: Option<Spare>,
+    spares: bool,
+    edits: &[Noted],
+    counts: (usize, usize),
+    scratch: &mut PatchScratch,
+    stamps: (u16, bool),
+    hours: (i32, Option<i32>),
+) -> io::Result<(SharedView, Option<Spare>)> {
+    if !spares || !previous.is_shared() {
+        return patched(held, previous, None, edits, counts, scratch, stamps, hours).map(|view| (view, None));
+    }
+    let TableView::Complete(rows) = &*previous else {
+        return Err(invalid("A patched table's view is not complete"));
+    };
+    let mut since = engine_allocation::copy_vec(edits)?;
+    compact(&mut since, rows)?;
+    let kept = Spare {
+        view: previous.clone(),
+        since,
+    };
+    let spare = spare.filter(|spare| !spare.view.is_shared());
+    let view = match spare {
+        Some(Spare { view, since }) => patched(
+            held,
+            previous,
+            Some((view, &since)),
+            edits,
+            counts,
+            scratch,
+            stamps,
+            hours,
+        )?,
+        None => patched(held, previous, None, edits, counts, scratch, stamps, hours)?,
+    };
+    Ok((view, Some(kept)))
+}
+
+/// Table `id`'s complete view `previous` given `edits`, the folded edits of the hours noted
+/// since, which change `changed` rows and delete `deleted` keys: its inserted rows built from
+/// `table`'s columns and the others given the columns written, with change facts and stamps
+/// when `changes`. `scratch` keeps the inserted keys, patches and deleted keys made.
+#[allow(clippy::too_many_arguments)]
+fn patched(
+    (id, table, dictionary): (TableId, &Table, &Dictionary),
+    previous: SharedView,
+    spare: Option<(SharedView, &[Noted])>,
+    edits: &[Noted],
+    (changed, deleted): (usize, usize),
+    scratch: &mut PatchScratch,
+    (format, changes): (u16, bool),
+    (hour, sampled): (i32, Option<i32>),
+) -> io::Result<SharedView> {
+    let TableView::Complete(rows) = &*previous else {
+        return Err(invalid("A patched table's view is not complete"));
+    };
+    // From a spare, its edits since and the hours noted since, both in key order, merged: each
+    // key's since first, so each key's stay in hour order.
+    let union = &mut scratch.union;
+    union.clear();
+    if let Some((_, since)) = spare {
+        engine_allocation::reserve(union, since.len() + edits.len())?;
+        let (mut before, mut after) = (since.iter().peekable(), edits.iter().peekable());
+        loop {
+            let noted = match (before.peek(), after.peek()) {
+                (Some(early), Some(late)) if late.key < early.key => after.next(),
+                (Some(_), _) => before.next(),
+                (None, _) => after.next(),
+            };
+            let Some(noted) = noted else { break };
+            let at = union.len() as u32;
+            union.push(Noted::new(noted.key, at, noted.edit())?);
+        }
+    }
+    let base = match &spare {
+        Some((view, _)) => match &**view {
+            TableView::Complete(rows) => rows,
+            _ => return Err(invalid("A spare view is not complete")),
+        },
+        None => rows,
+    };
+    let folded: &[Noted] = if spare.is_some() { union } else { edits };
+    scratch.slots.clear();
+    scratch.deleted.clear();
+    scratch.patches.clear();
+    {
+        let (slots, removed, patches) =
+            (&mut scratch.slots, &mut scratch.deleted, &mut scratch.patches);
+        fold(folded, |key, edit| {
+            match edit {
+                Edit::Inserted(slot) => {
+                    let slot = held_slot(table, key, slot)
+                        .ok_or_else(|| invalid("An inserted key holds no slot"))?;
+                    engine_allocation::reserve(slots, 1)?;
+                    slots.push((key, slot));
+                }
+                Edit::Deleted => {
+                    if base.contains_key(key) {
+                        engine_allocation::reserve(removed, 1)?;
+                        removed.push(key);
+                    }
+                }
+                Edit::Written(mask, slot) => {
+                    let slot = held_slot(table, key, slot)
+                        .ok_or_else(|| invalid("A changed key holds no slot"))?;
+                    engine_allocation::reserve(patches, 1)?;
+                    patches.push((key, slot, mask));
+                }
+            }
+            Ok(())
+        })?;
+    }
+    // Inserted rows are built whole; a key deleted and inserted again is set.
+    let inserted = rows_at(
+        id,
+        table,
+        dictionary,
+        &mut scratch.slots,
+        &mut scratch.keys,
+        format,
+    )?;
+    if spare.is_none()
+        && (scratch.keys.len() + scratch.patches.len() != changed
+            || scratch.deleted.len() != deleted)
+    {
+        return Err(invalid("A table's edits differ from their plan"));
+    }
+    // Change facts and stamps follow `previous` by the hours noted since it, whatever the rows
+    // are patched from.
+    let stamp = if changes {
+        let recorded = id.last_change().fields(id, format);
+        let mut rows_changed = engine_allocation::vec(changed)?;
+        let mut removed = Vec::new();
+        fold(edits, |key, edit| {
+            match edit {
+                Edit::Inserted(_) => {
+                    engine_allocation::reserve(&mut rows_changed, 1)?;
+                    rows_changed.push(RowChange {
+                        key,
+                        fields: change_fields(id, full_mask(recorded), recorded),
+                        inserted: !rows.contains_key(key),
+                    });
+                }
+                Edit::Written(mask, _) => {
+                    engine_allocation::reserve(&mut rows_changed, 1)?;
+                    rows_changed.push(RowChange {
+                        key,
+                        fields: change_fields(id, mask, recorded),
+                        inserted: false,
+                    });
+                }
+                Edit::Deleted => {
+                    if rows.contains_key(key) {
+                        engine_allocation::reserve(&mut removed, 1)?;
+                        removed.push(key);
+                    }
+                }
+            }
+            Ok(())
+        })?;
+        Some(previous.edited(rows_changed, removed, hour))
+    } else {
+        None
+    };
+    let source = match spare {
+        Some((view, _)) => {
+            drop(previous);
+            view
+        }
+        None => previous,
+    };
+    let mut held = match source.try_unwrap() {
+        Ok(TableView::Complete(rows)) => rows,
+        Ok(_) => unreachable!("only complete views are patched"),
+        Err(shared) => match &*shared {
+            TableView::Complete(rows) => rows.try_clone_validated()?,
+            _ => unreachable!("only complete views are patched"),
+        },
+    };
+    if !scratch.keys.is_empty() || !scratch.deleted.is_empty() {
+        let deleted = engine_allocation::copy_vec(&scratch.deleted)?;
+        held = held.apply_changes(RowChanges::new(inserted, deleted))?;
+    }
+    // Every other changed or filled row gets the columns written to it.
+    if !scratch.patches.is_empty() {
+        scratch.masks.clear();
+        engine_allocation::reserve(&mut scratch.masks, scratch.patches.len())?;
+        scratch.masks
+            .extend(scratch.patches.iter().map(|&(key, _, mask)| (key, mask)));
+        let (patches, format) = (&scratch.patches, format);
+        held.patch_from_wire(&scratch.masks, &mut |at, column| {
+            wire(table, dictionary, patches[at].1, column, format)
+        })?;
+    }
+    let view = SharedView::from(TableView::Complete(held)).with_sampled_at(sampled);
+    Ok(match stamp {
+        Some(stamp) => view.with_stamp(stamp),
+        None => view,
+    })
 }
 
 /// Hours a walk can take on its own: from its run's start or from a restart, through the

@@ -5,9 +5,9 @@
 //! ([`dashboard_world`]). A segment's first hour, and any after a skipped hour, hands every row.
 //!
 //! What only an hour's tables say of a row (its item's operands, names and scripted text,
-//! [`items`]) is read for the rows dated at the hour, from the walk's views at that hour alone;
-//! scripted text and trigger conditions read the kit's decoded rows, asked of the walk only once
-//! an item reaches them ([`items::TextFrame`]). Rows a capture may publish a read late are dated
+//! [`items`]) is read for the rows dated at the hour, from the walk's views at that hour alone,
+//! scripted text and trigger conditions with the walk's lexer folds ([`items::TextFrame`]).
+//! Rows a capture may publish a read late are dated
 //! the hour before: after a read whose capture interval starts at the hour, the kit is copied
 //! for the next hour, and copied again only where a following such hour moved it.
 
@@ -90,6 +90,7 @@ pub fn tables() -> &'static [TableId] {
 pub fn needs() -> Needs {
     Needs {
         countries: true,
+        lexicon: true,
         frame: kit().iter().map(|&table| (table, Hold::Whole)).collect(),
         ..Needs::default()
     }
@@ -1196,8 +1197,6 @@ impl Projector {
             let text = TextFrame::walked(walked.world, state);
             let mut dated = dated_at(&mut power, &mut costs, hour);
             self.date(&columns, &text, roster, true, &mut dated)?;
-            drop(dated);
-            text.finish()?;
         }
         // And at the hour before, from the copies carried from it.
         if let Some(frame) = held.filter(|_| late) {

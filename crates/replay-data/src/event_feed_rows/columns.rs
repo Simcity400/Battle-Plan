@@ -197,32 +197,13 @@ impl crate::value::EncodeValue for Batch<'_> {
     }
 }
 
-thread_local! {
-    /// The occurrences of a pack this thread decoded, kept for its next ([`reuse`]).
-    static SPARE: std::cell::Cell<Vec<EventFeedEvent>> = const { std::cell::Cell::new(Vec::new()) };
-}
-
-/// Keeps `events`' allocation for the next pack this thread decodes, which would otherwise
-/// commit its pages anew each hour.
-pub fn reuse(mut events: Vec<EventFeedEvent>) {
-    events.clear();
-    SPARE.with(|spare| {
-        let held = spare.take();
-        spare.set(if held.capacity() >= events.capacity() {
-            held
-        } else {
-            events
-        });
-    });
-}
-
 pub(crate) fn decode(
     row: &EventFeedHistoryRow,
     input: &mut Decoder<'_>,
 ) -> io::Result<Vec<EventFeedEvent>> {
     // Every occurrence stores at least its sequence gap and mask code.
     let count = input.count(2)?;
-    let mut events = SPARE.with(std::cell::Cell::take);
+    let mut events = Vec::new();
     allocation::reserve_exact(&mut events, count)?;
     // The words in force, which each occurrence changes in place, and which of them are held.
     let (mut sequence, mut words, mut held, mut previous_mask) =

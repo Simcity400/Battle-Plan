@@ -832,6 +832,7 @@ dependencies = [
  "collector-raw",
  "collector-test-support",
  "collector-timing",
+ "engine-allocation",
  "engine-native",
  "replay-data",
  "replay-frame",
@@ -1299,6 +1300,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "engine-allocation",
  "engine-mutations",
  "engine-native",
  "engine-sites",
@@ -1550,6 +1552,7 @@ dependencies = [
  "collector-primitives",
  "collector-projection",
  "collector-test-support",
+ "engine-allocation",
  "engine-native",
  "replay-data",
  "replay-frame",
@@ -2073,6 +2076,7 @@ dependencies = [
  "collector-status",
  "collector-test-support",
  "collector-timing",
+ "engine-allocation",
  "engine-native",
  "serde",
  "serde_json",
@@ -2234,6 +2238,7 @@ version = "0.1.0"
 name = "core-events"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "replay-columnar",
  "replay-data",
@@ -2336,6 +2341,7 @@ dependencies = [
 name = "core-indexes"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "replay-data",
  "replay-identity",
@@ -2347,6 +2353,7 @@ name = "core-shared-owners"
 version = "0.1.0"
 dependencies = [
  "core-events",
+ "engine-allocation",
  "engine-native",
  "replay-data",
  "replay-identity",
@@ -2358,6 +2365,7 @@ name = "core-spool"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
+ "engine-allocation",
  "engine-native",
  "lz4_flex",
  "replay-data",
@@ -2633,6 +2641,7 @@ dependencies = [
  "dpi",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-research",
  "engine-stability",
@@ -2653,7 +2662,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "map-snow",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "recording-upgrade",
@@ -2691,12 +2699,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -2729,11 +2737,11 @@ dependencies = [
  "dpi",
  "engine-air-history",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
  "indexmap 2.14.2",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -2765,13 +2773,13 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
  "installed-content-regions",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -2807,13 +2815,13 @@ dependencies = [
  "dashboard-world",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-division-names",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -2847,6 +2855,7 @@ dependencies = [
  "engine-dlc",
  "engine-events",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-production",
  "engine-projects",
@@ -2866,7 +2875,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "proc-macro2",
@@ -2904,6 +2912,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-gfx",
@@ -2911,7 +2920,6 @@ dependencies = [
  "installed-content-states",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "replay",
@@ -2939,11 +2947,11 @@ dependencies = [
  "dashboard-core",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-settings",
  "job-priority",
- "mimalloc",
  "replay",
  "replay-data",
  "replay-frame",
@@ -2969,11 +2977,11 @@ dependencies = [
  "dashboard-world",
  "engine-allocation",
  "engine-fuel",
+ "engine-heap",
  "engine-native",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3004,12 +3012,12 @@ dependencies = [
  "dashboard-series",
  "dashboard-text",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3072,11 +3080,11 @@ dependencies = [
  "dashboard-keyed",
  "dashboard-text",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3108,12 +3116,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-allocation",
+ "engine-heap",
  "engine-native",
  "engine-resources",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3146,6 +3154,7 @@ dependencies = [
  "engine-allocation",
  "engine-dlc",
  "engine-executable",
+ "engine-heap",
  "engine-land-inputs",
  "engine-native",
  "engine-resources",
@@ -3153,7 +3162,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3185,11 +3193,11 @@ dependencies = [
  "dashboard-world",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3252,11 +3260,11 @@ dependencies = [
  "dashboard-world",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3288,13 +3296,13 @@ dependencies = [
  "dashboard-text",
  "dashboard-wars",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3326,6 +3334,7 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-gfx",
@@ -3337,7 +3346,6 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-products",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "pollster 0.4.0",
@@ -3375,11 +3383,11 @@ dependencies = [
  "dashboard-series",
  "dashboard-text",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3409,6 +3417,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-intelligence",
  "engine-native",
  "installed-content-core",
@@ -3417,7 +3426,6 @@ dependencies = [
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3450,10 +3458,10 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-allocation",
+ "engine-heap",
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3483,6 +3491,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-land-inputs",
  "engine-native",
  "foldhash 0.2.0",
@@ -3490,7 +3499,6 @@ dependencies = [
  "installed-content-division-names",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3521,10 +3529,10 @@ dependencies = [
  "dashboard-series",
  "dashboard-text",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3553,10 +3561,10 @@ dependencies = [
  "dashboard-series",
  "dashboard-text",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3586,12 +3594,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-air-history",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-regions",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3623,13 +3631,13 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
  "installed-content-regions",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3660,11 +3668,11 @@ dependencies = [
  "dashboard-keyed",
  "dashboard-text",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3697,13 +3705,13 @@ dependencies = [
  "dashboard-world",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-division-names",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3736,6 +3744,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-gfx",
@@ -3743,7 +3752,6 @@ dependencies = [
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3774,12 +3782,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3810,13 +3818,13 @@ dependencies = [
  "dashboard-series",
  "dashboard-text",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "engine-peace",
  "installed-content-core",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3846,10 +3854,10 @@ dependencies = [
  "dashboard-place-names",
  "dashboard-series",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3877,12 +3885,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-power-balance",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3914,13 +3922,13 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3952,6 +3960,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
@@ -3959,7 +3968,6 @@ dependencies = [
  "installed-content-states",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -3990,11 +3998,11 @@ dependencies = [
  "dashboard-series",
  "dashboard-text",
  "dashboard-world",
+ "engine-heap",
  "engine-native",
  "engine-production",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -4027,7 +4035,6 @@ dependencies = [
  "replay-spool",
  "store",
  "test-unify",
- "zstd",
 ]
 
 [[package]]
@@ -4042,6 +4049,7 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-projects",
  "installed-content-core",
@@ -4050,7 +4058,6 @@ dependencies = [
  "installed-content-localisation",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "replay",
@@ -4082,12 +4089,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-stability",
  "installed-content-core",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -4118,12 +4125,12 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -4155,6 +4162,7 @@ dependencies = [
  "dashboard-world",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-power-balance",
  "engine-projects",
@@ -4180,7 +4188,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "replay",
@@ -4212,12 +4219,12 @@ dependencies = [
  "dashboard-unit-leaders",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-image",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "replay",
@@ -4251,6 +4258,7 @@ dependencies = [
  "dashboard-wars",
  "dashboard-world",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "foldhash 0.2.0",
  "installed-content-core",
@@ -4259,7 +4267,6 @@ dependencies = [
  "installed-content-wargoals",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -4290,6 +4297,7 @@ dependencies = [
  "dashboard-keyed",
  "dashboard-text",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-localisation",
@@ -4297,7 +4305,6 @@ dependencies = [
  "installed-content-weather",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -4341,11 +4348,11 @@ dependencies = [
  "dashboard-text",
  "dashboard-world",
  "dashboard-world-tension",
+ "engine-heap",
  "engine-native",
  "engine-stability",
  "indexmap 2.14.2",
  "log",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -4756,6 +4763,7 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "engine-air-history",
+ "engine-allocation",
  "engine-characters",
  "engine-decisions",
  "engine-deployment",
@@ -4791,6 +4799,7 @@ dependencies = [
 name = "engine-air-history"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4801,12 +4810,15 @@ name = "engine-allocation"
 version = "0.1.0"
 dependencies = [
  "engine-allocation",
+ "test-unify",
+ "zstd-sys",
 ]
 
 [[package]]
 name = "engine-characters"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4816,6 +4828,7 @@ dependencies = [
 name = "engine-decisions"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4825,6 +4838,7 @@ dependencies = [
 name = "engine-deployment"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4834,6 +4848,7 @@ dependencies = [
 name = "engine-dlc"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4843,6 +4858,7 @@ dependencies = [
 name = "engine-equipment"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4852,6 +4868,7 @@ dependencies = [
 name = "engine-events"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-deployment",
  "engine-native",
  "engine-peace",
@@ -4875,6 +4892,7 @@ dependencies = [
 name = "engine-fixed-layout"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "test-unify",
@@ -4884,6 +4902,7 @@ dependencies = [
 name = "engine-focus"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-governance-tests",
  "engine-native",
  "engine-research",
@@ -4895,6 +4914,7 @@ dependencies = [
 name = "engine-fuel"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "replay-spool",
@@ -4905,6 +4925,7 @@ dependencies = [
 name = "engine-governance-tests"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-focus",
  "engine-governance-tests",
@@ -4915,9 +4936,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "engine-heap"
+version = "0.1.0"
+dependencies = [
+ "engine-allocation",
+ "libmimalloc-sys",
+ "test-unify",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "engine-intelligence"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4928,6 +4960,7 @@ name = "engine-land-inputs"
 version = "0.1.0"
 dependencies = [
  "engine-air-history",
+ "engine-allocation",
  "engine-deployment",
  "engine-executable",
  "engine-native",
@@ -4939,6 +4972,7 @@ dependencies = [
 name = "engine-map-air"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -4948,6 +4982,7 @@ dependencies = [
 name = "engine-mutations"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-deployment",
  "engine-events",
  "engine-focus",
@@ -4978,6 +5013,7 @@ dependencies = [
 name = "engine-naval-history"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "engine-sites",
@@ -4989,6 +5025,7 @@ dependencies = [
 name = "engine-occupation"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-deployment",
  "engine-native",
  "engine-sites",
@@ -5000,6 +5037,7 @@ dependencies = [
 name = "engine-peace"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -5009,6 +5047,7 @@ dependencies = [
 name = "engine-power-balance"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "engine-sites",
@@ -5019,6 +5058,7 @@ dependencies = [
 name = "engine-production"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-dlc",
  "engine-executable",
  "engine-land-inputs",
@@ -5033,6 +5073,7 @@ dependencies = [
 name = "engine-projects"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-characters",
  "engine-native",
  "engine-sites",
@@ -5043,6 +5084,7 @@ dependencies = [
 name = "engine-raid-inputs"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-intelligence",
  "engine-native",
@@ -5057,6 +5099,7 @@ dependencies = [
 name = "engine-railways"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-equipment",
  "engine-fixed-layout",
  "engine-native",
@@ -5069,6 +5112,7 @@ dependencies = [
 name = "engine-research"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-characters",
  "engine-executable",
  "engine-governance-tests",
@@ -5082,6 +5126,7 @@ dependencies = [
 name = "engine-resources"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -5091,6 +5136,7 @@ dependencies = [
 name = "engine-scripts"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "replay-spool",
@@ -5110,6 +5156,7 @@ dependencies = [
 name = "engine-stability"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "engine-sites",
  "test-unify",
@@ -5119,6 +5166,7 @@ dependencies = [
 name = "engine-visibility"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-dlc",
  "engine-executable",
  "engine-native",
@@ -5403,6 +5451,7 @@ dependencies = [
 name = "installed-content"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-abilities",
@@ -5450,10 +5499,10 @@ version = "0.1.0"
 dependencies = [
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "installed-content-core",
  "installed-content-image",
  "job-priority",
- "mimalloc",
  "miniz_oxide 0.8.9",
  "mlua",
  "replay-identity",
@@ -5470,6 +5519,7 @@ dependencies = [
 name = "installed-content-country-names"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
@@ -5497,6 +5547,7 @@ dependencies = [
 name = "installed-content-equipment-graphics"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -5607,6 +5658,7 @@ dependencies = [
 name = "installed-content-raids"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -5636,6 +5688,7 @@ dependencies = [
 name = "installed-content-save"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -5737,6 +5790,7 @@ dependencies = [
 name = "installed-content-weather"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-native",
  "installed-content-core",
@@ -7000,6 +7054,7 @@ checksum = "dae608c151f68243f2b000364e1f7b186d9c29845f7d2d85bd31b9ad77ad552b"
 name = "map-display-data"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "product-codec",
  "replay-data",
@@ -7051,6 +7106,7 @@ dependencies = [
 name = "map-snow"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-native",
  "installed-content-core",
  "installed-content-image",
@@ -7096,15 +7152,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
-]
-
-[[package]]
-name = "mimalloc"
-version = "0.1.52"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d4139bb28d14ad1facf21d5eb8825051b326e172d216b39f6d31df53cc97862"
-dependencies = [
- "libmimalloc-sys",
 ]
 
 [[package]]
@@ -9527,6 +9574,7 @@ dependencies = [
  "replay-frame",
  "replay-identity",
  "replay-spool",
+ "self_cell",
  "serde",
  "serde_json",
  "test-unify",
@@ -9574,6 +9622,7 @@ dependencies = [
 name = "replay-derive"
 version = "0.1.0"
 dependencies = [
+ "engine-allocation",
  "engine-executable",
  "engine-fixed-layout",
  "engine-land-inputs",
@@ -9624,11 +9673,11 @@ dependencies = [
  "dashboard-unit-leaders",
  "dashboard-world-tension",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-settings",
  "installed-content-weather",
  "gilrs",
- "mimalloc",
  "replay",
  "replay-data",
  "replay-identity",
@@ -9672,6 +9721,7 @@ dependencies = [
  "engine-allocation",
  "replay-identity",
  "replay-spool",
+ "test-unify",
 ]
 
 [[package]]
@@ -10118,11 +10168,11 @@ dependencies = [
  "bytemuck",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "installed-content-core",
  "indexmap 2.14.2",
  "job-priority",
  "log",
- "mimalloc",
  "naga",
  "once_cell",
  "pollster 0.4.0",
@@ -10865,6 +10915,7 @@ dependencies = [
  "syn 3.0.5",
  "unicode-ident",
  "windows-sys 0.61.2",
+ "zstd-sys",
 ]
 
 [[package]]
@@ -11442,6 +11493,7 @@ dependencies = [
  "eframe",
  "engine-allocation",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-abilities",
  "installed-content-core",
@@ -11465,7 +11517,6 @@ dependencies = [
  "map-display-data",
  "map-products",
  "map-snow",
- "mimalloc",
  "once_cell",
  "png 0.18.1",
  "pollster 0.4.0",
@@ -11501,13 +11552,14 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "cpal",
+ "engine-allocation",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-sound",
  "job-priority",
  "log",
  "map-display-data",
- "mimalloc",
  "replay-data",
  "replay-identity",
  "test-unify",
@@ -11523,6 +11575,7 @@ dependencies = [
  "dpi",
  "engine-characters",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
@@ -11536,7 +11589,6 @@ dependencies = [
  "installed-content-weather",
  "indexmap 2.14.2",
  "map-products",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -11565,6 +11617,7 @@ dependencies = [
  "engine-allocation",
  "engine-dlc",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-occupation",
  "engine-railways",
@@ -11579,7 +11632,6 @@ dependencies = [
  "installed-content-weather",
  "indexmap 2.14.2",
  "job-priority",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -11605,6 +11657,7 @@ dependencies = [
  "dashboard-text",
  "dpi",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-abilities",
  "installed-content-core",
@@ -11620,7 +11673,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "map-products",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -11650,6 +11702,7 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
@@ -11666,7 +11719,6 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-snow",
- "mimalloc",
  "once_cell",
  "pollster 0.4.0",
  "replay",
@@ -11695,6 +11747,7 @@ dependencies = [
  "dpi",
  "eframe",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-research",
  "installed-content-core",
@@ -11709,7 +11762,6 @@ dependencies = [
  "indexmap 2.14.2",
  "job-priority",
  "map-products",
- "mimalloc",
  "once_cell",
  "replay",
  "replay-data",
@@ -11739,6 +11791,7 @@ dependencies = [
  "eframe",
  "engine-air-history",
  "engine-executable",
+ "engine-heap",
  "engine-native",
  "engine-research",
  "installed-content-core",
@@ -11755,7 +11808,6 @@ dependencies = [
  "job-priority",
  "map-display-data",
  "map-snow",
- "mimalloc",
  "once_cell",
  "pollster 0.4.0",
  "product-codec",

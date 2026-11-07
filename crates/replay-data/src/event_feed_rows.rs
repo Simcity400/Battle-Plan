@@ -10,7 +10,6 @@ use crate::{
 use engine_allocation as allocation;
 use std::io;
 pub(crate) mod columns;
-pub use columns::reuse;
 pub mod decisions;
 pub mod state;
 pub use state::{DelayedEvent, PendingEvent, ScriptEventState, ScriptIdentity};

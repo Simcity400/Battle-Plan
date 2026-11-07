@@ -107,8 +107,6 @@ export interface DashboardMapState {
   /** Playing, why a newer hour the clock passed is not shown: it failed or waits for memory. */
   behindReason?: string | null;
   error: string | null;
-  /** Why the hour shows no map yet, which is no failure: its session is still being recorded. */
-  pending?: string | null;
 }
 
 export type MapSettingsTarget = { scope: 'global' } | { scope: 'campaign' } | { scope: 'widget'; id: string };

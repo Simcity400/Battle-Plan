@@ -83,20 +83,6 @@ pub struct Bits {
     words: Vec<u64>,
 }
 
-/// The `count` bits of `words` from bit `from`, at most 64, the first lowest.
-pub(crate) fn span(words: &[u64], from: u32, count: u32) -> u64 {
-    let (word, shift) = ((from / 64) as usize, from % 64);
-    let low = words.get(word).copied().unwrap_or(0) >> shift;
-    let high = match shift {
-        0 => 0,
-        _ => words.get(word + 1).copied().unwrap_or(0) << (64 - shift),
-    };
-    match count {
-        64.. => low | high,
-        _ => (low | high) & ((1 << count) - 1),
-    }
-}
-
 impl Bits {
     pub fn from_words(words: Vec<u64>) -> io::Result<Self> {
         if words.len() > SLOT_WORDS {
@@ -612,6 +598,38 @@ impl Column {
         }
     }
 
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    pub fn common_bytes(&self, other: &Self) -> usize {
+        match (self, other) {
+            (Self::U8(mine), Self::U8(theirs)) => mine.common_bytes(theirs),
+            (Self::I8(mine), Self::I8(theirs)) => mine.common_bytes(theirs),
+            (Self::U16(mine), Self::U16(theirs)) => mine.common_bytes(theirs),
+            (Self::I16(mine), Self::I16(theirs)) => mine.common_bytes(theirs),
+            (Self::U32(mine), Self::U32(theirs)) => mine.common_bytes(theirs),
+            (Self::I32(mine), Self::I32(theirs)) => mine.common_bytes(theirs),
+            (Self::U64(mine), Self::U64(theirs)) => mine.common_bytes(theirs),
+            (Self::I64(mine), Self::I64(theirs)) => mine.common_bytes(theirs),
+            (Self::Bytes(mine), Self::Bytes(theirs)) => mine.common_bytes(theirs),
+            (Self::Bool(mine), Self::Bool(theirs)) => mine.common_bytes(theirs),
+            (Self::OptionalI32(mine, held), Self::OptionalI32(theirs, present)) => {
+                mine.common_bytes(theirs) + held.common_bytes(present)
+            }
+            (Self::OptionalU32(mine, held), Self::OptionalU32(theirs, present)) => {
+                mine.common_bytes(theirs) + held.common_bytes(present)
+            }
+            (Self::OptionalI64(mine, held), Self::OptionalI64(theirs, present)) => {
+                mine.common_bytes(theirs) + held.common_bytes(present)
+            }
+            (Self::OptionalU64(mine, held), Self::OptionalU64(theirs, present)) => {
+                mine.common_bytes(theirs) + held.common_bytes(present)
+            }
+            (Self::U32List(mine), Self::U32List(theirs)) => mine.common_bytes(theirs),
+            (Self::U64List(mine), Self::U64List(theirs)) => mine.common_bytes(theirs),
+            (Self::Opaque(mine), Self::Opaque(theirs)) => mine.common_bytes(theirs),
+            _ => 0,
+        }
+    }
+
     /// The value at `slot`, live or not: a freed slot holds the column's default.
     pub fn cell(&self, slot: u32) -> Option<Cell<'_>> {
         let at = slot as usize;
@@ -1103,10 +1121,6 @@ impl Default for Slots {
 }
 
 impl Slots {
-    pub(crate) fn len(&self) -> usize {
-        self.len
-    }
-
     fn held_bytes(&self) -> usize {
         self.buckets.held_bytes()
     }
@@ -1117,6 +1131,11 @@ impl Slots {
 
     fn shared_bytes(&self, other: &Self) -> usize {
         self.buckets.shared_bytes(&other.buckets)
+    }
+
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    fn common_bytes(&self, other: &Self) -> usize {
+        self.buckets.common_bytes(&other.buckets)
     }
 
     fn share(&self) -> io::Result<Self> {
@@ -1525,6 +1544,18 @@ impl Table {
             + self.by_key.shared_bytes(&other.by_key)
     }
 
+    /// The bytes of the pages it holds at the same place as `other`, whatever else holds them.
+    pub fn common_bytes(&self, other: &Self) -> usize {
+        self.keys.common_bytes(&other.keys)
+            + self
+                .columns
+                .iter()
+                .zip(&other.columns)
+                .map(|(mine, theirs)| mine.common_bytes(theirs))
+                .sum::<usize>()
+            + self.by_key.common_bytes(&other.by_key)
+    }
+
     pub fn live(&self) -> &Bits {
         &self.live
     }
@@ -1626,15 +1657,6 @@ impl Table {
             column.grow(slots)?;
         }
         self.slots = slots;
-        Ok(())
-    }
-
-    /// Sets the key held at `slot`, a slot of the table.
-    pub(crate) fn put_key(&mut self, slot: u32, key: u128) -> io::Result<()> {
-        *self
-            .keys
-            .get_mut(slot as usize)?
-            .ok_or_else(|| past(slot))? = key;
         Ok(())
     }
 

@@ -4,7 +4,7 @@
 //! Their histories are prepared ([`history`]); these reads supply only what
 //! the history does not keep. Nothing here reads live memory. Tables a
 //! recording's row frames leave to its native capture are read at the hour
-//! from the capture's change-run index ([`native::fill`]).
+//! from the capture's native recording ([`native::fill`]).
 //!
 //! Exiles are the exile cards' own projection ([`country_people::exiles`])
 //! for the whole world.
@@ -191,9 +191,6 @@ impl Product for PoliticsState {
             PoliticsUnavailable::decl(),
             PoliticsStateReply::decl(),
         ]
-    }
-    fn native_tables() -> Vec<TableId> {
-        [EXILE_TABLES, BALANCE_TABLES].concat()
     }
     fn validate(p: &PoliticsStateParams) -> Result<(), &'static str> {
         p.branch_id

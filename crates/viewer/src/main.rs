@@ -50,7 +50,7 @@ use dashboard::Config;
 /// The system heap slows sharply once the embedded data service holds
 /// gigabytes of scans; every product and render allocation runs faster on this.
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 use {viewer_foundation::map::camera::Camera, viewer_foundation::map::frame::DayNight};
 // names
@@ -119,7 +119,6 @@ Dump only: --presentation-time <seconds>, the engine's vGlobalTime and FoWTime, 
            --settle <seconds>, play that many seconds before the frame so entity events
              (damaged fire and smoke) and particles are under way; renders at the clock plus it
            --building-camera <x,z,height>, repeatable: earlier views whose map buildings the frame keeps
-           --change-runs <index.h4runs>, the map's hours from a change-run index of the replay's native columnar recording
            --demilitarized <state-id,...>, a verification aid that adds the save's demilitarized=yes states
            --debug-borders, the game's console toggle: no gradient fill and no border strips
            --no-water, a verification aid that skips the water plane as the game's debug_water does
@@ -373,9 +372,6 @@ struct Options {
     size: [u32; 2],
     game_dir: Option<PathBuf>,
     user_dir: Option<PathBuf>,
-    /// `--dump --change-runs <index.h4runs>`: a change-run index of the replay's native
-    /// columnar recording, which serves the map's hours in place of the one in its store.
-    change_runs: Option<PathBuf>,
     compare: Option<[PathBuf; 2]>,
     mask: Option<PathBuf>,
     diff: Option<PathBuf>,
@@ -687,10 +683,6 @@ impl Options {
                 }
                 Some("--game-dir") => {
                     options.game_dir =
-                        Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
-                }
-                Some("--change-runs") => {
-                    options.change_runs =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
                 Some("--user-dir") => {
@@ -1240,17 +1232,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         )?;
         // The dump works on this recording alone, with its own executable tables.
         engine_executable::executable_tables::enter(document.content.tables);
-        if let Some(path) = &options.change_runs {
-            let index = replay::columnar_runs::IndexFile::open(path)?;
-            if !document.bind_columnar(index) {
-                return Err(invalid(
-                    "--change-runs: the index does not hold exactly the replay's hours and map tables",
-                )
-                .into());
-            }
-            let (branch, hour) = (document.playback.branch(), document.playback.hour());
-            document.playback.seek(branch, hour)?;
-        }
         // Each frame settles its own flag and portrait decodes, in request
         // order, so a dump lays out the same cells on every run.
         document.icons.lazy.set_background(false);
@@ -2398,6 +2379,7 @@ fn behind_other_windows(viewport: eframe::egui::ViewportBuilder) -> eframe::egui
 }
 
 fn main() -> std::process::ExitCode {
+    engine_heap::return_freed_memory_promptly();
     viewer_foundation::frame_writer::initialize(Instant::now());
     let result = run();
     viewer_foundation::frame_writer::flush();

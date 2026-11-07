@@ -16,6 +16,7 @@ sha2.workspace = true
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 installed-content-core = { workspace = true, features = ["layer-fixtures", "test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }

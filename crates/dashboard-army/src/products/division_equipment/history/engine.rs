@@ -1119,8 +1119,19 @@ struct Looked {
     creator_link: u32,
     origin_link: u32,
     append_variant_name: u8,
-    display_name: Vec<u8>,
-    variant_name: Vec<u8>,
+    /// The display name's length, which `names` holds before the variant name.
+    split: u32,
+    names: Box<[u8]>,
+}
+
+impl Looked {
+    fn display_name(&self) -> &[u8] {
+        &self.names[..self.split as usize]
+    }
+
+    fn variant_name(&self) -> &[u8] {
+        &self.names[self.split as usize..]
+    }
 }
 
 /// A design's definition as kept: the fields a lookup reads where the row holds no other, else
@@ -1182,14 +1193,20 @@ impl Definition {
         if !looked_only(row) {
             return Self::Whole(Arc::clone(row));
         }
-        Self::Looked(Looked {
-            equipment_token: row.equipment_token,
-            creator_link: row.creator_link,
-            origin_link: row.origin_link,
-            append_variant_name: row.append_variant_name,
-            display_name: row.display_name.clone(),
-            variant_name: row.variant_name.clone(),
-        })
+        let mut names = Vec::with_capacity(row.display_name.len() + row.variant_name.len());
+        names.extend_from_slice(&row.display_name);
+        names.extend_from_slice(&row.variant_name);
+        match u32::try_from(row.display_name.len()) {
+            Ok(split) => Self::Looked(Looked {
+                equipment_token: row.equipment_token,
+                creator_link: row.creator_link,
+                origin_link: row.origin_link,
+                append_variant_name: row.append_variant_name,
+                split,
+                names: names.into_boxed_slice(),
+            }),
+            Err(_) => Self::Whole(Arc::clone(row)),
+        }
     }
 
     fn token(&self) -> u32 {
@@ -1207,8 +1224,8 @@ impl Definition {
                 looked.creator_link,
                 looked.origin_link,
                 looked.append_variant_name,
-                &looked.display_name,
-                &looked.variant_name,
+                looked.display_name(),
+                looked.variant_name(),
             ),
             Self::Whole(row) => fields(row),
         }
@@ -1231,8 +1248,8 @@ impl Definition {
                 creator_link: looked.creator_link,
                 origin_link: looked.origin_link,
                 append_variant_name: looked.append_variant_name,
-                display_name: looked.display_name.clone(),
-                variant_name: looked.variant_name.clone(),
+                display_name: looked.display_name().to_vec(),
+                variant_name: looked.variant_name().to_vec(),
                 ..VariantDefinitionRow::default()
             }),
             Self::Whole(row) => Cow::Borrowed(row),
@@ -1240,12 +1257,38 @@ impl Definition {
     }
 }
 
-/// Every design's definition at each designs read still looked up, by design: its versions,
-/// each with the hour of the read that first held it, none where the read did not define it.
+/// A design's versions, each with the hour of the read that first held it, none where the
+/// read did not define it: most designs hold one definition through every read kept.
+#[derive(replay_spool::Spooled)]
+enum Versions {
+    One(i32, Definition),
+    Many(Vec<(i32, Option<Definition>)>),
+}
+
+impl Versions {
+    fn latest(&self) -> Option<&Definition> {
+        match self {
+            Self::One(_, definition) => Some(definition),
+            Self::Many(versions) => versions.last().and_then(|(_, row)| row.as_ref()),
+        }
+    }
+
+    fn at(&self, hour: i32) -> Option<&Definition> {
+        match self {
+            Self::One(at, definition) => (*at <= hour).then_some(definition),
+            Self::Many(versions) => {
+                let after = versions.partition_point(|&(at, _)| at <= hour);
+                versions.get(after.checked_sub(1)?)?.1.as_ref()
+            }
+        }
+    }
+}
+
+/// Every design's definition at each designs read still looked up, by design.
 #[derive(Default)]
 #[derive(replay_spool::Spooled)]
 struct History {
-    versions: FastMap<u64, Vec<(i32, Option<Definition>)>>,
+    versions: FastMap<u64, Versions>,
     /// Designs holding more than one version.
     varied: Vec<u64>,
     /// The equipment tokens the latest definitions name, with how many name each.
@@ -1280,9 +1323,7 @@ impl History {
                 let gone: Vec<u64> = self
                     .versions
                     .iter()
-                    .filter(|&(&id, versions)| {
-                        versions.last().is_some_and(|(_, row)| row.is_some()) && !defined(id)
-                    })
+                    .filter(|&(&id, versions)| versions.latest().is_some() && !defined(id))
                     .map(|(&id, _)| id)
                     .collect();
                 for id in gone {
@@ -1296,11 +1337,7 @@ impl History {
 
     /// Design `id`'s definition from `hour` on; a version only where it differs.
     fn set(&mut self, id: u64, row: Option<&Arc<VariantDefinitionRow>>, hour: i32) {
-        let latest = self
-            .versions
-            .get(&id)
-            .and_then(|versions| versions.last())
-            .and_then(|(_, row)| row.as_ref());
+        let latest = self.versions.get(&id).and_then(Versions::latest);
         let same = match (latest, row) {
             (None, None) => true,
             (Some(latest), Some(row)) => latest.is(row),
@@ -1320,23 +1357,45 @@ impl History {
             *self.named.entry(row.equipment_token).or_default() += 1;
         }
         let row = row.map(Definition::of);
-        let versions = self.versions.entry(id).or_default();
-        match versions.last_mut() {
-            Some((at, held)) if *at == hour => *held = row,
-            _ => {
-                if versions.len() == 1 {
-                    self.varied.push(id);
-                }
-                versions.push((hour, row));
+        let Some(versions) = self.versions.get_mut(&id) else {
+            // No version yet and none now holds nothing: `same` returned above.
+            if let Some(row) = row {
+                self.versions.insert(id, Versions::One(hour, row));
             }
+            return;
+        };
+        match versions {
+            Versions::One(at, _) if *at == hour => match row {
+                Some(row) => *versions = Versions::One(hour, row),
+                // Undefined from every read it was defined at: as if never defined.
+                None => {
+                    self.versions.remove(&id);
+                }
+            },
+            Versions::One(..) => {
+                let Versions::One(at, held) =
+                    std::mem::replace(versions, Versions::Many(Vec::new()))
+                else {
+                    unreachable!("matched as one version")
+                };
+                *versions = Versions::Many(vec![(at, Some(held)), (hour, row)]);
+                self.varied.push(id);
+            }
+            Versions::Many(versions) => match versions.last_mut() {
+                Some((at, held)) if *at == hour => *held = row,
+                _ => {
+                    if versions.len() == 1 {
+                        self.varied.push(id);
+                    }
+                    versions.push((hour, row));
+                }
+            },
         }
     }
 
     /// Design `id`'s definition at the read at `hour`.
     fn at(&self, id: u64, hour: i32) -> Option<&Definition> {
-        let versions = self.versions.get(&id)?;
-        let after = versions.partition_point(|&(at, _)| at <= hour);
-        versions.get(after.checked_sub(1)?)?.1.as_ref()
+        self.versions.get(&id)?.at(hour)
     }
 
     /// The rows of `tokens`, a read's, that the latest definitions name: the last read's rows
@@ -1365,7 +1424,7 @@ impl History {
     fn keep(&mut self, oldest: Option<i32>) {
         let versions = &mut self.versions;
         self.varied.retain(|id| {
-            let Some(held) = versions.get_mut(id) else {
+            let Some(Versions::Many(held)) = versions.get_mut(id) else {
                 return false;
             };
             let first = match oldest {
@@ -1376,8 +1435,13 @@ impl History {
             if held.len() > 1 {
                 return true;
             }
-            if held.first().is_some_and(|(_, row)| row.is_none()) {
-                versions.remove(id);
+            match held.pop() {
+                Some((at, Some(definition))) => {
+                    versions.insert(*id, Versions::One(at, definition));
+                }
+                _ => {
+                    versions.remove(id);
+                }
             }
             false
         });

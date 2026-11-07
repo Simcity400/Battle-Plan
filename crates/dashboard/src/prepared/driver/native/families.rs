@@ -1164,6 +1164,10 @@ impl Native for Leaders<'_> {
         Ok(unit_leaders::columnar::needs(self.binding.catalogue))
     }
 
+    fn counts(&self) -> Vec<(&'static str, u64)> {
+        unit_leaders::columnar::FLOOR.report()
+    }
+
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {
         Ok(unit_leaders::columnar::Projector::starting(
             (self.replay.format, self.replay.capture_mode),
@@ -4284,6 +4288,10 @@ impl Native for LinesJob<'_> {
 
     fn needs(&self) -> io::Result<Needs> {
         production_lines::needs(self.icons.is_some())
+    }
+
+    fn counts(&self) -> Vec<(&'static str, u64)> {
+        production_lines::FLOOR.report()
     }
 
     fn operator(&self, _: &Segment) -> io::Result<Self::Operator> {

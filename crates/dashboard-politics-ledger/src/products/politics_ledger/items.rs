@@ -149,18 +149,13 @@ const CHARACTER: u64 = dashboard_text::identity::CHARACTER_IDENTITY;
 const COST_MODIFIER: u64 = mask::<ModifierDefinitionRow>(&["name_key", "argument"]);
 const LITERAL_COLUMN: usize = column::<LexicalTokenRow>("literal");
 
-/// The tables an hour's scripted text and trigger conditions read: the kit's decoded rows for
-/// scripted text and the scripted content's trigger world, which read them alone, and the
-/// hour's [`HourFrame`] for the trigger world that reads [`Tables`]. The one seam to move as
-/// those readers move.
+/// The tables an hour's scripted text and trigger conditions read: the walk's views at its own
+/// hour, with its lexer folds, or the copies carried from the hour before.
+#[derive(Clone, Copy)]
 pub(super) enum TextFrame<'h> {
-    /// The walk's own hour: its frame asked only once an item reaches scripted text, and given
-    /// back with the hour.
     Walked {
-        world: &'h dashboard_world::World,
-        state: &'h replay::segments::State,
         views: ColumnFrame<'h>,
-        frame: std::cell::OnceCell<io::Result<DecodedFrame>>,
+        lexicon: Option<&'h dashboard_world::Lexicon>,
     },
     /// The hour before, as the copies carried from it hold it.
     Carried(&'h DecodedFrame),
@@ -172,53 +167,26 @@ impl<'h> TextFrame<'h> {
         state: &'h replay::segments::State,
     ) -> Self {
         Self::Walked {
-            world,
-            state,
             views: world.columns(state),
-            frame: std::cell::OnceCell::new(),
+            lexicon: world.lexicon(),
         }
     }
 
-    /// The hour's tables for the readers behind the seam that read [`Tables`]: the walk's
-    /// views, or the copies.
-    fn tables(&self) -> HourFrame<'_> {
-        match self {
-            Self::Walked { views, .. } => HourFrame::Walked(*views),
-            Self::Carried(frame) => HourFrame::from(*frame),
+    /// The hour's tables: the walk's views, or the copies.
+    fn tables(&self) -> HourFrame<'h> {
+        match *self {
+            Self::Walked { views, .. } => HourFrame::Walked(views),
+            Self::Carried(frame) => HourFrame::from(frame),
         }
     }
 
-    /// The frame, asked of the walk at the first call; none where the ask failed.
-    fn frame(&self) -> Option<&DecodedFrame> {
-        match self {
-            Self::Walked {
-                world,
-                state,
-                frame,
-                ..
-            } => frame
-                .get_or_init(|| world.frame(state, super::facts::kit()))
-                .as_ref()
-                .ok(),
-            Self::Carried(frame) => Some(*frame),
+    /// The walk's lexer folds; none for the copies.
+    fn lexicon(&self) -> Option<&'h dashboard_world::Lexicon> {
+        match *self {
+            Self::Walked { lexicon, .. } => lexicon,
+            Self::Carried(_) => None,
         }
     }
-
-    /// The ask's failure, where it was made and failed.
-    pub(super) fn finish(self) -> io::Result<()> {
-        match self {
-            Self::Walked { frame, .. } => match frame.into_inner() {
-                Some(Err(error)) => Err(error),
-                _ => Ok(()),
-            },
-            Self::Carried(_) => Ok(()),
-        }
-    }
-}
-
-/// The decoded frame `text` gives, asked only here.
-fn decoded<'a>(text: Option<&'a TextFrame<'a>>) -> Option<&'a DecodedFrame> {
-    text.and_then(TextFrame::frame)
 }
 
 /// `table` of `frame` when complete, each row holding the fields `mask` names.
@@ -523,7 +491,7 @@ impl<'a> FrameTexts<'a> {
     fn scripted(
         &self,
         content: &'a PoliticsContent,
-        frame: &'a DecodedFrame,
+        frame: TextFrame<'a>,
         root: u32,
     ) -> Result<std::rc::Rc<dashboard_text::scripted_text::ScriptedText<'a>>, String> {
         if let Some(scripted) = self.scripted.borrow().get(&root) {
@@ -532,12 +500,13 @@ impl<'a> FrameTexts<'a> {
         let scripted = if let Some(existing) = self.scripted.borrow().values().next() {
             existing.for_root(root)
         } else {
-            dashboard_text::scripted_text::ScriptedText::new(
-                frame,
+            dashboard_text::scripted_text::ScriptedText::new_in(
+                frame.tables(),
                 &content.catalogue.localisation,
                 content.catalogue.scripted_content()?,
                 root,
             )
+            .with_lexicon(frame.lexicon())
         };
         let scripted = std::rc::Rc::new(scripted);
         self.scripted
@@ -592,7 +561,7 @@ fn localise_at<'a>(
     let slot = slot.ok_or_else(|| {
         format!("localisation {key}: country identity is unavailable at action hour")
     })?;
-    let frame = decoded(frame)
+    let frame = *frame
         .ok_or_else(|| format!("localisation {key}: its event-hour frame is unavailable"))?;
     let scripted = texts.scripted(content, frame, slot)?;
     if let Some((decision, selects_state)) = decision {
@@ -606,14 +575,11 @@ fn localise_at<'a>(
         let mut scopes = EventScopes::new(vec![root]);
         let mut unknown_seeds = BTreeSet::from([0]);
         if let Some(raw) = decision.identity.target_country {
-            let target = frame
-                .complete::<tables::CountryLinks>()
-                .ok()
-                .and_then(|rows| {
-                    rows.binary_search_by_key(&raw, |row| row.id)
-                        .ok()
-                        .map(|index| rows[index].canonical_slot)
-                });
+            let target = row(
+                complete::<_, tables::CountryLinks>(&frame.tables(), LINK),
+                u128::from(raw),
+            )
+            .map(|link| link.canonical_slot);
             if let Some(target) = target {
                 scopes.scopes[0].from = Link::Scope(1);
                 let mut from = EventScope::of(EventObject::Country(target));
@@ -627,16 +593,10 @@ fn localise_at<'a>(
             }
         } else if let Some(state) = decision.identity.target_state {
             let present = state > 0
-                && match &*frame.tables[TableId::States.index()] {
-                    replay_frame::frame::TableView::Complete(rows)
-                    | replay_frame::frame::TableView::Truncated { rows, .. } => {
-                        rows.rows::<tables::States>().is_some_and(|states| {
-                            states.binary_search_by_key(&state, |row| row.id).is_ok()
-                        })
-                    }
-                    replay_frame::frame::TableView::Unavailable { .. }
-                    | replay_frame::frame::TableView::NotRecorded { .. } => false,
-                };
+                && frame
+                    .tables()
+                    .rows::<tables::States>(0)
+                    .is_some_and(|states| states.contains(u128::from(state)));
             if present {
                 scopes.scopes[0].from = Link::Scope(1);
                 let mut from = EventScope::of(EventObject::State(state));
@@ -680,36 +640,31 @@ fn localise_at<'a>(
     Ok(content.catalogue.localise_in(key, &scripted))
 }
 
-/// The hour's trigger world: the scripted content's, which reads decoded rows, else the
-/// content's own triggers on the hour's tables.
+/// The hour's trigger world: the scripted content's, else the content's own triggers on the
+/// hour's tables.
 fn event_world<'a>(
     content: &'a PoliticsContent,
     text: &'a TextFrame<'a>,
 ) -> Result<dashboard_text::triggers::World<'a>, String> {
-    match content.catalogue.scripted_content().and_then(|scripted| {
-        let frame = text
-            .frame()
-            .ok_or_else(|| "its event-hour frame is unavailable".to_owned())?;
-        scripted.recorded_world(frame)
-    }) {
-        Ok(world) => Ok(world),
+    let world = match content
+        .catalogue
+        .scripted_content()
+        .and_then(|scripted| scripted.recorded_world_in(text.tables()))
+    {
+        Ok(world) => world,
         Err(_) => {
-            // Decoded until the trigger kit's remaining readers read views: a walked world
-            // lends them nothing.
-            let frame = text
-                .frame()
-                .ok_or_else(|| "its event-hour frame is unavailable".to_owned())?;
             let power = content.power_content()?;
-            Ok(dashboard_text::triggers::World::read(
-                frame,
+            dashboard_text::triggers::World::read_in(
+                text.tables(),
                 dashboard_text::triggers::ContentFacts::content_only(
                     &power.dlcs,
                     &power.triggers,
                     &power.aliases,
                 ),
-            ))
+            )
         }
-    }
+    };
+    Ok(world.with_lexicon(text.lexicon()))
 }
 
 /// The token a row's item records: its fact, or its recorded key.
@@ -743,7 +698,7 @@ fn event_text<'a>(
             let reference = row.identity.object_reference.ok_or_else(|| {
                 "daily organisation cost: recorded reference is unavailable".to_owned()
             })?;
-            let frame = decoded(frame).ok_or_else(|| {
+            let frame = *frame.ok_or_else(|| {
                 format!("organisation {reference:#x}: its action-hour frame is unavailable")
             })?;
             let root = own.map_or(0, |own| own.naming.slot);

@@ -2,9 +2,10 @@
 //! through its last footer whose root verifies, a whole extent at a time.
 
 use super::invalid;
+use engine_allocation::zstd::{Decompressor, Error, Holder};
 use replay_columnar::envelope::{self, Extent, Kind};
 use std::{fs::File, io};
-use zstd::zstd_safe::{self, DCtx};
+use zstd::zstd_safe;
 
 /// The blocks a footer is searched for and a file's root hashed in.
 const BLOCK: usize = 64 << 10;
@@ -261,24 +262,26 @@ fn check(extent: &Extent, stored: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+static EXTENTS: Holder = Holder::new("zstd: walker extents");
+
 /// A zstd context, and the buffer a file's stored extents are read into, reused extent after
 /// extent.
 pub(super) struct Decoder {
-    context: DCtx<'static>,
+    context: Decompressor,
     stored: Vec<u8>,
 }
 
 impl Decoder {
     pub(super) fn new() -> io::Result<Self> {
         Ok(Self {
-            context: DCtx::try_create().ok_or_else(engine_allocation::oom)?,
+            context: Decompressor::new(&EXTENTS)?,
             stored: Vec::new(),
         })
     }
 
     /// The bytes its zstd context allocated.
     pub(super) fn context(&self) -> usize {
-        self.context.sizeof()
+        self.context.size()
     }
 
     /// The stored bytes it reads an extent into without growing.
@@ -375,7 +378,7 @@ impl Decoder {
 /// Appends `stored`, `extent`'s bytes, decoded to `out` with `base` as its prefix when it was
 /// compressed with one, its digest and frame's length checked first.
 fn decode(
-    context: &mut DCtx<'static>,
+    context: &mut Decompressor,
     extent: &Extent,
     stored: &[u8],
     base: Option<&[u8]>,
@@ -387,20 +390,11 @@ fn decode(
         return Err(invalid(TRAILING));
     }
     engine_allocation::reserve(out, raw)?;
-    let start = out.len();
-    let mut into = std::io::Cursor::new(&mut *out);
-    into.set_position(start as u64);
     let written = match base {
-        None => context.decompress(&mut into, stored),
-        // A prefix serves the one frame it is given for, on a context of its own.
-        Some(base) => {
-            let mut context = DCtx::try_create().ok_or_else(engine_allocation::oom)?;
-            context
-                .ref_prefix(base)
-                .and_then(|_| context.decompress(&mut into, stored))
-        }
+        None => context.decompress_append(stored, out),
+        Some(base) => context.decompress_append_prefixed(base, stored, out),
     }
-    .map_err(|code| invalid(zstd_safe::get_error_name(code)))?;
+    .map_err(Error::invalid)?;
     if written != raw {
         return Err(invalid("decompresses to another length"));
     }

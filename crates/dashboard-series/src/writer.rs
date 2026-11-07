@@ -145,8 +145,9 @@ impl Columns {
 pub struct Tree {
     identity: Identity,
     nodes: Vec<NodeRef>,
-    /// What merging each of `nodes` reads, kept from when it was written until it is merged;
-    /// None for a node of a resumed hierarchy, read back when it merges.
+    /// What merging each of `nodes` reads: its header and held runs kept from when it was
+    /// written until it is merged, its pages read back then; None for a node of a resumed
+    /// hierarchy, read back whole when it merges.
     built: Vec<Option<Built>>,
     sealed: u64,
 }
@@ -174,7 +175,13 @@ impl Tree {
         self.built.push(Some(sealed.built));
         let mut undo = Vec::new();
         match hierarchy::settle(io, &mut self.nodes, &mut self.built, &mut undo) {
-            Ok(()) => Ok(undo),
+            Ok(()) => {
+                // Written pages are read back when they merge, every 16 segments a level.
+                for built in self.built.iter_mut().flatten() {
+                    built.let_go();
+                }
+                Ok(undo)
+            }
             Err(error) => {
                 self.undo(undo);
                 Err(error)
@@ -251,7 +258,7 @@ pub struct Writer {
     start: Option<i32>,
     sequences: u64,
     heap: u64,
-    keys: Vec<Edge>,
+    keys: Chunked<Edge>,
     specs: HashMap<SpecKey, u64>,
     domain_ids: HashMap<u64, u32>,
     domains: Vec<DomainEdge>,
@@ -342,7 +349,7 @@ impl Writer {
             start: Some(first),
             sequences: 0,
             heap: 0,
-            keys: Vec::new(),
+            keys: Chunked::default(),
             specs: HashMap::new(),
             domain_ids: HashMap::new(),
             domains: Vec::new(),
@@ -437,13 +444,12 @@ impl Writer {
             },
             definition.key.id,
         );
-        engine_allocation::reserve(&mut self.keys, 1)?;
         self.keys.push(Edge::new(
             definition.mode,
             definition.decimals,
             definition.domain,
             NONE,
-        ));
+        ))?;
         if definition.domain != NONE {
             self.domain_index(definition.domain)?;
         }
@@ -582,7 +588,7 @@ impl Writer {
         self.columns.definitions.reserve(1)?;
         {
             let _memory = keying();
-            engine_allocation::reserve(&mut self.keys, 1)?;
+            self.keys.reserve(1)?;
             engine_allocation::reserve_map(&mut self.specs, 1)?;
         }
         self.columns.definitions.put(Definition {
@@ -598,7 +604,7 @@ impl Writer {
             domain: NONE,
         });
         self.keys
-            .push(Edge::new(mode, decimals, NONE, self.segment));
+            .put(Edge::new(mode, decimals, NONE, self.segment));
         self.specs.insert(lookup, id);
         self.state.next_key = next;
         Ok(id)

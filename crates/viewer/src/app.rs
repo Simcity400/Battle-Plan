@@ -368,11 +368,6 @@ struct ShownHour {
     hour: i32,
     /// Why the hour draws nothing: a recorded gap or a failed builder part.
     error: Option<String>,
-    /// Why the hour draws nothing yet, no failure: its session is still being recorded, and
-    /// the map holds its hours once the session's native recording lands; or preparation has
-    /// not written the change-run index its map is read from (`awaiting_index`).
-    pending: Option<String>,
-    awaiting_index: bool,
     political_warnings: Vec<String>,
     /// The battle plan's refusals and missing inputs ([`viewer_foundation::map::ribbon_content::OrderReport::warnings`]).
     plan_warnings: Vec<String>,
@@ -2085,15 +2080,7 @@ impl Viewer {
     fn picture_ready(&self) -> bool {
         self.shown
             .as_ref()
-            .is_some_and(|shown| shown.error.is_none() && shown.pending.is_none())
-    }
-
-    /// Why the hour on screen, of this epoch, draws nothing yet, when it is not indexed yet.
-    fn shown_pending(&self) -> Option<String> {
-        self.shown
-            .as_ref()
-            .filter(|shown| shown.epoch == self.epoch)
-            .and_then(|shown| shown.pending.clone())
+            .is_some_and(|shown| shown.error.is_none())
     }
 
     /// Whether the frame drawn answers `target` with a built hour of this
@@ -2103,7 +2090,6 @@ impl Viewer {
             !self.animation_seek
                 && shown.epoch == self.epoch
                 && shown.error.is_none()
-                && shown.pending.is_none()
                 && self.rendered.is_some_and(|rendered| {
                     (rendered.branch, rendered.hour) == (shown.branch, shown.hour)
                         && presentation_matches(rendered, target, playing)
@@ -2148,15 +2134,6 @@ impl Viewer {
             .playing
             .then(|| self.held_back.as_ref().map(|(_, reason)| reason.clone()))
             .flatten();
-        let pending = self
-            .shown
-            .as_ref()
-            .filter(|shown| {
-                shown.epoch == self.epoch
-                    && shown.branch.to_string() == target.branch_id
-                    && shown.hour == target.hour
-            })
-            .and_then(|shown| shown.pending.clone());
         dashboard::protocol::DashboardMapState {
             id: target.id.clone(),
             source_id: Some(target.source_id.clone()),
@@ -2166,11 +2143,10 @@ impl Viewer {
             fraction: self.rendered.map(|shown| shown.fraction as f32),
             sequence: self.rendered_sequence,
             requested_sequence: target.sequence,
-            loading: error.is_none() && pending.is_none() && !ready,
+            loading: error.is_none() && !ready,
             behind,
             behind_reason,
             error,
-            pending,
         }
     }
 
@@ -2462,20 +2438,6 @@ impl Viewer {
                     .map_err(|error| error.to_string())?;
                     if let Some(source) = &source {
                         document.bind_source(source);
-                    }
-                    if options.window_dump
-                        && let Some(path) = &options.change_runs
-                    {
-                        let index = replay::columnar_runs::IndexFile::open(path)
-                            .map_err(|error| error.to_string())?;
-                        if !document.bind_columnar(index) {
-                            return Err("--change-runs: the index does not hold exactly the replay's hours and map tables".into());
-                        }
-                        let (branch, hour) = (document.playback.branch(), document.playback.hour());
-                        document
-                            .playback
-                            .seek(branch, hour)
-                            .map_err(|error| error.to_string())?;
                     }
                     let decoder = resources
                         .as_ref()
@@ -3636,7 +3598,11 @@ impl Viewer {
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
     ) -> Result<(), String> {
-        let result = self.draw_map(ui, state, document);
+        // The frame's scope was taken before a document loaded this frame could be installed.
+        let tables = document.content.tables;
+        let result = engine_executable::executable_tables::scope(tables, || {
+            self.draw_map(ui, state, document)
+        });
         if !self.drew_frame {
             self.silence_unshown();
         }
@@ -3705,25 +3671,6 @@ impl Viewer {
             self.rendered = None;
             ui.centered_and_justified(|ui| {
                 ui.colored_label(egui::Color32::LIGHT_RED, error);
-            });
-            return Ok(());
-        }
-        if let Some(pending) = self.shown_pending() {
-            // Built before preparation wrote the map's index: build it again once it has.
-            if self.shown.as_ref().is_some_and(|shown| shown.awaiting_index) {
-                let waiting = document.playback.map_binding().is_some_and(|binding| {
-                    binding.index_state() == crate::map_binding::IndexState::Preparing
-                });
-                if waiting {
-                    ui.ctx().request_repaint_after(Duration::from_secs(1));
-                } else if let Some(hours) = &mut self.hours {
-                    hours.seek();
-                    ui.ctx().request_repaint();
-                }
-            }
-            self.rendered = None;
-            ui.centered_and_justified(|ui| {
-                ui.label(format!("Not indexed yet: {pending}"));
             });
             return Ok(());
         }
@@ -7394,8 +7341,6 @@ pub(crate) mod tests {
             branch: 1,
             hour: 10,
             error: None,
-            pending: None,
-            awaiting_index: false,
             political_warnings: Vec::new(),
             plan_warnings: Vec::new(),
             building_warnings: Vec::new(),

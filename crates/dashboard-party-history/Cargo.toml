@@ -30,7 +30,7 @@ serde_json.workspace = true
 ts-rs = "11.1"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 engine-executable.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
 uuid = { workspace = true, features = ["v4"] }

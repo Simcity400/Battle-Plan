@@ -13,16 +13,16 @@ pub(crate) struct Allocator;
 
 unsafe impl GlobalAlloc for Allocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        unsafe { mimalloc::MiMalloc.alloc(layout) }
+        unsafe { engine_heap::Heap.alloc(layout) }
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        unsafe { mimalloc::MiMalloc.alloc_zeroed(layout) }
+        unsafe { engine_heap::Heap.alloc_zeroed(layout) }
     }
     unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
-        unsafe { mimalloc::MiMalloc.realloc(pointer, layout, size) }
+        unsafe { engine_heap::Heap.realloc(pointer, layout, size) }
     }
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-        unsafe { mimalloc::MiMalloc.dealloc(pointer, layout) };
+        unsafe { engine_heap::Heap.dealloc(pointer, layout) };
         let _ = WATCH.try_with(|watch| {
             let (address, freed) = watch.get();
             let start = pointer as usize;

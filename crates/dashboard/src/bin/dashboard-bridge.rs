@@ -16,7 +16,7 @@ use std::{
 
 /// The data service as the viewer hosts it (see the viewer's `main.rs`).
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
@@ -79,7 +79,7 @@ fn answer(id: String, payload: String) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dashboard::allocator::return_freed_memory_promptly();
+    engine_heap::return_freed_memory_promptly();
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     if arguments
         .first()

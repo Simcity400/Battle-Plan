@@ -61,6 +61,7 @@ collector-timing = { workspace = true, features = ["test-support"] }
 [target.'cfg(all())'.dev-dependencies]
 collector-intel = { workspace = true, features = ["default", "flag_changes", "opinion_changes", "test-support", "variable_changes"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }

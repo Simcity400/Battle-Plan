@@ -130,6 +130,7 @@ fn endpoint(read: Option<i32>, restart: Option<i32>) -> facts::Endpoint {
         ranking_offset: 0,
         ranking_len: 0,
         keyframe: true,
+        continues: false,
     }
 }
 

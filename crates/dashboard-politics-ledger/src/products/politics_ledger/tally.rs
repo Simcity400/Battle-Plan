@@ -503,7 +503,43 @@ pub struct Rollups {
     pub days: FastMap<(i32, Field), Day>,
     /// Each open day's latest daily gains, by day and capture identity.
     pub daily: FastMap<(i32, u32, u64), [GainDay; 2]>,
-    pub open: [std::collections::BTreeMap<i32, Totals>; 3],
+    open: std::collections::BTreeMap<i32, Totals>,
+    /// Upper levels change only as a period below closes into them, so they stay packed.
+    upper: [std::collections::BTreeMap<i32, Packed>; 2],
+}
+
+/// Totals as saved ([`Out::totals`]); fields are ordered, so equal totals are equal bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
+struct Packed(Box<[u8]>);
+
+impl Packed {
+    fn of(totals: &Totals) -> Self {
+        let mut bytes = Vec::new();
+        Out(&mut bytes).totals(totals);
+        Self(bytes.into_boxed_slice())
+    }
+
+    fn totals(&self) -> io::Result<Totals> {
+        let mut input = Decode::new(&self.0);
+        let held = totals(&mut input)?;
+        input.end()?;
+        Ok(held)
+    }
+
+    fn merge_into(
+        level: &mut std::collections::BTreeMap<i32, Self>,
+        index: i32,
+        more: &Totals,
+    ) -> io::Result<()> {
+        let mut held = match level.get(&index) {
+            Some(packed) => packed.totals()?,
+            None => Totals::default(),
+        };
+        held.merge(more)?;
+        level.insert(index, Self::of(&held));
+        Ok(())
+    }
 }
 
 impl Rollups {
@@ -521,7 +557,7 @@ impl Rollups {
             return Ok(());
         }
         let (index, _, _) = period(0, contribution.hour.div_euclid(24));
-        let totals = self.open[0].entry(index).or_default();
+        let totals = self.open.entry(index).or_default();
         totals.read = totals.read.max(contribution.read);
         totals
             .entries
@@ -536,7 +572,7 @@ impl Rollups {
     /// field) a cost whose application is not recorded.
     pub fn count(&mut self, field: Option<Field>, hour: i32, credit: bool) {
         let (index, _, _) = period(0, hour.div_euclid(24));
-        let totals = self.open[0].entry(index).or_default();
+        let totals = self.open.entry(index).or_default();
         match field {
             Some(field) => {
                 let entry = totals.entries.entry(field).or_default();
@@ -558,14 +594,16 @@ impl Rollups {
     /// Every period whose days are all settled before `settled`, lowest level first, with its
     /// level, index and totals: each folded into the level above it.
     pub fn settle(&mut self, settled: i32) -> io::Result<Vec<(usize, i32, Totals)>> {
-        let Self { days, daily, open } = self;
+        let Self {
+            days, daily, open, ..
+        } = self;
         let mut failed = None;
         days.retain(|&(at, field), day| {
             if at >= settled {
                 return true;
             }
             let (index, _, _) = period(0, day.day.div_euclid(24));
-            let totals = open[0].entry(index).or_default();
+            let totals = open.entry(index).or_default();
             totals.read = totals.read.max(day.day + day.lag);
             if let Err(error) = totals.entries.entry(field).or_default().add_day(day) {
                 failed.get_or_insert(error);
@@ -580,7 +618,7 @@ impl Rollups {
                 return true;
             }
             let (index, _, _) = period(0, at.div_euclid(24));
-            let totals = open[0].entry(index).or_default();
+            let totals = open.entry(index).or_default();
             for (gain, day) in totals.gains.iter_mut().zip(*gains) {
                 if let Err(error) = gain.add(day) {
                     failed.get_or_insert(error);
@@ -593,20 +631,25 @@ impl Rollups {
         }
         let mut closed = Vec::new();
         let settled_day = settled.div_euclid(24);
-        for level in 0..3 {
-            let done: Vec<i32> = self.open[level]
-                .keys()
-                .copied()
-                .filter(|&index| index * PERIOD_DAYS[level] + PERIOD_DAYS[level] <= settled_day)
-                .collect();
+        let ended = |level: usize, index: i32| {
+            index * PERIOD_DAYS[level] + PERIOD_DAYS[level] <= settled_day
+        };
+        let done: Vec<i32> = self.open.keys().copied().filter(|&index| ended(0, index)).collect();
+        for index in done {
+            let totals = self.open.remove(&index).expect("an open period");
+            let (above, _, _) = period(1, index * PERIOD_DAYS[0]);
+            Packed::merge_into(&mut self.upper[0], above, &totals)?;
+            closed.push((0, index, totals));
+        }
+        for level in 1..3 {
+            let (below, higher) = self.upper.split_at_mut(level);
+            let held = &mut below[level - 1];
+            let done: Vec<i32> = held.keys().copied().filter(|&index| ended(level, index)).collect();
             for index in done {
-                let totals = self.open[level].remove(&index).expect("an open period");
-                if level + 1 < 3 {
+                let totals = held.remove(&index).expect("an open period").totals()?;
+                if let Some(higher) = higher.first_mut() {
                     let (above, _, _) = period(level + 1, index * PERIOD_DAYS[level]);
-                    self.open[level + 1]
-                        .entry(above)
-                        .or_default()
-                        .merge(&totals)?;
+                    Packed::merge_into(higher, above, &totals)?;
                 }
                 closed.push((level, index, totals));
             }
@@ -617,19 +660,29 @@ impl Rollups {
 
 impl Rollups {
     pub fn is_empty(&self) -> bool {
-        self.days.is_empty() && self.daily.is_empty() && self.open.iter().all(|open| open.is_empty())
+        self.days.is_empty()
+            && self.daily.is_empty()
+            && self.open.is_empty()
+            && self.upper.iter().all(|upper| upper.is_empty())
     }
 
     /// The least settled frontier at which [`Self::settle`] would change anything.
     pub fn due(&self) -> Option<i32> {
         let days = self.days.keys().map(|&(at, _)| at.saturating_add(1));
         let daily = self.daily.keys().map(|&(at, _, _)| at.saturating_add(1));
-        let periods = self.open.iter().enumerate().filter_map(|(level, open)| {
-            let (&index, _) = open.first_key_value()?;
-            (index + 1)
+        let first = |level: usize, index: Option<&i32>| {
+            (index? + 1)
                 .checked_mul(PERIOD_DAYS[level])
                 .and_then(|day| day.checked_mul(24))
-        });
+        };
+        let periods = std::iter::once(first(0, self.open.keys().next()))
+            .chain(
+                self.upper
+                    .iter()
+                    .enumerate()
+                    .map(|(level, upper)| first(level + 1, upper.keys().next())),
+            )
+            .flatten();
         days.chain(daily).chain(periods).min()
     }
 
@@ -676,14 +729,22 @@ impl Rollups {
 
     /// Takes in `later`, the rollups of every payment recorded after these.
     pub fn merge(&mut self, later: Self) -> io::Result<()> {
-        let Self { days, daily, open } = later;
+        let Self {
+            days,
+            daily,
+            open,
+            upper,
+        } = later;
         self.join(Split {
             days: days.into_iter().collect(),
             daily: daily.into_iter().collect(),
         })?;
-        for (level, open) in open.into_iter().enumerate() {
-            for (index, totals) in open {
-                self.open[level].entry(index).or_default().merge(&totals)?;
+        for (index, totals) in open {
+            self.open.entry(index).or_default().merge(&totals)?;
+        }
+        for (level, upper) in upper.into_iter().enumerate() {
+            for (index, packed) in upper {
+                Packed::merge_into(&mut self.upper[level], index, &packed.totals()?)?;
             }
         }
         Ok(())
@@ -696,16 +757,21 @@ impl Rollups {
         for ((at, field), day) in self.days {
             days.insert((at, (item(field.0)?, field.1, field.2)), day);
         }
-        let mut open: [std::collections::BTreeMap<i32, Totals>; 3] = Default::default();
-        for (level, held) in self.open.into_iter().enumerate() {
-            for (index, totals) in held {
-                open[level].insert(index, totals.remap(item)?);
+        let mut open = std::collections::BTreeMap::new();
+        for (index, totals) in self.open {
+            open.insert(index, totals.remap(item)?);
+        }
+        let mut upper: [std::collections::BTreeMap<i32, Packed>; 2] = Default::default();
+        for (level, held) in self.upper.into_iter().enumerate() {
+            for (index, packed) in held {
+                upper[level].insert(index, Packed::of(&packed.totals()?.remap(item)?));
             }
         }
         Ok(Self {
             days,
             daily: self.daily,
             open,
+            upper,
         })
     }
 }
@@ -985,11 +1051,16 @@ impl Rollups {
                 out.gain_day(gain);
             }
         }
-        for open in &self.open {
-            out.len(open.len());
-            for (&index, totals) in open {
+        out.len(self.open.len());
+        for (&index, totals) in &self.open {
+            out.int(index);
+            out.totals(totals);
+        }
+        for upper in &self.upper {
+            out.len(upper.len());
+            for (&index, packed) in upper {
                 out.int(index);
-                out.totals(totals);
+                out.0.extend_from_slice(&packed.0);
             }
         }
     }
@@ -1006,10 +1077,14 @@ impl Rollups {
             let key = (int(input)?, word(input)?, input.var()?);
             rollups.daily.insert(key, [gain_day(input)?, gain_day(input)?]);
         }
-        for open in &mut rollups.open {
+        for _ in 0..len(input)? {
+            let index = int(input)?;
+            rollups.open.insert(index, totals(input)?);
+        }
+        for upper in &mut rollups.upper {
             for _ in 0..len(input)? {
                 let index = int(input)?;
-                open.insert(index, totals(input)?);
+                upper.insert(index, Packed::of(&totals(input)?));
             }
         }
         Ok(rollups)

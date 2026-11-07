@@ -811,10 +811,11 @@ pub(crate) fn select_with(
             None => index.final_names(classes, variant),
         }
     };
+    let (first_hour, last_hour) = index.span(current);
     let mut selection = page(
         Frame {
-            first_hour: endpoint.first_hour,
-            last_hour: endpoint.last_hour,
+            first_hour,
+            last_hour,
             kinds: kinds(index, classes),
             handles: &index.variants,
             names: &names,
@@ -851,7 +852,7 @@ fn joined(index: &Index, ordinal: u64, state: &State, holder: u32) -> io::Result
         return Ok(None);
     };
     let read = row.read_of(&equipment.head, false)?;
-    if !source.rocket_joined || index.revoked(holder, &equipment.head, read, row.first_hour) {
+    if !source.rocket_joined || index.revoked(holder, &equipment.head, read, index.span(ordinal).0) {
         return Ok(None);
     }
     Ok(index.endpoint_at(read))

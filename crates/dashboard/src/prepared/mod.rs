@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 pub(crate) use dashboard_base::prepared::observer_tests;
-pub mod change_runs;
 pub mod driver;
 pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, prefix, series};
 pub mod pipeline;

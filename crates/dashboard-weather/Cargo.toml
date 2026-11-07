@@ -29,7 +29,7 @@ serde_json.workspace = true
 ts-rs = "11.1"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 dashboard-base = { workspace = true, features = ["test-support"] }
 dashboard-keyed = { workspace = true, features = ["test-support"] }
 store = { path = "../store", features = ["test-support"] }

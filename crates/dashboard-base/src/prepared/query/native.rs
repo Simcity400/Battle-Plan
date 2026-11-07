@@ -1,23 +1,20 @@
 //! The tables a recording's row frames leave to its native capture, read at a query's hour from
-//! the change-run index its preparation keeps of that capture ([`index_path`]), so an hour's
-//! reader sees them as its row frames would have held them; and the refusal of what no native
-//! reader serves yet ([`unprepared`]).
+//! the recording's runs in place ([`Natives`]), so an hour's reader sees them as its row frames
+//! would have held them; and the refusal of what no native reader serves yet ([`unprepared`]).
 
 use crate::Source;
 use replay::{
-    columnar_runs::{IndexFile, Snapshots},
     campaign::Parallel,
+    columnar_natives::{Cursor, Natives},
 };
 use replay_data::{rows::TableId, scope};
 use replay_frame::frame::{DecodedFrame, TableUpdate, TableView};
 use std::{
     io,
-    path::PathBuf,
     sync::{
         Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
-    time::SystemTime,
 };
 
 /// The refusal of `label`, whose data a native recording holds but nothing prepares from it yet.
@@ -27,94 +24,81 @@ pub fn unprepared(label: &str) -> io::Error {
     ))
 }
 
-/// The folder of `source`'s prepared store holding its change-run index.
-pub fn index_folder(source: &Source) -> io::Result<PathBuf> {
-    Ok(crate::prepared::recording_folder(source)?.join("change-runs"))
-}
-
-/// Where `source`'s change-run index is kept ([`index_folder`]).
-pub fn index_path(source: &Source) -> io::Result<PathBuf> {
-    Ok(index_folder(source)?.join("index.h4runs"))
-}
-
 /// Whether `frame` leaves `table` to the native capture: its recording's mode records the
 /// table, which its row frame holds as not recorded.
 pub fn left_to_native(frame: &DecodedFrame, table: TableId) -> bool {
     matches!(&*frame.tables[table.index()], TableView::NotRecorded { mode } if scope::records(*mode, table))
 }
 
-/// One frame of `tables`' change runs, held between a source's queries so the next hour moves on
-/// from the last.
-type Cursor = Arc<Mutex<Snapshots>>;
+/// One frame of `tables` read from the recording, held between a source's queries so the next
+/// hour walks on from the last.
+type Held = Arc<Mutex<Cursor>>;
 
-/// The change-run index a source's queries read, by the file's length and last write, and the
-/// cursors read through it, one for each set of tables asked.
+/// The recording a source's queries read in place, and the cursors read through it, one for
+/// each set of tables asked.
 #[derive(Default)]
-struct Held {
-    file: Option<((u64, Option<SystemTime>), Arc<IndexFile>)>,
-    cursors: Vec<(Vec<TableId>, Cursor)>,
+struct Queries {
+    natives: Option<Arc<Natives>>,
+    cursors: Vec<(Vec<TableId>, Held)>,
 }
 
-/// The index serving `source` in its `held` state, opened anew when the file changed; refused
-/// unless it indexes the recording and holds `tables`.
-fn open(source: &Source, held: &mut Held, tables: &[TableId]) -> io::Result<Arc<IndexFile>> {
-    let not_indexed = || {
-        dashboard_core::refused(format!(
-            "The recording holds {tables:?} in its native capture, whose change-run index is not prepared yet"
-        ))
-    };
-    let path = index_path(source)?;
-    let metadata = match std::fs::metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Err(not_indexed()),
-        Err(error) => return Err(error),
-    };
-    let identity = (metadata.len(), metadata.modified().ok());
-    if held.file.as_ref().is_none_or(|(at, _)| *at != identity) {
-        let file = Arc::new(IndexFile::open(&path)?);
-        *held = Held {
-            file: Some((identity, file)),
-            cursors: Vec::new(),
-        };
-    }
-    let file = Arc::clone(&held.file.as_ref().expect("opened above").1);
-    if !file.records(source.replay_ref()) || !file.holds(tables) {
-        return Err(not_indexed());
-    }
-    Ok(file)
-}
-
-/// The cursor over `tables` of the index serving `source` ([`open`]).
-fn cursor(source: &Source, tables: &[TableId]) -> io::Result<Cursor> {
-    let state = source.state::<Held>();
-    let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-    let file = open(source, &mut held, tables)?;
-    if let Some((_, cursor)) = held.cursors.iter().find(|(asked, _)| asked == tables) {
+/// The cursor over `tables` of `source`'s recording.
+fn cursor(source: &Source, tables: &[TableId]) -> io::Result<Held> {
+    let state = source.state::<Queries>();
+    let mut queries = state.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, cursor)) = queries.cursors.iter().find(|(asked, _)| asked == tables) {
         return Ok(Arc::clone(cursor));
     }
     let replay = source.replay_ref();
-    let workers = std::thread::available_parallelism().map_or(1, usize::from);
-    let snapshots = Snapshots::new(
-        file,
+    let natives = match &queries.natives {
+        Some(natives) => Arc::clone(natives),
+        None => {
+            let natives = Arc::new(Natives::new(replay)?);
+            queries.natives = Some(Arc::clone(&natives));
+            natives
+        }
+    };
+    let cursor = Arc::new(Mutex::new(Cursor::new(
+        natives,
         tables,
         replay.format,
         replay.capture_mode,
-        workers,
-    )?;
-    let cursor = Arc::new(Mutex::new(snapshots));
-    held.cursors.push((tables.to_vec(), Arc::clone(&cursor)));
+    )?));
+    queries.cursors.push((tables.to_vec(), Arc::clone(&cursor)));
     Ok(cursor)
 }
 
-/// Why `file` holds no `hour` of `branch`.
-fn unheld(_source: &Source, _file: &IndexFile, branch: u64, hour: i32) -> io::Error {
+/// Why the recording holds no `hour` of `branch`.
+fn unheld(branch: u64, hour: i32) -> io::Error {
     dashboard_core::refused(format!(
-        "The recording's index holds no hour {hour} of branch {branch}"
+        "The recording's native capture holds no hour {hour} of branch {branch}"
     ))
 }
 
+/// Moves `cursor` to `hour` of `branch` until `cancelled` is set: refused when the recording
+/// holds no such hour.
+fn reach(
+    source: &Source,
+    cursor: &mut Cursor,
+    branch: u64,
+    hour: i32,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let stop = || cancelled.load(Ordering::Acquire);
+    if stop() {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
+    let Some(segment) = source.replay_ref().segment_at(branch, hour) else {
+        return Err(unheld(branch, hour));
+    };
+    if !cursor.move_to(segment, branch, hour, &stop)? {
+        return Err(unheld(branch, hour));
+    }
+    Ok(())
+}
+
 /// Fills each of `tables` that `frame` leaves to the native capture with its view at the
-/// frame's hour, read from the capture's change-run index; a frame leaving none is untouched.
+/// frame's hour, read from the recording's runs; a frame leaving none is untouched.
 pub fn fill(
     source: &Source,
     frame: &mut DecodedFrame,
@@ -132,25 +116,14 @@ pub fn fill(
     cut.sort_unstable();
     cut.dedup();
     let cursor = cursor(source, &cut)?;
-    let mut snapshots = cursor.lock().unwrap_or_else(PoisonError::into_inner);
-    let (branch, hour) = (frame.branch, frame.hour);
+    let mut cursor = cursor.lock().unwrap_or_else(PoisonError::into_inner);
+    reach(source, &mut cursor, frame.branch, frame.hour, cancelled)?;
     let alone = || {};
-    if cancelled.load(Ordering::Acquire) {
-        return Err(io::Error::from(io::ErrorKind::Interrupted));
-    }
-    let segment = source.replay_ref().segment_at(branch, hour);
-    let moved = match segment {
-        Some(segment) => snapshots.move_to_segment(segment, branch, hour, &alone)?,
-        None => false,
-    };
-    if !moved {
-        return Err(unheld(source, snapshots.file(), branch, hour));
-    }
     let parallel = Parallel {
         workers: std::thread::available_parallelism().map_or(1, usize::from),
         on_worker: &alone,
     };
-    let native = snapshots.build(Some(&parallel))?;
+    let native = cursor.build(Some(&parallel))?;
     for table in cut {
         frame.tables[table.index()] = native.tables[table.index()].clone();
     }
@@ -209,9 +182,9 @@ fn leaves(
 /// The supplying read of `table` within `cadence` hours of `hour` that
 /// [`super::progressive::latest_read`] finds, when `branch`'s row frame at `hour` leaves the
 /// table to the native capture: the latest hour whose read slots read it, every hour since
-/// recorded and the table complete at each, its status read from the capture's change-run index
-/// (None inside when there is none). None when the row frame holds the table, for the row
-/// reader to find.
+/// recorded and the table complete at each, its status read from the recording's runs (None
+/// inside when there is none). None when the row frame holds the table, for the row reader to
+/// find.
 pub fn read_hour(
     source: &Source,
     branch: u64,
@@ -226,50 +199,71 @@ pub fn read_hour(
     if cadence <= 0 {
         return Err(crate::invalid("A supplying read needs a positive cadence"));
     }
-    let file = {
-        let state = source.state::<Held>();
-        let mut held = state.lock().unwrap_or_else(PoisonError::into_inner);
-        open(source, &mut held, &[table])?
-    };
+    let held = cursor(source, &[table])?;
     let replay = source.replay_ref();
     let first = hour.saturating_sub(cadence - 1);
     // Row frames keep every table's read slots; a cut table's rows decode as not recorded.
     let frames = super::frames::window(source, branch, first, hour, &[table], cancelled)?;
-    let mut expected = hour;
+    // The hours recorded one after another back from `hour`, latest first.
+    let mut recorded = Vec::new();
+    let mut expected = Some(hour);
     for frame in frames.iter().rev() {
         crate::metadata::check_cancel(cancelled)?;
-        if frame.hour != expected {
-            return Ok(Some(None));
+        if Some(frame.hour) != expected {
+            break;
         }
+        recorded.push(frame);
+        expected = frame.hour.checked_sub(1);
+    }
+    // The scan below stops at the latest hour whose row frame alone ends it, at the latest.
+    let reads = |frame: &DecodedFrame| {
+        crate::metadata::slot_read(replay.format, &frame.metrics, table, frame.hour)
+    };
+    let ends = recorded
+        .iter()
+        .position(|frame| {
+            reads(frame)
+                || (!left_to_native(frame, table)
+                    && !matches!(&*frame.tables[table.index()], TableView::Complete(_)))
+        })
+        .map_or(recorded.len(), |at| at + 1);
+    // The table's status at the hours before that its row frames leave to the native capture,
+    // walked in hour order: whether the recording's runs hold it complete there.
+    let mut complete = vec![false; ends];
+    {
+        let mut cursor = held.lock().unwrap_or_else(PoisonError::into_inner);
+        for (at, frame) in recorded[..ends].iter().enumerate().rev() {
+            if !left_to_native(frame, table) {
+                continue;
+            }
+            // The scan reads `hour` first: a refusal names it.
+            match reach(source, &mut cursor, branch, frame.hour, cancelled) {
+                Err(error) if error.kind() != io::ErrorKind::Interrupted => {
+                    let held = replay
+                        .segment_at(branch, hour)
+                        .and_then(|segment| cursor.natives().find(segment, hour));
+                    return Err(match held {
+                        None => unheld(branch, hour),
+                        Some(_) => error,
+                    });
+                }
+                reached => reached?,
+            }
+            complete[at] = cursor.complete(table)?;
+        }
+    }
+    for (at, frame) in recorded[..ends].iter().enumerate() {
         let complete = if left_to_native(frame, table) {
-            // No keys: the table's status alone, read without its rows.
-            let segment = replay
-                .segment_at(branch, frame.hour)
-                .ok_or_else(|| unheld(source, &file, branch, frame.hour))?;
-            let (view, _) = file
-                .rows_at(
-                    segment,
-                    frame.hour,
-                    table,
-                    &[],
-                    replay.format,
-                    replay.capture_mode,
-                )?
-                .ok_or_else(|| unheld(source, &file, branch, frame.hour))?;
-            matches!(view, TableView::Complete(_))
+            complete[at]
         } else {
             matches!(&*frame.tables[table.index()], TableView::Complete(_))
         };
         if !complete {
             return Ok(Some(None));
         }
-        if crate::metadata::slot_read(replay.format, &frame.metrics, table, frame.hour) {
+        if reads(frame) {
             return Ok(Some(Some(frame.hour)));
         }
-        let Some(before) = expected.checked_sub(1) else {
-            break;
-        };
-        expected = before;
     }
     Ok(Some(None))
 }
@@ -326,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_leaving_nothing_is_untouched_and_one_leaving_tables_unindexed_is_refused() {
+    fn a_frame_leaving_nothing_is_untouched_and_one_leaving_tables_is_filled_from_the_recording() {
         let frame = source(1, 1, Some(1));
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame.clone()])]);
         let (source, root) = file_source(replay.unwrap());
@@ -340,27 +334,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(kept, frame);
-        let mut cut = frame;
+        let mut cut = frame.clone();
         *cut.tables[TableId::Divisions.index()] = TableView::NotRecorded {
             mode: CaptureMode::Full,
         };
-        let error = fill(
+        fill(
             &source,
             &mut cut,
             &[TableId::Campaign, TableId::Divisions],
             &cancelled,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap();
+        assert_eq!(cut.tables[TableId::Divisions.index()], frame.tables[TableId::Divisions.index()]);
+        // An hour the recording does not hold is refused by name.
+        let mut unheld = frame;
+        unheld.hour = 7;
+        *unheld.tables[TableId::Divisions.index()] = TableView::NotRecorded {
+            mode: CaptureMode::Full,
+        };
+        let error = fill(&source, &mut unheld, &[TableId::Divisions], &cancelled)
+            .unwrap_err()
+            .to_string();
         assert_eq!(
             error,
-            "The recording holds [Divisions] in its native capture, whose change-run index is not prepared yet"
+            "The recording's native capture holds no hour 7 of branch 1"
         );
         std::fs::remove_dir_all(root).ok();
     }
 
     #[test]
-    fn a_supplying_read_the_rows_hold_is_the_row_readers_and_one_left_to_native_needs_the_index() {
+    fn a_supplying_read_the_rows_hold_is_the_row_readers_and_one_left_to_native_reads_its_status() {
         let table = TableId::ProjectPrograms;
         let frames = |view: &dyn Fn() -> TableView| -> Vec<DecodedFrame> {
             (0..30)
@@ -402,11 +405,10 @@ mod tests {
         });
         let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, cut)]).unwrap();
         let (native, root) = file_source(replay);
+        // The recording holds the table not recorded: no complete read supplies it.
         assert_eq!(
-            read_hour(&native, 1, 29, table, 24, &cancelled)
-                .unwrap_err()
-                .to_string(),
-            "The recording holds [ProjectPrograms] in its native capture, whose change-run index is not prepared yet"
+            read_hour(&native, 1, 29, table, 24, &cancelled).unwrap(),
+            Some(None)
         );
         // An hour no block records is the row reader's, which finds no read.
         assert_eq!(

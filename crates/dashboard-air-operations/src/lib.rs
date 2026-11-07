@@ -1,7 +1,7 @@
 //! Prepared air mission registrations and current annual-ring statistics.
 #[cfg(test)]
 #[global_allocator]
-static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 pub mod products {
     pub mod air_missions;

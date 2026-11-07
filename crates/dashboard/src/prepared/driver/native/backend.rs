@@ -459,6 +459,8 @@ impl<'p, N: Native> Member for Bound<'p, '_, N> {
         let resumes: &'a Vec<Resume<'p>> = resumes;
         let operators: &'a AtomicU64 = operators;
         let total = walking.measuring.then_some(operators);
+        // One shelf of finished records for this family's every accumulator.
+        let room = emit.stage.room().lane();
         Lane::new(
             id.name(),
             move |segment: &Segment| {
@@ -469,7 +471,10 @@ impl<'p, N: Native> Member for Bound<'p, '_, N> {
                     total,
                 })
             },
-            move |chunk: Chunk<'_, Output<N>>| emit.chunk(native, walking, chunk),
+            move |chunk: Chunk<'_, Output<N>>| {
+                let _room = engine_allocation::spill::enter(Some(room.clone()));
+                emit.chunk(native, walking, chunk)
+            },
         )
         .reads(native.tables())
         .passes(passes)
@@ -759,18 +764,22 @@ impl<N: Native> Emit<'_, '_, N> {
         Ok(())
     }
 
-    /// Publishes into `branch`'s series what its state kept through the segment it processed
-    /// last, which ended without ending the batch, and hands the segment off to be sealed at
-    /// once, so its rows never wait in memory for the batch's end.
+    /// Publishes what `branch`'s state kept through the segment it processed last, which ended
+    /// without ending the batch: into its series, whose segment is handed off to be sealed at
+    /// once, or, for a branch with no series, into the batch's pages, so no segment's output
+    /// waits in memory for the batch's end.
     fn seal(&mut self, native: &N, walking: &Walking<'_>, branch: u64) -> io::Result<()> {
-        // A family whose series this segment left empty, as one writing only pages, cuts nothing.
-        if !self.stage.series_holds(branch) {
+        // A series this segment left empty cuts nothing.
+        if !self.stage.series_holds(branch) && self.stage.series_open(branch) {
             return Ok(());
         }
         if let Some(state) = self.states.get_mut(&branch) {
             native
                 .flush(state, &mut self.stage, branch, None, walking.cancelled)
                 .map_err(alone)?;
+        }
+        if !self.stage.series_holds(branch) {
+            return Ok(());
         }
         self.stage.seal(branch).map_err(alone)
     }

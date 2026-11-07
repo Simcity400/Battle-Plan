@@ -1,27 +1,30 @@
 //! Measures a native preparation of a recording as production prepares it
 //! ([`dashboard::prepared::driver::native`]): every family with a native backend, or those
-//! `--family` names, prepared from the native recording into a scratch store under `--output`,
-//! with the change-run index as production prepares it: a lane of the union run when it indexes
-//! that recording alone, else first, in runs of its own.
+//! `--family` names, prepared from the native recording into a scratch store under `--output`.
 //! Reports what it cost per game hour beside the goal it is judged on: each family's operators,
 //! ordered emit and publication, the walks every lane shares, the slowest serial lane and the
 //! peak resident bytes, with every status row that failed. `served-check` checks the replies.
 //! `columnar-family-check --recording <r.battleplan> --columnar <c.h4col> --output <new folder>
-//!   [--family F[,F...]|ported] [--threads N] [--content-cache DIR] [--scopes] [--walk-only]`
+//!   [--family F[,F...]|ported] [--threads N] [--background [--promote-after SECONDS]]
+//!   [--content-cache DIR] [--scopes] [--walk-only]`
 //! Game content comes from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or none when neither is set. Its
 //! hashes are kept in `--content-cache`, by default the app's own cache, so a run resolves it as
 //! the app would; the report says what the resolve read.
+//! `--background` prepares as a job ahead of the user, in background mode
+//! ([`replay::segments::Background`]); `--promote-after` has the user join it that many seconds
+//! in, when it goes on as any run on `--threads` workers.
 //! `--scopes` also reports the CPU each accounting scope charged. `--walk-only` walks the runs
 //! with one lane doing no family's work, for the floor decode, apply and the world cost.
 //! report.json also holds the timeline of every task and phase, from the process's start.
-//! Built with the `memory-labels` feature, its `memory` section says, for the index run, the
-//! union run and the phases between, what each family and each part of the run held at the
+//! Built with the `memory-labels` feature, its `memory` section says, for the union run and the
+//! phases around it, what each family and each part of the run held at the
 //! peak, as the allocator counted it, beside what the system and mimalloc held then.
 
 use dashboard::{
     config::{Config, ContentOptions},
     prepared::driver::native,
 };
+use dashboard_base::prepared::priority::JobPriority;
 use engine_allocation::labels::{self, Kind, Phase};
 use replay::columnar_frames::Recording;
 use serde_json::{Value, json};
@@ -29,7 +32,11 @@ use std::{
     collections::BTreeMap,
     io,
     path::PathBuf,
-    sync::atomic::AtomicBool,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 
 #[path = "support/shader_compiler.rs"]
@@ -37,17 +44,27 @@ mod shader_compiler;
 
 #[cfg(not(feature = "memory-labels"))]
 #[global_allocator]
-static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
 #[cfg(feature = "memory-labels")]
 #[global_allocator]
-static ALLOCATOR: labels::Counting<mimalloc::MiMalloc> = labels::Counting(mimalloc::MiMalloc);
+static ALLOCATOR: labels::Counting<engine_heap::Heap> = labels::Counting(engine_heap::Heap);
 
 const USAGE: &str = "columnar-family-check --recording R --columnar C --output NEW \
-                     [--family F[,F...]|ported] [--threads N] [--content-cache DIR] [--scopes] [--walk-only]";
+                     [--family F[,F...]|ported] [--threads N] \
+                     [--background [--promote-after SECONDS]] \
+                     [--content-cache DIR] [--scopes] [--walk-only]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
+}
+
+fn positive(value: &std::ffi::OsStr) -> io::Result<usize> {
+    value
+        .to_str()
+        .and_then(|text| text.parse().ok())
+        .filter(|&count| count > 0)
+        .ok_or_else(|| invalid(USAGE))
 }
 
 /// The content the families read, its hashes kept in `cache_dir`; none when neither folder is set.
@@ -81,7 +98,8 @@ fn run() -> io::Result<()> {
     let (mut recording, mut columnar, mut output) = (None, None, None);
     let mut families: Option<String> = None;
     let mut threads = std::thread::available_parallelism().map_or(1, usize::from);
-    let (mut scopes, mut walk_only) = (false, false);
+    let (mut scopes, mut walk_only, mut background) = (false, false, false);
+    let mut promote = None;
     let mut content_cache = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(flag) = args.next() {
@@ -93,6 +111,10 @@ fn run() -> io::Result<()> {
             walk_only = true;
             continue;
         }
+        if flag == "--background" {
+            background = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| invalid(USAGE))?;
         match flag.to_str() {
             Some("--recording") => recording = Some(PathBuf::from(value)),
@@ -100,19 +122,17 @@ fn run() -> io::Result<()> {
             Some("--output") => output = Some(PathBuf::from(value)),
             Some("--family") => families = Some(value.to_string_lossy().into_owned()),
             Some("--content-cache") => content_cache = Some(PathBuf::from(value)),
-            Some("--threads") => {
-                threads = value
-                    .to_str()
-                    .and_then(|text| text.parse().ok())
-                    .filter(|&count| count > 0)
-                    .ok_or_else(|| invalid(USAGE))?
-            }
+            Some("--threads") => threads = positive(&value)?,
+            Some("--promote-after") => promote = Some(positive(&value)?),
             _ => return Err(invalid(USAGE)),
         }
     }
     let (Some(recording), Some(columnar), Some(output)) = (recording, columnar, output) else {
         return Err(invalid(USAGE));
     };
+    if promote.is_some() && !background {
+        return Err(invalid(USAGE));
+    }
     let named: Option<Vec<&str>> = families
         .as_deref()
         .filter(|list| *list != "ported")
@@ -144,55 +164,43 @@ fn run() -> io::Result<()> {
     engine_executable::executable_tables::enter(source.tables());
     drop(span);
     let cancelled = AtomicBool::new(false);
-    // The content resolves beside the index, as production prepares it.
     let options = content.as_ref().map(|content| &content.options);
-    let (index, damage, accepted, measured, failure) =
+    let (damage, accepted, measured, failure) =
         source.resolving_ahead(options, &cancelled, || -> io::Result<_> {
             let span = replay_frame::timeline::span("recording open");
             let file = Recording::open_path(&columnar)?;
             let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
             drop(span);
-            // The change-run index as production prepares it: native readers serve from it.
-            let span = replay_frame::timeline::span("index");
-            labels::phase("index run");
-            let started = std::time::Instant::now();
-            let cpu_before = replay_frame::cpu::process_cpu_ns();
-            let plan = dashboard::prepared::change_runs::plan(&source)?;
-            let (riding, prepared) = plan.take(Some(&file), &cancelled)?;
-            let seconds = started.elapsed().as_secs_f64();
-            let cpu = cpu_before
-                .zip(replay_frame::cpu::process_cpu_ns())
-                .map(|(before, after)| after.saturating_sub(before) as f64 / 1e9);
-            // The process's peaks so far: an index prepared alone is its first heavy work.
-            let (working, commit) = native::peaks()?;
-            let runs: Vec<native::Run> =
-                prepared.runs.into_iter().map(native::Run::from).collect();
-            // Riding, its cost is the union run's, in `measured`.
-            let index = json!({
-                "rode": riding.is_some(),
-                "seconds": seconds,
-                "refused": prepared.refused,
-                "cpu_seconds": cpu,
-                "peak_working_set_bytes": working,
-                "peak_commit_bytes": commit,
-                "runs": runs,
-            });
             labels::phase("families open");
-            drop(span);
             let span = replay_frame::timeline::span("families");
-            let (accepted, measured, failure) = native::measure(
-                &source,
-                content.as_ref(),
-                file,
-                riding,
-                named.as_deref(),
-                threads,
-                walk_only,
-                &cancelled,
-            )?;
+            let measure = || {
+                native::measure(
+                    &source,
+                    content.as_ref(),
+                    file,
+                    named.as_deref(),
+                    threads,
+                    walk_only,
+                    &cancelled,
+                )
+            };
+            let (accepted, measured, failure) = if background {
+                let ahead = Arc::new(AtomicBool::new(true));
+                if let Some(seconds) = promote {
+                    let joined = Arc::clone(&ahead);
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(seconds as u64));
+                        drop(replay_frame::timeline::span("promote"));
+                        joined.store(false, Ordering::Release);
+                    });
+                }
+                JobPriority::run(ahead, measure)
+            } else {
+                measure()
+            }?;
             drop(span);
             let failure = failure.map(|error| error.to_string());
-            Ok((index, damage, accepted, measured, failure))
+            Ok((damage, accepted, measured, failure))
         })?;
     let failed: Vec<_> = accepted
         .sections
@@ -223,7 +231,6 @@ fn run() -> io::Result<()> {
         "columnar": columnar,
         "damage": damage,
         "measured": measured,
-        "index": index,
         "failure": failure,
         "content": resolved,
         "failed": failed,
@@ -247,7 +254,7 @@ fn memory() -> Value {
     if !labels::ENABLED {
         return json!("Built without the memory-labels feature: nothing was counted");
     }
-    let (version, options) = dashboard::allocator::retention();
+    let (version, options) = engine_heap::retention();
     let options: serde_json::Map<String, Value> = options
         .into_iter()
         .map(|(name, value)| (name.to_owned(), json!(value)))
@@ -303,7 +310,7 @@ fn phase_memory(phase: &Phase) -> Value {
         let kind = kinds.entry(charge.kind.name()).or_default();
         kind.0 += charge.at_peak;
         kind.1 += charge.end;
-        if charge.owner == "run" {
+        if charge.owner == "run" || charge.kind == Kind::Zstd {
             continue;
         }
         let held = families.entry(charge.owner).or_default();
@@ -339,6 +346,12 @@ fn phase_memory(phase: &Phase) -> Value {
             .map(|(family, bytes)| json!({"family": family, "bytes": bytes}))
             .collect::<Vec<_>>()
     };
+    let mut zstd: Vec<_> = phase
+        .labels
+        .iter()
+        .filter(|charge| charge.kind == Kind::Zstd)
+        .collect();
+    zstd.sort_by_key(|charge| std::cmp::Reverse(charge.at_peak));
     let mut charges: Vec<_> = phase.labels.iter().collect();
     charges.sort_by_key(|charge| std::cmp::Reverse(charge.at_peak));
     let (started, ended) = (phase.os_started, phase.os_ended);
@@ -350,20 +363,6 @@ fn phase_memory(phase: &Phase) -> Value {
                 .then(|| peak(&end))
         })
     };
-    let index = families.get("change runs").map(|held| {
-        let lane = |kind: Kind| at("change runs", kind);
-        json!({
-            // The walks' own, the builders' scratch among them, past what is named below.
-            "operatorBytes": held.operator,
-            "cursorBytes": lane(Kind::IndexCursors),
-            "spillBufferBytes": lane(Kind::IndexSpill),
-            "pieceDirectoryBytes": lane(Kind::IndexPieces),
-            "piecesInFlightBytes": held.in_flight,
-            "directoryBytes": held.emit + held.publish + at("run", Kind::Index),
-            "walkerBytes": at("run", Kind::Walker),
-            "walkerTablesBytes": at("run", Kind::WalkerTables),
-        })
-    });
     json!({
         "phase": phase.name,
         "trackedPeakBytes": phase.tracked_peak,
@@ -375,7 +374,15 @@ fn phase_memory(phase: &Phase) -> Value {
             "allocatorCommitBytes": os.and_then(|os| os.allocator),
             // Freed pages mimalloc keeps committed, and its fragmentation.
             "allocatorRetainedBytes": os.and_then(|os| os.allocator).and_then(less_tracked),
-            // C libraries' own heaps, thread stacks, and the system's and drivers' memory.
+            // Of those, what live blocks hold past their bytes in mimalloc's size classes, and
+            // what the tags add to that, which a build without them does not hold.
+            "roundingBytes": at("run", Kind::Rounding),
+            "tagRoundingBytes": at("run", Kind::TagRounding),
+            // The rest: committed, but held by no live block.
+            "allocatorFreeBytes": os.and_then(|os| os.allocator).and_then(less_tracked).map(|held| {
+                held - at("run", Kind::Rounding) - at("run", Kind::TagRounding)
+            }),
+            // C libraries' own heaps but zstd's, thread stacks, and the system's and drivers' memory.
             "outsideAllocatorBytes": os.and_then(|os| {
                 os.allocator.map(|held| os.commit as i64 - held as i64)
             }),
@@ -392,7 +399,13 @@ fn phase_memory(phase: &Phase) -> Value {
         "kinds": kinds.iter().map(|(kind, (at_peak, end))| {
             json!({"kind": kind, "atPeakBytes": at_peak, "endBytes": end})
         }).collect::<Vec<_>>(),
-        "changeRuns": index,
+        // Each kind of zstd context, by its holder.
+        "zstd": zstd.iter().map(|charge| json!({
+            "holder": charge.owner,
+            "atPeakBytes": charge.at_peak,
+            "peakBytes": charge.peak,
+            "endBytes": charge.end,
+        })).collect::<Vec<_>>(),
         "top": {
             "operator": top(|held| held.operator),
             "outputInFlight": top(|held| held.in_flight),
@@ -465,8 +478,9 @@ fn render(value: &Value, indent: usize, out: &mut String) {
 fn main() {
     replay_frame::timeline::enable();
     // Measured with the memory settings the data service runs with.
-    dashboard::allocator::return_freed_memory_promptly();
-    labels::measure_allocator(dashboard::allocator::committed);
+    engine_heap::return_freed_memory_promptly();
+    labels::measure_allocator(engine_heap::committed);
+    labels::measure_sizes(engine_heap::size_class);
     if let Err(error) = run() {
         eprintln!("columnar-family-check: {error}");
         std::process::exit(1);

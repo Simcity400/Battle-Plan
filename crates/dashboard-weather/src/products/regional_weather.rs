@@ -21,7 +21,6 @@ use dashboard_keyed::{
     daily,
     query::{self as keyed, KeyedSeries, KeyedWindow, Opened, Query},
 };
-use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, io};
 use ts_rs::TS;
@@ -188,10 +187,6 @@ impl Product for RegionalWeather {
     const SERVED: Option<&'static dashboard_base::prepared::served::Plan> = Some(&served::PLAN);
     type Params = RegionalWeatherParams;
     type Reply = RegionalWeatherResponse;
-
-    fn native_tables() -> Vec<TableId> {
-        [provinces::TABLES, content::AUXILIARY_TABLES].concat()
-    }
 
     fn validate(params: &Self::Params) -> Result<(), &'static str> {
         keyed::validate_window(&params.branch_id, params.first_hour, params.last_hour)?;

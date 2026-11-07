@@ -7,6 +7,7 @@ mod keys;
 pub(super) mod lens;
 #[cfg(test)]
 mod parity;
+mod record;
 #[cfg(test)]
 mod tests;
 
@@ -17,6 +18,7 @@ use super::*;
 use crate::prepared::pages::Pages;
 use crate::products::country_groups::HourSpan;
 use keys::{Ctx, Keys, Trees};
+use record::Record;
 pub use lens::Lenses;
 use replay_data::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow, TableRows};
 
@@ -165,7 +167,7 @@ struct Dirty {
 
 #[derive(Clone, Default)]
 pub struct CountryState {
-    events: Events,
+    events: Record,
     last: Option<((u32, u32), i32)>,
     open: BTreeMap<u64, Line>,
     carried: bool,
@@ -285,48 +287,28 @@ fn line_operand_bytes(line: &ProductionLineModifiersRow) -> usize {
     std::mem::size_of_val(line) + line.factory_efficiencies.len() * std::mem::size_of::<i64>()
 }
 
-fn close_run(events: &mut Events, run: LiveRun) {
-    let (runs, at) = match run.at {
-        At::New(at) => (&mut events.detail.runs, at),
-        At::Carried(at) => (&mut events.detail.carried_runs, at),
-    };
-    runs.close(at, run.run.last_hour);
-    events.touched = true;
+fn close_run(events: &mut Record, run: LiveRun) {
+    events.close_run(run.at, run.run.last_hour);
+    events.touch(0);
 }
 
-fn close_step(events: &mut Events, step: LiveStep, last: i32) {
-    match step.at {
-        At::New(at) => {
-            let step = &mut events.overview.steps[at];
-            step.last_hour = last;
-            step.closed = true;
-        }
-        At::Carried(_) => events.overview.step_closes.push((step.id, last)),
-    }
-    events.touched = true;
+fn close_step(events: &mut Record, step: LiveStep, last: i32) {
+    events.close_step(step.at, step.id, last);
+    events.touch(0);
 }
 
-fn close_output(events: &mut Events, output: LiveOutput) {
-    let record = match output.at {
-        At::New(at) => &mut events.detail.outputs[at],
-        At::Carried(at) => &mut events.detail.carried_outputs[at],
-    };
-    record.output.last_hour = output.output.last_hour;
-    record.closed = true;
-    events.touched = true;
+fn close_output(events: &mut Record, output: LiveOutput) {
+    events.close_output(output.at, output.output.last_hour);
+    events.touch(0);
 }
 
-fn close_modifier(events: &mut Events, lifetime: u64, modifier: LiveModifier) {
-    let modifiers = events.modifiers.entry(lifetime).or_default();
-    match modifier.at {
-        At::New(at) => modifiers.close(at, modifier.last),
-        At::Carried(_) => modifiers.carried_last = Some(modifier.last),
-    }
-    events.touched = true;
+fn close_modifier(events: &mut Record, lifetime: u64, modifier: LiveModifier) {
+    events.close_modifier(lifetime, modifier.at, modifier.last);
+    events.touch(0);
 }
 
 /// Ends everything `line` carries where it reached.
-fn close_line(events: &mut Events, line: &mut Line) {
+fn close_line(events: &mut Record, line: &mut Line) {
     if let Some(run) = line.run.take() {
         let last = run.run.last_hour;
         close_run(events, run);
@@ -352,12 +334,11 @@ impl CountryState {
     }
 
     fn touch(&mut self, bytes: usize) {
-        self.events.touched = true;
-        self.events.bytes = self.events.bytes.saturating_add(bytes);
+        self.events.touch(bytes);
     }
 
     fn pending_bytes(&self) -> usize {
-        self.events.bytes
+        self.events.bytes()
     }
 
     /// The events since the flush before, leaving the next chunk's carried entries: the
@@ -365,50 +346,43 @@ impl CountryState {
     /// where the versions those runs overlay were pushed. A dormant history writes them
     /// only once it records more.
     fn take_events(&mut self, live: bool, ctx: &mut Ctx<'_>) -> io::Result<Events> {
-        let mut next = Events::default();
+        let produced = std::mem::take(&mut self.producing)
+            .into_iter()
+            .map(|(variant, (first, last))| (variant, first, last))
+            .collect();
+        let taken = self.events.cut(&self.counters, produced);
         let mut carried = Vec::new();
+        let mut any = false;
         for line in self.open.values_mut() {
             if let Some(run) = &mut line.run {
-                let at = next
-                    .detail
-                    .carried_runs
-                    .push(run.id, line.lifetime, &run.run);
+                let at = self.events.carried_run(run.id, line.lifetime, &run.run);
                 run.at = At::Carried(at);
-                next.detail
-                    .lives
-                    .insert(line.lifetime, (line.handle, line.appearance));
+                self.events.live(line.lifetime, line.handle, line.appearance);
                 carried.push((run.run.variant, run.run.mio));
+                any = true;
             }
             if let Some(step) = &mut line.step {
                 step.at = At::Carried(0);
             }
             if let Some(output) = &mut line.output {
-                next.detail.carried_outputs.push(OutputRecord {
+                let at = self.events.carried_output(OutputRecord {
                     id: output.id,
                     lifetime: line.lifetime,
                     output: output.output.clone(),
                     closed: false,
                 });
-                output.at = At::Carried(next.detail.carried_outputs.len() - 1);
-                next.detail
-                    .lives
-                    .insert(line.lifetime, (line.handle, line.appearance));
+                output.at = At::Carried(at);
+                self.events.live(line.lifetime, line.handle, line.appearance);
+                any = true;
             }
             if let Some(modifier) = &mut line.modifier {
                 modifier.at = At::Carried(0);
             }
         }
-        next.overview.counters = self.counters.clone();
-        next.touched = live
-            && (next.detail.carried_runs.len() != 0 || !next.detail.carried_outputs.is_empty());
+        if live && any {
+            self.events.touch(0);
+        }
         self.country_at = None;
-        let mut taken = std::mem::replace(&mut self.events, next);
-        taken.overview.counters = self.counters.clone();
-        taken.overview.produced.extend(
-            std::mem::take(&mut self.producing)
-                .into_iter()
-                .map(|(variant, (first, last))| (variant, first, last)),
-        );
         for (variant, mio) in carried {
             self.anchor_design(variant, ctx)?;
             if mio != 0 {
@@ -492,12 +466,8 @@ impl CountryState {
             return;
         }
         let _phase = replay_frame::cpu::scope_phase("production-lines:carry");
-        mark_span(
-            &mut self.events.overview.line_hours,
-            hours.first,
-            hours.last,
-        );
-        self.events.touched = true;
+        self.events.span_lines(hours.first, hours.last);
+        self.events.touch(0);
         let output = self.output_open && hours.output_complete;
         if self.output_open && !output {
             for line in self.open.values_mut() {
@@ -509,11 +479,7 @@ impl CountryState {
         self.output_open = output;
         self.organisations_open &= hours.organisations_complete;
         if self.organisations_open {
-            mark_span(
-                &mut self.events.overview.organisation_hours,
-                hours.first,
-                hours.last,
-            );
+            self.events.span_organisations(hours.first, hours.last);
         }
         match &mut self.carry {
             Some(span) => span.last = hours.last,
@@ -527,11 +493,7 @@ impl CountryState {
             }
         }
         if self.output_open {
-            mark_span(
-                &mut self.events.overview.output_hours,
-                hours.first,
-                hours.last,
-            );
+            self.events.span_output(hours.first, hours.last);
         }
     }
 
@@ -585,7 +547,7 @@ impl CountryState {
         };
         self.anchor_design(variant, ctx)?;
         let root = self.keys.root;
-        let listed = self.events.versions.designs.len();
+        let listed = self.events.listed().0;
         // A lens lists its first read of a variant a history may hold the same of, as it is.
         let conditional = self
             .marking
@@ -603,7 +565,7 @@ impl CountryState {
                 .designs
                 .put(variant, (read, ctx.chunk), ctx.generation);
             self.dirty.designs.insert(variant);
-            self.events.versions.designs.push((variant, read));
+            self.events.design(variant, read);
             self.touch(std::mem::size_of::<(u64, DesignRead)>());
         }
         if let Some(author) = read.author.filter(|id| *id != 0)
@@ -650,10 +612,8 @@ impl CountryState {
     ) -> io::Result<()> {
         self.anchor_organisation(id, ctx)?;
         let root = self.keys.root;
-        let listed = (
-            self.events.versions.organisations.len(),
-            self.events.overview.names.len(),
-        );
+        let (_, organisations, names) = self.events.listed();
+        let listed = (organisations, names);
         let conditional = self
             .marking
             .as_mut()
@@ -674,10 +634,7 @@ impl CountryState {
             previous.is_none_or(|(_, naming)| !naming)
         };
         let bytes = organisation_bytes(&raw);
-        if named {
-            self.events.overview.names.push((id, raw.clone()));
-        }
-        self.events.versions.organisations.push((id, raw.clone()));
+        self.events.organisation(id, raw.clone(), named);
         if !(author && previous.is_some()) {
             self.keys
                 .organisations
@@ -698,7 +655,7 @@ impl CountryState {
             .collect();
         for variant in ended {
             if let Some((first, last)) = self.producing.remove(&variant) {
-                self.events.overview.produced.push((variant, first, last));
+                self.events.produced(variant, first, last);
                 self.touch(std::mem::size_of::<(u64, i32, i32)>());
             }
         }
@@ -712,28 +669,28 @@ impl CountryState {
 
     /// Notes, once a chunk, where the design of `variant` holding as it began was pushed.
     fn anchor_design(&mut self, variant: u64, ctx: &mut Ctx<'_>) -> io::Result<()> {
-        if !self.events.versions.design_anchors.contains_key(&variant) {
+        if !self.events.has_design_anchor(variant) {
             let root = self.keys.root;
             let at = self
                 .keys
                 .designs
                 .get(variant, root, ctx)?
                 .map(|(_, chunk)| *chunk);
-            self.events.versions.design_anchors.insert(variant, at);
+            self.events.design_anchor(variant, at);
         }
         Ok(())
     }
 
     /// [`Self::anchor_design`] of an organisation's version.
     fn anchor_organisation(&mut self, id: u64, ctx: &mut Ctx<'_>) -> io::Result<()> {
-        if !self.events.versions.organisation_anchors.contains_key(&id) {
+        if !self.events.has_organisation_anchor(id) {
             let root = self.keys.root;
             let at = self
                 .keys
                 .organisations
                 .get(id, root, ctx)?
                 .map(|(_, chunk)| *chunk);
-            self.events.versions.organisation_anchors.insert(id, at);
+            self.events.organisation_anchor(id, at);
         }
         Ok(())
     }
@@ -765,20 +722,7 @@ impl CountryState {
     }
 
     fn unread_span(&mut self, first: i32, last: i32) -> io::Result<()> {
-        let overview = &mut self.events.overview;
-        // A span after a wake joins none before it: the wake's spans fold in between.
-        if overview
-            .wakes
-            .last()
-            .is_some_and(|wake| wake.at == overview.unread_output.len() as u64)
-        {
-            overview.unread_output.push(HourSpan {
-                first_hour: first,
-                last_hour: last,
-            });
-        } else {
-            mark_span(&mut overview.unread_output, first, last);
-        }
+        self.events.unread(first, last);
         if let Some(stream) = &mut self.stream {
             stream.push(first, last)?;
         }
@@ -832,13 +776,7 @@ impl CountryState {
             ));
         }
         if sleep.spans < recorded {
-            let at = self.events.overview.unread_output.len() as u64;
-            self.events.overview.wakes.push(index::Wake {
-                at,
-                from: sleep.spans,
-                to: recorded,
-                hour: sleep.hour,
-            });
+            self.events.wake(sleep.spans, recorded, sleep.hour);
         }
         self.touch(std::mem::size_of::<index::Wake>());
         self.last_output_due = absent.last_output_due;
@@ -896,7 +834,7 @@ impl CountryState {
             if !read.lines_read {
                 continue;
             }
-            self.events.overview.reads.push(read.hour);
+            self.events.read(read.hour);
             self.touch(std::mem::size_of::<i32>());
             self.last_census = Some(read.hour);
             if read.modifiers_read
@@ -963,8 +901,8 @@ impl CountryState {
             .get(&slot)
             .map(Vec::as_slice)
             .unwrap_or_default();
-        self.events.overview.reads.push(hour);
-        mark(&mut self.events.overview.line_hours, hour);
+        self.events.read(hour);
+        self.events.mark_lines(hour);
         self.touch(std::mem::size_of::<i32>());
         let previous_read = self.last_census;
         self.last_census = Some(hour);
@@ -999,8 +937,7 @@ impl CountryState {
                     .as_ref()
                     .is_none_or(|last| !Arc::ptr_eq(last, country) && **last != **country)
                 {
-                    self.events.countries.push(Arc::clone(country));
-                    self.country_at = Some((self.events.countries.len() - 1) as u32);
+                    self.country_at = Some(self.events.country(country)?);
                     self.touch(modifier_country_bytes(country));
                     self.last_modifier_country = Some(Arc::clone(country));
                 }
@@ -1012,12 +949,12 @@ impl CountryState {
             && let Some(reason) = &input.modifier_refusal
         {
             *self.counters.refusals.entry(reason.clone()).or_default() += 1;
-            self.events.touched = true;
+            self.events.touch(0);
         }
         for row in &mine {
             let Some(kind) = LineKind::of(row.kind) else {
                 self.counters.unknown_kinds += 1;
-                self.events.touched = true;
+                self.events.touch(0);
                 continue;
             };
             let (mut line, starts_segment) = if let Some(line) = self.open.remove(&row.handle) {
@@ -1042,7 +979,7 @@ impl CountryState {
                 if let Some(marking) = &mut self.marking {
                     marking.began(row.handle);
                 }
-                self.events.overview.lives.push(index::Life {
+                self.events.life(index::Life {
                     id: lifetime,
                     handle: row.handle,
                     appearance,
@@ -1092,8 +1029,7 @@ impl CountryState {
                 let country = match self.country_at {
                     Some(at) => at,
                     None => {
-                        self.events.countries.push(Arc::clone(country));
-                        let at = (self.events.countries.len() - 1) as u32;
+                        let at = self.events.country(country)?;
                         self.country_at = Some(at);
                         self.touch(modifier_country_bytes(country));
                         at
@@ -1106,13 +1042,14 @@ impl CountryState {
                 let bytes = std::mem::size_of::<index::ModifierRecord>()
                     + usize::from(!repeated) * line_operand_bytes(operands)
                     + organisation.as_ref().map_or(0, String::len);
-                let at = self.events.modifiers.entry(line.lifetime).or_default().push(
+                let at = self.events.modifier(
+                    line.lifetime,
                     hour,
                     country,
                     (!repeated).then_some(operands),
                     &values,
                     organisation,
-                );
+                )?;
                 line.modifier = Some(LiveModifier {
                     last: hour,
                     at: At::New(at),
@@ -1153,7 +1090,7 @@ impl CountryState {
                         }
                         let id = self.ids.step;
                         self.ids.step += 1;
-                        self.events.overview.steps.push(index::Step {
+                        let at = self.events.step(index::Step {
                             id,
                             lifetime: line.lifetime,
                             first_hour: hour,
@@ -1169,16 +1106,13 @@ impl CountryState {
                             variant: values.variant,
                             active_factories: values.active_factories,
                             requested_factories: values.requested_factories,
-                            at: At::New(self.events.overview.steps.len() - 1),
+                            at: At::New(at),
                         });
                     }
                     let id = self.ids.run;
                     self.ids.run += 1;
-                    let at = self.events.detail.runs.push(id, line.lifetime, &values);
-                    self.events
-                        .detail
-                        .lives
-                        .insert(line.lifetime, (line.handle, line.appearance));
+                    let at = self.events.run(id, line.lifetime, &values);
+                    self.events.live(line.lifetime, line.handle, line.appearance);
                     if values.mio != 0 {
                         self.anchor_organisation(values.mio, ctx)?;
                     }
@@ -1196,10 +1130,10 @@ impl CountryState {
             .into_values()
             .chain(std::mem::take(&mut self.broken).into_values());
         for mut line in ended {
-            self.events.overview.ends.push((line.lifetime, hour));
+            self.events.end(line.lifetime, hour);
             close_line(&mut self.events, &mut line);
             self.closed(&line, ctx);
-            self.events.touched = true;
+            self.events.touch(0);
         }
         self.active_variants = still
             .values()
@@ -1212,7 +1146,7 @@ impl CountryState {
         let mut produced_between: BTreeSet<u64> = BTreeSet::new();
         if input.output_complete {
             self.output_open = true;
-            mark(&mut self.events.overview.output_hours, hour);
+            self.events.mark_output(hour);
             let mut outputs: Vec<(&ProductionLineOutputRow, bool)> = Vec::new();
             self.counters.unlinked_rows += input.unlinked_output.len();
             for (row, linked) in input
@@ -1253,7 +1187,7 @@ impl CountryState {
                         }
                         let variants: Vec<u64> = rows.iter().map(|(row, _)| row.variant).collect();
                         produced_between.extend(variants.iter().copied());
-                        self.events.overview.lives.push(index::Life {
+                        self.events.life(index::Life {
                             id: lifetime,
                             handle,
                             appearance: 1,
@@ -1265,7 +1199,7 @@ impl CountryState {
                             }),
                             variants,
                         });
-                        self.events.overview.ends.push((lifetime, hour));
+                        self.events.end(lifetime, hour);
                         self.keys.handles.put(
                             handle,
                             Handle {
@@ -1280,7 +1214,7 @@ impl CountryState {
                     }
                     None => {
                         self.counters.unlisted_output += 1;
-                        self.events.touched = true;
+                        self.events.touch(0);
                         continue;
                     }
                 };
@@ -1290,28 +1224,23 @@ impl CountryState {
                 match self.open.get_mut(&handle).filter(|_| !ended) {
                     Some(line) => {
                         self.events
-                            .overview
-                            .output_variants
-                            .extend(output.parts.iter().map(|part| part.variant));
+                            .output_variants(output.parts.iter().map(|part| part.variant));
                         let id = self.ids.output;
                         self.ids.output += 1;
-                        self.events.detail.outputs.push(OutputRecord {
+                        let at = self.events.output(OutputRecord {
                             id,
                             lifetime,
                             output: output.clone(),
                             closed: false,
                         });
-                        self.events
-                            .detail
-                            .lives
-                            .insert(lifetime, (line.handle, line.appearance));
+                        self.events.live(lifetime, line.handle, line.appearance);
                         line.output = Some(LiveOutput {
                             id,
                             output,
-                            at: At::New(self.events.detail.outputs.len() - 1),
+                            at: At::New(at),
                         });
                     }
-                    None => self.events.overview.finals.push((lifetime, output)),
+                    None => self.events.final_output(lifetime, output),
                 }
                 self.touch(bytes);
             }
@@ -1319,7 +1248,7 @@ impl CountryState {
         self.organisations_open = false;
         if input.organisations_named {
             self.organisations_open = true;
-            mark(&mut self.events.overview.organisation_hours, hour);
+            self.events.mark_organisations(hour);
             let named: BTreeSet<u64> = mine
                 .iter()
                 .flat_map(|row| {
@@ -1734,6 +1663,10 @@ pub struct Prepared {
     bound: BTreeMap<u64, lens::Bound>,
     /// Histories the next hour forks from, as their lenses left them.
     fork_sources: BTreeMap<NativeCountry, History>,
+    /// Each of the segment's lenses' chunk, made again from what its walk journaled, and the
+    /// pieces made of those it ended, until the flush ending them.
+    rebuilt: BTreeMap<u32, record::Rebuilt>,
+    pieces: Vec<lens::Piece>,
 }
 
 /// Every live history, with what folds it: a native country's, or a tag's own projection.
@@ -1890,6 +1823,8 @@ impl Prepared {
             ledger_ranges: Vec::new(),
             pending: false,
             bound: BTreeMap::new(),
+            rebuilt: BTreeMap::new(),
+            pieces: Vec::new(),
             fork_sources: BTreeMap::new(),
         }
     }
@@ -1945,13 +1880,38 @@ impl Prepared {
         )
     }
 
+    /// Makes again each lens's changes its walk journaled ([`record`]), encoded.
+    pub(super) fn lens_ops(&mut self, ops: &[u8]) -> io::Result<()> {
+        let ops: Vec<(u32, Vec<record::Op>)> = index::unpack(ops)?;
+        for (lens, ops) in ops {
+            let rebuilt = self.rebuilt.entry(lens).or_default();
+            for op in ops {
+                if let Some(piece) = rebuilt.apply(lens, op)? {
+                    self.pieces.push(piece);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// [`Self::lens_flush`] of a native walk's flush as it handed it on, written through `writer`.
     pub(super) fn lens_flush_into<W: Pages + ?Sized>(
         &mut self,
         writer: &mut W,
         flush: &[u8],
     ) -> io::Result<()> {
-        self.lens_flush(&mut Through(writer), lens::Flush::decode(flush)?)
+        let mut flush = lens::Flush::decode(flush)?;
+        flush.pieces = std::mem::take(&mut self.pieces);
+        let (last, stops) = (flush.last, flush.stops.clone());
+        self.lens_flush(&mut Through(writer), flush)?;
+        if last {
+            self.rebuilt.clear();
+        } else {
+            for lens in stops {
+                self.rebuilt.remove(&lens);
+            }
+        }
+        Ok(())
     }
 
     /// Folds one hour, whatever it is read from; whether it was more than a quiet hour.
@@ -3555,6 +3515,8 @@ impl Prepared {
             ledger_ranges: commit.ledger,
             pending: false,
             bound: BTreeMap::new(),
+            rebuilt: BTreeMap::new(),
+            pieces: Vec::new(),
             fork_sources: BTreeMap::new(),
             directory,
         })
@@ -3653,15 +3615,17 @@ where
     let (requests, asked) = std::sync::mpsc::channel::<keys::Request>();
     let context = replay_frame::cpu::Context::capture();
     let memory = engine_allocation::labels::current();
+    let room = engine_allocation::spill::room();
     let step = &step;
     std::thread::scope(|scope| {
         let handles: Vec<_> = shards
             .into_iter()
             .map(|shard| {
                 let remote = keys::Remote::new(requests.clone());
-                let context = context.clone();
+                let (context, room) = (context.clone(), room.clone());
                 scope.spawn(move || {
                     let _memory = engine_allocation::labels::resume(memory);
+                    let _room = engine_allocation::spill::enter(room);
                     let _cpu = context.enter("fold observe");
                     let mut ctx = Ctx::remote(&remote, generation, chunk);
                     shard
@@ -3725,13 +3689,15 @@ fn encode_histories(
     }
     let context = replay_frame::cpu::Context::capture();
     let memory = engine_allocation::labels::current();
+    let room = engine_allocation::spill::room();
     std::thread::scope(|scope| {
         let handles: Vec<_> = groups
             .iter()
             .map(|group| {
-                let context = context.clone();
+                let (context, room) = (context.clone(), room.clone());
                 scope.spawn(move || {
                     let _memory = engine_allocation::labels::resume(memory);
+                    let _room = engine_allocation::spill::enter(room);
                     let _cpu = context.enter("fold publish");
                     let mut encoded = Vec::new();
                     for (history, events) in group {
@@ -4069,7 +4035,7 @@ impl RestoredHistory {
         held.designs.restore(stored.designs);
         held.organisations.restore(stored.organisations);
         let mut state = CountryState {
-            events: Events::default(),
+            events: Record::default(),
             last: core.last,
             open: lines(core.open)?,
             carried: core.carried,

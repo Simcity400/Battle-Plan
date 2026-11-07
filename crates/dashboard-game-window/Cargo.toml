@@ -42,7 +42,7 @@ uuid = { workspace = true, features = ["v4"] }
 windows-sys = { workspace = true, features = ["Win32_UI_HiDpi"] }
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 engine-executable.workspace = true
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-gfx = { workspace = true, features = ["test-support"] }

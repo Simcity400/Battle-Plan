@@ -1280,6 +1280,7 @@ impl Reuse<'_> {
             since,
         } = self;
         let frame = hour.frame;
+        let confirming = ::replay_frame::cpu::scope_phase("leaders:vis_confirm");
         let confirmed = evaluation.as_mut().is_some_and(|last| {
             if last.owner != row.owner || last.visibility != *visibility {
                 return false;
@@ -1295,7 +1296,9 @@ impl Reuse<'_> {
                 reread(rereads, world, frame, key)
             })
         });
+        drop(confirming);
         if confirmed {
+            columnar::FLOOR.add(9, 1);
             counts.reused += 1;
             if !check_reuse() {
                 let last = evaluation.as_mut().expect("confirmed evaluation");
@@ -1303,6 +1306,8 @@ impl Reuse<'_> {
                 return Ok(last.value.clone());
             }
         }
+        let _evaluating = ::replay_frame::cpu::scope_phase("leaders:vis_eval");
+        columnar::FLOOR.add(8, 1);
         let world = hour.get()?;
         let (value, inputs) = dashboard_text::triggers::inputs::capture_in(frame, || {
             Evaluator::new(world, None).decide_leader_visibility(row, visibility.clone(), true)
@@ -1332,6 +1337,29 @@ impl Reuse<'_> {
             }
         } else {
             counts.evaluated += 1;
+        }
+        if ::replay_frame::cpu::enabled() {
+            let started = ::replay_frame::cpu::thread_cycles();
+            let mut tables = BTreeSet::new();
+            for key in inputs.keys() {
+                if let dashboard_text::triggers::inputs::Key::Table(table)
+                | dashboard_text::triggers::inputs::Key::Fields(table, _) = key
+                {
+                    tables.insert(*table);
+                }
+            }
+            for table in tables {
+                ::replay_frame::cpu::note_named("leaders.eval.whole-read", &format!("{table:?}"), started);
+            }
+            let why = match evaluation.as_ref() {
+                None => "leaders.eval.first",
+                Some(last) if last.owner != row.owner || last.visibility != *visibility => {
+                    "leaders.eval.owner-or-visibility"
+                }
+                Some(last) if last.value == value => "leaders.eval.same-verdict",
+                Some(_) => "leaders.eval.new-verdict",
+            };
+            ::replay_frame::cpu::note(why, "leaders", started);
         }
         *evaluation = Some(Evaluation {
             owner: row.owner,
@@ -2212,6 +2240,50 @@ struct NavalSource {
     game_hour: i32,
 }
 
+/// Each training trait's spelling, name and required experience, while the tokens spelling
+/// them stand: a progress read formats only its experience.
+#[derive(Default)]
+struct TraitNames {
+    /// The tokens' epoch and completeness they were read at.
+    at: Option<(u64, bool)>,
+    names: HashMap<u32, TraitName>,
+}
+
+struct TraitName {
+    token: Option<String>,
+    name: Option<String>,
+    required_raw: Option<String>,
+}
+
+impl TraitNames {
+    fn at(&mut self, at: (u64, bool)) {
+        if self.at != Some(at) {
+            self.names.clear();
+            self.at = Some(at);
+        }
+    }
+
+    fn named<'s>(
+        &mut self,
+        token: u32,
+        spelled: impl Fn(u32) -> Option<&'s str>,
+        content: Option<&Content>,
+    ) -> &TraitName {
+        self.names.entry(token).or_insert_with(|| {
+            let token = spelled(token);
+            TraitName {
+                token: token.map(str::to_owned),
+                name: token.and_then(|token| {
+                    content.and_then(|c| c.catalogue.localised(token, View::Plain))
+                }),
+                required_raw: token
+                    .and_then(|token| content.and_then(|c| c.leaders.traits.get(token)))
+                    .map(|t| (i64::from(t.required_experience()) * 100_000).to_string()),
+            }
+        })
+    }
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[allow(clippy::type_complexity)]
 #[derive(replay_spool::Spooled)]
@@ -2307,6 +2379,9 @@ pub(crate) struct Scan {
     progress_tables: Option<[TableMark; 2]>,
     #[serde(skip)]
     progress_epochs: [u64; 2],
+    #[serde(skip)]
+    #[spool(skip)]
+    trait_names: TraitNames,
     #[serde(skip)]
     formation_names: HashMap<u64, (Option<Vec<u8>>, Option<String>)>,
     #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
@@ -3286,6 +3361,7 @@ impl Scan {
             trait_epoch,
             progress_tables,
             progress_epochs,
+            trait_names,
             formation_names,
             roles,
             rank_names,
@@ -3514,6 +3590,7 @@ impl Scan {
                 &all
             }
         };
+        let visibility_phase = ::replay_frame::cpu::scope_phase("leaders:rows_visibility");
         let mut planned = Vec::with_capacity(selected.len());
         for &row_index in selected {
             if let Some(work) = projection.as_mut() {
@@ -3650,6 +3727,8 @@ impl Scan {
             return Ok(false);
         }
         // Each projected leader read, whether it was visible and the kind it was read with.
+        drop(visibility_phase);
+        let _careers = ::replay_frame::cpu::scope_phase("leaders:rows_careers");
         let mut commanders = Vec::new();
         let owner_countries = OnceCell::new();
         for (row, index, owner_unchanged, owner_slot, decided) in planned {
@@ -3765,6 +3844,7 @@ impl Scan {
                     || last.row.kind != row.kind
                     || reply.roles[last.role as usize].owner.as_ref() != owner_tags.get(row.owner)
             });
+            let person_phase = ::replay_frame::cpu::scope_phase("leaders:car_person");
             let person_id = if let Some(last) = state.last_read.as_ref().filter(|last| {
                 last.person_epoch == *identity_epoch
                     && last.row.character_id == row.character_id
@@ -3837,6 +3917,7 @@ impl Scan {
                     index
                 }
             };
+            drop(person_phase);
             let owner = if owner_unchanged {
                 reply.roles[state.last_read.as_ref().expect("cached owner").role as usize]
                     .owner
@@ -3844,6 +3925,7 @@ impl Scan {
             } else {
                 owner_tags.get(row.owner).map(String::as_str)
             };
+            let progress_phase = ::replay_frame::cpu::scope_phase("leaders:car_progress");
             let raw_traits = traits
                 .map(|ts| trait_slice(ts, reference))
                 .transpose()?;
@@ -3891,27 +3973,23 @@ impl Scan {
                 #[cfg(test)]
                 PROGRESS_BUILDS.with(|builds| builds.set(builds.get() + 1));
                 let read = training_of(&training_read, progress_rows, reference)?;
+                trait_names.at((progress_epochs[1], progress_tokens.is_some()));
                 let training = read.map(|rows| {
                     rows.iter()
                         .filter(|p| p.list == 0)
                         .map(|p| {
-                            let token = spelled(p.token_id as u32);
-                            if token.is_none() {
+                            let named = trait_names.named(p.token_id as u32, spelled, content);
+                            if named.token.is_none() {
                                 refusals.note(
                                     "Training trait token is unavailable",
                                     format!("{reference}:{}", p.ordinal),
                                 );
                             }
-                            let required = token
-                                .and_then(|token| content.and_then(|c| c.leaders.traits.get(token)))
-                                .map(|t| i64::from(t.required_experience()) * 100_000);
                             LeaderTraining {
-                                token: token.map(str::to_owned),
-                                name: token.and_then(|token| {
-                                    content.and_then(|c| c.catalogue.localised(token, View::Plain))
-                                }),
+                                token: named.token.clone(),
+                                name: named.name.clone(),
                                 experience_raw: p.experience.to_string(),
-                                required_raw: required.map(|v| v.to_string()),
+                                required_raw: named.required_raw.clone(),
                             }
                         })
                         .collect()
@@ -3920,18 +3998,16 @@ impl Scan {
                     rows.iter()
                         .filter(|p| p.list == 1)
                         .map(|p| {
-                            let token = spelled(p.token_id as u32);
-                            if token.is_none() {
+                            let named = trait_names.named(p.token_id as u32, spelled, content);
+                            if named.token.is_none() {
                                 refusals.note(
                                     "Training trait token is unavailable",
                                     format!("{reference}:{}", p.ordinal),
                                 );
                             }
                             LeaderTrainingFactor {
-                                token: token.map(str::to_owned),
-                                name: token.and_then(|token| {
-                                    content.and_then(|c| c.catalogue.localised(token, View::Plain))
-                                }),
+                                token: named.token.clone(),
+                                name: named.name.clone(),
                                 factor_raw: p.experience.to_string(),
                             }
                         })
@@ -3958,6 +4034,7 @@ impl Scan {
             } else {
                 Some(training_of(&training_read, progress_rows, reference)?.map(<[_]>::to_vec))
             };
+            drop(progress_phase);
             let leader = &mut state.career;
             if state.last_run.is_none() {
                 if let Some(work) = projection {

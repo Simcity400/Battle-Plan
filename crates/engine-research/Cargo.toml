@@ -27,4 +27,5 @@ engine-governance-tests = { workspace = true, features = ["test-support"] }
 # `cargo test --workspace` resolves for crates these tests build, so `cargo test -p`
 # builds them identically.
 [target.'cfg(all())'.dev-dependencies]
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 test-unify = { workspace = true }

@@ -186,9 +186,6 @@ impl Product for DivisionCareers {
             CareerTemplate::decl(),
         ]
     }
-    fn native_tables() -> Vec<TableId> {
-        TABLES.to_vec()
-    }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         for tag in p.tags.iter().flatten() {
             dashboard_base::products::validate_tag(tag)?;
@@ -249,9 +246,6 @@ impl Product for DivisionRecord {
             DivisionRecordReply::decl(),
             RecordEntry::decl(),
         ]
-    }
-    fn native_tables() -> Vec<TableId> {
-        record_tables()
     }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         p.division.parse::<u64>().map_err(|_| "Invalid division")?;

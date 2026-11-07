@@ -240,6 +240,7 @@ engine-air-history = { path = "crates/engine-air-history" }
 engine-governance-tests = { path = "crates/engine-governance-tests" }
 engine-native = { path = "crates/engine-native" }
 engine-allocation = { path = "crates/engine-allocation" }
+engine-heap = { path = "crates/engine-heap" }
 engine-executable = { path = "crates/engine-executable" }
 installed-content = { path = "crates/installed-content" }
 installed-content-raids = { path = "crates/installed-content-raids" }
@@ -267,7 +268,7 @@ installed-content-core = { path = "crates/installed-content-core" }
 installed-content-image = { path = "crates/installed-content-image" }
 installed-content-save = { path = "crates/installed-content-save" }
 # Bundled v3 (3.3.2) dereferences a null thread heap when a thread's first allocation is an in-place realloc.
-mimalloc = { version = "0.1", default-features = false, features = ["v2"] }
+libmimalloc-sys = { version = "0.1.49", default-features = false }
 png = "0.18"
 pollster = "0.4"
 job-priority = { path = "crates/job-priority" }

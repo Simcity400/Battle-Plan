@@ -200,11 +200,6 @@ impl Product for ArmyLosses {
             ArmyLossesAvailability::decl(),
         ]
     }
-    fn native_tables() -> Vec<TableId> {
-        let mut tables = TABLES.to_vec();
-        tables.extend(equipment::DESIGN_TABLES);
-        tables
-    }
     fn validate(p: &Self::Params) -> Result<(), &'static str> {
         dashboard_base::products::validate_tag(&p.tag)?;
         p.branch_id

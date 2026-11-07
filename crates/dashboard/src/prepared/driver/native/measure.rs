@@ -1,8 +1,7 @@
 //! What a native preparation of the families cost, measured on its production run: CPU per game
 //! hour of each family's operators, ordered emit and publication, of the walks shared by every
 //! lane and of their world, the slowest serial lane, and the peak resident bytes, beside the goal
-//! the whole preparation is judged on ([`GOAL`]). The change-run index, prepared before the
-//! families, is not measured here ([`Measured::excludes`]).
+//! the whole preparation is judged on ([`GOAL`]).
 
 use super::backend::Spent;
 use serde::Serialize;
@@ -39,6 +38,51 @@ pub struct Phases {
     pub emit_us_per_hour: f64,
     pub publish_us_per_hour: f64,
     pub serial_us_per_hour: f64,
+    /// Its operators' hours as the walks timed them, on any worker, and of those the hours
+    /// that were the costliest of their walk's hour: what held each walk up.
+    pub hour_us_per_hour: f64,
+    pub costliest_us_per_hour: f64,
+}
+
+/// What a walk's hour took, in microseconds a walked hour ([`replay::segments::Chain`]).
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct WalkHour {
+    pub hours: u64,
+    /// The walk's worker alone, before its families: of it, the walker's pages decompressed,
+    /// its manifests and sections read, its tables applied (spread over its helpers, whose
+    /// work that was is `parts_us`), and the world.
+    pub own_us: f64,
+    pub decompress_us: f64,
+    pub read_us: f64,
+    pub apply_us: f64,
+    pub parts_us: f64,
+    pub world_us: f64,
+    /// Its families' hours, all told and the costliest, and how long the walk waited for them.
+    pub families_us: f64,
+    pub costliest_us: f64,
+    pub families_wall_us: f64,
+    /// The workers a walk keeps busy at its fastest: its work over its own part and its
+    /// costliest family's hour.
+    pub busy: f64,
+}
+
+impl From<replay::segments::Chain> for WalkHour {
+    fn from(chain: replay::segments::Chain) -> Self {
+        let per = |ns: u64| ns as f64 / 1e3 / chain.hours.max(1) as f64;
+        Self {
+            hours: chain.hours,
+            own_us: per(chain.own_ns),
+            decompress_us: per(chain.decompress_ns),
+            read_us: per(chain.read_ns),
+            apply_us: per(chain.apply_ns),
+            parts_us: per(chain.parts_ns),
+            world_us: per(chain.world_ns),
+            families_us: per(chain.families_ns),
+            costliest_us: per(chain.costliest_ns),
+            families_wall_us: per(chain.families_wall_ns),
+            busy: chain.work_ns as f64 / chain.fastest_ns.max(1) as f64,
+        }
+    }
 }
 
 /// What the run did and the most it held at once ([`replay::segments::Stats`]).
@@ -48,6 +92,9 @@ pub struct Run {
     pub chained: usize,
     pub deferred: usize,
     pub segments_held: usize,
+    pub segments_walking: usize,
+    /// The walks the workers keep busy, by the run's hours: new walks start only below it.
+    pub walks_paced: usize,
     /// The most its items and parked operators held on disk at once, and wrote in all: as
     /// stored, and raw.
     pub spool_bytes_held: u64,
@@ -65,6 +112,9 @@ pub struct Run {
     /// The walkers' buffers held at once, and the most one walk charged its tables.
     pub walker_bytes_held: usize,
     pub walk_table_bytes_held: usize,
+    pub walk_hour: WalkHour,
+    /// Seconds workers waited with nothing to do, all told.
+    pub idle_seconds: f64,
 }
 
 impl From<replay::segments::Stats> for Run {
@@ -74,6 +124,8 @@ impl From<replay::segments::Stats> for Run {
             chained: stats.chained,
             deferred: stats.deferred,
             segments_held: stats.segments,
+            segments_walking: stats.walking,
+            walks_paced: stats.paced,
             spool_bytes_held: stats.spool_bytes,
             spool_raw_bytes_held: stats.spool_raw_bytes,
             spooled_bytes: stats.spooled,
@@ -88,6 +140,8 @@ impl From<replay::segments::Stats> for Run {
             rewalked: stats.rewalked,
             walker_bytes_held: stats.walker_bytes,
             walk_table_bytes_held: stats.table_bytes,
+            walk_hour: stats.chain.into(),
+            idle_seconds: stats.idle_ns as f64 / 1e9,
         }
     }
 }
@@ -113,11 +167,11 @@ pub struct Measured {
     pub hours: u64,
     pub segments: usize,
     pub threads: usize,
+    /// It began in background mode, as a job ahead of the user ([`replay::segments::Background`]).
+    pub background: bool,
     /// Its runs walked for lanes doing no family's work: what they cost is the floor under
     /// the families' ([`super::Floor`]).
     pub walk_only: bool,
-    /// What the measurement leaves out of the whole preparation.
-    pub excludes: &'static [&'static str],
     /// The families' preparation: opening, content, the run and its commits.
     pub wall_seconds: f64,
     pub cpu_us_per_hour: f64,
@@ -132,6 +186,8 @@ pub struct Measured {
     /// less the families' and the worlds'. Below zero, those count more than the run spent.
     pub walk_us_per_hour: f64,
     pub world_us_per_hour: f64,
+    /// Of the workers' time over the union run, the share they waited with nothing to do.
+    pub idle_share: f64,
     pub families: BTreeMap<&'static str, Phases>,
     /// What families counted over the run, by family and name, for those that count.
     pub counts: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
@@ -145,8 +201,7 @@ pub struct Measured {
     pub run: Run,
     /// The most each segment's walks charged their tables, by segment.
     pub walk_table_bytes: Vec<usize>,
-    /// Fifty years of the families' preparation at both runs' wall time per hour, less what it
-    /// excludes ([`Self::excludes`]).
+    /// Fifty years of the families' preparation at both runs' wall time per hour.
     pub fifty_years_seconds: f64,
     pub goal: Goal,
 }
@@ -222,6 +277,7 @@ pub(crate) struct Counted<'a> {
     pub hours: u64,
     pub segments: usize,
     pub threads: usize,
+    pub background: bool,
     pub walk_only: bool,
     pub whole: Lap,
     pub content: Lap,
@@ -230,6 +286,9 @@ pub(crate) struct Counted<'a> {
     pub families: &'a [(&'static str, Spent)],
     pub counts: &'a [(&'static str, Vec<(&'static str, u64)>)],
     pub largest: &'a [(&'static str, Option<usize>)],
+    /// Each family's hours as the walks timed them, and of those the costliest of their
+    /// walk's hour, in nanoseconds.
+    pub costs: &'a [(&'static str, Option<(u64, u64)>)],
     pub stats: replay::segments::Stats,
     pub tables: Vec<usize>,
     /// The working set as the preparation began, after content loaded, and as the run ended.
@@ -244,6 +303,7 @@ impl Measured {
         let rate = counted.run.stamps as f64 / counted.run.seconds.max(f64::MIN_POSITIVE);
         let us = |cycles: u64| cycles as f64 / rate.max(f64::MIN_POSITIVE) * 1e6 / hours;
         let cpu = |lap: Lap| lap.cpu as f64 / 1e3 / hours;
+        let walked = |ns: u64| ns as f64 / 1e3 / hours;
         let mut families = BTreeMap::new();
         let (mut spent, mut ahead) = (0, 0);
         for &(name, family) in counted.families {
@@ -253,6 +313,12 @@ impl Measured {
                 _ => spent += cycles,
             }
             let (emit, publish) = (us(family.emit), us(family.publish));
+            let (hour, costliest) = counted
+                .costs
+                .iter()
+                .find(|(named, _)| *named == name)
+                .and_then(|(_, costs)| *costs)
+                .unwrap_or((0, 0));
             families.insert(
                 name,
                 Phases {
@@ -260,6 +326,8 @@ impl Measured {
                     emit_us_per_hour: emit,
                     publish_us_per_hour: publish,
                     serial_us_per_hour: emit + publish,
+                    hour_us_per_hour: walked(hour),
+                    costliest_us_per_hour: walked(costliest),
                 },
             );
         }
@@ -296,8 +364,8 @@ impl Measured {
             hours: counted.hours,
             segments: counted.segments,
             threads: counted.threads,
+            background: counted.background,
             walk_only: counted.walk_only,
-            excludes: &["the change-run index, prepared before the families"],
             wall_seconds: counted.whole.seconds,
             cpu_us_per_hour: cpu(counted.whole),
             content_wall_seconds: counted.content.seconds,
@@ -306,6 +374,9 @@ impl Measured {
             run_cpu_us_per_hour: cpu(counted.run),
             walk_us_per_hour: cpu(counted.run) - us(spent) - us(counted.world),
             world_us_per_hour: us(counted.world),
+            idle_share: counted.stats.idle_ns as f64
+                / 1e9
+                / (counted.run.seconds * counted.threads as f64).max(f64::MIN_POSITIVE),
             families,
             counts: counted
                 .counts

@@ -303,7 +303,7 @@ pub(super) fn publish<W: super::super::pages::Pages + ?Sized>(
     section: &str,
     batch: u64,
     bytes: &mut Vec<u8>,
-    keys: &mut [KeyRows<'_>],
+    keys: &mut [Ordered<'_>],
     cancelled: &AtomicBool,
 ) -> io::Result<usize> {
     let original = bytes.len();
@@ -311,7 +311,7 @@ pub(super) fn publish<W: super::super::pages::Pages + ?Sized>(
     let capacity = bytes.capacity();
     let mut first = i32_at(bytes, 0);
     let mut last = i32_at(bytes, 4);
-    if batch != 0 && keys.iter().any(|(_, _, events, _)| !events.is_empty()) {
+    if batch != 0 && keys.iter().any(|(dates, _)| !dates.is_empty()) {
         let mut previous = [0; HEADER as usize];
         writer.read_slice(section, batch - 1, 0, &mut previous)?;
         first = first.max(i32_at(&previous, 4));
@@ -330,9 +330,9 @@ pub(super) fn publish<W: super::super::pages::Pages + ?Sized>(
     };
     let mut additional = 0_usize;
     let mut indexed = false;
-    for (_, _, events, state) in keys.iter() {
+    for (dates, state) in keys.iter() {
         check_cancel(cancelled)?;
-        let late = events.partition_point(|row| row.0 < first);
+        let late = dates.partition_point(|&date| date < first);
         indexed |= state.event_order.is_some() || late != 0;
         if late == 0 {
             continue;
@@ -363,13 +363,13 @@ pub(super) fn publish<W: super::super::pages::Pages + ?Sized>(
         .checked_add(additional)
         .ok_or_else(allocation_refused)?;
     reserve(builder.bytes, additional)?;
-    for (index, (_, _, events, state)) in keys.iter_mut().enumerate() {
+    for (index, (dates, state)) in keys.iter_mut().enumerate() {
         check_cancel(cancelled)?;
-        let base = state.events - events.len() as u64;
-        for (index, (date, _)) in events
+        let base = state.events - dates.len() as u64;
+        for (index, date) in dates
             .iter()
             .enumerate()
-            .take_while(|(_, row)| row.0 < first)
+            .take_while(|(_, date)| **date < first)
         {
             let height = builder.dimensions(state.event_order)?.1;
             state.event_order =
@@ -385,7 +385,7 @@ pub(super) fn publish<W: super::super::pages::Pages + ?Sized>(
     }
     if keys
         .iter()
-        .any(|(_, _, _, state)| state.event_order.is_some())
+        .any(|(_, state)| state.event_order.is_some())
     {
         let roots = keys.len().checked_mul(16).ok_or_else(allocation_refused)?;
         if builder
@@ -398,7 +398,7 @@ pub(super) fn publish<W: super::super::pages::Pages + ?Sized>(
                 "event order roots exceed their admitted construction bound",
             ));
         }
-        for (_, _, _, state) in keys {
+        for (_, state) in keys {
             match state.event_order {
                 Some(root) => root.encode(builder.bytes),
                 None => builder.bytes.extend_from_slice(&[0; 16]),

@@ -221,24 +221,23 @@ const MARKED: [TableId; 4] = [
     TableId::CountryLinks,
 ];
 
-/// How the walk's views are asked for the tables held as `holds` say, but those the roster
-/// reads by its own keys.
+/// How the walk's views are asked for every table leaders may read, as `holds` says: a
+/// widened hour reads the roster's tables and those only a fallback reads from them too.
 fn asks(holds: &[Option<Hold>]) -> Vec<(TableId, dashboard_world::Hold)> {
     block::tables()
         .iter()
-        .filter_map(|&table| {
-            let hold = match holds[table.index()]? {
-                Hold::Whole => dashboard_world::Hold::Whole,
-                Hold::Watched(fields) => dashboard_world::Hold::Fields(fields),
-                Hold::Keys => dashboard_world::Hold::Fields(0),
-                Hold::Roster => return None,
+        .map(|&table| {
+            let hold = match holds[table.index()] {
+                Some(Hold::Watched(fields)) => dashboard_world::Hold::Fields(fields),
+                Some(Hold::Keys) => dashboard_world::Hold::Fields(0),
+                Some(Hold::Whole | Hold::Roster) | None => dashboard_world::Hold::Whole,
             };
-            Some((table, hold))
+            (table, hold)
         })
         .collect()
 }
 
-/// What a run's leaders read of its walk's world: every table held but the roster's own.
+/// What a run's leaders read of its walk's world: every table they may read.
 pub fn needs(catalogue: bool) -> Needs {
     Needs {
         frame: asks(&holds(catalogue)),
@@ -879,11 +878,12 @@ impl Registry {
     fn insert(&mut self, at: usize, inputs: &Inputs) {
         self.remove(at);
         let mut reads: Vec<TableRead> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for key in inputs.keys() {
             match key.dependence() {
                 Some(declared) => {
                     for read in declared {
-                        if !reads.contains(&read) {
+                        if seen.insert(read) {
                             reads.push(read);
                         }
                     }
@@ -893,6 +893,7 @@ impl Registry {
                 }
             }
         }
+        FLOOR.add(11, reads.len() as u64);
         for &read in &reads {
             let users = self.readers.entry(read).or_default();
             if users.is_empty() {
@@ -918,12 +919,14 @@ impl Registry {
             if matches!(changes.table(table), TableChange::Same) {
                 continue;
             }
+            FLOOR.add(10, reads.len() as u64);
             for read in reads {
                 if since.changed(read) {
                     suspects.extend(&self.readers[read]);
                 }
             }
         }
+        FLOOR.add(12, suspects.len() as u64);
         for read in &self.ending {
             if since.changed(read) {
                 suspects.extend(&self.readers[read]);
@@ -2205,6 +2208,23 @@ pub struct Hour {
     pub(super) admissions: Vec<(u64, LeaderRole, Option<(u32, u32)>)>,
 }
 
+/// The floor of leaders' operator hours.
+pub static FLOOR: dashboard_world::floor::Floor = dashboard_world::floor::Floor::new(&[
+    "hours quiet",
+    "hours battles",
+    "hours read every leader",
+    "hours read some leaders",
+    "leaders read in every-leader hours",
+    "leaders read in some-leader hours",
+    "roster leaders, every hour",
+    "fallbacks",
+    "visibility evaluations",
+    "visibility evaluations reused",
+    "registry reads checked",
+    "registry reads registered",
+    "suspects",
+]);
+
 pub struct Projector {
     format: FormatVersion,
     starts: BTreeMap<u64, i32>,
@@ -2288,6 +2308,7 @@ impl Operator<World> for Projector {
             self.start(Start::Run { continues: false }, hour.branch, hour.hour)?;
         }
         self.hours += 1;
+        FLOOR.hour(hour.state, hour.manifest, block::tables());
         let held = self
             .held
             .as_mut()
@@ -2323,6 +2344,28 @@ impl Operator<World> for Projector {
                 )
             })?
         };
+        if dashboard_world::floor::Floor::on() {
+            let roster = held
+                .frame(hour)
+                .frame
+                .complete::<tables::UnitLeaders>(0)
+                .map_or(0, |rows| rows.len() as u64);
+            FLOOR.add(6, roster);
+            match &step {
+                Step::Quiet => FLOOR.add(0, 1),
+                Step::Battles => FLOOR.add(1, 1),
+                Step::Read { rows: None, .. } => {
+                    FLOOR.add(2, 1);
+                    FLOOR.add(4, roster);
+                }
+                Step::Read {
+                    rows: Some(rows), ..
+                } => {
+                    FLOOR.add(3, 1);
+                    FLOOR.add(5, rows.len() as u64);
+                }
+            }
+        }
         match step {
             Step::Quiet => scan.advance(hour.hour),
             Step::Battles => scan.observe_battles(held.frame(hour).frame, format, &changes)?,
@@ -2366,6 +2409,7 @@ impl Operator<World> for Projector {
                     };
                     let _cpu = ::replay_frame::cpu::scope_phase("leaders:fallback");
                     self.fallbacks += 1;
+                    FLOOR.add(7, 1);
                     if !held.widen(&wanted) {
                         return Err(invalid(
                             "A leaders hour cannot give its visibility verdicts on every table",
@@ -2373,11 +2417,13 @@ impl Operator<World> for Projector {
                     }
                     scan.resume(mark);
                 }
+                let _cpu = ::replay_frame::cpu::scope_phase("leaders:index");
                 index(scan, held.frame(hour).frame, rows.is_none())?;
             }
         }
         let segment = self.first.expect("a segment start");
         let work = scan.projection.as_mut().expect("a projected scan");
+        let _cpu = ::replay_frame::cpu::scope_phase("leaders:began");
         for began in work.take_began(segment) {
             out.push(Pushed::Began(began))?;
         }

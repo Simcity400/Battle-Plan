@@ -31,6 +31,7 @@ collector-test-support.workspace = true
 [target.'cfg(all())'.dev-dependencies]
 collector-certificates = { workspace = true, features = ["test-support"] }
 collector-primitives = { workspace = true, features = ["test-support"] }
+engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }

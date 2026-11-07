@@ -254,12 +254,6 @@ impl<'p> Projector<'p> {
                 || !edits.inserted.is_empty()
                 || !edits.deleted_keys.is_empty()
             {
-                // The pack read last, which no item holds, keeps its occurrences' allocation.
-                if let Some((_, Ok((row, _)))) = self.packet.take()
-                    && let Ok(row) = Arc::try_unwrap(row)
-                {
-                    replay_data::event_feed_rows::reuse(row.events);
-                }
                 let mut slots = held.live().ones();
                 self.packet = match (slots.next(), slots.next()) {
                     (Some(slot), None) => {
@@ -277,7 +271,6 @@ impl<'p> Projector<'p> {
                                 .map(|header| (Arc::new(row), Arc::new(header)))
                                 .map_err(|error| error.to_string())
                         } else {
-                            replay_data::event_feed_rows::reuse(row.events);
                             Err("The pack was read at another hour.".into())
                         };
                         Some((read_hour, packet))
@@ -285,8 +278,11 @@ impl<'p> Projector<'p> {
                     _ => None,
                 };
             }
-            return Ok(match &self.packet {
-                Some((read_hour, packet)) if *read_hour == hour.hour => packet.clone(),
+            return Ok(match &mut self.packet {
+                Some((read_hour, packet)) if *read_hour == hour.hour => {
+                    // Only its supplying hour observes it: the hours after keep its hour alone.
+                    std::mem::replace(packet, Err(String::new()))
+                }
                 _ => Err("Event history has no unique pack for its supplying hour.".into()),
             });
         }

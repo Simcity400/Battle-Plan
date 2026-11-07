@@ -17,7 +17,7 @@ test-support = ["dashboard-core/test-support", "dashboard-text/test-support", "i
 product-codec.workspace = true
 engine-projects.workspace = true
 replay.workspace = true
-engine-allocation.workspace = true
+engine-allocation = { workspace = true, features = ["zstd"] }
 engine-dlc.workspace = true
 engine-events.workspace = true
 engine-executable.workspace = true
@@ -56,7 +56,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_
 zstd = "0.13"
 
 [dev-dependencies]
-mimalloc.workspace = true
+engine-heap.workspace = true
 installed-content-abilities = { workspace = true, features = ["test-support"] }
 installed-content-core = { workspace = true, features = ["test-support"] }
 installed-content-country-names = { workspace = true, features = ["test-support"] }

@@ -691,9 +691,6 @@ pub struct DashboardMapState {
     /// Playing, why a newer hour the clock passed is not shown: it failed or waits for memory.
     pub behind_reason: Option<String>,
     pub error: Option<String>,
-    /// Why the hour shows no map yet, which is no failure: its session is still being
-    /// recorded, and the map holds its hours once the session's native recording lands.
-    pub pending: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]

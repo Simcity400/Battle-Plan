@@ -1500,7 +1500,80 @@ impl Rows {
     }
 }
 
+impl ColumnDecoder {
+    fn copied(&self) -> io::Result<Self> {
+        Ok(Self {
+            previous_w: engine_allocation::copy_vec(&self.previous_w)?,
+            previous_n: engine_allocation::copy_vec(&self.previous_n)?,
+            previous_except: engine_allocation::copy_vec(&self.previous_except)?,
+            last: engine_allocation::copy_vec(&self.last)?,
+            literals: engine_allocation::copy_vec(&self.literals)?,
+        })
+    }
+}
+
 impl<'a> TableDecoder<'a> {
+    /// The bytes its own state holds, its payload aside.
+    pub fn held_bytes(&self) -> usize {
+        let words = self.previous_read.capacity()
+            + self.previous_touched.capacity()
+            + self.previous_changed.capacity()
+            + self
+                .columns
+                .iter()
+                .map(|column| {
+                    column.previous_w.capacity()
+                        + column.previous_n.capacity()
+                        + column.previous_except.capacity()
+                        + 2 * column.last.capacity()
+                        + 4 * column.literals.capacity()
+                })
+                .sum::<usize>();
+        4 * words
+            + 8 * (self.row_written.capacity() + self.row_noops.capacity())
+            + self.streams.capacity() * std::mem::size_of::<Reader<'_>>()
+            + self.offsets.capacity() * std::mem::size_of::<usize>()
+            + self.kinds.capacity()
+            + self.modes.capacity()
+    }
+
+    /// The decoder where it stands, over `to`, a copy of `from`, which its payload lies in.
+    pub fn rebased<'b>(&self, from: &[u8], to: &'b [u8]) -> io::Result<TableDecoder<'b>> {
+        let mut streams = engine_allocation::vec(self.streams.len())?;
+        for stream in &self.streams {
+            streams.push(stream.rebased(from, to)?);
+        }
+        let mut columns = engine_allocation::vec(self.columns.len())?;
+        for column in &self.columns {
+            columns.push(column.copied()?);
+        }
+        let count = self.kinds.len();
+        Ok(TableDecoder {
+            kinds: engine_allocation::copy_vec(&self.kinds)?,
+            offsets: engine_allocation::copy_vec(&self.offsets)?,
+            modes: engine_allocation::copy_vec(&self.modes)?,
+            streams,
+            rest: self.rest.rebased(from, to)?,
+            payload: crate::leaf::rebased(self.payload, from, to)?,
+            group: self.group,
+            hours: self.hours,
+            read_hours: self.read_hours,
+            by_rows: self.by_rows,
+            previous_read: engine_allocation::copy_vec(&self.previous_read)?,
+            previous_touched: engine_allocation::copy_vec(&self.previous_touched)?,
+            previous_key: self.previous_key,
+            previous_changed: engine_allocation::copy_vec(&self.previous_changed)?,
+            row_written: engine_allocation::copy_vec(&self.row_written)?,
+            row_noops: engine_allocation::copy_vec(&self.row_noops)?,
+            columns,
+            scratch: DecodeScratch {
+                row_w: engine_allocation::collect_vec((0..count).map(|_| Vec::new()))?,
+                row_n: engine_allocation::collect_vec((0..count).map(|_| Vec::new()))?,
+                ..DecodeScratch::default()
+            },
+        })
+    }
+
     pub fn new(kinds: &[Kind], payload: &'a [u8]) -> io::Result<Self> {
         let mut reader = Reader::new(payload);
         let hours = reader.varint_u32()?;
