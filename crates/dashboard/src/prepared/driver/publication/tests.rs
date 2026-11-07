@@ -518,6 +518,85 @@ fn an_interruption_around_adoption_or_root_publication_leaves_a_whole_root() {
     assert_eq!(fixture.count("steady-test"), Some(1));
 }
 
+/// The recording gone once a commit published its root, before preparation went on: the batch
+/// read back stands and counts as committed, publication stops as changed sources, never as an
+/// uncertain commit, and reopening refuses the changed sources by name.
+#[test]
+fn a_source_gone_after_a_root_keeps_its_batch_and_stops_as_changed_sources() {
+    let fixture = Fixture::new();
+    let steady = family("steady");
+    {
+        let (publisher, _) = fixture.open(&[steady]);
+        let recording = fixture.root.join("recording");
+        publisher.change_after_root(move || std::fs::remove_file(recording).unwrap());
+        let mut stage = publisher.stage(steady.id).unwrap();
+        process(&mut stage, "steady-test", segment(0), Made::Prepared);
+        stage.submit().unwrap();
+        assert!(
+            matches!(publisher.stopped(), Some(Stopped::Failed(message)) if message.contains("sources changed")),
+            "{:?}",
+            publisher.stopped()
+        );
+        assert_eq!(
+            publisher
+                .committed(steady.id, BRANCH)
+                .unwrap()
+                .frontier
+                .last_hour,
+            1009
+        );
+        assert_eq!(publisher.progress()[&steady.id].processed, 1);
+        let error = stage
+            .processed(segment(1), Made::Prepared, None, None)
+            .unwrap_err();
+        assert!(halted(&error));
+    }
+    let reopened = Publisher::open(
+        &fixture.store,
+        fixture.key.clone(),
+        binding(),
+        *PLAN,
+        &[steady],
+        &|_, _, _| true,
+    );
+    let error = reopened.err().expect("the recording is gone");
+    assert!(store::is_sources_changed(&error), "{error}");
+}
+
+/// Another preparation, from other inputs, publishing the same ordinals and hours once a failed
+/// commit let go of the store: what is read back is not this publisher's, so its batch is never
+/// counted as committed.
+#[test]
+fn a_root_read_back_from_another_preparation_s_inputs_is_not_this_batch_s() {
+    let fixture = Fixture::new();
+    let steady = family("steady");
+    let (publisher, _) = fixture.open(&[steady]);
+    let id = fixture
+        .store
+        .folder()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| uuid::Uuid::parse_str(name).ok())
+        .unwrap();
+    let other = fixture.root.join("other recording");
+    publisher.change_after_root(move || {
+        // Shorter than this publisher's recording, so it replaces the store's publication.
+        std::fs::write(&other, b"x").unwrap();
+        let key = store::SourceKey::capture(&other, &[]).unwrap();
+        let store = store::Store::local(id).unwrap();
+        let (publisher, _) =
+            Publisher::open(&store, key, binding(), *PLAN, &[steady], &|_, _, _| true).unwrap();
+        let mut stage = publisher.stage(steady.id).unwrap();
+        process(&mut stage, "steady-test", segment(0), Made::Prepared);
+        stage.submit().unwrap();
+    });
+    let mut stage = publisher.stage(steady.id).unwrap();
+    process(&mut stage, "steady-test", segment(0), Made::Prepared);
+    assert!(stage.submit().is_err());
+    assert!(publisher.committed(steady.id, BRANCH).is_none());
+    assert!(!publisher.progress().contains_key(&steady.id));
+}
+
 #[test]
 fn every_stop_refuses_processed_hours_before_the_next_cut() {
     for stopped in [

@@ -21,7 +21,10 @@ use std::{
 };
 use uuid::Uuid;
 use windows_sys::Win32::{
-    Foundation::{ERROR_SHARING_VIOLATION, GENERIC_READ, GENERIC_WRITE},
+    Foundation::{
+        ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, GENERIC_READ,
+        GENERIC_WRITE,
+    },
     Storage::FileSystem::{
         DELETE, FILE_ATTRIBUTE_TEMPORARY, FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_DELETE,
         FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -104,6 +107,35 @@ pub fn is_superseded(error: &io::Error) -> bool {
         && error
             .get_ref()
             .is_some_and(|inner| inner.is::<Superseded>())
+}
+
+#[derive(Debug)]
+struct SourcesChanged(String);
+
+impl std::fmt::Display for SourcesChanged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SourcesChanged {}
+
+/// The sources changed `when`, `changed` the first input found not as stamped.
+fn sources_changed(when: &str, changed: &Path) -> io::Error {
+    let message = format!(
+        "sources changed {when}: {} is not as it was",
+        changed.display()
+    );
+    io::Error::new(io::ErrorKind::InvalidData, SourcesChanged(message))
+}
+
+/// Whether a writer refused because its recording or content inputs are no longer as its key
+/// stamped them, gone included: what it refused is known, as a commit refused before its manifest
+/// published nothing.
+pub fn is_sources_changed(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<SourcesChanged>())
 }
 
 /// What is told of each publication and Clear of any store in this process: the store's
@@ -208,8 +240,18 @@ impl Stamp {
         Ok(metadata)
     }
 
+    /// Whether the input is as stamped: one gone, its folder too, or no longer a file is not. A
+    /// share that cannot be reached says nothing of its files: that error is passed on.
     fn current(&self) -> io::Result<bool> {
-        let metadata = Self::metadata(&self.path)?;
+        #[cfg(test)]
+        tests::INPUT_CHECKS.set(tests::INPUT_CHECKS.get() + 1);
+        count!(stats);
+        let metadata = match fs::metadata(&self.path) {
+            Ok(metadata) if metadata.is_file() => metadata,
+            Ok(_) => return Ok(false),
+            Err(error) if gone(&error) => return Ok(false),
+            Err(error) => return Err(error),
+        };
         let modified = metadata.modified()?;
         Ok(metadata.len() == self.size && modified == self.modified)
     }
@@ -222,6 +264,15 @@ impl Stamp {
             modified: metadata.modified()?,
         })
     }
+}
+
+/// Whether `error` says a file, or a folder on its path, is not there: not a network path or
+/// share that cannot be reached, which Rust also counts as not found.
+fn gone(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error().map(|code| code as u32),
+        Some(ERROR_FILE_NOT_FOUND | ERROR_PATH_NOT_FOUND)
+    )
 }
 
 fn stamps<T: Sync, U: Send>(
@@ -382,31 +433,42 @@ impl SourceKey {
         self.recording.current()
     }
 
+    #[cfg(test)]
     fn current(&self) -> io::Result<bool> {
-        #[cfg(test)]
-        tests::VALIDATIONS.set(tests::VALIDATIONS.get() + 1);
-        let recording = self.recording.current()?;
-        let content = stamps(&self.content, Stamp::current)?;
-        Ok(recording && content.into_iter().all(|current| current))
+        Ok(self.changed()?.is_none())
     }
 
-    /// Whether a commit may publish under this key: the recording's stamp is
+    /// The first input not as stamped, the recording before the content; None while every one is.
+    fn changed(&self) -> io::Result<Option<&Path>> {
+        #[cfg(test)]
+        tests::VALIDATIONS.set(tests::VALIDATIONS.get() + 1);
+        if !self.recording.current()? {
+            return Ok(Some(&self.recording.path));
+        }
+        let current = stamps(&self.content, Stamp::current)?;
+        Ok(current
+            .iter()
+            .position(|current| !current)
+            .map(|at| self.content[at].path.as_path()))
+    }
+
+    /// The input that refuses a commit under this key, if one does: the recording's stamp is
     /// read every time, the content stack's only once [`CONTENT_RECHECK`] has
     /// passed since its stamps were last found current. Content edited within
     /// that interval is refused when the store is next opened, since the
     /// published stamps no longer match it.
-    fn current_for_commit(&self) -> io::Result<bool> {
+    fn changed_for_commit(&self) -> io::Result<Option<&Path>> {
         #[cfg(test)]
         let interval = tests::CONTENT_RECHECK.get();
         #[cfg(not(test))]
         let interval = CONTENT_RECHECK;
         let mut checked = self.checked.lock().unwrap();
         if checked.is_some_and(|at| at.elapsed() < interval) {
-            return self.recording_current();
+            return Ok((!self.recording_current()?).then_some(self.recording.path.as_path()));
         }
-        let current = self.current()?;
-        *checked = current.then(Instant::now);
-        Ok(current)
+        let changed = self.changed()?;
+        *checked = changed.is_none().then(Instant::now);
+        Ok(changed)
     }
 }
 
@@ -843,7 +905,10 @@ impl Store {
     /// A cancelled or interrupted producer resumes from its published accumulator.
     pub fn extend(&self, key: &SourceKey) -> io::Result<Writer> {
         if !key.recording_current()? {
-            return Err(invalid("sources changed before preparation resumed"));
+            return Err(sources_changed(
+                "before preparation resumed",
+                &key.recording.path,
+            ));
         }
         self.continue_from(key, key.clone())
     }
@@ -3608,7 +3673,10 @@ impl Writer {
         };
         self.commit_with_scratch(scratch)?;
         if !key.recording_current()? {
-            return Err(invalid("sources changed before preparation resumed"));
+            return Err(sources_changed(
+                "before preparation resumed",
+                &key.recording.path,
+            ));
         }
         store.continue_locked(&key, key.clone(), lock)
     }
@@ -3645,15 +3713,18 @@ impl Writer {
                 "a refused adoption left this prepared transaction incomplete",
             ));
         }
-        let valid = self.key.current_for_commit();
-        if !matches!(&valid, Ok(true)) {
+        let changed = self
+            .key
+            .changed_for_commit()
+            .map(|changed| changed.map(Path::to_path_buf));
+        if !matches!(&changed, Ok(None)) {
             self.key.rejected.store(true, Ordering::Release);
             if let Some((_, _, accepted)) = self.key.binding.lock().unwrap().as_mut() {
                 *accepted = false;
             }
         }
-        if !valid? {
-            return Err(invalid("sources changed during preparation"));
+        if let Some(path) = changed? {
+            return Err(sources_changed("during preparation", &path));
         }
         let mut fresh = std::mem::take(&mut self.packs);
         if let Some(pack) = &mut self.pack {

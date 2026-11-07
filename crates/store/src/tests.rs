@@ -3282,16 +3282,52 @@ fn source_validation_borrows_stamps_and_preserves_recapture_refusals() {
     }
     fs::write(&fixture.content[0], b"changed content length").unwrap();
     assert_eq!(key.current().unwrap(), key.recapture().unwrap() == key);
+    // An input gone, or no longer a file, is changed, though it cannot be stamped again.
     fs::remove_file(&fixture.content[1]).unwrap();
-    assert_eq!(
-        key.current().unwrap_err().kind(),
-        key.recapture().unwrap_err().kind()
-    );
+    assert!(!key.current().unwrap());
+    assert_eq!(key.recapture().unwrap_err().kind(), io::ErrorKind::NotFound);
     fs::create_dir(&fixture.content[1]).unwrap();
-    assert_eq!(
-        key.current().unwrap_err().to_string(),
-        key.recapture().unwrap_err().to_string()
-    );
+    assert!(!key.current().unwrap());
+    assert!(key.recapture().is_err());
+}
+
+/// Only a file or folder not there is gone: a network path or share that cannot be reached,
+/// which Rust also counts as not found, is an error, since its files may be unchanged.
+#[test]
+fn only_a_missing_file_or_folder_counts_as_a_gone_input() {
+    for (code, missing) in [(2, true), (3, true), (53, false), (67, false), (5, false)] {
+        let error = io::Error::from_raw_os_error(code);
+        assert_eq!(gone(&error), missing, "os error {code}");
+    }
+}
+
+/// A content input gone with its folder, as a game folder removed while preparation runs, refuses
+/// the commit as changed sources naming it, never as a failure of the commit: nothing is published.
+#[test]
+fn a_commit_refuses_an_input_gone_with_its_folder_as_changed_sources() {
+    let fixture = Fixture::new();
+    let folder = fixture.root.join("game");
+    fs::create_dir(&folder).unwrap();
+    let art = folder.join("art.dds");
+    fs::write(&art, b"synthetic").unwrap();
+    let key = SourceKey::capture(&fixture.recording, std::slice::from_ref(&art)).unwrap();
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", &b"page"[..]).unwrap();
+    fs::remove_dir_all(&folder).unwrap();
+    let error = writer.commit().unwrap_err();
+    assert!(is_sources_changed(&error), "{error}");
+    assert!(error.to_string().contains("art.dds"), "{error}");
+    assert!(fixture.store.current().unwrap().is_none());
+    assert!(key.rejected.load(Ordering::Acquire));
+    // The recording gone after a commit refuses going on, also as changed sources.
+    let key = fixture.key();
+    let mut writer = fixture.store.replace(key).unwrap();
+    writer.write("pages", &b"page"[..]).unwrap();
+    let mut writer = writer.commit_continue().unwrap();
+    writer.write("pages", &b"next"[..]).unwrap();
+    fs::remove_file(&fixture.recording).unwrap();
+    let error = writer.commit_continue().err().unwrap();
+    assert!(is_sources_changed(&error), "{error}");
 }
 
 /// A flat manifest may list a name twice: the writer's lookup keeps the first

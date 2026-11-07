@@ -303,6 +303,9 @@ pub(crate) enum Fault {
     BeforeRoot,
     /// The root published, then an error, as from a flush after its rename.
     AfterRoot,
+    /// The root published, then the sources changed, as [`Publisher::change_after_root`] does,
+    /// before preparation went on.
+    ChangedAfterRoot,
 }
 
 struct Inner {
@@ -330,6 +333,7 @@ struct Inner {
 /// The one root writer of a prepared store, and the coordinator of every family's batches.
 pub(crate) struct Publisher<'s> {
     store: &'s store::Store,
+    /// The inputs its commits are made from.
     key: store::SourceKey,
     binding: Binding,
     plan: &'static Plan,
@@ -339,6 +343,9 @@ pub(crate) struct Publisher<'s> {
     on_commit: Option<Box<dyn Fn() + Send + Sync + 's>>,
     #[cfg(test)]
     fault: Mutex<Option<Fault>>,
+    /// What changes the sources once a [`Fault::ChangedAfterRoot`] published its root.
+    #[cfg(test)]
+    changes: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     /// Each family's fault to come, and how many of those steps pass before it.
     #[cfg(test)]
     owned: Mutex<Vec<(FamilyId, Own, usize)>>,
@@ -455,6 +462,8 @@ impl<'s> Publisher<'s> {
                 #[cfg(test)]
                 fault: Mutex::new(None),
                 #[cfg(test)]
+                changes: Mutex::new(None),
+                #[cfg(test)]
                 owned: Mutex::new(Vec::new()),
             },
             resume,
@@ -470,6 +479,13 @@ impl<'s> Publisher<'s> {
     #[cfg(test)]
     pub(crate) fn fail_next_commit(&self, fault: Fault) {
         *self.fault.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
+    }
+
+    /// Runs `change` once the next commit published its root, as a source changing then would.
+    #[cfg(test)]
+    pub(crate) fn change_after_root(&self, change: impl FnOnce() + Send + 'static) {
+        *self.changes.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(change));
+        self.fail_next_commit(Fault::ChangedAfterRoot);
     }
 
     /// Fails `family`'s step `at` once `after` more of them passed.
@@ -803,6 +819,12 @@ impl<'s> Publisher<'s> {
             Err(error) => {
                 // The new root may be visible all the same: only what is read back stands.
                 let message: Arc<str> = Arc::from(error.to_string());
+                // Changed inputs refuse before the root, or after it, which is read back: no doubt.
+                let stopped = if store::is_sources_changed(&error) {
+                    Stopped::Failed(message)
+                } else {
+                    Stopped::Uncertain(message)
+                };
                 let proven = self.proven(&adopted);
                 let mut durable = Vec::new();
                 for ((ticket, family, sealed), proven) in adopted.into_iter().zip(proven) {
@@ -810,14 +832,14 @@ impl<'s> Publisher<'s> {
                         outcomes.push((ticket, Ok(())));
                         durable.push((family, sealed));
                     } else {
-                        outcomes.push((ticket, Err(Stopped::Uncertain(message.clone()).error())));
+                        outcomes.push((ticket, Err(stopped.error())));
                     }
                 }
                 Done {
                     writer: None,
                     outcomes,
                     durable,
-                    stopped: Some(Stopped::Uncertain(message)),
+                    stopped: Some(stopped),
                 }
             }
         }
@@ -839,16 +861,31 @@ impl<'s> Publisher<'s> {
                 writer.commit()?;
                 return Err(io::Error::other("Simulated flush failure after the root"));
             }
+            Some(Fault::ChangedAfterRoot) => {
+                writer.commit()?;
+                let change = self
+                    .changes
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .take();
+                if let Some(change) = change {
+                    change();
+                }
+                // Going on checks the sources again, as a writer continuing its commit does.
+                return self.store.extend(&self.key);
+            }
             None => {}
         }
         writer.commit_continue()
     }
 
-    /// For each adopted batch, whether the store's current manifest holds every root it
-    /// published.
+    /// For each adopted batch, whether the store's current manifest, published from this
+    /// publisher's inputs as stamped, holds every root it published: the physical inputs are not
+    /// read again, as a commit may have found them changed.
     fn proven(&self, adopted: &[(u64, FamilyId, Sealed)]) -> Vec<bool> {
-        let snapshot = match self.store.session(&self.key) {
-            Ok(Some(session)) => session.snapshot(),
+        let snapshot = match self.store.current() {
+            // Another preparation may have published from other inputs once the lock was let go.
+            Ok(Some(snapshot)) if *snapshot.key() == self.key => snapshot,
             _ => return vec![false; adopted.len()],
         };
         adopted
