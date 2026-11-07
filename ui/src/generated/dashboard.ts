@@ -586,9 +586,13 @@ snapshot: boolean, coverage: PreparedCoverage, pending: Array<HourSpan>, warning
 export type DiplomacyRun = { firstHour: number, lastHour: number, value: number | null, startsSegment: boolean, };
 export type DiplomacyPairReply = { forward: Array<DiplomacyRun>, reverse: Array<DiplomacyRun>, unobserved: Array<HourSpan>, first: DiplomacyCountry | null, second: DiplomacyCountry | null, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
 export type DiplomacyKind = { kind: string, name: string | null, reason: string | null, count: number, };
-export type DiplomacyPact = { id: string, kind: string, owner: string | null, target: string | null, first: string | null, second: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, ordinal: number, startHour: number | null, endHour: number | null, cancelled: boolean | null, retired: boolean | null, cancelRaw: number, retiredRaw: number, firstSeen: number, lastSeen: number, presentAtEnd: boolean, endedBy: boolean, readHour: number, };
+export type DiplomacyPact = { id: string, kind: string, owner: string | null, target: string | null, first: string | null, second: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, ordinal: number, startHour: number | null, endHour: number | null, cancelled: boolean | null, retired: boolean | null, cancelRaw: number, retiredRaw: number, firstSeen: number, lastSeen: number, presentAtEnd: boolean, endedBy: boolean, readHour: number,
+/**
+ * Its owner's first read after `last_seen`, which no longer lists it; none while unproven.
+ */
+goneBy: number | null, };
 export type DiplomacyReadRun = { owner: DiplomacyCountry | null, firstHour: number, lastHour: number, readHour: number, };
-export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, reads: Array<DiplomacyReadRun>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
+export type DiplomacyPactsReply = { kinds: Array<DiplomacyKind>, pacts: Array<DiplomacyPact>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
 export type DiplomacyProposal = { id: string, handle: string, owner: string | null, sender: string | null, recipient: string | null, originalSender: string | null, originalRecipient: string | null, identities: Array<DiplomacyCountry | null>, rawCountries: Array<number>, storedHour: number, lastCommandHour: number, firstSeen: number, lastSeen: number, goneBy: number | null, goneByBound: boolean, presentAtEnd: boolean, readHour: number, };
 export type DiplomacyProposalsReply = { proposals: Array<DiplomacyProposal>, reads: Array<DiplomacyReadRun>, unobserved: Array<HourSpan>, coverage: PreparedCoverage, pending: Array<HourSpan>, warnings: Array<string>, };
 export type CountryParams = { branchId: string, tag: string, };
@@ -6002,6 +6006,8 @@ reads: { [key in string]?: number },
 tokens: { [key in string]?: YardChoice }, warnings: Array<string>, };
 /** The native command byte budget, including its envelope. */
 export const MAX_MESSAGE_BYTES = 33554432;
+/** Data requests outstanding at once; one past it is refused for want of room. */
+export const MAX_PENDING_REQUESTS = 64;
 /** Refusals for want of room: a message starting with one may be tried again. */
 export const CAPACITY_REACHED = "Dashboard request capacity reached";
 export const BROWSER_BRIDGE_BUSY = "The recording bridge is busy";

@@ -122,7 +122,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     // The URL the development server routes to [`LocalCommand::Artwork`].
-    dashboard::artwork::configure(&artwork_url.ok_or("The bridge needs --artwork-url")?)?;
+    if let Err(error) = dashboard::artwork::configure(
+        &artwork_url.ok_or("The bridge needs --artwork-url")?,
+        dashboard::artwork::local_folder(),
+    ) {
+        eprintln!("Artwork: {error}");
+    }
     let service = Service::new(Arc::new(|event| emit(&event)))?;
     service.apply_saved_preparation()?;
     if let Err(error) = service.configure_content(&config, false) {

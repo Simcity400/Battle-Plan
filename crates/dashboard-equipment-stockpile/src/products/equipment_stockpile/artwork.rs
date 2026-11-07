@@ -339,12 +339,20 @@ impl StockpileArtwork {
                     .map_err(|_| dashboard_core::invalid("Invalid stockpile artwork variant"))?,
             );
         }
-        let lexical = frame.complete::<tables::LexicalTokens>()?;
-        let definitions: BTreeMap<_, _> = frame
-            .complete::<tables::VariantDefinitions>()?
-            .iter()
-            .map(|row| (row.id, row))
-            .collect();
+        // Designs and their spellings are slow tables: an hour without them has no pictures, said so.
+        let (lexical, variants) = match (
+            frame.complete::<tables::LexicalTokens>(),
+            frame.complete::<tables::VariantDefinitions>(),
+        ) {
+            (Ok(lexical), Ok(variants)) => (lexical, variants),
+            (Err(why), _) | (_, Err(why)) => {
+                reply.warnings.push(format!(
+                    "Stockpile artwork is unavailable at this hour: {why}"
+                ));
+                return Ok(reply);
+            }
+        };
+        let definitions: BTreeMap<_, _> = variants.iter().map(|row| (row.id, row)).collect();
         let tags = equipment::Tags::new(
             countries,
             links,

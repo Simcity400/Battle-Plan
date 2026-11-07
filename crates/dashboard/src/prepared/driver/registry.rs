@@ -619,7 +619,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["fuel-branches"],
         gates: &[crate::products::fuel_branches::QUERY],
         // 2: consumers on the segment driver, published as a series root.
-        version: 2,
+        // 3: a refusal counts the hours it held, never named once per hour.
+        version: 3,
         ..family("fuel_branches")
     },
     Descriptor {
@@ -631,7 +632,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         ],
         // 2: a row whose buyer or receiver has no identity stands, those hours dated.
         // 3: on the segment driver, published as a series root; refusals count the hours held.
-        version: 4,
+        // 5: a refusal counts the hours it held, never named once per hour.
+        version: 5,
         ..family("market")
     },
     Descriptor {
@@ -639,7 +641,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         queries: &["lend-lease-balance"],
         gates: &[crate::products::lend_lease_balance::QUERY],
         // 2: histories on the segment driver, published as a series root.
-        version: 2,
+        // 3: a refusal counts the hours it held, never named once per hour.
+        version: 3,
         ..family("lend_lease_balance")
     },
     Descriptor {

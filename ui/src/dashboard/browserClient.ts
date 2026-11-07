@@ -17,11 +17,17 @@ import { newId } from '../shell/ids.ts';
 const requests = new BrowserRequestQueue();
 /** This page load, which owns the recordings it opens and imports. The bridge outlives the page, so a page that goes
  * away (closed or reloaded) tells it, and the bridge lets go of them, even those whose reply had not arrived. A
- * back/forward-cache visit retains the page and what it holds. */
+ * back/forward-cache visit retains the page and what it holds. Only a page that has used the bridge says so: the
+ * desktop app, which never does, may not reach it. */
 const page = newId();
-if (typeof window !== 'undefined') addEventListener('pagehide', event => {
-  if (!event.persisted) navigator.sendBeacon('/api/recordings', new Blob([JSON.stringify({ type: 'pageGone', page })], { type: 'application/json' }));
-});
+let owning = false;
+function ownRecordings(): void {
+  if (owning || typeof window === 'undefined') return;
+  owning = true;
+  addEventListener('pagehide', event => {
+    if (!event.persisted) navigator.sendBeacon('/api/recordings', new Blob([JSON.stringify({ type: 'pageGone', page })], { type: 'application/json' }));
+  });
+}
 const interactiveProducts: ReadonlySet<string> = new Set(INTERACTIVE_PRODUCTS);
 
 function chooseRecording(): Promise<string | null> {
@@ -35,6 +41,7 @@ function chooseRecording(): Promise<string | null> {
       if (!file) { resolve(null); return; }
       if (!(/\.(?:battleplan|hoi4replay)$/i.test(file.name))) { reject(new Error('Choose a .battleplan recording')); return; }
       if (file.size > 2 * 1024 * 1024 * 1024) { reject(new Error('Open recordings larger than 2 GB in the desktop app.')); return; }
+      ownRecordings();
       void requests.run('history', async signal => {
         const response = await fetch('/api/recordings/import', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Recording-Name': encodeURIComponent(file.name), 'X-Recording-Page': page }, body: file, signal });
         const data = await response.json();
@@ -50,6 +57,7 @@ async function request<T>(body: { type: string; request?: ProductRequest; source
   releaseLate?: (value: T) => Promise<void>): Promise<T> {
   const lane: BrowserRequestLane = body.type === 'release' ? 'control'
     : body.type === 'preparedQuery' || body.type === 'preparation' || body.type === 'product' && interactiveProducts.has(body.request!.product) ? 'interactive' : 'history';
+  ownRecordings();
   return requests.run(lane, async active => {
     const response = await fetch('/api/recordings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: active });
     const bytes = await response.arrayBuffer();

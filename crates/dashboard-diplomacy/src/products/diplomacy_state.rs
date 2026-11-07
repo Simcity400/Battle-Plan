@@ -150,6 +150,8 @@ pub struct DiplomacyPact {
     pub present_at_end: bool,
     pub ended_by: bool,
     pub read_hour: i32,
+    /// Its owner's first read after `last_seen`, which no longer lists it; none while unproven.
+    pub gone_by: Option<i32>,
 }
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -164,7 +166,6 @@ pub struct DiplomacyReadRun {
 pub struct DiplomacyPactsReply {
     pub kinds: Vec<DiplomacyKind>,
     pub pacts: Vec<DiplomacyPact>,
-    pub reads: Vec<DiplomacyReadRun>,
     pub unobserved: Vec<HourSpan>,
     pub coverage: Coverage,
     pub pending: Vec<HourSpan>,

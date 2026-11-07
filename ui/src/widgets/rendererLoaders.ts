@@ -138,3 +138,24 @@ export function loadWidgetRenderer(kind: string): Promise<WidgetRenderer | undef
   }
   return held;
 }
+
+/** Fetches the code of `kinds` now, so a page's widgets render the moment they mount. */
+export function preloadWidgetRenderers(kinds: Iterable<string>): void {
+  for (const kind of kinds) if (!ready.has(kind)) void loadWidgetRenderer(kind).catch(() => {});
+}
+
+let idlePreload = false;
+/** Every other widget's code, one at a time while the page is idle, so any page or added widget opens without
+ * fetching code. A failed load is left to the widget, which shows and retries it. */
+export function preloadAllWidgetRenderers(): void {
+  if (idlePreload || typeof window === 'undefined') return;
+  idlePreload = true;
+  const kinds = Object.keys(rendererLoaders).filter(kind => !ready.has(kind));
+  const idle = (next: () => void) => typeof requestIdleCallback === 'function' ? requestIdleCallback(next, { timeout: 2000 }) : setTimeout(next, 50);
+  const step = () => {
+    const kind = kinds.shift();
+    if (kind === undefined) return;
+    void loadWidgetRenderer(kind).catch(() => {}).finally(() => idle(step));
+  };
+  idle(step);
+}

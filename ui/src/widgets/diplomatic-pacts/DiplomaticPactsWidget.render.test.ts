@@ -8,7 +8,7 @@ import { BRANCH, mountModule } from '../../dashboard/pendingGroups.fixture.ts';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
 
 test('one country\'s agreements: still preparing is loading, none is said, and each agreement is a lane under its kind', async () => {
-  const reply = (pacts: unknown[], pending: { firstHour: number; lastHour: number }[]) => ({ kinds: [], pacts, reads: [], unobserved: [], warnings: [], pending,
+  const reply = (pacts: unknown[], pending: { firstHour: number; lastHour: number }[]) => ({ kinds: [], pacts, unobserved: [], warnings: [], pending,
     coverage: { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour, complete: !pending.length } }) as unknown as DiplomacyPactsReply;
   const state = { reply: reply([], [{ firstHour: 100, lastHour: BRANCH.lastHour }]), requests: [] as unknown[], lanes: [] as { identity?: { label: string } }[] };
   const host = globalThis as typeof globalThis & { __agreements?: typeof state }; host.__agreements = state;

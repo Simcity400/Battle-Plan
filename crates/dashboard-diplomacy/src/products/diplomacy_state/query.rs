@@ -247,7 +247,6 @@ pub fn unpublished(params: &DiplomacyParams, prefix: Prefix) -> io::Result<Diplo
         DiplomacyParams::Pacts { .. } => DiplomacyReply::Pacts(DiplomacyPactsReply {
             kinds: Vec::new(),
             pacts: Vec::new(),
-            reads: Vec::new(),
             unobserved,
             coverage: prefix.coverage,
             pending: prefix.pending,
@@ -830,10 +829,46 @@ fn pacts<P: PageRead>(
             present_at_end: state == 0,
             ended_by: state == 2,
             read_hour: last_seen,
+            gone_by: None,
         };
         reply_bytes = reply_bytes.saturating_add(serde_json::to_vec(&pact)?.len());
         preflight(reply_bytes)?;
         pacts.push(pact);
+    }
+    // A pact no longer listed is gone by its owner's first read after the last that listed it;
+    // only those owners' reads are read, never every country's whole history.
+    let mut owner_reads: HashMap<&DiplomacyCountry, Vec<i32>> = pacts
+        .iter()
+        .filter(|pact| !pact.present_at_end && !pact.ended_by)
+        .filter_map(|pact| pact.identities.first()?.as_ref())
+        .map(|owner| (owner, Vec::new()))
+        .collect();
+    for (country, actor) in &read.countries {
+        let Some(hours) = owner_reads.get_mut(country) else {
+            continue;
+        };
+        for run in runs(snapshot, read.key(*actor, TUPLES), prefix)? {
+            check_cancel(cancelled)?;
+            hours.push(run.value as i32);
+        }
+    }
+    for hours in owner_reads.values_mut() {
+        hours.sort_unstable();
+    }
+    let gone_by: Vec<Option<i32>> = pacts
+        .iter()
+        .map(|pact| {
+            if pact.present_at_end || pact.ended_by {
+                return None;
+            }
+            let hours = owner_reads.get(pact.identities.first()?.as_ref()?)?;
+            hours
+                .get(hours.partition_point(|&hour| hour <= pact.last_seen))
+                .copied()
+        })
+        .collect();
+    for (pact, gone_by) in pacts.iter_mut().zip(gone_by) {
+        pact.gone_by = gone_by;
     }
     let tokens: BTreeMap<&str, u32> = kinds
         .iter()
@@ -853,24 +888,10 @@ fn pacts<P: PageRead>(
             "Pacts with unresolved endpoints or non-Boolean raw flags (count: {unknown})"
         ));
     }
-    let owners: BTreeSet<_> = pacts
-        .iter()
-        .filter_map(|pact| pact.identities.first()?.as_ref())
-        .collect();
-    let mut tuple_reads = Vec::new();
-    for (country, actor) in &read.countries {
-        if tags.is_none_or(|tags| tags.contains(&country.tag)) || owners.contains(country) {
-            for run in runs(snapshot, read.key(*actor, TUPLES), prefix)? {
-                check_cancel(cancelled)?;
-                append_read(&mut tuple_reads, Some(country), &run, &mut reply_bytes)?;
-            }
-        }
-    }
     let unobserved = unavailable(snapshot, read.family(TUPLE_COVERAGE), prefix)?;
     Ok(DiplomacyPactsReply {
         kinds,
         pacts,
-        reads: tuple_reads,
         unobserved,
         coverage: prefix.coverage.clone(),
         pending: prefix.pending.clone(),

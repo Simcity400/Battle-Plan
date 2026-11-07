@@ -15,7 +15,7 @@ use tokio::sync::oneshot;
 
 use crate::native::NativeHost;
 
-const MAX_PENDING: usize = 64;
+const MAX_PENDING: usize = dashboard::transport::MAX_PENDING_REQUESTS;
 const CANCELLED: &str = "Dashboard request cancelled";
 
 struct PendingReply {

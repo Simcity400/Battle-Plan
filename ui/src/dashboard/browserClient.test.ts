@@ -22,6 +22,7 @@ test('a page going away names itself, the owner of everything it opened or impor
     return { ok: true, text: async () => JSON.stringify(reply) };
   }) as unknown as typeof fetch;
   const { browserDashboardClient: client } = await import('./browserClient.ts');
+  assert.ok(!handlers.has('pagehide'), 'a page that never used the bridge (the desktop app) says nothing as it goes');
   await client.openSource('a', AbortSignal.timeout(1000));
   await client.openSource('b', AbortSignal.timeout(1000));
   await client.releaseSource('lease-a');

@@ -32,7 +32,7 @@ use admission::{Lease, Pending, Request};
 use jobs::{LoadJob, MapSettingsJob, OpenJob, Sources};
 use pump::{Signal, run_pump};
 
-const MAX_PENDING: usize = 64;
+const MAX_PENDING: usize = crate::transport::MAX_PENDING_REQUESTS;
 
 /// Library preparation neither starts nor continues while the volume holding
 /// prepared data has less than one part in this many of its capacity free. It

@@ -18,7 +18,7 @@ import { useProduct } from '../../dashboard/products';
 import { useDiagnostics } from '../../dashboard/useDiagnostics';
 import type { DiplomacyPactsReply } from '../../generated/dashboard';
 import { OPTIONS } from './definition';
-import { aboutElsewhere, agreementLanes, agreementsOf, ownerReads } from './pactsData';
+import { aboutElsewhere, agreementLanes, agreementsOf } from './pactsData';
 import './diplomaticPacts.css';
 import { motionOf } from '../../charts/easing.ts';
 
@@ -43,11 +43,10 @@ export default function DiplomaticPactsWidget({ widget, runtime, active, onDiagn
     product: 'diplomacy-state', params: { view: 'pacts', branchId: track.branch.id, tags: [tag] } } : null, active, undefined, track?.source);
   const data = reply.data;
   const kinds = useMemo(() => { const chosen = contentSet(options.kinds).map(contentKey); return chosen.length ? new Set(chosen) : null; }, [options.kinds]);
-  const reads = useMemo(() => ownerReads(data?.reads ?? []), [data]);
   const prefix = useMemo(() => preparedPrefix(data), [data]);
   // A prefix reply lists pacts only through its last prepared hour.
   const through = prefix?.pending.length ? prefix.coverage.lastHour : Infinity;
-  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, reads, kinds, through) : [], [data, tag, at, reads, kinds, through]);
+  const agreements = useMemo(() => data && tag ? agreementsOf(data.pacts, tag, at, kinds, through) : [], [data, tag, at, kinds, through]);
   // Partners are named as they were when last listed (or at the hour shown, if earlier):
   // a tag a later country takes never renames an earlier agreement's partner.
   const [inView, setInView] = useState<[number, number]>([0, 40]);

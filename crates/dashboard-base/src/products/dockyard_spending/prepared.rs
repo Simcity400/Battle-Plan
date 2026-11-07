@@ -76,21 +76,20 @@ pub fn query(
                 "{mismatches} country-hours had naval base assignments that did not sum to their country's dockyards in use; repairs there are not split by design."
             )));
     }
+    // A whole campaign's repairs start where the country's output is first known, named when
+    // that is after the recording's start. Both views carry these totals: the months' bands
+    // and the ring alike say how much repairs took.
+    let origin = repairs.origin(&input.tag)?;
+    let start = answered.from.or(origin);
+    let since = origin.filter(|&origin| answered.from.is_none() && origin > answered.bounds.0);
+    let ends = [answered.hour, answered.end];
+    let [hour, end] = window_integrals(start, ends, |spans| repairs.integrals(&input.tag, spans))?;
     match input.view {
         DockyardView::Circle => {
             let other = keep_domain(&mut data, Domain::Naval, &SHOWN)?;
             if other > 0 {
                 warn(&mut data, other, "designs")?;
             }
-            // A whole campaign's repairs start where the country's output is
-            // first known, named when that is after the recording's start.
-            let origin = repairs.origin(&input.tag)?;
-            let start = answered.from.or(origin);
-            let since =
-                origin.filter(|&origin| answered.from.is_none() && origin > answered.bounds.0);
-            let ends = [answered.hour, answered.end];
-            let [hour, end] =
-                window_integrals(start, ends, |spans| repairs.integrals(&input.tag, spans))?;
             let parts = repair_parts(source, content, &mut repairs, &input.tag, start, ends)?;
             data["repairs"] = serde_json::to_value(DockyardRepairs {
                 denominator: REPAIR_DENOMINATOR,
@@ -119,7 +118,10 @@ pub fn query(
             data["peaks"] = json!({});
             data["repairs"] = serde_json::to_value(DockyardRepairs {
                 denominator: REPAIR_DENOMINATOR,
-                ..Default::default()
+                hour: DockyardAmount::of(hour),
+                end: DockyardAmount::of(end),
+                since,
+                parts: Vec::new(),
             })?;
             data["months"] = serde_json::to_value(months)?;
         }

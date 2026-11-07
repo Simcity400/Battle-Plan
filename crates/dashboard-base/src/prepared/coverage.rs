@@ -418,7 +418,7 @@ pub fn refusal(
 /// version is prepared again whole, and coverage of another is refused. What
 /// one family publishes has a version of its own in the driver's registry,
 /// whose change prepares that family again alone.
-pub const SCHEMA: u32 = 59;
+pub const SCHEMA: u32 = 60;
 
 /// Accepted extent, distinct from a complete source's timeline and recorded gaps.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]

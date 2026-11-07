@@ -1,6 +1,6 @@
 import type { TimelineLane, TimelineSpan } from '../../charts/timeline/layout';
 import type { CountryFlagLook } from '../../components/countryFlagPresentation';
-import type { DiplomacyKind, DiplomacyPact, DiplomacyReadRun } from '../../generated/dashboard';
+import type { DiplomacyKind, DiplomacyPact } from '../../generated/dashboard';
 
 type Pact = DiplomacyPact;
 
@@ -8,31 +8,16 @@ export type PactState = { state: 'present' } | { state: 'gone'; by: number } | {
   /** Listed at the last prepared read (`since`); later hours are still being prepared. */
   | { state: 'preparing'; since: number };
 
-/** Each owner's supplying reads, in hour order, for dating when a listed pact stopped being listed. */
-export function ownerReads(reads: readonly DiplomacyReadRun[]): Map<string, number[]> {
-  const byOwner = new Map<string, number[]>();
-  for (const read of reads) {
-    if (!read.owner) continue;
-    const key = `${read.owner.slot}:${read.owner.countryId}`;
-    const hours = byOwner.get(key) ?? byOwner.set(key, []).get(key)!;
-    if (hours.at(-1) !== read.readHour) hours.push(read.readHour);
-  }
-  for (const hours of byOwner.values()) hours.sort((a, b) => a - b);
-  return byOwner;
-}
-
 /** Whether the recording lists a pact at `at`: listed through its last read (or still at the
  * last read); gone once a later read of its owner no longer lists it, dated by that read; and
  * unknown in between or where its owner was not read again, never assumed gone. Nothing is
  * said about the game's own state words. */
-export function pactState(pact: Pact, at: number, reads: ReadonlyMap<string, readonly number[]>, through = Infinity): PactState {
+export function pactState(pact: Pact, at: number, through = Infinity): PactState {
   if (at <= pact.lastSeen) return { state: 'present' };
   if (pact.presentAtEnd) return at <= through ? { state: 'present' } : { state: 'preparing', since: through };
   // An episode a recording gap ended proves no absence: the next read may list it again.
   if (pact.endedBy) return { state: 'unknown', since: pact.lastSeen };
-  const owner = pact.identities[0];
-  const next = owner ? reads.get(`${owner.slot}:${owner.countryId}`)?.find(hour => hour > pact.lastSeen) : undefined;
-  return next !== undefined && next <= at ? { state: 'gone', by: next } : { state: 'unknown', since: pact.lastSeen };
+  return pact.goneBy !== null && pact.goneBy <= at ? { state: 'gone', by: pact.goneBy } : { state: 'unknown', since: pact.lastSeen };
 }
 
 /** Where a pact's presence starts: its stored start, else the first read that listed it (a bound). */
@@ -77,8 +62,7 @@ export interface Agreement {
 
 /** The chosen country's agreements at `at`: those listed by then, offers turned round,
  * kinds shown elsewhere left out, and one per relation. `through` is the last prepared hour. */
-export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, reads: ReadonlyMap<string, readonly number[]>,
-  kinds: ReadonlySet<string> | null, through = Infinity): Agreement[] {
+export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, kinds: ReadonlySet<string> | null, through = Infinity): Agreement[] {
   const joined = new Map<string, { pacts: Pact[]; kind: string; outgoing: boolean; partner: string | null }>();
   for (const pact of pacts) {
     if (pact.firstSeen > at || ELSEWHERE.has(pact.kind)) continue;
@@ -97,7 +81,7 @@ export function agreementsOf(pacts: readonly Pact[], tag: string, at: number, re
     const since = Math.min(...entry.pacts.map(pactSince));
     const expiry = latest.endHour != null && latest.endHour > since ? latest.endHour : null;
     return { key, kind: entry.kind, outgoing: entry.outgoing, partner: entry.partner, since, sinceBound: latest.startHour == null,
-      expires: expiry, lastSeen: latest.lastSeen, state: pactState(latest, at, reads, through), pact: latest };
+      expires: expiry, lastSeen: latest.lastSeen, state: pactState(latest, at, through), pact: latest };
   });
 }
 

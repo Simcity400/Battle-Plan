@@ -171,6 +171,17 @@ export interface HistoryPart { firstHour: number | null; lastHour: number | null
 
 const OVER_BUDGET = /exceeds the transport reply budget/;
 export const WHOLE: readonly HistoryPart[] = [{ firstHour: null, lastHour: null }];
+/** Hours either side of the shown hour asked on their own first: a whole history takes seconds to read, this a fraction of one. */
+export const NEAR_HOURS = 24 * 14;
+
+/** The history asked as the weeks around `hour` first, then what comes before and after them; open-ended like `WHOLE`. */
+export function partsAround(hour: number, branch: { firstHour: number; lastHour: number }): readonly HistoryPart[] {
+  const first = Math.max(branch.firstHour, hour - NEAR_HOURS), last = Math.min(branch.lastHour, hour + NEAR_HOURS);
+  if (first > last) return WHOLE;
+  return [{ firstHour: first === branch.firstHour ? null : first, lastHour: last === branch.lastHour ? null : last },
+    ...first > branch.firstHour ? [{ firstHour: null, lastHour: first - 1 }] : [],
+    ...last < branch.lastHour ? [{ firstHour: last + 1, lastHour: null }] : []];
+}
 
 export const partAt = (parts: readonly HistoryPart[], hour: number) =>
   parts.find(part => (part.firstHour === null || part.firstHour <= hour) && (part.lastHour === null || hour <= part.lastHour));

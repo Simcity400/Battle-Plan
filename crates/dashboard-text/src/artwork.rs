@@ -1,14 +1,19 @@
-//! The images replies name. Each PNG is kept once, in this process's memory, under its content
-//! address, and a reply carries only its URL, which the host serves from [`bytes`]. An image is
-//! never dropped, so every URL this process handed out stays served for its life; a disk reply
-//! entry carries the images its reply names ([`Table::images`], [`Table::restore`]).
+//! The images replies name. Each PNG is kept once under its content address, and a reply carries
+//! only its URL, which the host serves from [`bytes`]. An image is never dropped. A host's table
+//! also keeps every image in a folder ([`configure`]): prepared stores keep the URLs their art was
+//! drawn as, and a later process serves those names. A disk reply entry carries the images its
+//! reply names ([`Table::images`], [`Table::restore`]).
 
 use base64::Engine;
 use installed_content_image::Rgba8Image;
 use std::{
     collections::{HashMap, HashSet},
-    fmt, io,
-    sync::{Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard},
+    fmt, fs, io,
+    path::{Path, PathBuf},
+    sync::{
+        Arc, OnceLock, PoisonError, RwLock, RwLockReadGuard,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 /// The base of an unconfigured table's URLs (tests, command-line tools).
@@ -18,11 +23,29 @@ const NAME_LENGTH: usize = 36;
 
 static SHARED: OnceLock<Table> = OnceLock::new();
 
-/// Name every image under `base`. Called once by a host, before any image is drawn.
-pub fn configure(base: &str) -> io::Result<()> {
+/// Name every image under `base` and keep each in `folder` too. Called once by a host, before
+/// any image is drawn. Without a usable folder the images stay in memory, served by this process
+/// alone, and the folder's error is returned.
+pub fn configure(base: &str, folder: io::Result<PathBuf>) -> io::Result<()> {
+    let kept = folder.and_then(|folder| fs::create_dir_all(&folder).map(|()| folder));
+    let table = match &kept {
+        Ok(folder) => Table::kept_in(base, folder),
+        Err(_) => Table::new(base),
+    };
     SHARED
-        .set(Table::new(base))
-        .map_err(|_| io::Error::other("artwork is already configured"))
+        .set(table)
+        .map_err(|_| io::Error::other("artwork is already configured"))?;
+    kept.map(drop)
+}
+
+/// The folder a host keeps its images in, beside the app's other local data.
+pub fn local_folder() -> io::Result<PathBuf> {
+    Ok(PathBuf::from(
+        std::env::var_os("LOCALAPPDATA")
+            .ok_or_else(|| io::Error::other("LOCALAPPDATA is not set"))?,
+    )
+    .join("HOI4Replay")
+    .join("artwork"))
 }
 
 /// What every image URL starts with.
@@ -103,18 +126,31 @@ impl fmt::Display for Name {
     }
 }
 
-/// Images by content address, kept for the table's life.
+/// Images by content address, kept for the table's life and, with a folder, for later processes.
 pub struct Table {
     base: String,
     images: RwLock<HashMap<Name, Arc<[u8]>>>,
+    folder: Option<PathBuf>,
 }
 
+/// Distinguishes this process's partly written files.
+static WRITES: AtomicU64 = AtomicU64::new(0);
+
 impl Table {
-    /// A table naming its images under `base`.
+    /// A table naming its images under `base`, in memory alone.
     pub fn new(base: &str) -> Self {
         Self {
             base: base.to_owned(),
             images: RwLock::default(),
+            folder: None,
+        }
+    }
+
+    /// A table naming its images under `base` and keeping each in `folder`.
+    pub fn kept_in(base: &str, folder: &Path) -> Self {
+        Self {
+            folder: Some(folder.to_owned()),
+            ..Self::new(base)
         }
     }
 
@@ -131,13 +167,47 @@ impl Table {
     }
 
     fn keep(&self, name: Name, png: Vec<u8>) {
-        if !self.read().contains_key(&name) {
+        if self.read().contains_key(&name) {
+            return;
+        }
+        // Written whole before it is named, so a reader never finds part of one; a failed write
+        // leaves the image served by this process alone.
+        if let Some(folder) = &self.folder {
+            let path = folder.join(name.to_string());
+            if !path.exists() {
+                let partial = folder.join(format!(
+                    "{name}.{}-{}.part",
+                    std::process::id(),
+                    WRITES.fetch_add(1, Ordering::Relaxed)
+                ));
+                if fs::write(&partial, &png).is_err() || fs::rename(&partial, &path).is_err() {
+                    let _ = fs::remove_file(&partial);
+                }
+            }
+        }
+        self.images
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(name)
+            .or_insert_with(|| png.into());
+    }
+
+    /// The image named `name`, from memory or, kept by an earlier process, from the folder.
+    fn get(&self, name: &Name) -> Option<Arc<[u8]>> {
+        if let Some(png) = self.read().get(name) {
+            return Some(Arc::clone(png));
+        }
+        let png = fs::read(self.folder.as_ref()?.join(name.to_string())).ok()?;
+        if Name::of(&png) != *name {
+            return None;
+        }
+        Some(Arc::clone(
             self.images
                 .write()
                 .unwrap_or_else(PoisonError::into_inner)
-                .entry(name)
-                .or_insert_with(|| png.into());
-        }
+                .entry(*name)
+                .or_insert_with(|| png.into()),
+        ))
     }
 
     fn read(&self) -> RwLockReadGuard<'_, HashMap<Name, Arc<[u8]>>> {
@@ -146,7 +216,7 @@ impl Table {
 
     /// The PNG named `name`.
     pub fn bytes(&self, name: &str) -> Option<Arc<[u8]>> {
-        self.read().get(&Name::parse(name)?).cloned()
+        self.get(&Name::parse(name)?)
     }
 
     /// The PNG a URL this table returned names.
@@ -166,9 +236,7 @@ impl Table {
 
     /// The PNG of every image `text` names, each once, or none when one is not kept.
     pub fn images(&self, text: &str) -> Option<Vec<Arc<[u8]>>> {
-        let named = self.named(text);
-        let images = self.read();
-        named.iter().map(|name| images.get(name).cloned()).collect()
+        self.named(text).iter().map(|name| self.get(name)).collect()
     }
 
     /// Keep each of `pngs` that `text` names, under its content address, and say whether every
@@ -181,8 +249,7 @@ impl Table {
                 self.keep(name, png);
             }
         }
-        let images = self.read();
-        named.iter().all(|name| images.contains_key(name))
+        named.iter().all(|name| self.get(name).is_some())
     }
 }
 

@@ -154,6 +154,8 @@ impl Emit {
         if times == 0 {
             return;
         }
+        let reason = super::super::keyed::undated(reason);
+        let reason = reason.as_ref();
         let id = match self.numbered.get(reason) {
             Some(&id) => id,
             None => {

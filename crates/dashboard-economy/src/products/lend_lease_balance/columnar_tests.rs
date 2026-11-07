@@ -417,9 +417,9 @@ fn the_scenarios_replies_hold_what_they_are_held_to() {
         "a lend-lease history names a country with no identity",
         "a lend-lease history names a partner with no identity",
         "a war roster names a country with no identity",
-        "hour 115 WarLendLeaseHistories is unavailable",
-        "hour 125 Countries is unavailable",
-        "hour 135 WarOwnedRelations is unavailable",
+        "lend-lease histories unavailable: WarLendLeaseHistories is unavailable",
+        "country identities unavailable: Countries is unavailable",
+        "WarOwnedRelations is unavailable",
     ] {
         assert!(
             every.warnings.iter().any(|warning| warning.contains(refusal)),

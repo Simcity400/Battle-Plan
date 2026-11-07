@@ -1,12 +1,12 @@
 import { createElement, useEffect, useState } from 'react';
 import type { ComponentType, ReactNode } from 'react';
 
-/** A component whose code loads when it first renders, showing `fallback` until it arrives and
- * then the loaded component in an ordinary update. Behind a Suspense boundary, React would hold
+/** A component whose code loads when it first renders (unless `peek` already has it), showing `fallback` until it
+ * arrives and then the loaded component in an ordinary update. Behind a Suspense boundary, React would hold
  * what it reveals until 300 ms after the fallback showed, and every request the revealed code
  * makes with it. A failed load reaches the nearest error boundary; the next render tries again. */
 export function loadable<P extends object>(load: () => Promise<ComponentType<P>>,
-  fallback: (props: P) => ReactNode = () => null): ComponentType<P> {
+  fallback: (props: P) => ReactNode = () => null, peek?: () => ComponentType<P> | undefined): ComponentType<P> {
   let loaded: ComponentType<P> | undefined;
   let loading: Promise<ComponentType<P>> | undefined;
   const begin = () => loading ??= load().then(component => { loaded = component; return component; },
@@ -14,7 +14,8 @@ export function loadable<P extends object>(load: () => Promise<ComponentType<P>>
   return function Loadable(props: P) {
     const [, arrived] = useState(false);
     const [failure, setFailure] = useState<{ error: unknown } | null>(null);
-    const component = loaded;
+    // Code another caller already loaded renders at once, without a fallback frame.
+    const component = loaded ??= peek?.();
     if (!component && !failure) begin().catch(() => {});
     useEffect(() => {
       if (component) return;

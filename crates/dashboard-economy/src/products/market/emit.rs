@@ -251,10 +251,11 @@ impl Emit {
         if times == 0 {
             return;
         }
-        match self.refusals.get_mut(reason) {
+        let reason = super::super::keyed::undated(reason);
+        match self.refusals.get_mut(reason.as_ref()) {
             Some(count) => *count += times,
             None => {
-                self.refusals.insert(reason.to_owned(), times);
+                self.refusals.insert(reason.into_owned(), times);
             }
         }
     }
@@ -264,7 +265,9 @@ impl Emit {
         let refusals = &mut self.refusals;
         let mut add = |reason: String, times: u64| {
             if times != 0 {
-                *refusals.entry(reason).or_default() += times;
+                *refusals
+                    .entry(super::super::keyed::undated(&reason).into_owned())
+                    .or_default() += times;
             }
         };
         match &self.identities {

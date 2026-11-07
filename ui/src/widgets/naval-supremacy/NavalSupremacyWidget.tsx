@@ -42,7 +42,17 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const { tag, options, data, error, retry } = useNavalSupremacy(widget, runtime, active, extent);
   const chosen = contentSet(options.regions).map(contentKey);
   const regions = useMemo(() => data ? data.regions.filter(region => !chosen.length || chosen.includes(region.id)) : [], [data, JSON.stringify(chosen)]); // eslint-disable-line react-hooks/exhaustive-deps
-  const days = useMemo(() => data && extent ? keyedDays(data.window, extent, data.dayHours) : [], [data, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A reply kept while a moved window loads answers only its own hours: the rest are loading, not unrecorded.
+  const covered = useMemo<[number, number] | null>(() => data && extent
+    ? [Math.max(extent[0], data.window.firstHour), Math.min(extent[1], data.window.lastHour)] : null, [data, extent?.[0], extent?.[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const days = useMemo(() => data && covered && covered[0] <= covered[1] ? keyedDays(data.window, covered, data.dayHours) : [], [data, covered]);
+  const loading = useMemo(() => {
+    if (!extent || !covered) return undefined;
+    if (covered[0] > covered[1]) return [{ firstHour: extent[0], lastHour: extent[1] }];
+    const spans = [...covered[0] > extent[0] ? [{ firstHour: extent[0], lastHour: covered[0] - 1 }] : [],
+      ...covered[1] < extent[1] ? [{ firstHour: covered[1] + 1, lastHour: extent[1] }] : []];
+    return spans.length ? spans : undefined;
+  }, [extent?.[0], extent?.[1], covered]); // eslint-disable-line react-hooks/exhaustive-deps
   const looks = useCountryLooks(runtime.client, track, tag && moment !== null ? [tag] : [], moment ?? 0, active);
   const colour = useCountryColours(tag ? [tag] : [], looks.color, tokens, looks);
   const viewer = tag && moment !== null ? looks.name(tag, moment) : 'No country selected';
@@ -59,12 +69,13 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
   const tooltip = useCallback((row: { id: string }, _period: unknown, hour: number) => {
     const region = regions.find(item => item.id === row.id);
     if (!data || !region) return null;
+    if (loading?.some(span => span.firstHour <= hour && hour <= span.lastHour)) return { title: region.name, rows: [{ label: dayLabel(Math.floor(hour)) }, { label: 'Loading…' }] };
     const day = dayAt(hour);
     if (day?.readHour == null || !tag) return supremacyTooltip(region, null, viewer, LABELS, data.scale, dayLabel(Math.floor(hour)), null);
     ask(day.readHour, [tag]);
     return { ...supremacyTooltip(region, regionDay(series.get(region.id), day.at), labelAt(day.readHour)(tag).name, LABELS, data.scale,
       dayLabel(Math.floor(hour)), dayLabel(day.readHour)), ...countryNameDetails(labelAt(day.readHour)(tag)) };
-  }, [data, regions, dayAt, series, viewer, tag, ask, labelAt]);
+  }, [data, regions, dayAt, series, viewer, tag, ask, labelAt, loading]);
   const onMenu = useCallback((hour: number, x: number, y: number) => {
     if (track) menu.open(x, y, [jumpItem(runtime, track.id, dayAt(hour)?.readHour ?? hour)]);
   }, [track, dayAt, menu.open, runtime]);
@@ -84,7 +95,7 @@ export default function NavalSupremacyWidget({ widget, runtime, active, onDiagno
     <div className="air-timeline-chart"><HeatChart label="Naval supremacy timeline" rows={rows} periods={days} labelCatalogue={regions.map(region => region.name)}
       extent={extent} playhead={widget.time.mode === 'follow' ? extent[1] : null} branchStart={track.branch.firstHour}
       legend={legend} afterPlayhead={widget.time.mode !== 'follow'} look="split" active={active} revision={`${tag}:${data.window.lastHour}:${viewer}:${hover.revision}`}
-      hoursPerSecond={hoursPerSecond} pending={prefix?.pending} tooltip={tooltip} onContextMenu={onMenu} /></div>
+      hoursPerSecond={hoursPerSecond} pending={prefix?.pending} loading={loading} tooltip={tooltip} onContextMenu={onMenu} /></div>
     {menu.menu}
   </div>;
 }

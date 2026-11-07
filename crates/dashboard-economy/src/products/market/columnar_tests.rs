@@ -612,10 +612,8 @@ fn refusals_match_the_row_preparations_observed_hours_and_decoder_text() {
         [
             "Market: a market country has no identity (8 observed hours)",
             "Market: a market occurrence's party has no identity (1 observed hours)",
-            "Market: market inventory unavailable: hour 100 CountryMarket is unavailable: synthetic writer refusal (1 observed hours)",
-            "Market: market inventory unavailable: hour 101 CountryMarket is unavailable: synthetic writer refusal (1 observed hours)",
-            "Market: market occurrences unavailable: hour 105 MarketEvents is not recorded in a full recording (1 observed hours)",
-            "Market: market occurrences unavailable: hour 106 MarketEvents is not recorded in a full recording (1 observed hours)",
+            "Market: market inventory unavailable: CountryMarket is unavailable: synthetic writer refusal (2 observed hours)",
+            "Market: market occurrences unavailable: MarketEvents is not recorded in a full recording (2 observed hours)",
         ]
     );
     for starts in [&[][..], &[103, 105, 107], &[104, 110], &[101, 102, 106]] {
@@ -749,10 +747,8 @@ fn adjacent_run_start_counts_identity_and_occurrence_refusals() {
         unavailable(&mut second, table);
     }
     check_adjacent_runs(first, second, &[
-        "Market: country identities unavailable: hour 101 Countries is unavailable: synthetic writer refusal (1 observed hours)",
-        "Market: country identities unavailable: hour 102 Countries is unavailable: synthetic writer refusal (1 observed hours)",
-        "Market: market occurrences unavailable: hour 101 MarketEvents is unavailable: synthetic writer refusal (1 observed hours)",
-        "Market: market occurrences unavailable: hour 102 MarketEvents is unavailable: synthetic writer refusal (1 observed hours)",
+        "Market: country identities unavailable: Countries is unavailable: synthetic writer refusal (2 observed hours)",
+        "Market: market occurrences unavailable: MarketEvents is unavailable: synthetic writer refusal (2 observed hours)",
     ]);
 }
 

@@ -27,6 +27,7 @@ import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
 import { MeasuredWidget } from './widgetPerf';
 import { perfLog } from '../shell/perf';
+import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { commitZone } from '../shell/commitCount';
 
 interface Props {
@@ -40,6 +41,10 @@ interface Props {
 
 function DashboardGrid({ template, runtime, editing, onLayouts, onApply, onRemove }: Props) {
   const { width, containerRef, mounted } = useContainerWidth({ initialWidth: 1200 });
+  // The page's widget code is fetched with the layout, before its bodies mount in turn; every
+  // other widget's follows while idle, so another page or an added widget needs none fetched.
+  const kinds = [...new Set(template.widgets.map(widget => widget.kind))].join(' ');
+  useEffect(() => { preloadWidgetRenderers(kinds.split(' ')); preloadAllWidgetRenderers(); }, [kinds]);
   const changed = useCallback((_layout: Layout, layouts: ResponsiveLayouts<Breakpoint>) => {
     runtime.maps.schedule();
     const next: GridLayouts = {};

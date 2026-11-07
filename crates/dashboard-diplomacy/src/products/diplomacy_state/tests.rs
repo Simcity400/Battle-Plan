@@ -1163,6 +1163,12 @@ fn target_only_inventory_selection_includes_storage_and_queue_owner_reads() {
         assert_eq!(reply[view][0]["owner"], "first");
         assert_eq!(reply[view][0]["lastSeen"], 22);
         assert_eq!(reply[view][0]["presentAtEnd"], false);
+        if view == "pacts" {
+            // The owner's read at 46 no longer lists it: gone by then, with no read history sent.
+            assert_eq!(reply[view][0]["goneBy"], 46);
+            assert!(reply.get("reads").is_none());
+            continue;
+        }
         let reads: Vec<_> = reply["reads"]
             .as_array()
             .unwrap()
@@ -1250,14 +1256,9 @@ fn tuple_read_proofs_close_on_unavailable_tables_and_resume_without_bridge() {
         reply["unobserved"],
         serde_json::json!([{"firstHour":2,"lastHour":2}])
     );
-    assert!(
-        reply["reads"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|read| read["firstHour"].as_i64().unwrap() > 2
-                || read["lastHour"].as_i64().unwrap() < 2)
-    );
+    // An episode a gap ended is not proven gone, and one still listed is not gone.
+    assert_eq!(reply["pacts"][0]["goneBy"], serde_json::Value::Null);
+    assert_eq!(reply["pacts"][1]["goneBy"], serde_json::Value::Null);
 }
 
 #[test]

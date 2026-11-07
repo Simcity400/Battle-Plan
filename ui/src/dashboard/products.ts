@@ -1,5 +1,5 @@
 import { type Failure, asFailure } from './queryError.ts';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { DashboardClient, DashboardSource, ProductReply, ProductRequest } from './client';
 import { validateProductReply } from './client.ts';
 import { ResourceCache } from './resourceCache.ts';
@@ -41,7 +41,9 @@ const replySize = (reply: ProductReply<unknown>) => (receivedLength(reply) ?? JS
 function cache(client: DashboardClient, hours = false): ResourceCache<ProductReply<unknown>> {
   let entry = caches.get(client);
   if (!entry) {
-    entry = { shared: new ResourceCache(128, 64 * 1024 * 1024, replySize), hours: new ResourceCache(64, 32 * 1024 * 1024, replySize) };
+    // Sized to hold every page's replies for one campaign and country (a 13-year campaign's tour of
+    // the pages is about 240 replies and 80 MB of JSON), so a page shown before shows again at once.
+    entry = { shared: new ResourceCache(1024, 256 * 1024 * 1024, replySize), hours: new ResourceCache(512, 64 * 1024 * 1024, replySize) };
     caches.set(client, entry);
   }
   return hours ? entry.hours : entry.shared;
@@ -282,6 +284,19 @@ export function forgetSettledProducts(client: DashboardClient, sourceId: string)
 }
 
 export interface ProductState<T> { data?: T; error?: Failure; retry: () => void }
+
+/** Whether a read of `key` should run: while its widget is in view, and, once started, until it settles even
+ * when the widget scrolls out of view, so a slow read is never thrown away and asked again from the start.
+ * Leaving the page (unmounting) still cancels it. */
+function useRunWhileStarted(active: boolean, key: string | null) {
+  // Each run is its own object, so an earlier run settling never clears a later one of the same key.
+  const running = useRef<{ key: string } | null>(null);
+  return {
+    wanted: active || (key !== null && running.current?.key === key),
+    started: (at: string) => { const run = { key: at }; running.current = run; return run; },
+    settled: (run: { key: string }) => { if (running.current === run) running.current = null; },
+  };
+}
 const NO_ERRORS: readonly Failure[] = [];
 
 /** A failed request stays failed until Retry, even while other requests publish. */
@@ -292,11 +307,15 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
   const widget = measuredWidget();
   const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T[]; errors?: readonly Failure[] }>();
   const [attempt, setAttempt] = useState(0);
+  const run = useRunWhileStarted(active, key);
   useEffect(() => {
-    if (!active || !requests.length) return;
+    if (!run.wanted || !requests.length) return;
     const controller = new AbortController();
     const values = new Map<number, T>();
     const failures = new Map<number, Failure>();
+    let left = requests.length;
+    const mine = run.started(key);
+    const settled = () => { if (--left === 0) run.settled(mine); };
     const commit = () => {
       if (controller.signal.aborted) return;
       const data = values.size === requests.length ? requests.map((_, index) => values.get(index)!) : undefined;
@@ -319,12 +338,12 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
       const publish = (value: T) => { if (!controller.signal.aborted) { values.set(index, value); commit(); } };
       countWork(widget, 'read');
       void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(publish,
-        error => { if (!controller.signal.aborted) { failures.set(index, asFailure(error)); commit(); } });
+        error => { if (!controller.signal.aborted) { failures.set(index, asFailure(error)); commit(); } }).finally(settled);
     });
     return () => controller.abort();
     // The structured key names the requests and their order.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, key, active, attempt]);
+  }, [client, key, run.wanted, attempt]);
   const current = requests.length && state?.client === client && state.key === key ? state : undefined;
   const retry = () => { setState(undefined); setAttempt(value => value + 1); };
   const held = current?.data !== undefined;
@@ -340,9 +359,11 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
   const widget = measuredWidget();
   const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
+  const run = useRunWhileStarted(active, key);
   useEffect(() => {
-    if (!active || !request || !key) return;
+    if (!run.wanted || !request || !key) return;
     const controller = new AbortController();
+    const mine = run.started(key);
     const publish = (data: T) => inFrame(() => {
       if (controller.signal.aborted) return;
       countWork(widget, 'reply');
@@ -354,11 +375,11 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
       error => inFrame(() => controller.signal.aborted || setState(previous => ({ client, key,
         data: previous?.client === client && previous.key === key ? previous.data : undefined,
         error: asFailure(error) }))),
-    );
+    ).finally(() => run.settled(mine));
     return () => controller.abort();
     // The request object is recreated each render; its key is the identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, client, key, attempt]);
+  }, [run.wanted, client, key, attempt]);
   const current = state?.client === client && state.key === key ? state : undefined;
   // A failed load already left the cache; retrying only asks again.
   const retry = () => { setState(undefined); setAttempt(value => value + 1); };

@@ -14,6 +14,10 @@ use crate::ReplayMetadata;
 /// Includes one serialized response, before the control-envelope escaping.
 pub const MAX_REPLY_BYTES: usize = 32 * 1024 * 1024;
 
+/// Data requests a host keeps outstanding at once: the service and the desktop host each refuse
+/// one past it with [`CAPACITY_REACHED`], and the frontend waits for room rather than send it.
+pub const MAX_PENDING_REQUESTS: usize = 64;
+
 /// The service had no room for the request: nothing is said of the product, and
 /// the request may be tried again. The desktop host refuses past the same
 /// admission budget with a message starting with it.

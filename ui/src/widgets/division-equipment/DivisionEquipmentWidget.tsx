@@ -63,7 +63,7 @@ export default function DivisionEquipmentWidget({ widget, runtime, active, setOp
   const subject = JSON.stringify([track?.branch.id, country.chosen, countFor]);
   const base = track && window && tag ? { sourceId: track.source.id, revision: track.source.revision, product: 'division-equipment' } : null;
   // Only an hour the prepared history does not hold is asked of the reached product.
-  const history = useDivisionEquipmentHistory(runtime.client, track, tag, countFor, active);
+  const history = useDivisionEquipmentHistory(runtime.client, track, tag, countFor, active, hour);
   const part = partAt(history.parts, hour);
   const { held, asked } = useMemo(() => historyAnswer(history.prepared, part ?? { error: new Error('no range') }, hour), [history.prepared, part, hour]);
   const state = useReachedProduct(runtime.client, track?.source, base && { ...base, params: { branchId: track!.branch.id, hour, tag, countFor } },

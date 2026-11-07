@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { KeyedRun } from '../../dashboard/keyedHistory';
-import { divisionEquipmentAt, historyAnswer, partAt, REPLY_BUDGET, splitPart, validateDivisionEquipmentHistory, WHOLE } from './divisionEquipmentHistory.ts';
+import { divisionEquipmentAt, historyAnswer, NEAR_HOURS, partAt, partsAround, REPLY_BUDGET, splitPart, validateDivisionEquipmentHistory, WHOLE } from './divisionEquipmentHistory.ts';
 import type { DivisionEquipmentHistory } from './divisionEquipmentHistory';
 import { validateDivisionEquipment } from './divisionEquipmentData.ts';
 
@@ -142,4 +142,13 @@ test('a history answers only inside its range, and a range over budget is asked 
   assert.equal(splitPart(WHOLE[0], new Error('Recording changed'), branch), null);
   assert.equal(splitPart({ firstHour: 12, lastHour: 12 }, new Error('exceeds the transport reply budget'), branch), null);
   assert.equal(partAt([{ firstHour: null, lastHour: 25 }, { firstHour: 26, lastHour: null }], 30)?.firstHour, 26);
+});
+
+test('the weeks around the shown hour are asked first, then what comes before and after them, covering the branch once', () => {
+  const branch = { firstHour: 0, lastHour: 100_000 };
+  assert.deepEqual(partsAround(50_000, branch), [{ firstHour: 50_000 - NEAR_HOURS, lastHour: 50_000 + NEAR_HOURS },
+    { firstHour: null, lastHour: 50_000 - NEAR_HOURS - 1 }, { firstHour: 50_000 + NEAR_HOURS + 1, lastHour: null }]);
+  assert.deepEqual(partsAround(10, branch), [{ firstHour: null, lastHour: 10 + NEAR_HOURS }, { firstHour: 11 + NEAR_HOURS, lastHour: null }], 'at the start nothing comes before');
+  assert.deepEqual(partsAround(5, { firstHour: 0, lastHour: 20 }), WHOLE, 'a branch shorter than the weeks is one part');
+  assert.equal(partAt(partsAround(50_000, branch), 100_000)?.lastHour, null);
 });

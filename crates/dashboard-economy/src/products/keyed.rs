@@ -29,6 +29,43 @@ use ts_rs::TS;
 /// One observed hour's values, by key.
 pub type Observed = BTreeMap<u64, i128>;
 
+/// `reason` without the hour a failed table read names (`hour 123 Table …` becomes `Table …`):
+/// refusals are counted by their words, once per observed hour, so a refusal that names its
+/// hour would be a new reason every hour.
+pub fn undated(reason: &str) -> std::borrow::Cow<'_, str> {
+    let mut out = String::new();
+    let mut rest = reason;
+    let mut at = 0;
+    let mut dated_any = false;
+    while let Some(found) = rest[at..].find("hour ") {
+        let start = at + found;
+        let digits = &rest[start + 5..];
+        let number = digits
+            .char_indices()
+            .take_while(|&(index, c)| c.is_ascii_digit() || (index == 0 && c == '-'))
+            .count();
+        let after = &digits[number..];
+        let dated = (start == 0 || rest.as_bytes()[start - 1] == b' ')
+            && number > 0
+            && digits.as_bytes()[number - 1].is_ascii_digit()
+            && after.starts_with(' ')
+            && after[1..].starts_with(|c: char| c.is_ascii_uppercase());
+        if dated {
+            out.push_str(&rest[..start]);
+            rest = &after[1..];
+            at = 0;
+            dated_any = true;
+        } else {
+            at = start + 5;
+        }
+    }
+    if !dated_any {
+        return std::borrow::Cow::Borrowed(reason);
+    }
+    out.push_str(rest);
+    std::borrow::Cow::Owned(out)
+}
+
 /// What a family's catalogue says about each key and holder.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Metadata<F, X> {
@@ -156,18 +193,19 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
         self.refuse_times(reason.into(), 1);
     }
 
-    pub fn refuse_times(&mut self, reason: impl AsRef<str> + Into<String>, times: u64) {
+    pub fn refuse_times(&mut self, reason: impl AsRef<str>, times: u64) {
         if times == 0 {
             return;
         }
+        let reason = undated(reason.as_ref());
         if !self.refused.contains(reason.as_ref()) {
-            self.changed += 2 * reason.as_ref().len() + 20 + EDIT_MARGIN;
+            self.changed += 2 * reason.len() + 20 + EDIT_MARGIN;
             self.refused.insert(reason.as_ref().to_owned());
         }
         match self.meta.refusals.get_mut(reason.as_ref()) {
             Some(count) => *count += times,
             None => {
-                self.meta.refusals.insert(reason.into(), times);
+                self.meta.refusals.insert(reason.into_owned(), times);
             }
         }
     }
@@ -668,4 +706,21 @@ pub fn observe_variants(
 pub fn branch_of(id: &str) -> io::Result<u64> {
     id.parse()
         .map_err(|_| invalid("Invalid economy history branch"))
+}
+
+#[cfg(test)]
+mod undated_tests {
+    use super::undated;
+
+    #[test]
+    fn a_read_names_its_table_without_its_hour() {
+        assert_eq!(
+            undated("market inventory unavailable: hour 100 CountryMarket is unavailable: x"),
+            "market inventory unavailable: CountryMarket is unavailable: x"
+        );
+        assert_eq!(undated("hour -3 Countries is truncated (2 missing rows)"), "Countries is truncated (2 missing rows)");
+        for kept in ["unavailable this hour: x", "hours 12 Countries", "hour 12 countries", "a war roster names a country with no identity"] {
+            assert_eq!(undated(kept), kept);
+        }
+    }
 }

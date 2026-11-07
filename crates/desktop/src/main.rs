@@ -197,7 +197,9 @@ fn main() {
     }
     perf::init();
     shader_pipeline::artwork::warm();
-    if let Err(error) = dashboard::artwork::configure(ARTWORK_BASE) {
+    if let Err(error) =
+        dashboard::artwork::configure(ARTWORK_BASE, dashboard::artwork::local_folder())
+    {
         eprintln!("{error}");
     }
     let app = tauri::Builder::default()

@@ -9,6 +9,7 @@ import { newId } from '../shell/ids.ts';
 import { desktopAvailable } from '../shell/api';
 import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
+import { MAX_PENDING_REQUESTS } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
 import { keepDigest } from './replyDigest.ts';
@@ -46,6 +47,29 @@ async function rawInvoke<T>(command: string, args: Record<string, unknown>, timi
   return reply as T;
 }
 
+/** Requests the host is holding, and those waiting for one of them to end, in order: the host refuses a
+ * request past its bound for want of room, so one is never sent until there is room. */
+let outstanding = 0;
+const waiting: (() => void)[] = [];
+async function admitted(signal: AbortSignal): Promise<() => void> {
+  if (outstanding >= MAX_PENDING_REQUESTS) {
+    await new Promise<void>((resolve, reject) => {
+      const turn = () => { signal.removeEventListener('abort', leave); resolve(); };
+      const leave = () => { const at = waiting.indexOf(turn); if (at >= 0) waiting.splice(at, 1); reject(cancelled()); };
+      waiting.push(turn);
+      signal.addEventListener('abort', leave, { once: true });
+    });
+  } else outstanding++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    // A slot passes straight to the next waiting request.
+    const next = waiting.shift();
+    if (next) next(); else outstanding--;
+  };
+}
+
 async function request<T>(
   command: string,
   args: (requestId: string) => Record<string, unknown>,
@@ -54,6 +78,20 @@ async function request<T>(
 ): Promise<T> {
   if (!desktopAvailable) throw new Error('Open the desktop app to read recordings and display native maps.');
   if (signal.aborted) throw cancelled();
+  const release = await admitted(signal);
+  try {
+    // Cancelled while waiting for room, after the wait's own abort listener was removed.
+    if (signal.aborted) throw cancelled();
+    return await sent(command, args, signal, releaseLate);
+  } finally { release(); }
+}
+
+async function sent<T>(
+  command: string,
+  args: (requestId: string) => Record<string, unknown>,
+  signal: AbortSignal,
+  releaseLate?: (result: T) => Promise<void>,
+): Promise<T> {
   const requestId = newId();
   const body = args(requestId);
   const abort = () => { void invoke('dashboard_cancel', { requestId }).catch(() => {}); };
@@ -80,13 +118,15 @@ async function request<T>(
 async function preparation(command: string, query: PreparationRequest, signal: AbortSignal): Promise<PreparationReply> {
   if (!desktopAvailable) throw new Error('Open the desktop app to prepare recordings.');
   if (signal.aborted) throw cancelled();
+  const release = await admitted(signal);
   const abort = () => { void invoke('dashboard_cancel', { requestId: query.requestId }).catch(() => {}); };
   signal.addEventListener('abort', abort, { once: true });
   try {
+    if (signal.aborted) throw cancelled();
     const reply = await rawInvoke<PreparationReply>(command, query as unknown as Record<string, unknown>);
     if (signal.aborted) throw cancelled();
     return validatePreparationReply(reply, query);
-  } finally { signal.removeEventListener('abort', abort); }
+  } finally { signal.removeEventListener('abort', abort); release(); }
 }
 
 async function releaseSource(sourceId: string): Promise<void> {
