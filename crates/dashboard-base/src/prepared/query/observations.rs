@@ -9,7 +9,7 @@
 //! with the requests made. Concurrent asks for one key share one extraction.
 
 use crate::{Source, metadata::check_cancel};
-use replay::container::BlockIndex;
+use replay::campaign::BlockIndex;
 use serde::Serialize;
 use std::{
     any::{Any, TypeId},

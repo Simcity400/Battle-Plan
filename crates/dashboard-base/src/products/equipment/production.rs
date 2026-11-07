@@ -5,15 +5,16 @@
 mod rocket;
 pub(crate) use rocket::{RocketFold, RocketProduced, RocketRead, RocketTotals};
 
+use replay_frame::frame::DecodedFrame;
 use super::{self as equipment, Domain, Texts, VariantCatalogue};
 use crate::products::LoadContext;
 use crate::{
     Source, catalogue,
     metadata::{TaggedCountry, link_slot, slot_read, tagged_countries, validate_campaign},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::Recorded, rows::TableId, rows::tables};
-use replay_frame::{frame::FrameDecoder, frame::TableView};
+use replay_frame::frame::TableView;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -492,7 +493,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 // A block or frame that cannot be read may have held a publication.
                 let Ok(frames) = frames else {
                     result.taint(observation, block.first_hour);
@@ -505,7 +505,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(decoded) if validate_campaign(decoded, replay).is_ok() => decoded,
                         _ => {
                             result.taint(observation, frame.hour);

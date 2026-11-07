@@ -113,14 +113,14 @@ use dashboard_text::metadata::{
     TaggedCountry, link_slot, mapped_slot, slot_read, tagged_country, validate_campaign,
 };
 use dashboard_text::{catalogue::View, metadata::branch_bounds};
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(test)]
 use replay_data::rows::{CountryLinkRow, RowCodec, tables};
 use replay_data::{
     rows::EQUIPMENT_DESTRUCTION_PARTIAL_REASON, rows::EquipmentDestructionCause, rows::TableId,
 };
 #[cfg(test)]
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::sync::{Arc, atomic::Ordering};

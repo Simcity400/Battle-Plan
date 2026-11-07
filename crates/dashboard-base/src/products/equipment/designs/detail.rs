@@ -1045,8 +1045,8 @@ impl Product for EquipmentDesignDetail {
                 }
             },
         )? {
-            replay::container::SeekResult::Frame(frame) => frame,
-            replay::container::SeekResult::Gap { reason, .. } => {
+            replay::campaign::SeekResult::Frame(frame) => frame,
+            replay::campaign::SeekResult::Gap { reason, .. } => {
                 return Err(crate::invalid(reason));
             }
         };

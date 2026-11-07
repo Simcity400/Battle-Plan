@@ -276,7 +276,7 @@ impl Recorded {
 
 struct Recorder<'a, 's, 'w> {
     branches: &'a [Branch],
-    recording: Option<&'a replay::container::Replay>,
+    recording: Option<&'a replay::campaign::Replay>,
     owners: &'a [Owner],
     serve: &'a mut (dyn FnMut(&str, &Value) -> Reply + 's),
     out: &'a mut (dyn Write + 'w),
@@ -383,7 +383,7 @@ impl Ask for Recorder<'_, '_, '_> {
         self.branches
     }
 
-    fn recording(&self) -> io::Result<&replay::container::Replay> {
+    fn recording(&self) -> io::Result<&replay::campaign::Replay> {
         self.recording
             .ok_or_else(|| invalid("This served plan needs the recording's rows"))
     }
@@ -461,7 +461,7 @@ pub fn record(
     revision: &str,
     owners: &[Owner],
     branches: &[Branch],
-    recording: Option<&replay::container::Replay>,
+    recording: Option<&replay::campaign::Replay>,
     serve: &mut dyn FnMut(&str, &Value) -> Reply,
     out: &mut dyn Write,
 ) -> io::Result<Vec<Recorded>> {
@@ -1274,7 +1274,7 @@ impl Served {
         &self.source.key().revision
     }
 
-    pub fn recording(&self) -> &replay::container::Replay {
+    pub fn recording(&self) -> &replay::campaign::Replay {
         self.source.replay_ref()
     }
 

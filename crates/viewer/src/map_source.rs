@@ -4,7 +4,7 @@
 use crate::playback::Current;
 use replay::{
     columnar_runs::{IndexFile, Snapshots},
-    container::{Parallel, Replay},
+    campaign::{Parallel, Replay},
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, TableView};
@@ -19,8 +19,7 @@ pub struct Columnar {
 
 impl Columnar {
     /// `file` as `replay`'s map source; none when it is of another campaign, does not hold
-    /// exactly the hours the replay records of the sessions it does not hold pending, or lacks
-    /// a map table.
+    /// exactly the hours the recording holds now, or lacks a map table.
     pub fn verify(replay: &Replay, file: Arc<IndexFile>) -> Option<Arc<Self>> {
         (file.records(replay) && file.holds(dashboard_base::map_tables::selected_tables()))
             .then(|| Arc::new(Self { file }))
@@ -38,7 +37,6 @@ impl Columnar {
         )?
         .with_change_facts();
         Ok(MapSource {
-            pending: self.file.pending(&replay),
             snapshots,
             replay,
             workers: workers.max(1),
@@ -51,8 +49,6 @@ pub struct MapSource {
     snapshots: Snapshots,
     replay: Arc<Replay>,
     workers: usize,
-    /// The replay's branches whose session the index holds pending, each with its session.
-    pending: Vec<(BranchId, u64)>,
 }
 
 impl MapSource {
@@ -103,26 +99,7 @@ impl MapSource {
             reason,
         };
         if self.snapshots.file().index.find(branch, hour).is_none() {
-            let recorded = self.replay.index.iter().any(|block| {
-                block.branch == branch && block.first_hour <= hour && hour <= block.last_hour
-            });
-            let pending = self
-                .pending
-                .iter()
-                .find(|&&(held, _)| held == branch)
-                .filter(|_| recorded);
-            return Ok(match pending {
-                Some(&(_, session)) => Current::Pending {
-                    branch,
-                    hour,
-                    reason: format!(
-                        "session {session} is still being recorded: the map holds its hours \
-                         once its native recording lands"
-                    ),
-                    awaiting_index: false,
-                },
-                None => gap(crate::playback::gap_reason(&self.replay, branch, hour)),
-            });
+            return Ok(gap(crate::playback::gap_reason(&self.replay, branch, hour)));
         }
         let read = (|| -> io::Result<Option<DecodedFrame>> {
             if cancelled() {

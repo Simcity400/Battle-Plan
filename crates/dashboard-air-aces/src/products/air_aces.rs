@@ -28,7 +28,7 @@ use dashboard_text::{
 };
 use installed_content_localisation::localisation::Argument;
 use facts::{Read, Roster};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::AirAceRow, rows::RowCodec, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, Rowset, Tables};
 use serde::{Deserialize, Serialize};
@@ -43,7 +43,7 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(test)]
-use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
+use dashboard_text::metadata::validate_campaign;
 
 pub struct AirAces;
 pub struct AirAcePortraits;
@@ -752,7 +752,6 @@ fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> 
         |blocks| {
             for (_, frames) in blocks {
                 cancelled(flag)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     result.unread = true;
                     result
@@ -762,7 +761,7 @@ fn scan(replay: &Replay, branch_id: u64, flag: &AtomicBool) -> io::Result<Scan> 
                 };
                 for frame in frames {
                     cancelled(flag)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         result.unread = true;
                         result
                             .warnings
@@ -1016,14 +1015,13 @@ fn recording_available(
         |blocks| {
             for (_, frames) in blocks {
                 cancelled(flag)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     unread = true;
                     continue;
                 };
                 for frame in frames {
                     cancelled(flag)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         unread = true;
                         break;
                     };

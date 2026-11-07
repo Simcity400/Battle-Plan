@@ -118,7 +118,7 @@ impl Settings {
 }
 
 /// `raw` compressed at `level`, with `base`'s raw bytes as its dictionary when given.
-fn compress(level: i32, raw: &[u8], base: Option<&[u8]>) -> io::Result<Vec<u8>> {
+pub(crate) fn compress(level: i32, raw: &[u8], base: Option<&[u8]>) -> io::Result<Vec<u8>> {
     let needed = (raw.len() + base.map_or(0, <[u8]>::len)).max(2);
     let window = (usize::BITS - (needed - 1).leading_zeros()).clamp(10, LARGEST_WINDOW_LOG);
     let mut compressor = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
@@ -813,6 +813,7 @@ impl<W: Write + Seek> FileWriter<W> {
             revision: self.revision + 1,
             runs,
             controls,
+            facts: Vec::new(),
         };
         let written = root.write();
         self.identity = Some(root.identity);

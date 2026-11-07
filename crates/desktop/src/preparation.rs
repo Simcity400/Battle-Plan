@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager};
 /// The preparation revision, whether the prepared-data volume has room for
 /// library preparation, and each library recording with its replay revision
 /// and its native recordings' stamp.
-type Observation = (u64, bool, Vec<(PathBuf, Option<String>, Option<String>)>);
+type Observation = (u64, bool, Vec<(PathBuf, Option<String>)>);
 
 /// One admission attempt per observed input/worker change. A busy or unchanged
 /// reply ends retries until new external inputs or completed work wake them.
@@ -72,7 +72,6 @@ impl LibraryAdmission {
                     (
                         path.clone(),
                         dashboard::protocol::replay_revision(path).ok(),
-                        dashboard::prepared::change_runs::native_revision(path).ok(),
                     )
                 })
                 .collect(),

@@ -12,7 +12,7 @@ use super::{
 use dashboard_base::{Source, products::LoadContext};
 use dashboard_text::metadata::{check_cancel, slot_read, validate_campaign};
 use replay_data::rows::{ProjectHistoryRow, TableId, tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::BTreeMap,
     io,
@@ -179,10 +179,9 @@ pub fn feed(
                 let Ok(frames) = frames else {
                     continue;
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(frame) = decoder.advance(&frame) else {
+                    let Ok(frame) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(frame, replay).is_err() {

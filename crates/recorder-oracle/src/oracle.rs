@@ -11,7 +11,7 @@ use installed_content_core::ResolveOptions;
 #[cfg(test)]
 use installed_content_save::Decimal;
 use installed_content_save::{self as save, Save};
-use replay::{container::Replay, container::SeekResult};
+use replay::{campaign::Replay, campaign::SeekResult};
 #[cfg(test)]
 use replay_data::rows::TableRows;
 use replay_data::{

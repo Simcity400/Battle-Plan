@@ -66,7 +66,7 @@ use crate::{
     catalogue::{self, Catalogue},
     metadata::{TaggedCountry, link_slot, slot_reads},
 };
-use replay::{container::BlockIndex, container::Replay};
+use replay::{campaign::BlockIndex, campaign::Replay};
 use replay_data::{
     rows::IndustrialOrganisationDetailsRow, rows::IndustrialOrganisationRow, rows::LexicalTokenRow,
     rows::ProductionLineOutputRow, rows::ProductionLineRow, rows::TableId,
@@ -1782,7 +1782,7 @@ fn pictures_serve(
 fn last_block(replay: &Replay, branch: u64) -> Option<(i32, i32, u64)> {
     branch_blocks(replay, branch)
         .last()
-        .map(|block| (block.first_hour, block.last_hour, block.offset))
+        .map(|block| (block.first_hour, block.last_hour, block.key()))
 }
 
 /// A branch's prepared index opened for one view (a literal tag's, or a native holder's),

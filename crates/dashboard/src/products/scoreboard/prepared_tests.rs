@@ -257,15 +257,6 @@ const GAP: i32 = SECOND + UNIT_HOURS;
 const THIRD: i32 = GAP + 2;
 const FOURTH: i32 = THIRD + UNIT_HOURS;
 
-/// The native runs of the recording grown by its first `parts` parts.
-fn runs(parts: u32) -> Vec<(u64, i32, u32)> {
-    let mut runs = vec![(1, FIRST, parts.min(2))];
-    if parts > 2 {
-        runs.push((1, THIRD, parts - 2));
-    }
-    runs
-}
-
 fn hours(from: i32, to: i32) -> Vec<DecodedFrame> {
     (from..to).map(all_frame).collect()
 }
@@ -537,7 +528,7 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
     }
     let recorded = Recorded::new();
     let first = Replay::from_records(CAMPAIGN.into(), &[records(1, hours(FIRST, SECOND))]).unwrap();
-    recorded.record(&first, &runs(1), STREAMS, write_hour);
+    recorded.record(&first);
     let columns = ScoreboardColumnKey::ALL.to_vec();
     let selection = request(
         columns.clone(),
@@ -627,7 +618,7 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
     let second = first
         .append(&[continuation_records(&first, 1, hours(SECOND, GAP))])
         .unwrap();
-    recorded.record(&second, &runs(2), STREAMS, write_hour);
+    recorded.record(&second);
     prepare(&recorded);
     for hour in [FIRST, FIRST + 1, SECOND - 1, SECOND, SECOND + 1] {
         let clean = recorded.source(SOURCE);
@@ -651,7 +642,7 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
     let grown = second
         .append(&[continuation_records(&second, 1, hours(THIRD, FOURTH))])
         .unwrap();
-    recorded.record(&grown, &runs(3), STREAMS, write_hour);
+    recorded.record(&grown);
     let appended = prepare(&recorded);
     for hour in [GAP, GAP + 1, THIRD, THIRD + 1] {
         let clean = recorded.source(SOURCE);
@@ -705,7 +696,7 @@ fn scoreboard_prepared_composes_native_cells_after_two_commits_resume_append_gap
             hours(FOURTH, FOURTH + UNIT_HOURS),
         )])
         .unwrap();
-    recorded.record(&reused, &runs(4), STREAMS, write_hour);
+    recorded.record(&reused);
     prepare(&recorded);
     let pick = request(columns, vec!["GER".into()], None);
     for hour in [FOURTH, FOURTH + 1] {
@@ -733,7 +724,7 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
         &[records(1, (FIRST..SECOND).map(frame).collect())],
     )
     .unwrap();
-    recorded.record(&first, &runs(1), STREAMS, write_hour);
+    recorded.record(&first);
     prepare(&recorded);
     let second = first
         .append(&[continuation_records(
@@ -742,7 +733,7 @@ fn scoreboard_prepared_top_and_mounted_page_keep_every_country_and_unknown_last_
             (SECOND..GAP).map(frame).collect(),
         )])
         .unwrap();
-    recorded.record(&second, &runs(2), STREAMS, write_hour);
+    recorded.record(&second);
     // Political power is the balances family's, prepared natively beside the other suppliers.
     prepare(&recorded);
     for descending in [true, false] {

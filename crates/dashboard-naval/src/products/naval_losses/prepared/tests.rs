@@ -217,7 +217,7 @@ fn prepared_naval_losses_match_oracle_after_two_commits_resume_append_and_bridge
         (history, prepared) = reloaded(&(&history, &prepared));
         history.resume(frame);
         if step >= 1 {
-            let replay = replay::container::Replay::from_records(
+            let replay = replay::campaign::Replay::from_records(
                 dashboard_base::test_fixtures::CAMPAIGN.into(),
                 &[dashboard_base::test_fixtures::records(
                     1,

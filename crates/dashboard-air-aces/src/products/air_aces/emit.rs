@@ -6,7 +6,7 @@
 use super::{facts::Hour, prepared::Prepared};
 use dashboard_base::source::Source;
 use dashboard_core::config::LoadContext;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 

@@ -2,9 +2,8 @@
 use dashboard_base::{products::Product, source::Source};
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::validate_campaign;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     io,
@@ -105,25 +104,20 @@ pub(super) fn completions_match(
         .iter()
         .find(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
         .ok_or_else(|| dashboard_core::invalid("Completion witness hour missing"))?;
-    let mut decoder = FrameDecoder::for_tables(&selected);
-    for frame in replay.read_block_selected(block, &selected)? {
-        if frame.hour > hour {
-            break;
-        }
-        let decoded = decoder.advance(&frame)?;
-        validate_campaign(decoded, replay)?;
-        if frame.hour == hour {
-            let by_key: std::collections::HashMap<_, _> = decoded
-                .complete::<tables::OperationCompletions>()?
-                .iter()
-                .map(|row| ((row.owner, row.sequence), row))
-                .collect();
-            return Ok(incoming
-                .iter()
-                .all(|row| by_key.get(&(row.owner, row.sequence)).copied() == Some(*row)));
-        }
-    }
-    Err(dashboard_core::invalid("Completion witness read missing"))
+    let replay::campaign::SeekResult::Frame(decoded) =
+        replay.seek_selected(block.branch, hour, Some(&selected))?
+    else {
+        return Err(dashboard_core::invalid("Completion witness read missing"));
+    };
+    validate_campaign(&decoded, replay)?;
+    let by_key: std::collections::HashMap<_, _> = decoded
+        .complete::<tables::OperationCompletions>()?
+        .iter()
+        .map(|row| ((row.owner, row.sequence), row))
+        .collect();
+    Ok(incoming
+        .iter()
+        .all(|row| by_key.get(&(row.owner, row.sequence)).copied() == Some(*row)))
 }
 
 fn load(
@@ -163,22 +157,19 @@ fn load(
         .ok_or_else(|| {
             dashboard_core::refused("Operation description supplying hour was not recorded")
         })?;
-    let mut decoder = FrameDecoder::for_tables(&selected);
-    for frame in replay.read_block_selected(block, &selected)? {
+    let found = replay.seek_selected_with(block.branch, reference.hour, Some(&selected), || {
         if cancelled.load(Ordering::Acquire) {
-            return Err(io::Error::new(
+            Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "Operation description request cancelled",
-            ));
+            ))
+        } else {
+            Ok(())
         }
-        if frame.hour > reference.hour {
-            break;
-        }
-        let decoded = decoder.advance(&frame)?;
+    })?;
+    if let replay::campaign::SeekResult::Frame(decoded) = &found {
+        let decoded: &replay_frame::frame::DecodedFrame = decoded;
         validate_campaign(decoded, replay)?;
-        if frame.hour != reference.hour {
-            continue;
-        }
         let language = replay
             .identity
             .language

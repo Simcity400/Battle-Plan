@@ -1,6 +1,5 @@
-//! Bounded block packing: ordered coordinator state, parallel finite table/section work.
-//!
-//! Offline callers may also pipeline independent finished blocks on OS workers.
+//! The recorder's background work budget: bounded workers, gated by the game's hourly tick
+//! while it plays, and budgeted file reads and writes.
 
 use std::{
     collections::VecDeque,
@@ -15,7 +14,6 @@ use std::{
 type Gate = dyn Fn() + Send + Sync;
 
 struct Budget {
-    compression: AtomicUsize,
     progress: Mutex<Option<crate::progress::Progress>>,
     // Playing limits remain active even after catch-up leaves OS background mode.
     background: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -32,8 +30,6 @@ struct Budget {
     io_bytes: std::sync::atomic::AtomicU64,
     /// Waits out the game's hourly tick while playing limits apply.
     gate: std::sync::OnceLock<std::sync::Arc<Gate>>,
-    #[cfg(test)]
-    readback_table: Mutex<Option<std::sync::Arc<dyn Fn() + Send + Sync>>>,
 }
 
 thread_local! {
@@ -63,7 +59,6 @@ impl Packing {
     fn with_workers(foreground: usize) -> io::Result<Self> {
         let foreground = foreground.max(1);
         let budget = std::sync::Arc::new(Budget {
-            compression: AtomicUsize::new(0),
             progress: Mutex::new(None),
             background: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             io: Mutex::new(std::time::Instant::now()),
@@ -78,8 +73,6 @@ impl Packing {
             timings: Mutex::new([None; 5]),
             io_bytes: std::sync::atomic::AtomicU64::new(0),
             gate: std::sync::OnceLock::new(),
-            #[cfg(test)]
-            readback_table: Mutex::new(None),
         });
         let started = budget.clone();
         let pool = rayon::ThreadPoolBuilder::new()
@@ -165,13 +158,6 @@ impl Packing {
     /// The coordinator's own wait at its loop boundaries; nothing once promoted.
     pub fn wait_for_game(&self) {
         wait_for_game(&self.budget);
-    }
-
-    pub fn set_compression(&self, compression: crate::compression::Compression) {
-        self.budget.compression.store(
-            usize::from(compression == crate::compression::Compression::High),
-            Ordering::Release,
-        );
     }
 
     /// Leave OS background mode while catching up, retaining the playing CPU and logical I/O limits.
@@ -267,19 +253,6 @@ impl Packing {
     }
 }
 
-pub(crate) fn compression() -> crate::compression::Compression {
-    use crate::compression::Compression;
-    let budget = BUDGET.with_borrow(Clone::clone);
-    let Some(budget) = budget else {
-        return Compression::Low;
-    };
-    if budget.compression.load(Ordering::Acquire) == 0 {
-        Compression::Low
-    } else {
-        Compression::High
-    }
-}
-
 /// Charge completed file I/O once, including short operations, against the current packing job.
 pub struct Budgeted<T>(T);
 
@@ -370,21 +343,6 @@ impl Drop for PhaseTimer {
     }
 }
 
-pub(super) fn readback_table() {
-    refresh();
-    #[cfg(test)]
-    {
-        let watch = BUDGET.with_borrow(|budget| {
-            budget
-                .as_ref()
-                .and_then(|budget| lock(&budget.readback_table).clone())
-        });
-        if let Some(watch) = watch {
-            watch();
-        }
-    }
-}
-
 fn stalled(budget: &Budget, elapsed: std::time::Duration) -> bool {
     let due = budget.progress_due_ns.load(Ordering::Acquire);
     due != 0
@@ -460,10 +418,6 @@ pub(crate) fn workers() -> usize {
     (thread::available_parallelism().map_or(1, usize::from) / 2).max(1)
 }
 
-/// Finished blocks wait for a worker at most this many at a time, so a pack
-/// holds at most its workers' blocks, these and the block being written.
-pub(crate) const WAITING: usize = 1;
-
 /// The threads a pack may keep busy, and how many are: the calling thread,
 /// the workers packing a block, and the helpers free ones are lent to.
 pub(crate) struct Cores {
@@ -482,40 +436,12 @@ impl Cores {
         }
     }
 
-    /// `limit` threads, none busy: the calling thread only waits.
-    pub(crate) fn idle(limit: usize) -> Self {
-        Self {
-            limit: limit.max(1),
-            busy: Mutex::new(0),
-            freed: Condvar::new(),
-        }
-    }
-
-    /// `work` on this thread, as one busy thread once one is free.
-    pub(crate) fn busy<T>(&self, work: impl FnOnce() -> T) -> T {
-        self.acquire();
-        let _lent = Lent(self, 1);
-        work()
-    }
-
     /// Up to `wanted` more busy threads, as many as are free now.
     fn take(&self, wanted: usize) -> usize {
         let mut busy = lock(&self.busy);
         let taken = self.limit.saturating_sub(*busy).min(wanted);
         *busy += taken;
         taken
-    }
-
-    /// One more busy thread, once one is free.
-    fn acquire(&self) {
-        let mut busy = lock(&self.busy);
-        while *busy >= self.limit {
-            busy = self
-                .freed
-                .wait(busy)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-        *busy += 1;
     }
 
     fn give(&self, count: usize) {
@@ -774,465 +700,4 @@ pub(crate) fn ordered<T: Send, U: Send>(
             .count();
         drive(started);
     });
-}
-
-type Packed<R> = thread::Result<io::Result<R>>;
-
-struct Queue<J, R> {
-    waiting: VecDeque<(usize, J)>,
-    /// By submission, none until packed or after an earlier failure.
-    packed: Vec<Option<Packed<R>>>,
-    /// The first submission whose packing failed.
-    failed: Option<usize>,
-    closed: bool,
-}
-
-struct Pool<'a, J, R> {
-    cores: Cores,
-    queue: Mutex<Queue<J, R>>,
-    changed: Condvar,
-    pack: &'a (dyn Fn(J, &Cores) -> io::Result<R> + Sync),
-}
-
-impl<J, R> Pool<'_, J, R> {
-    fn wait<'g>(&self, queue: MutexGuard<'g, Queue<J, R>>) -> MutexGuard<'g, Queue<J, R>> {
-        self.changed
-            .wait(queue)
-            .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// One worker: pack waiting jobs until the queue closes empty.
-    fn work(&self) {
-        let mut queue = lock(&self.queue);
-        loop {
-            let Some((at, job)) = queue.waiting.pop_front() else {
-                if queue.closed {
-                    return;
-                }
-                queue = self.wait(queue);
-                continue;
-            };
-            self.changed.notify_all();
-            // A job after a failed one cannot change the result.
-            let skip = queue.failed.is_some_and(|failed| failed < at);
-            drop(queue);
-            let packed = (!skip).then(|| {
-                self.cores.acquire();
-                let packed =
-                    panic::catch_unwind(panic::AssertUnwindSafe(|| (self.pack)(job, &self.cores)));
-                self.cores.give(1);
-                packed
-            });
-            queue = lock(&self.queue);
-            if let Some(packed) = packed {
-                if !matches!(packed, Ok(Ok(_))) {
-                    queue.failed = Some(queue.failed.map_or(at, |failed| failed.min(at)));
-                }
-                queue.packed[at] = Some(packed);
-                self.changed.notify_all();
-            }
-        }
-    }
-}
-
-/// Where the writer hands its finished blocks.
-pub(crate) struct Packer<'a, J, R> {
-    pool: &'a Pool<'a, J, R>,
-    /// No worker started: pack on this thread, as the sequential writer.
-    inline: bool,
-}
-
-impl<'a, J, R> Packer<'a, J, R> {
-    /// The threads the writer may lend its own work to.
-    pub(crate) fn cores(&self) -> &'a Cores {
-        &self.pool.cores
-    }
-
-    /// Pack `job` after the jobs submitted before it. An error is the
-    /// sequential writer's when packing on this thread; otherwise it only
-    /// stops writing after an earlier job failed, and [`blocks`] returns
-    /// that job's error.
-    pub(crate) fn submit(&mut self, job: J) -> io::Result<()> {
-        refresh();
-        let pool = self.pool;
-        if self.inline {
-            let packed = (pool.pack)(job, &pool.cores)?;
-            lock(&pool.queue).packed.push(Some(Ok(Ok(packed))));
-            return Ok(());
-        }
-        let mut queue = lock(&pool.queue);
-        if queue.waiting.len() >= WAITING && queue.failed.is_none() {
-            // While it waits, this thread's core is free for the others.
-            pool.cores.give(1);
-            while queue.waiting.len() >= WAITING && queue.failed.is_none() {
-                queue = pool.wait(queue);
-            }
-            drop(queue);
-            pool.cores.acquire();
-            // Only workers took jobs or failed since.
-            queue = lock(&pool.queue);
-        }
-        if queue.failed.is_some() {
-            return Err(io::Error::other("an earlier block failed to pack"));
-        }
-        let at = queue.packed.len();
-        queue.packed.push(None);
-        queue.waiting.push_back((at, job));
-        pool.changed.notify_all();
-        Ok(())
-    }
-}
-
-impl<J, R> Drop for Packer<'_, J, R> {
-    fn drop(&mut self) {
-        lock(&self.pool.queue).closed = true;
-        self.pool.changed.notify_all();
-    }
-}
-
-/// `write` with a [`Packer`] that packs each submitted job with `pack` on up
-/// to `workers` threads, this one included, and the packed jobs in
-/// submission order. The result is the sequential writer's, which packs each
-/// job as it is submitted: the first failed job's error or panic, else
-/// `write`'s error or panic, since every job was submitted before it.
-pub(crate) fn blocks<J: Send, R: Send, P>(
-    workers: usize,
-    pack: impl Fn(J, &Cores) -> io::Result<R> + Sync,
-    write: impl FnOnce(&mut Packer<'_, J, R>) -> io::Result<P>,
-) -> io::Result<(P, Vec<R>)> {
-    let pool = Pool {
-        cores: Cores::new(workers),
-        queue: Mutex::new(Queue {
-            waiting: VecDeque::new(),
-            packed: Vec::new(),
-            failed: None,
-            closed: false,
-        }),
-        changed: Condvar::new(),
-        pack: &pack,
-    };
-    let written = if Packing::active() {
-        // Keep ordered block ownership here; only finite table/section work enters the pool.
-        let mut packer = Packer {
-            pool: &pool,
-            inline: true,
-        };
-        panic::catch_unwind(panic::AssertUnwindSafe(|| write(&mut packer)))
-    } else {
-        let progress = crate::progress::Progress::current();
-        thread::scope(|scope| {
-            let started = (1..workers)
-                .filter(|_| {
-                    let priority = job_priority::JobPriority::current();
-                    thread::Builder::new()
-                        .spawn_scoped(scope, || {
-                            let _progress =
-                                progress.clone().map(crate::progress::Progress::install);
-                            priority.enter(job_priority::Level::Normal);
-                            pool.work()
-                        })
-                        .is_ok()
-                })
-                .count();
-            let mut packer = Packer {
-                pool: &pool,
-                inline: started == 0,
-            };
-            // A job submitted before the writer panicked still fails first.
-            panic::catch_unwind(panic::AssertUnwindSafe(|| write(&mut packer)))
-        })
-    };
-    let queue = pool
-        .queue
-        .into_inner()
-        .unwrap_or_else(PoisonError::into_inner);
-    let mut packed = Vec::with_capacity(queue.packed.len());
-    for job in queue.packed {
-        match job.expect("a job is skipped only after an earlier one failed") {
-            Ok(Ok(job)) => packed.push(job),
-            Ok(Err(error)) => return Err(error),
-            Err(panic) => panic::resume_unwind(panic),
-        }
-    }
-    match written {
-        Ok(written) => Ok((written?, packed)),
-        Err(panic) => panic::resume_unwind(panic),
-    }
-}
-
-#[cfg(test)]
-#[path = "pack_tests.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "pack_fallback_tests.rs"]
-mod fallback_tests;
-
-#[cfg(test)]
-mod continuous_tests {
-    use super::*;
-
-    /// Packing threads and the coordinator wait for the game at their boundaries while
-    /// playing limits apply, and never once promoted.
-    #[test]
-    fn packing_waits_for_the_game_until_promoted() {
-        use std::sync::Arc;
-        let packing = Packing::with_workers(2).unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&calls);
-        packing.set_gate(move || {
-            counted.fetch_add(1, Ordering::SeqCst);
-        });
-        packing.run(refresh);
-        let gated = calls.load(Ordering::SeqCst);
-        assert!(gated >= 2, "run and its item boundary both wait");
-        packing.wait_for_game();
-        assert_eq!(calls.load(Ordering::SeqCst), gated + 1);
-        packing.run(crate::progress::Progress::completed);
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            gated + 3,
-            "each compressed or read chunk waits too"
-        );
-        packing.promote();
-        packing.run(refresh);
-        packing.run(crate::progress::Progress::completed);
-        packing.wait_for_game();
-        assert_eq!(calls.load(Ordering::SeqCst), gated + 3, "a promoted packing never waits");
-    }
-
-    #[test]
-    fn finalizer_chunk_progress_reaches_persistent_workers_and_is_removed_after_the_job() {
-        use std::sync::{Arc, atomic::AtomicU64};
-        let packing = Packing::with_workers(2).unwrap();
-        packing.promote();
-        let chunks = Arc::new(AtomicU64::new(0));
-        let observed = Arc::clone(&chunks);
-        let progress = crate::progress::Progress::new(move || {
-            observed.fetch_add(1, Ordering::Relaxed);
-        })
-        .install();
-        packing.run(|| {
-            packing
-                .pool
-                .broadcast(|_| crate::progress::Progress::completed());
-        });
-        let completed = chunks.load(Ordering::Relaxed);
-        assert_eq!(completed, packing.pool.current_num_threads() as u64);
-        drop(progress);
-        packing.run(|| {
-            packing
-                .pool
-                .broadcast(|_| crate::progress::Progress::completed())
-        });
-        assert_eq!(chunks.load(Ordering::Relaxed), completed);
-    }
-
-    #[test]
-    fn takeover_uses_the_same_persistent_pool_and_restores_the_caller() {
-        let packing = Packing::new().unwrap();
-        let before = packing.pool.broadcast(|_| std::thread::current().id());
-        packing.run(|| {
-            assert!(workers() <= 4);
-            let cores = Cores::new(workers());
-            assert_eq!(
-                each(&cores, (0..100).collect(), |at| Ok(at + 1)).unwrap(),
-                (1..=100).collect::<Vec<_>>()
-            );
-        });
-        assert!(!Packing::active());
-        packing.promote();
-        packing.run(|| {
-            assert_eq!(workers(), packing.budget.foreground);
-            let cores = Cores::new(workers());
-            assert_eq!(
-                each(&cores, (0..100).collect(), |at| Ok(at + 1))
-                    .unwrap()
-                    .len(),
-                100
-            );
-        });
-        assert_eq!(
-            before,
-            packing.pool.broadcast(|_| std::thread::current().id())
-        );
-        assert!(!Packing::active());
-    }
-
-    #[test]
-    fn stop_promotes_an_inflight_job_without_cancelling_or_resubmitting_it() {
-        use std::sync::{Arc, Barrier, mpsc};
-        let packing = Arc::new(Packing::new().unwrap());
-        let identities = packing.pool.broadcast(|_| std::thread::current().id());
-        let calls = Arc::new((0..20).map(|_| AtomicUsize::new(0)).collect::<Vec<_>>());
-        let release = Arc::new(Barrier::new(2));
-        let (started, waiting) = mpsc::channel();
-        let running = packing.clone();
-        let counts = calls.clone();
-        let blocked = release.clone();
-        let coordinator = thread::spawn(move || {
-            running.run(|| {
-                let cores = Cores::new(workers());
-                each(&cores, (0..20).collect(), |at| {
-                    counts[at].fetch_add(1, Ordering::Relaxed);
-                    if at == 0 {
-                        started.send(()).unwrap();
-                        blocked.wait();
-                    }
-                    Ok(at)
-                })
-                .unwrap()
-            })
-        });
-        waiting.recv().unwrap();
-        packing.promote();
-        release.wait();
-        assert_eq!(coordinator.join().unwrap(), (0..20).collect::<Vec<_>>());
-        assert!(calls.iter().all(|calls| calls.load(Ordering::Relaxed) == 1));
-        assert_eq!(
-            identities,
-            packing.pool.broadcast(|_| std::thread::current().id())
-        );
-        assert!(
-            packing
-                .pool
-                .broadcast(|_| !job_priority::is_background_thread())
-                .into_iter()
-                .all(|foreground| foreground)
-        );
-    }
-
-    #[test]
-    fn stop_promotes_readback_at_each_table_including_the_external_coordinator() {
-        use crate::container::{
-            Parallel, Replay,
-            tests::{CAMPAIGN, records},
-        };
-        use std::collections::HashMap;
-        use std::sync::{Arc, Barrier};
-        for requested in [1, 4] {
-            let replay = Replay::from_records(CAMPAIGN.into(), &[records(1, &[1, 2])]).unwrap();
-            let reference = Replay::open(replay.bytes().to_vec()).unwrap();
-            let expected = reference.read_block(&reference.index[0]).unwrap();
-            let packing = Arc::new(Packing::new().unwrap());
-            let count = requested.min(packing.budget.foreground).min(
-                crate::rows::TableId::ALL
-                    .len()
-                    .div_ceil(super::super::PARALLEL_FRAMES),
-            );
-            let arrived = Arc::new(Barrier::new(count + 1));
-            let release = Arc::new(Barrier::new(count + 1));
-            let resumed = Arc::new(Barrier::new(count));
-            let observations = Arc::new(Mutex::new(HashMap::<thread::ThreadId, Vec<bool>>::new()));
-            let seen = observations.clone();
-            let first = arrived.clone();
-            let blocked = release.clone();
-            let second = resumed.clone();
-            *lock(&packing.budget.readback_table) = Some(Arc::new(move || {
-                let turn = {
-                    let mut seen = lock(&seen);
-                    let states = seen.entry(thread::current().id()).or_default();
-                    states.push(job_priority::is_background_thread());
-                    states.len()
-                };
-                if turn == 1 {
-                    first.wait();
-                    blocked.wait();
-                } else if turn == 2 {
-                    second.wait();
-                }
-            }));
-            let running = packing.clone();
-            let coordinator = thread::spawn(move || {
-                let caller = thread::current().id();
-                let result = running.run(|| {
-                    replay
-                        .read_block_parallel(
-                            &replay.index[0],
-                            &Parallel {
-                                workers: count,
-                                on_worker: &|| {},
-                            },
-                        )
-                        .unwrap()
-                });
-                (caller, result)
-            });
-            arrived.wait();
-            packing.promote();
-            release.wait();
-            let (caller, result) = coordinator.join().unwrap();
-            assert_eq!(result, expected);
-            let observed = lock(&observations);
-            assert_eq!(observed.len(), count);
-            assert!(
-                observed.contains_key(&caller),
-                "the coordinator must process tables too"
-            );
-            assert!(observed.values().all(|states| states.len() >= 2
-                && states[0]
-                && states[1..].iter().all(|background| !background)));
-        }
-    }
-
-    #[test]
-    fn io_budget_charges_short_operations_once_and_not_failed_or_empty_operations() {
-        use io::{Read, Seek, Write};
-        struct Short(io::Cursor<Vec<u8>>);
-        impl Read for Short {
-            fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-                let length = bytes.len().min(2);
-                self.0.read(&mut bytes[..length])
-            }
-        }
-        impl Write for Short {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                if bytes == b"fail" {
-                    return Err(io::ErrorKind::PermissionDenied.into());
-                }
-                self.0.write(&bytes[..bytes.len().min(3)])
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        impl Seek for Short {
-            fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
-                self.0.seek(to)
-            }
-        }
-        let packing = Packing::new().unwrap();
-        packing.run(|| {
-            let mut file = Budgeted::new(Short(io::Cursor::new(Vec::new())));
-            file.write_all(b"1234567").unwrap();
-            assert_eq!(packing.io_bytes(), 7);
-            assert_eq!(
-                file.write(b"fail").unwrap_err().kind(),
-                io::ErrorKind::PermissionDenied
-            );
-            assert_eq!(packing.io_bytes(), 7);
-            file.seek(io::SeekFrom::Start(0)).unwrap();
-            let mut bytes = Vec::new();
-            file.read_to_end(&mut bytes).unwrap();
-            assert_eq!(bytes, b"1234567");
-            assert_eq!(packing.io_bytes(), 14);
-            assert_eq!(file.read(&mut []).unwrap(), 0);
-            assert_eq!(packing.io_bytes(), 14);
-        });
-    }
-
-    #[test]
-    fn phases_not_observed_are_not_zero_and_stop_does_not_reset_progress() {
-        let packing = Packing::new().unwrap();
-        assert_eq!(packing.timings(), [None; 5]);
-        packing.promote();
-        packing.run(|| {
-            let _phase = Packing::phase(Phase::Pack);
-        });
-        let timed = packing.timings();
-        assert!(timed[Phase::Pack as usize].is_some());
-        assert!(timed[Phase::Readback as usize].is_none());
-        packing.promote();
-        assert_eq!(packing.timings(), timed);
-    }
 }

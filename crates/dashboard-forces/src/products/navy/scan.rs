@@ -6,9 +6,9 @@ use dashboard_base::products::{
     force_census::{Countries, changed_ids},
 };
 use dashboard_text::metadata::{IdentityTrack, validate_campaign};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::ShipRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::ViewIdentity};
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 
 #[derive(Default)]
 struct Track {
@@ -725,14 +725,13 @@ pub(super) fn scan_with_decode(
                 let Some((_, frames)) = next else {
                     break;
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
                     decoding(true);
-                    let decoded = decoder.advance(&frame);
+                    let decoded = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded);
                     decoding(false);
                     let Ok(decoded) = decoded else {
                         break;

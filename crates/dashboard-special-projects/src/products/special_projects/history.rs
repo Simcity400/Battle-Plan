@@ -1,4 +1,5 @@
 //! Shared recorded inputs, independent of a country's reply and content folders.
+use replay_frame::frame::DecodedFrame;
 use super::*;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
@@ -7,12 +8,12 @@ use dashboard_text::triggers::inputs::{self as reuse, ReuseCounts, Since, TableC
 use dashboard_world::{Mark, Viewed};
 use replay_frame::frame::HourFrame;
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::CountryRow;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::RowCodec, rows::TableRows, rows::TableSchema};
 #[cfg(any(test, feature = "test-support"))]
-use replay_frame::{frame::FrameDecoder, frame::Metrics, frame::SharedView, frame::TableView};
+use replay_frame::{frame::Metrics, frame::SharedView, frame::TableView};
 use std::collections::{BTreeSet, HashMap};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -406,13 +407,12 @@ impl BranchScan {
                 for (_, frames) in blocks {
                     check_cancel(cancelled)?;
                     decoded_blocks += 1;
-                    let mut decoder = FrameDecoder::for_tables(&SELECTED);
                     let Ok(frames) = frames else {
                         continue;
                     };
                     for frame in frames {
                         check_cancel(cancelled)?;
-                        let Ok(frame) = decoder.advance(&frame) else {
+                        let Ok(frame) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                             break;
                         };
                         if validate_campaign(frame, replay).is_err() {
@@ -1025,13 +1025,12 @@ pub(super) fn scoped_names(
                 {
                     observer.names.decoded_blocks += 1;
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(frame) = decoder.advance(&frame) else {
+                    let Ok(frame) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(frame, replay).is_err() {

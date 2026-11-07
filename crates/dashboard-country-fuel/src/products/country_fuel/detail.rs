@@ -1,5 +1,6 @@
 //! A recipient's receipts over a window, from the applied days fuel's publication holds of
 //! the supplying reads. The test fixtures read the same days from the recording's rows.
+use replay_frame::frame::DecodedFrame;
 use super::*;
 
 /// Matches the existing production-detail window duration; not a roster cap.
@@ -87,13 +88,12 @@ fn scan_reads(
         |blocks| {
             for (_, frames) in blocks {
                 dashboard_text::metadata::check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     dashboard_text::metadata::check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

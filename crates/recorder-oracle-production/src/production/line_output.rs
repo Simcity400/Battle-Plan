@@ -62,16 +62,22 @@ pub fn compare_line_output(
     let mut census = census::CensusCheck::new(since);
     for block in blocks {
         // Every block starts with a keyframe.
-        let mut decoder = FrameDecoder::for_tables(&LINE_OUTPUT_TABLES);
-        for encoded in replay.read_block_selected(block, &LINE_OUTPUT_TABLES)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &LINE_OUTPUT_TABLES,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            let decoded = decoder.advance(&encoded)?;
+            let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
             if decoded.hour >= since {
                 census.observe(decoded, report)?;
             }
-        }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     census.finish(report);
     Ok(())
@@ -88,20 +94,26 @@ fn observation_start(replay: &Replay, frame: &DecodedFrame) -> io::Result<Option
         .collect::<Vec<_>>();
     blocks.sort_by_key(|block| std::cmp::Reverse(block.first_hour));
     for block in blocks {
-        let mut decoder = FrameDecoder::for_tables(&LINE_OUTPUT_TABLES);
         let mut since = None;
-        for encoded in replay.read_block_selected(block, &LINE_OUTPUT_TABLES)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &LINE_OUTPUT_TABLES,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            let decoded = decoder.advance(&encoded)?;
+            let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
             if let Some(row) = complete::<tables::ProductionLineOutput>(decoded)
                 .ok()
                 .and_then(|rows| rows.first())
             {
                 since = Some(row.since_hour);
             }
-        }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
         if since.is_some() {
             return Ok(since);
         }

@@ -153,7 +153,7 @@ use installed_content_gfx::gfx::SpriteSet;
 use observed::{BuildingLine, Buildings, Queue, RailwayLine};
 pub use output::{ConstructionOutputRead, SpendingGap};
 use output::{OutputScan, OutputUnknown};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{BuildingConstructionRow, TableId};
 #[cfg(test)]
 pub(crate) use row::{scan, scan_with_reads};

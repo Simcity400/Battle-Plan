@@ -30,13 +30,13 @@ use dashboard_text::metadata::{
     IdentityTrack, LinkTags, TaggedCountry, branch_bounds, link_slot, slot_read, tagged_countries,
     validate_campaign,
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::SunkConvoyRow, rows::SunkShipEntry,
     rows::TableId, rows::TableRows, rows::tables,
 };
 use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::TableView,
+    frame::DecodedFrame, frame::SharedView, frame::TableView,
     frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
@@ -1008,7 +1008,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
             let Ok(frames) = frames else {
                 continue;
             };
-            let mut decoder = FrameDecoder::for_tables(&selected);
             for frame in frames {
                 if cancelled.load(Ordering::Acquire) {
                     return Err(io::Error::new(
@@ -1016,7 +1015,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                         "Naval sinkings cancelled",
                     ));
                 }
-                let Ok(decoded) = decoder.advance(&frame) else {
+                let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                     break;
                 };
                 if validate_campaign(decoded, replay).is_err() {

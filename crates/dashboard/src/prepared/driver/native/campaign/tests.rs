@@ -5,7 +5,7 @@ use replay::{
         Damage, Recording, Segment, fixtures, schema,
         synthetic::{Input, Sample},
     },
-    container::Replay,
+    campaign::Replay,
     segments::State,
 };
 use replay_data::{

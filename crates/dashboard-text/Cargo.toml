@@ -75,9 +75,6 @@ installed-content-settings = { workspace = true, features = ["test-support"] }
 installed-content-state-categories = { workspace = true, features = ["test-support"] }
 installed-content-states = { workspace = true, features = ["test-support"] }
 installed-content-wargoals = { workspace = true, features = ["test-support"] }
-# Recording containers the metadata tests corrupt and re-checksum.
-crc32fast = "1"
-zstd = "0.13"
 dashboard-core = { workspace = true, features = ["test-support"] }
 # Folder layers, so tests load localisation files as the game content does.
 

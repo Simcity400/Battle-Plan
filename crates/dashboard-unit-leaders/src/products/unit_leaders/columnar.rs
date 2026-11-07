@@ -4,7 +4,7 @@ use dashboard_text::triggers::inputs::{TableChange, TableChanges};
 use dashboard_world::{Epochs, Needs, Viewed, World};
 use replay::{
     columns,
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink, Start, State},
 };
 use replay_data::{

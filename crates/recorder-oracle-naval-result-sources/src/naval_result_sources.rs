@@ -1,8 +1,8 @@
 //! Branch self-check: the save retains outcomes, never combat provenance.
 use super::{Report, complete};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{Hour, rows::NavalResultSourceRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::TableView};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -44,13 +44,19 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
         .collect();
     blocks.sort_by_key(|block| block.first_hour);
     for block in blocks {
-        let mut decoder = FrameDecoder::for_tables(&TABLES);
-        for encoded in replay.read_block_selected(block, &TABLES)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &TABLES,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            check.observe(decoder.advance(&encoded)?, report);
-        }
+            check.observe(Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?, report);
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     check.finish(report);
     Ok(())

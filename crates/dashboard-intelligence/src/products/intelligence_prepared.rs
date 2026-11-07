@@ -422,7 +422,7 @@ mod tests {
         prepared::{frame_changes::FrameChangeTracker, observer_tests, series::tests::Fixture},
         test_fixtures,
     };
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::{
         rows::CountryLinkRow, rows::CountryRow, rows::IntelligenceAgencyRow,
         rows::SimulationFeatureRow, rows::TableId, rows::TableRows,

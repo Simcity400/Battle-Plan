@@ -311,7 +311,7 @@ mod tests {
         CIVILIAN, building_at, building_line, construction_frame, railway_line, timed_scan,
     };
     use dashboard_core::test_fixtures::{CAMPAIGN, records};
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::{rows::ConstructionCompletion, rows::TableId, rows::TableRows};
     use replay_frame::frame::TableView;
     use std::sync::atomic::AtomicBool;

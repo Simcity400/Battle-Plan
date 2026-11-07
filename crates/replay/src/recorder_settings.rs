@@ -333,7 +333,11 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         drop(file);
-        crate::container::replace_file(&temporary, path)
+        #[cfg(windows)]
+        let replaced = crate::publication::replace_file(&temporary, path).map_err(io::Error::from);
+        #[cfg(not(windows))]
+        let replaced = fs::rename(&temporary, path);
+        replaced
     })();
     let _ = fs::remove_file(&temporary);
     result

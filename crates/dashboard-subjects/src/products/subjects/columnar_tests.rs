@@ -22,7 +22,7 @@ use dashboard_series::{
 };
 use replay::{
     columnar_frames::synthetic::{Input as Written, Sample, Synthetic},
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator},
 };
 use replay_data::{

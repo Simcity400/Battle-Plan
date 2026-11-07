@@ -1,5 +1,6 @@
-//! Compressed recording containers, spool I/O and durable publication.
+//! Campaign recordings, spool I/O and durable publication.
 
+pub mod campaign;
 pub mod columnar_blocks;
 pub mod columnar_capture;
 pub mod columnar_file;
@@ -9,9 +10,9 @@ pub mod columnar_runs;
 pub mod columns;
 pub mod commands;
 pub mod compression;
-pub mod container;
 pub mod native_columns;
 pub mod native_frame;
+pub mod packing;
 pub mod progress;
 #[cfg(windows)]
 pub mod publication;
@@ -21,10 +22,6 @@ pub mod recording_files;
 pub mod segments;
 pub mod spool;
 
-use replay_data::{BranchId, FORMAT_VERSION, Hour, SessionId, codec, format, identity, scope};
-#[cfg(test)]
-use replay_data::{cadence, event_feed_rows, value};
-use replay_frame::{KEYFRAME_INTERVAL, branches, cpu, frame, rows};
+use replay_data::{BranchId, Hour, SessionId, codec, format, identity, scope};
+use replay_frame::{branches, frame, rows};
 
-#[cfg(test)]
-mod acceptance;

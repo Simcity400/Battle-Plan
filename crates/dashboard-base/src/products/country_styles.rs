@@ -10,7 +10,7 @@ use super::{ContentOptions, LoadContext, Product, recorded_rows, validate_tag};
 use crate::{Source, catalogue::plain_text, content, invalid};
 use installed_content_country_names::country_names::{CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

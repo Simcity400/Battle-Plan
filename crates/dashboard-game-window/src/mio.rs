@@ -39,7 +39,7 @@ use dashboard_base::{
     catalogue::Catalogue,
     metadata::check_cancel,
     products::industrial_organisations::{
-        PolicyCost, affordable, both, owner_country, owner_roster, policy_cost, shows_attach_cost,
+        PolicyCost, affordable, owner_country, owner_roster, policy_cost, shows_attach_cost,
     },
 };
 use dashboard_text::{
@@ -50,7 +50,7 @@ use installed_content_core::{
     ResolvedLayers, industrial_organisations::policies::Catalog as Policies, parser::Item,
 };
 use installed_content_localisation::localisation::{Argument, Localisation};
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{
     IndustrialOrganisationDetailsRow, IndustrialOrganisationPolicy, IndustrialOrganisationRow,
     TableId, tables,
@@ -1116,6 +1116,7 @@ fn slot(name: &str, state: SlotState, detail: Option<String>) -> WindowSlot {
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+    use dashboard_base::products::industrial_organisations::both;
     use replay_data::rows::{
         CountryLinkRow, CountryRow, IndustrialOrganisationDetailsRow,
         IndustrialOrganisationPoliciesRow, IndustrialOrganisationRow, LexicalTokenRow, TableRows,

@@ -22,7 +22,7 @@ use dashboard_world::{Mark, Viewed};
 use installed_content_core::faction_templates::Catalog;
 use installed_content_country_names::{country_names, country_names::CountryNames};
 use installed_content_localisation::localisation::Localisation;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     BranchId, format::FormatVersion, rows::AirBaseRegistrationRow,
     rows::AirWingGameScoreStatsRow, rows::CountryAppearanceRow, rows::CountryFactoriesRow,
@@ -31,7 +31,7 @@ use replay_data::{
     rows::TableId, rows::TableSchema, rows::mask, rows::tables,
 };
 use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::HourFrame, frame::OperandStatus,
+    frame::DecodedFrame, frame::HourFrame, frame::OperandStatus,
     frame::Rowset, frame::SharedView, frame::TableView,
 };
 use serde::{Deserialize, Serialize};
@@ -1229,7 +1229,6 @@ fn scan(
         |blocks| {
             for (_, frames) in blocks {
                 metadata::check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(selected);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(error) => {
@@ -1246,7 +1245,7 @@ fn scan(
                     if cancelled.load(Ordering::Acquire) {
                         return Err(dashboard_core::invalid("game_score request cancelled"));
                     }
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(decoded) => decoded,
                         Err(error) => {
                             *warnings

@@ -5,7 +5,7 @@
 //! workers and its pipeline folds each family's facts in block order.
 
 use super::frame_changes::FrameChanges;
-use replay::{container::QuietHours, container::Replay, container::TableFields};
+use replay::{campaign::QuietHours, campaign::Replay, campaign::TableFields};
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{any::Any, io, ops::Range};
@@ -271,7 +271,7 @@ pub struct Failure {
 #[cfg(any(test, feature = "test-support"))]
 pub fn extract_alone(
     replay: &Replay,
-    index: &replay::container::BlockIndex,
+    index: &replay::campaign::BlockIndex,
     family: &Family,
 ) -> io::Result<Box<dyn Any + Send>> {
     let mut tables = family.tables.to_vec();
@@ -283,7 +283,7 @@ pub fn extract_alone(
         index,
         &tables,
         |raw, frame| {
-            let changes = tracker.observe_updates(frame, std::sync::Arc::new(raw), replay.format);
+            let changes = tracker.observe_updates(frame, std::sync::Arc::new(raw.clone()), replay.format);
             extract.observe(replay, frame, &changes)
         },
         || Ok(()),

@@ -1,16 +1,13 @@
-//! A recording's change-run index ([`replay::columnar_runs`]), prepared from its native columnar
-//! recordings, one per capture, in a folder of its prepared store's, which Clear removes with
-//! the store: the viewer's map reads its hours from it in place of walking the recording, and
-//! an hour's product reader the tables its row frames leave to the native capture
+//! A recording's change-run index ([`replay::columnar_runs`]), prepared from its runs, in a
+//! folder of its prepared store's, which Clear removes with the store: the viewer's map and an
+//! hour's product reader read any hour's tables from it in place of walking the recording
 //! ([`dashboard_base::prepared::query::native`]).
 
 use crate::Source;
 use engine_allocation::labels::{self, Kind, Owner};
 use replay::{
-    columnar_file,
     columnar_frames::Recording,
     columnar_runs::{self, IndexFile, Layout},
-    container::Replay,
     segments::{self, Lane},
 };
 use replay_data::rows::TableId;
@@ -73,104 +70,14 @@ fn refusal(source: &Source) -> io::Result<Option<String>> {
     }
 }
 
-/// The native columnar recordings of `campaign` published beside the replay at `path`, in the
-/// campaign's folder there ([`columnar_file::campaign_folder`]), by session dir and then
-/// capture: every capture of the campaign, whichever of its replays holds the session.
-pub fn native_files(path: &Path, campaign: &[u8]) -> io::Result<Vec<PathBuf>> {
-    let folder = match path.parent() {
-        Some(folder) if !folder.as_os_str().is_empty() => folder,
-        _ => Path::new("."),
-    };
-    let folder = columnar_file::campaign_folder(folder, campaign);
-    // A campaign with none published has no folder.
-    let entries = match fs::read_dir(&folder) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error),
-    };
-    let mut files = Vec::new();
-    for entry in entries {
-        let entry = entry?;
-        let name = entry.file_name();
-        if let Some((session, capture)) = columnar_file::published_of(&name) {
-            files.push((session.to_owned(), capture, entry.path()));
-        }
-    }
-    files.sort_unstable();
-    Ok(files.into_iter().map(|(_, _, path)| path).collect())
-}
-
-/// A stamp of the native recordings of the replay at `path` ([`native_files`] of the campaign
-/// its header names): each one's name, length and last write, so one landing, replaced or gone
-/// changes it. Empty with none, as for a replay whose header names no campaign.
-pub fn native_revision(path: &Path) -> io::Result<String> {
-    let campaign = match Replay::read_campaign_id(&mut File::open(path)?) {
-        Ok(campaign) => campaign,
-        Err(error)
-            if matches!(
-                error.kind(),
-                io::ErrorKind::InvalidData | io::ErrorKind::UnexpectedEof
-            ) =>
-        {
-            return Ok(String::new());
-        }
-        Err(error) => return Err(error),
-    };
-    let mut stamp = String::new();
-    for file in native_files(path, &campaign)? {
-        let revision = match crate::protocol::replay_revision(&file) {
-            Ok(revision) => revision,
-            // Gone since its folder was read.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error),
-        };
-        let name = file.file_name().unwrap_or_default().to_string_lossy();
-        stamp.push_str(&format!("{}:{name}:{revision}\n", name.len()));
-    }
-    Ok(stamp)
-}
-
-/// `source`'s native columnar recordings as its index holds them ([`columnar_runs::whole`]),
-/// none or not: one of another campaign, or holding no hour the replay records, is another
-/// recording's or one whose save has not landed ([`records_any`]); any other must be one
-/// session's, read whole, and together they must hold every hour the replay records of its
-/// ended sessions. Why not, naming the file, the session or the hours at fault.
+/// `source`'s recording as its index holds it ([`columnar_runs::whole`]), or why it is refused:
+/// one that cannot be read whole.
 pub fn natives(source: &Source) -> io::Result<Result<columnar_runs::Whole, String>> {
     let replay = source.replay();
-    let mut found = Vec::new();
-    for file in native_files(source.path(), &replay.campaign_id)? {
-        let name = file.display().to_string();
-        let recording = match Recording::open_path(&file) {
-            Ok(recording) => recording,
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                return Ok(Err(format!("{name} cannot be read: {error}")));
-            }
-            Err(error) => return Err(error),
-        };
-        if recording.campaign() != replay.campaign_id {
-            continue;
-        }
-        // One that cannot be read whole is the replay's to refuse by name.
-        let foreign = columnar_runs::recorded_runs(&recording)?
-            .is_some_and(|runs| !runs.is_empty() && !records_any(&replay, &runs));
-        if !foreign {
-            found.push((name, recording));
-        }
+    if let Some(damage) = replay.recording().damage().first() {
+        return Ok(Err(format!("The recording cannot be read whole: {damage}")));
     }
-    columnar_runs::whole(found, &replay)
-}
-
-/// Whether `replay` records an hour of any of `runs` (branch, first hour, ordinals): a capture
-/// holding none, even of a branch it holds, is one a save has not added to it yet.
-fn records_any(replay: &Replay, runs: &[(u64, i32, u32)]) -> bool {
-    runs.iter().any(|&(branch, first, ordinals)| {
-        let (first, last) = (i64::from(first), i64::from(first) + i64::from(ordinals) - 1);
-        replay.index.iter().any(|block| {
-            block.branch == branch
-                && i64::from(block.first_hour) <= last
-                && i64::from(block.last_hour) >= first
-        })
-    })
+    Ok(Ok(columnar_runs::whole(&replay)?))
 }
 
 /// What `source`'s last index preparation left, against its native recordings as they are now.
@@ -189,9 +96,8 @@ pub enum Outcome {
 pub fn outcome(source: &Source) -> io::Result<Outcome> {
     Ok(match natives(source)? {
         Ok(whole)
-            if IndexFile::summary_of(path(source)?).is_ok_and(|summary| {
-                summary.indexes(&whole.recordings, &whole.pending, tables())
-            }) =>
+            if IndexFile::summary_of(path(source)?)
+                .is_ok_and(|summary| summary.indexes(&whole.recordings, tables())) =>
         {
             Outcome::Indexed
         }
@@ -355,7 +261,7 @@ pub fn plan(source: &Source) -> io::Result<Plan> {
     };
     remove(&refused)?;
     if IndexFile::summary_of(&target)
-        .is_ok_and(|summary| summary.indexes(&whole.recordings, &whole.pending, tables()))
+        .is_ok_and(|summary| summary.indexes(&whole.recordings, tables()))
     {
         return Ok(Plan::Current);
     }

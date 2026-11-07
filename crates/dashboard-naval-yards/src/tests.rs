@@ -211,7 +211,7 @@ fn values<V: View>(frame: &DecodedFrame) -> BTreeMap<String, i128> {
     named(frame, V::REFITS).0
 }
 fn source(frames: Vec<DecodedFrame>) -> dashboard_base::Source {
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         test_fixtures::CAMPAIGN.into(),
         &[test_fixtures::records(1, frames)],
     )

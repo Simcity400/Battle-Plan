@@ -1,7 +1,7 @@
 use crate::{Observer, Scan, Values, countries::Countries, query};
 use dashboard_base::prepared::prepass::Family;
 use dashboard_base::test_fixtures::world_frame;
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{NavalRegionalMineRow, TableId, TableRows, tables},

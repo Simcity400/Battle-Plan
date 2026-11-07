@@ -2,7 +2,7 @@ use crate::{
     products::Product,
     test_fixtures::{CAMPAIGN, continuation_records, ownership_frame, records},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{

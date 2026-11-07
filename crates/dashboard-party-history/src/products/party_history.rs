@@ -25,6 +25,7 @@
 //! Prepared as the `parties` series family ([`facts`], [`emit`]) and answered from its
 //! publication ([`query`]); the row scan below is kept as its oracle.
 
+use replay_frame::frame::DecodedFrame;
 use dashboard_base::{
     Source,
     catalogue::View,
@@ -43,11 +44,11 @@ use dashboard_text::{
     metadata::{CountryKeys, link_slot, tagged_countries},
 };
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::TableId, rows::tables};
 #[cfg(any(test, feature = "test-support"))]
-use replay_frame::{frame::FrameDecoder, frame::ViewIdentity};
+use replay_frame::frame::ViewIdentity;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
@@ -1293,7 +1294,6 @@ pub fn scan_selected(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -1301,7 +1301,7 @@ pub fn scan_selected(
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

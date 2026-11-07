@@ -23,7 +23,7 @@ use dashboard_text::{
     catalogue::plain_text,
     metadata::{IdentityTrack, link_slot},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::IntelligenceAgencyRow, rows::OperativeMembershipRow, rows::TableId, rows::tables,
 };
@@ -40,8 +40,6 @@ use ts_rs::TS;
 
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 
 pub mod prepared;
 
@@ -2656,12 +2654,7 @@ mod tests {
         let replay =
             Replay::from_records(CAMPAIGN.into(), &[records(1, vec![source(1, 16, Some(1))])])
                 .unwrap();
-        let mut bytes = replay.bytes().to_vec();
-        let block = &replay.index[0];
-        // The directory CRC guards every section; a damaged last byte only
-        // fails the section it lands in, which need not be one this scan reads.
-        bytes[(block.offset + 4) as usize] ^= 0x40;
-        let damaged = Replay::open(bytes).unwrap();
+        let damaged = Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap();
         let scanned = scan(&damaged, 1, &AtomicBool::new(false)).unwrap();
         assert!(!scanned.available);
         assert!(scanned.observed.is_empty());

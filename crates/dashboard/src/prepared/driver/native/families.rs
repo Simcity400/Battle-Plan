@@ -87,7 +87,7 @@ use dashboard_text::{
 use dashboard_unit_leaders::products::unit_leaders;
 use dashboard_world_tension::products::world_tension;
 use dashboard_world::Needs;
-use replay::{columnar_frames::Segment, container::Replay};
+use replay::{columnar_frames::Segment, campaign::Replay};
 use replay_data::{format::FormatVersion, rows::TableId};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{

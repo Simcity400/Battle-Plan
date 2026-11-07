@@ -3,7 +3,7 @@ use super::*;
 use crate::shared;
 use dashboard_base::prepared::{frame_changes::FrameChanges, prepass::Family};
 use dashboard_keyed::countries::Countries;
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::rows::{NavalRegionalMineRow, RowCodec, TableSchema};
 use replay_derive::naval_mine_levels::Levels;
 use serde::{Deserialize, Serialize};

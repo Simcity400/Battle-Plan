@@ -1,4 +1,4 @@
-//! Upgrades recordings to the current format, keeping each original.
+//! Upgrades recordings to the current format, each in place as a revision of its own.
 //!
 //!     recording-upgrade --game <folder> [--game <folder>]... --user <folder> [--cache <folder>] <recording or folder>...
 
@@ -37,12 +37,8 @@ fn main() {
             Ok(recording_upgrade::Outcome::Current) => {
                 println!("{}: current", recording.display())
             }
-            Ok(recording_upgrade::Outcome::Upgraded { original, steps }) => {
-                println!(
-                    "{}: upgraded (original kept at {})",
-                    recording.display(),
-                    original.display()
-                );
+            Ok(recording_upgrade::Outcome::Upgraded { steps }) => {
+                println!("{}: upgraded", recording.display());
                 for step in steps {
                     println!("  {step}");
                 }

@@ -501,7 +501,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
     };
     session.identity = identity;
     let replay =
-        replay::container::Replay::from_records(test_fixtures::CAMPAIGN.into(), &[records])
+        replay::campaign::Replay::from_records(test_fixtures::CAMPAIGN.into(), &[records])
             .unwrap();
     let source = Source::from_replay(
         dashboard_base::SourceKey {

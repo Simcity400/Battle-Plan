@@ -6,7 +6,7 @@ use dashboard_base::{
     test_fixtures::{CAMPAIGN, continuation_records, records, scale_frame, scale_tag},
 };
 use dashboard_core::config::LoadContext;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::*;
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{

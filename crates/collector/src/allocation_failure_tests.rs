@@ -384,7 +384,7 @@ fn set_aside_witness() -> io::Result<()> {
         .replays
         .iter()
         .find_map(|path| {
-            let replay = replay::container::Replay::open_path(path).unwrap();
+            let replay = replay::campaign::Replay::open_path(path).unwrap();
             (replay.campaign_id.as_slice() == CAMPAIGN).then_some(replay)
         })
         .unwrap();

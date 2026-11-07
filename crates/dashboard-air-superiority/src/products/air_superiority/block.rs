@@ -57,7 +57,7 @@ use dashboard_base::{
 };
 use dashboard_text::metadata::CountryKeys;
 use replay::{
-    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
+    campaign::BlockIndex, campaign::QuietHours, campaign::Replay, campaign::TableFields,
 };
 use replay_data::{
     format::FormatVersion, rows::AirWingRow, rows::CountryRow, rows::TableId, rows::TableRows,

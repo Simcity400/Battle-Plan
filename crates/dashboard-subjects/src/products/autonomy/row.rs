@@ -4,9 +4,9 @@
 use super::{AutonomyParams, AutonomyReply, AutonomyRun, ScannedAutonomy, mark};
 use dashboard_base::{Source, products::LoadContext};
 use dashboard_text::metadata::{link_slots, validate_campaign};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io,
@@ -244,7 +244,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(TABLES);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -252,7 +251,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

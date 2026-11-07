@@ -11,13 +11,13 @@ use std::{
     },
 };
 
-use replay::{columnar_frames::Recording, container::Replay};
+use replay::{campaign::BlockIndex, campaign::Replay, columnar_frames::Recording};
 use replay_data::{
     BranchId, format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::TableId,
     rows::tables,
 };
 use replay_frame::{
-    branches::BranchStart, branches::Parentage, frame::DecodedFrame, frame::FrameDecoder,
+    branches::BranchStart, branches::Parentage, frame::DecodedFrame, 
     frame::Metrics, frame::TableView, frame::ViewIdentity,
 };
 
@@ -222,19 +222,19 @@ pub fn read_resident(
     path: &Path,
     cancelled: &AtomicBool,
 ) -> io::Result<ResidentMetadata> {
-    read_from(replay, path, cancelled, None, 0)
+    read_from(replay, path, cancelled, None, &|_| false)
 }
 
-/// Refresh trailer metadata and catalogue only branches introduced after the
-/// accepted index prefix. Previously observed catalogues do not reread frames.
+/// Refresh the recording's metadata and catalogue only from the blocks not `read` before.
+/// Previously observed catalogues do not reread hours.
 pub fn read_append(
     replay: &Arc<Replay>,
     path: &Path,
     cancelled: &AtomicBool,
     previous: &ResidentMetadata,
-    first_new_block: usize,
+    read: &dyn Fn(&BlockIndex) -> bool,
 ) -> io::Result<ResidentMetadata> {
-    read_from(replay, path, cancelled, Some(previous), first_new_block)
+    read_from(replay, path, cancelled, Some(previous), read)
 }
 
 fn read_from(
@@ -242,7 +242,7 @@ fn read_from(
     path: &Path,
     cancelled: &AtomicBool,
     previous: Option<&ResidentMetadata>,
-    first_new_block: usize,
+    read_before: &dyn Fn(&BlockIndex) -> bool,
 ) -> io::Result<ResidentMetadata> {
     check_cancel(cancelled)?;
     let branches = read_branches(replay, cancelled)?;
@@ -342,18 +342,15 @@ fn read_from(
         for block in replay
             .index
             .iter()
-            .skip(first_new_block)
-            .filter(|block| block.branch == branch.id)
+            .filter(|block| block.branch == branch.id && !read_before(block))
         {
             check_cancel(cancelled)?;
             let mut catalogue = Catalogue::default();
             let mut player_country_id = None;
             let mut observed = None;
             // Only the tables the catalogue reads, up to its first complete country table.
-            let mut decoder = FrameDecoder::for_tables(&CATALOGUE_TABLES);
-            let read = replay.visit_block(block, Some(&CATALOGUE_TABLES), |frame| {
+            let read = replay.visit_blocks(&[block], &CATALOGUE_TABLES, None, |_, _, decoded| {
                 check_cancel(cancelled)?;
-                let decoded = decoder.advance(&frame)?;
                 validate_campaign(decoded, replay)?;
                 let (rows, links) = match country_tables(decoded) {
                     Ok(tables) => tables,
@@ -362,11 +359,11 @@ fn read_from(
                     }
                     Err(_) => return Ok(true),
                 };
-                catalogue.observe(rows, links, branch.id, frame.hour)?;
+                catalogue.observe(rows, links, branch.id, decoded.hour)?;
                 player_country_id = player_slot(decoded, links)?.map(|slot| slot.to_string());
-                observed = Some(frame.hour);
+                observed = Some(decoded.hour);
                 Ok(false)
-            });
+            }, || Ok(()));
             if let Err(error) = read {
                 check_cancel(cancelled)?;
                 if engine_allocation::is_allocation_error(&error) {

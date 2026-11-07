@@ -13,11 +13,11 @@ use job_priority::SpawnCarried as _;
 use super::{Arg, Context, line};
 use replay::{
     columnar_runs::{IndexFile, Snapshots},
-    container::Replay,
+    campaign::Replay,
 };
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_derive::air_region_derive as derive;
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, HashSet},
     sync::{
@@ -181,28 +181,20 @@ impl Samples {
         };
         self.blocks.fetch_add(1, Ordering::AcqRel);
         let tables = [TableId::AirDailyRoster, TableId::CountryLinks];
-        let frames = match self.replay.read_block_selected(index, &tables) {
-            Ok(frames) => frames,
-            Err(error) => {
-                out.insert(hour, Err(format!("hour {hour} is unreadable: {error}")));
-                return out;
-            }
-        };
-        let mut decoder = FrameDecoder::for_tables(&tables);
-        for frame in frames {
-            let at = frame.hour;
-            let decoded = match decoder.advance(&frame) {
-                Ok(decoded) => decoded,
-                Err(error) => {
-                    out.insert(at, Err(format!("hour {at} is unreadable: {error}")));
-                    break;
+        let read = self.replay.read_block_alone(
+            index,
+            &tables,
+            |_, decoded| {
+                let at = decoded.hour;
+                if matches!(at.rem_euclid(derive::DAY), 0 | 23) {
+                    out.insert(at, self.roster(decoded));
                 }
-            };
-            if !matches!(at.rem_euclid(derive::DAY), 0 | 23) {
-                continue;
-            }
-            let roster = self.roster(decoded);
-            out.insert(at, roster);
+                Ok(())
+            },
+            || Ok(()),
+        );
+        if let Err(error) = read {
+            out.insert(hour, Err(format!("hour {hour} is unreadable: {error}")));
         }
         out
     }

@@ -26,7 +26,7 @@ fn compatibility_real_g2_product_impact() {
     .unwrap();
     let replay = source.replay();
     assert_eq!(replay.format.version(), 94);
-    let replay::container::SeekResult::Frame(frame) = replay.seek(2, 60827796).unwrap() else {
+    let replay::campaign::SeekResult::Frame(frame) = replay.seek(2, 60827796).unwrap() else {
         panic!("missing G2 comparison hour")
     };
     let countries = frame

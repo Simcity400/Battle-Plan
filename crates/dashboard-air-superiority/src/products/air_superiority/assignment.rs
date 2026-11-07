@@ -1344,7 +1344,7 @@ mod tests {
     #[test]
     fn membership_changes_are_applied_at_the_requested_hour() {
         use dashboard_core::test_fixtures::{CAMPAIGN, ownership_frame, records};
-        use replay::container::Replay;
+        use replay::campaign::Replay;
         use replay_data::{rows::TableId, rows::TableRows};
         use replay_frame::frame::TableView;
         use std::sync::atomic::AtomicBool;
@@ -1393,7 +1393,7 @@ mod tests {
     #[test]
     fn dissolved_faction_cannot_use_held_member_rows_as_an_air_side() {
         use dashboard_core::test_fixtures::{CAMPAIGN, ownership_frame, records};
-        use replay::container::Replay;
+        use replay::campaign::Replay;
         use replay_data::{
             rows::FactionMemberRow, rows::FactionRow, rows::TableId, rows::TableRows,
         };

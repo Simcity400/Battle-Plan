@@ -1,5 +1,5 @@
 use dashboard_base::test_fixtures::{CAMPAIGN, records, stability_frame, stability_inputs};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::sync::{Arc, atomic::AtomicBool};

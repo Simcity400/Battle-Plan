@@ -5,7 +5,7 @@ use dashboard_base::{
     products::{LoadContext, Product, check_reply_budget, validate_tag},
 };
 use dashboard_text::metadata::{TaggedCountry, tagged_country};
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

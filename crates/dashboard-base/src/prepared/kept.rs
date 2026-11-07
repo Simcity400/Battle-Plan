@@ -6,7 +6,7 @@
 //! history).
 
 use crate::prepared::frame_changes::{FrameChangeTracker, FrameChanges};
-use replay::{container::BlockIndex, container::QuietHours, container::Replay};
+use replay::{campaign::BlockIndex, campaign::QuietHours, campaign::Replay};
 use replay_data::{rows::CountryRow, rows::TableId, rows::TableRows, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::SharedView, frame::TableView, frame::ViewIdentity};
 use std::{io, ops::Range, sync::Arc};
@@ -244,7 +244,7 @@ pub fn observe_hours(
         tables,
         |raw, frame| {
             let _cpu = ::replay_frame::cpu::scope("fold driver", None);
-            let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+            let facts = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
             if stopped || from.is_some_and(|from| frame.hour < from) {
                 return Ok(());
             }

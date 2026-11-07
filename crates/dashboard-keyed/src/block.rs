@@ -24,7 +24,7 @@ use dashboard_base::prepared::{
     prepass::{Extract, Family, Folded},
 };
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::{BlockIndex, QuietHours, Replay};
+use replay::campaign::{BlockIndex, QuietHours, Replay};
 use replay_data::format::FormatVersion;
 use replay_frame::frame::DecodedFrame;
 #[cfg(any(test, feature = "test-support"))]

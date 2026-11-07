@@ -16,7 +16,7 @@ use super::{
     windows,
 };
 use dashboard_text::catalogue::Catalogue;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{format::FormatVersion, rows::LandCombatSideRow};
 use serde::{Deserialize, Serialize};
 use std::{

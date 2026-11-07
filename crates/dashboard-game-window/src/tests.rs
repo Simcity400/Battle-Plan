@@ -1070,7 +1070,7 @@ fn a_request_of_replaced_folders_never_retires_the_new_folders_session() {
         },
         "memory.battleplan".into(),
         std::sync::Arc::new(
-            replay::container::Replay::from_records(
+            replay::campaign::Replay::from_records(
                 CAMPAIGN.into(),
                 &[records(1, vec![frame(1, 100, Some(1))])],
             )

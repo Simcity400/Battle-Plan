@@ -12,7 +12,7 @@ use dashboard_keyed::{
     countries::Countries,
     segment::{Reader, Segmented, Touched},
 };
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{AirStatisticsRow, TableId},

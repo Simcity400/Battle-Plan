@@ -56,7 +56,7 @@ use dashboard_text::{
     scripted_text::ScriptedContent,
     triggers::{Eval, Evaluator, LeaderVisibility, World, core_gap, world::core_gap_in},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     format::FormatVersion, rows::CharacterPortraitRow, rows::CharacterRow, rows::CountryRow,
     rows::LandCombatDetailsRow, rows::LexicalTokenRow, rows::NavalCombatDetailsRow, rows::Recorded,
@@ -64,7 +64,7 @@ use replay_data::{
     rows::RowCodec, rows::UnitLeaderTraitRow, rows::full_mask, rows::tables,
 };
 use dashboard_world::{Mark as TableMark, Viewed};
-use replay_frame::frame::{DecodedFrame, FrameDecoder, HourFrame, Rowset};
+use replay_frame::frame::{DecodedFrame, HourFrame, Rowset};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -4649,7 +4649,6 @@ fn scan(
                         continue;
                     }
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
                     if cancelled.load(Ordering::Acquire) {
                         return Err(io::Error::new(
@@ -4657,7 +4656,7 @@ fn scan(
                             "Leader request cancelled",
                         ));
                     }
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(frame) => frame,
                         Err(e) => {
                             scan.refusals.note(e.to_string(), frame.hour.to_string());

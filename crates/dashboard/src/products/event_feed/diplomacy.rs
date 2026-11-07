@@ -8,7 +8,7 @@ use crate::{
     products::country_groups,
 };
 #[cfg(test)]
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryRow, rows::RelationTupleRow, rows::SliceReadRow,
     rows::TableId, rows::tables,
@@ -398,7 +398,6 @@ pub(super) fn scan(
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     observer.since = None;
                     out.refuse(
@@ -410,7 +409,7 @@ pub(super) fn scan(
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         observer.since = None;
                         out.refuse(
                             "diplomacyFrame",

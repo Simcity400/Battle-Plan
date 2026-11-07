@@ -1,17 +1,16 @@
-//! Whole-branch scans with their blocks read ahead: while a scan works on one block,
-//! the next few are inflated and decoded on spare cores, and every block still
-//! reaches the scan in the order it was given. Reads from every scan share one core
-//! budget, so scans running together never oversubscribe the machine. A scan keeping
-//! most tables reads one block at a time: its blocks are nearly whole raw blocks.
+//! Whole-branch scans with their hours read ahead: while a scan works on one hour, a walk on a
+//! thread of its own builds the next ones, and every block still reaches the scan in the order
+//! it was given. Reads from every scan share one core budget, so scans running together never
+//! oversubscribe the machine.
 
 use job_priority::SpawnCarried as _;
-use replay::{container::BlockIndex, container::Replay};
-use replay_data::rows::TABLE_COUNT;
+use replay::{campaign::BlockIndex, campaign::Replay};
+use replay_frame::frame::DecodedFrame;
+use std::{cell::RefCell, rc::Rc, sync::mpsc};
 use replay_data::rows::TableId;
 use replay_frame::frame::RecordedFrame;
 use std::{
     io,
-    marker::PhantomData,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Condvar, Mutex, MutexGuard, OnceLock,
@@ -20,8 +19,6 @@ use std::{
     thread,
 };
 
-/// Blocks a scan may have read ahead of the one it is working on.
-const AHEAD: usize = 8;
 
 #[cfg(any(test, feature = "test-support"))]
 thread_local! {
@@ -30,104 +27,268 @@ thread_local! {
     };
 }
 
-/// One block as a scan receives it: what [`Replay::read_block_selected`] returned.
-pub type BlockRead<'a> = (&'a BlockIndex, io::Result<Vec<RecordedFrame>>);
-
-/// The tables a scan reads from each block: one list for every block, or [`PerBlock`].
-pub trait BlockTables: Sync {
-    fn of(&self, block: &BlockIndex) -> &[TableId];
+/// One hour a scan receives: its recorded facts, as the row recording shaped them, and the
+/// frame built from them, `decoded`.
+pub struct ScanHour {
+    pub recorded: RecordedFrame,
+    pub decoded: DecodedFrame,
 }
 
-impl BlockTables for [TableId] {
-    fn of(&self, _: &BlockIndex) -> &[TableId] {
-        self
+impl std::ops::Deref for ScanHour {
+    type Target = RecordedFrame;
+
+    fn deref(&self) -> &RecordedFrame {
+        &self.recorded
     }
 }
 
-impl<const N: usize> BlockTables for [TableId; N] {
-    fn of(&self, _: &BlockIndex) -> &[TableId] {
-        self
+impl replay_frame::frame::FrameSource for ScanHour {
+    fn branch(&self) -> replay_data::BranchId {
+        self.recorded.branch()
+    }
+    fn hour(&self) -> replay_data::Hour {
+        self.recorded.hour()
+    }
+    fn keyframe(&self) -> bool {
+        self.recorded.keyframe()
+    }
+    fn metrics(&self) -> &replay_frame::frame::Metrics {
+        self.recorded.metrics()
+    }
+    fn update(&self, index: usize) -> &replay_frame::frame::TableUpdate {
+        self.recorded.update(index)
+    }
+    fn shared_update(&self, index: usize) -> Option<&std::sync::Arc<replay_frame::frame::TableUpdate>> {
+        self.recorded.shared_update(index)
     }
 }
 
-impl BlockTables for Vec<TableId> {
-    fn of(&self, _: &BlockIndex) -> &[TableId] {
-        self
+/// One block as a scan receives it: its hours, read as the scan takes them, or why it cannot be
+/// read.
+pub type BlockRead<'a> = (&'a BlockIndex, io::Result<BlockHours>);
+
+/// What the walk sends a scan.
+enum Sent {
+    /// The block at this position of the scan's begins.
+    Begin(usize),
+    Hour(Box<ScanHour>),
+    /// The block at this position cannot be read, for this reason.
+    Failed(usize, io::Error),
+    /// The block at this position, begun, cannot be read past the hours already sent.
+    Broken(usize, io::Error),
+}
+
+/// What a scan's blocks share: the walk's messages and the block whose hours are handed now.
+struct Feed {
+    received: mpsc::Receiver<Sent>,
+    /// A message received ahead of the block it belongs to.
+    held: Option<Sent>,
+    /// The block whose hours are being handed.
+    current: Option<usize>,
+    /// Why a block the scan was reading ended short; the scan fails with it.
+    broken: Option<io::Error>,
+}
+
+impl Feed {
+    fn next(&mut self) -> Option<Sent> {
+        self.held.take().or_else(|| self.received.recv().ok())
     }
 }
 
-/// Tables chosen block by block.
-pub struct PerBlock<'t, F>(F, PhantomData<&'t ()>);
+/// The hours of one block of a scan, in order, read as they are taken.
+pub struct BlockHours {
+    feed: Rc<RefCell<Feed>>,
+    position: usize,
+}
 
-impl<'t, F: Fn(&BlockIndex) -> &'t [TableId] + Sync> PerBlock<'t, F> {
-    pub fn new(choose: F) -> Self {
-        Self(choose, PhantomData)
+impl Iterator for BlockHours {
+    type Item = ScanHour;
+
+    fn next(&mut self) -> Option<ScanHour> {
+        let mut feed = self.feed.borrow_mut();
+        if feed.current != Some(self.position) {
+            return None;
+        }
+        match feed.next() {
+            Some(Sent::Hour(hour)) => Some(*hour),
+            Some(Sent::Broken(at, error)) if at == self.position => {
+                feed.broken.get_or_insert(error);
+                feed.current = None;
+                None
+            }
+            other => {
+                feed.held = other;
+                feed.current = None;
+                None
+            }
+        }
     }
 }
 
-impl<'t, F: Fn(&BlockIndex) -> &'t [TableId] + Sync> BlockTables for PerBlock<'t, F> {
-    fn of(&self, block: &BlockIndex) -> &[TableId] {
-        (self.0)(block)
-    }
-}
-
-/// `blocks`, each read with only its `tables`, handed to `scan` in their given order.
-/// Reading ahead stops once `scan` returns or `cancelled` is set.
+/// `blocks`, each read with only its `tables` (and Campaign), handed to `scan` in their given
+/// order: each block's hours walked on a thread of their own as the scan takes them, blocks of
+/// one segment in rising order sharing one walk. A block whose walk meets damage is handed as
+/// that error, and the walk goes on at the next segment. Reading stops once `scan` returns or
+/// `cancelled` is set.
 pub fn scan_blocks<'a, R>(
     replay: &'a Replay,
     blocks: impl IntoIterator<Item = &'a BlockIndex>,
-    tables: &(impl BlockTables + ?Sized),
+    tables: &[TableId],
     cancelled: &AtomicBool,
     scan: impl FnOnce(&mut dyn Iterator<Item = BlockRead<'a>>) -> io::Result<R>,
 ) -> io::Result<R> {
-    let blocks = blocks.into_iter();
-    let (minimum, maximum) = blocks.size_hint();
-    let mut collected = Vec::new();
-    if maximum == Some(minimum) {
-        collected = engine_allocation::vec(minimum)?;
-        collected.extend(blocks);
-    } else {
-        for block in blocks {
-            engine_allocation::reserve(&mut collected, 1)?;
-            collected.push(block);
-        }
-    }
-    let blocks = collected;
+    let blocks: Vec<&'a BlockIndex> = blocks.into_iter().collect();
     #[cfg(any(test, feature = "test-support"))]
     SCANNED_BLOCKS.with_borrow_mut(|scanned| {
-        scanned.extend(blocks.iter().map(|block| block.offset));
+        scanned.extend(blocks.iter().map(|block| (u64::from(block.run) << 32) | u64::from(block.page)));
     });
-    let largest = blocks.iter().map(|block| tables.of(block).len()).max();
-    let ahead = if largest.unwrap_or(0) * 2 > TABLE_COUNT {
-        0
-    } else {
-        AHEAD
-    };
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
-    scan_blocks_by(
-        blocks,
-        ahead,
-        cancelled,
-        &|block| {
-            if let Some(position) = replay.block_position(block) {
-                consumer.reading(position);
+    let (sender, received) = mpsc::sync_channel::<Sent>(AHEAD_HOURS);
+    let feed = Rc::new(RefCell::new(Feed {
+        received,
+        held: None,
+        current: None,
+        broken: None,
+    }));
+    let cpu_family = replay_frame::cpu::family();
+    thread::scope(|scope| {
+        let walking = &blocks;
+        let priority = job_priority::JobPriority::current();
+        thread::Builder::new().spawn_scoped_carried(scope, move || {
+            priority.enter(job_priority::Level::Normal);
+            let _cpu = replay_frame::cpu::scope("scan read-ahead", cpu_family);
+            let _core = cores().take();
+            walk(replay, walking, tables, cancelled, &sender);
+        })?;
+        let mut next = 0;
+        let mut iterate = std::iter::from_fn(|| {
+            if next == blocks.len() {
+                return None;
             }
-            replay.read_block_recorded_selected(block, tables.of(block))
-        },
-        |reads| {
-            scan(&mut reads.map(|(block, frames)| {
-                if let Some(position) = replay.block_position(block) {
-                    consumer.at(position);
+            let position = next;
+            next += 1;
+            let mut held = feed.borrow_mut();
+            // Hours of the block before that the scan left are passed over.
+            loop {
+                match held.next() {
+                    Some(Sent::Hour(_)) => continue,
+                    Some(Sent::Begin(at)) if at == position => {
+                        held.current = Some(position);
+                        drop(held);
+                        return Some((
+                            blocks[position],
+                            Ok(BlockHours {
+                                feed: Rc::clone(&feed),
+                                position,
+                            }),
+                        ));
+                    }
+                    Some(Sent::Failed(at, error)) if at == position => {
+                        held.current = None;
+                        return Some((blocks[position], Err(error)));
+                    }
+                    // A block the scan left before its end is no part of its result.
+                    Some(Sent::Begin(_) | Sent::Failed(..) | Sent::Broken(..)) => continue,
+                    None => {
+                        held.current = None;
+                        let error = if cancelled.load(Ordering::Acquire) {
+                            io::Error::new(io::ErrorKind::Interrupted, "the scan was cancelled")
+                        } else {
+                            io::Error::other("the scan's walk ended before this block")
+                        };
+                        return Some((blocks[position], Err(error)));
+                    }
                 }
-                (block, frames)
-            }))
-        },
-    )
+            }
+        });
+        let result = scan(&mut iterate);
+        drop(iterate);
+        let broken = feed.borrow_mut().broken.take();
+        // The walk stops at its next send once nothing receives.
+        drop(feed);
+        match (result, broken) {
+            (Ok(_), Some(error)) => Err(error),
+            (result, _) => result,
+        }
+    })
+}
+
+/// Hours a scan's walk runs ahead of the scan at most.
+const AHEAD_HOURS: usize = 64;
+
+/// Walks `blocks` of `replay`, sending each block's beginning, its hours and its failure.
+fn walk(
+    replay: &Replay,
+    blocks: &[&BlockIndex],
+    tables: &[TableId],
+    cancelled: &AtomicBool,
+    sender: &mpsc::SyncSender<Sent>,
+) {
+    let mut at = 0;
+    while at < blocks.len() {
+        let mut end = at + 1;
+        while end < blocks.len()
+            && replay.same_segment(blocks[end - 1], blocks[end])
+            && (blocks[end].run, blocks[end].page) > (blocks[end - 1].run, blocks[end - 1].page)
+        {
+            end += 1;
+        }
+        let group = &blocks[at..end];
+        let mut begun = at;
+        // The block whose hours are being sent and not yet all sent.
+        let mut open = None;
+        let mut gone = false;
+        let walked = replay.visit_blocks(
+            group,
+            tables,
+            None,
+            |block, recorded, decoded| {
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "the scan was cancelled"));
+                }
+                if decoded.hour == block.first_hour {
+                    let position = at + group.iter().position(|held| std::ptr::eq(*held, block)).unwrap_or(0);
+                    if sender.send(Sent::Begin(position)).is_err() {
+                        gone = true;
+                        return Ok(false);
+                    }
+                    begun = position + 1;
+                    open = Some(position);
+                }
+                if decoded.hour == block.last_hour {
+                    open = None;
+                }
+                let hour = Box::new(ScanHour {
+                    recorded: recorded.clone(),
+                    decoded: decoded.clone(),
+                });
+                if sender.send(Sent::Hour(hour)).is_err() {
+                    gone = true;
+                    return Ok(false);
+                }
+                Ok(true)
+            },
+            || Ok(()),
+        );
+        if gone {
+            return;
+        }
+        if let Err(error) = walked {
+            if let Some(position) = open {
+                let error = io::Error::new(error.kind(), error.to_string());
+                if sender.send(Sent::Broken(position, error)).is_err() {
+                    return;
+                }
+            }
+            // The blocks not begun yet are lost with the segment.
+            for position in begun..end {
+                let error = io::Error::new(error.kind(), error.to_string());
+                if sender.send(Sent::Failed(position, error)).is_err() {
+                    return;
+                }
+            }
+        }
+        at = end;
+    }
 }
 
 /// `blocks` (or any items read alike), each read by `read`, handed to `scan` in their
@@ -364,7 +525,7 @@ mod tests {
             &cancelled,
             |reads| {
                 Ok(reads
-                    .map(|(block, frames)| (block.first_hour, frames.unwrap()[0].hour))
+                    .map(|(block, frames)| (block.first_hour, frames.unwrap().next().unwrap().hour))
                     .collect::<Vec<_>>())
             },
         );

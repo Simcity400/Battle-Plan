@@ -1775,14 +1775,16 @@ impl Prepared {
         self.block_failed = true;
         let mut observer_failed = false;
         let pages: &mut dyn Pages = &mut Through(writer);
-        let result = replay.read_block_recorded_alone(
+        let mut last_read = None;
+        let result = replay.read_block_alone(
             block,
             &tables,
             |updates, frame| {
                 let _cpu = replay_frame::cpu::scope("fold observe", None);
+                last_read = Some(frame.hour);
                 let changes = self
                     .world
-                    .recorded_changes(replay, frame, (*updates).clone());
+                    .recorded_changes(replay, frame, updates.clone());
                 if let Err(error) =
                     self.observe_frame(&mut *pages, replay, frame, icons, cancelled, &changes)
                 {
@@ -1798,9 +1800,9 @@ impl Prepared {
             Err(error) if observer_failed || error.kind() == io::ErrorKind::Interrupted => {
                 return Err(error);
             }
-            Err(error) => {
-                let first = replay::container::ReplayStream::failed_hour(&error)
-                    .unwrap_or(block.first_hour);
+            Err(_) => {
+                // The hours after the last one read are lost with the block's walk.
+                let first = last_read.map_or(block.first_hour, |hour| hour + 1);
                 self.drain_quiet(pages)?;
                 self.lost(first, block.last_hour)?;
             }
@@ -2495,7 +2497,7 @@ impl Prepared {
             crate::metadata::check_cancel(cancelled)?;
             if !self.directory.coverage.complete
                 && let Some(block) = self.processed.clone().filter(|block| {
-                    Some((block.first_hour, block.last_hour, block.offset))
+                    Some((block.first_hour, block.last_hour, block.key()))
                         == last_block(replay, self.directory.branch)
                 })
             {
@@ -3241,7 +3243,7 @@ impl Prepared {
         let _cpu = replay_frame::cpu::scope("fold publish", None);
         self.flush_into(pages, cancelled)?;
         let branch = self.directory.branch;
-        self.directory.last_block = Some((block.first_hour, block.last_hour, block.offset));
+        self.directory.last_block = Some((block.first_hour, block.last_hour, block.key()));
         self.directory.coverage.last_hour = block.last_hour;
         self.directory.coverage.complete = self.directory.last_block == last_block(replay, branch);
         self.commit(pages)?;
@@ -3394,7 +3396,7 @@ impl Prepared {
             || !pictures_hold_with(icons, directory.pictured, directory.visual.as_deref())
             || !replay.index.iter().any(|block| {
                 block.branch == branch
-                    && Some((block.first_hour, block.last_hour, block.offset))
+                    && Some((block.first_hour, block.last_hour, block.key()))
                         == directory.last_block
             })
         {
@@ -3419,7 +3421,7 @@ impl Prepared {
             .iter()
             .find(|block| {
                 block.branch == branch
-                    && Some((block.first_hour, block.last_hour, block.offset))
+                    && Some((block.first_hour, block.last_hour, block.key()))
                         == directory.last_block
             })
             .cloned()
@@ -3564,7 +3566,9 @@ impl Prepared {
         match &self.processed {
             None => Ok(0),
             Some(previous) => replay
-                .block_position(previous)
+                .index
+                .iter()
+                .position(|block| block == previous)
                 .filter(|_| previous.branch == self.directory.branch)
                 .map(|position| position + 1)
                 .ok_or_else(|| crate::invalid("Production cursor differs from recording prefix")),

@@ -277,7 +277,7 @@ impl Prepared {
     #[allow(clippy::too_many_arguments)]
     pub fn publish<W: dashboard_base::prepared::pages::Pages + ?Sized>(
         &mut self,
-        replay: &replay::container::Replay,
+        replay: &replay::campaign::Replay,
         writer: &mut W,
         branch: u64,
         ordinal: usize,

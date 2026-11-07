@@ -16,7 +16,7 @@
 //! `columnar-staging <recording.battleplan> [hours] [--fixed [--cold <MiB>]]`
 
 use replay::{
-    container::{Replay, ReplayStream},
+    campaign::Replay,
     native_columns::{self, RowCells, Staging, TableHour, TableInput},
 };
 use replay_columnar::{
@@ -316,7 +316,6 @@ fn main() -> io::Result<()> {
         return per_table(&input, limit, cold);
     }
     let replay = Replay::open_path(&input)?;
-    let mut stream = ReplayStream::new(&TableId::ALL)?;
     let mut rows = Side::new(Staging::Rows, Sweep::Touched)?;
     let mut columns = Side::new(Staging::Columns, Sweep::Touched)?;
     let schema: Vec<usize> = TableId::ALL.iter().map(|id| id.schema().len()).collect();
@@ -328,12 +327,14 @@ fn main() -> io::Result<()> {
     // The branch and the next hour of the run under way.
     let mut run: Option<(u64, i32)> = None;
     let started = Instant::now();
-    while hours < limit
-        && stream.next_block_recorded_with(
-            &replay,
-            |recorded, decoded| {
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+            &blocks,
+            &TableId::ALL,
+            None,
+            |_, recorded, decoded| {
                 if hours >= limit {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let continues = run == Some((decoded.branch, decoded.hour));
                 if !continues {
@@ -387,11 +388,10 @@ fn main() -> io::Result<()> {
                 }
                 run = Some((decoded.branch, decoded.hour + 1));
                 hours += 1;
-                Ok(())
+                Ok(true)
             },
             || Ok(()),
-        )?
-    {}
+        )?;
     if let Some((_, next)) = run {
         same_restarts(&rows, &columns, next - 1)?;
     }
@@ -514,7 +514,6 @@ impl Sweeps {
 /// and by writers sweeping every column, timed by what each hour asked of them.
 fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
     let replay = Replay::open_path(input)?;
-    let mut stream = ReplayStream::new(&TableId::ALL)?;
     let mut sweeps = Sweeps {
         touched: Side::new(Staging::Columns, Sweep::Touched)?,
         swept: Side::new(Staging::Columns, Sweep::Every)?,
@@ -528,12 +527,14 @@ fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
     let (mut hours, mut runs) = (0_u64, 0_u64);
     let mut run: Option<(u64, i32)> = None;
     let started = Instant::now();
-    while hours < limit
-        && stream.next_block_recorded_with(
-            &replay,
-            |recorded, decoded| {
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+            &blocks,
+            &TableId::ALL,
+            None,
+            |_, recorded, decoded| {
                 if hours >= limit {
-                    return Ok(());
+                    return Ok(false);
                 }
                 let continues = run == Some((decoded.branch, decoded.hour));
                 if !continues {
@@ -576,11 +577,10 @@ fn per_table(input: &Path, limit: u64, cold: usize) -> io::Result<()> {
                 }
                 run = Some((decoded.branch, decoded.hour + 1));
                 hours += 1;
-                Ok(())
+                Ok(true)
             },
             || Ok(()),
-        )?
-    {}
+        )?;
     if let Some((_, next)) = run {
         same_restarts(&sweeps.touched, &sweeps.swept, next - 1)?;
     }

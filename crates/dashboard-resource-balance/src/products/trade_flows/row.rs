@@ -14,9 +14,9 @@ use dashboard_base::products::{
 use dashboard_base::source::Source;
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::validate_campaign;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -197,7 +197,6 @@ fn scan_with_history(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -205,7 +204,7 @@ fn scan_with_history(
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

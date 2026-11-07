@@ -1,6 +1,6 @@
 //! Compact block facts and proved windows in the shared observation cache.
 use crate::{Source, metadata::check_cancel};
-use replay::{container::BlockChange, container::BlockIndex, container::TableFields};
+use replay::{campaign::BlockChange, campaign::BlockIndex, campaign::TableFields};
 use replay_frame::frame::DecodedFrame;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{collections::HashSet, io, sync::atomic::AtomicBool};

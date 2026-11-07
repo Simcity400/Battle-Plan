@@ -8,7 +8,7 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::{LinkTags, check_cancel};
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{tables, *};
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde::{Deserialize, Serialize};

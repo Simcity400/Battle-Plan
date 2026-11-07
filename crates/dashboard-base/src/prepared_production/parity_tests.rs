@@ -255,7 +255,7 @@ fn campaign(days: i32, extra: u32) -> Vec<DecodedFrame> {
 }
 
 fn format_of(frames: &[DecodedFrame]) -> FormatVersion {
-    replay::container::Replay::from_records(
+    replay::campaign::Replay::from_records(
         crate::test_fixtures::CAMPAIGN.into(),
         &[crate::test_fixtures::records(1, frames[..1].to_vec())],
     )
@@ -306,7 +306,7 @@ fn prepare(frames: &[DecodedFrame]) -> Prepared {
     writer.commit().unwrap();
     pages.extend(state.completed.drain(..).map(|(page, _)| page));
     revoked.extend(state.revocations());
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         crate::test_fixtures::CAMPAIGN.into(),
         &[crate::test_fixtures::records(1, frames.to_vec())],
     )

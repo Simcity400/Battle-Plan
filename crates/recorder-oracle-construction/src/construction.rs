@@ -6,11 +6,11 @@ use std::{
 };
 
 use installed_content_save::construction as saved;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     Hour, rows::ConstructionLineOutputRow, rows::CountryRow, rows::TableId, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 
 use super::{Report, complete, country_tag, daily_read, invalid, required_country_tag};
 

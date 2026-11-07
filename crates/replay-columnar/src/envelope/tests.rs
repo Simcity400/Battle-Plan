@@ -169,6 +169,7 @@ fn root() -> Root {
             extent(Kind::RunDirectory, 1, 0, 0, 0),
         ],
         controls: vec![extent(Kind::Controls, 0, 0, 0, 0); 2],
+        facts: vec![extent(Kind::Facts, 0, 0, 0, 0)],
     }
 }
 

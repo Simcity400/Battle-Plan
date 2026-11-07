@@ -1,10 +1,9 @@
 //! Occupation joins frozen at their supplying read; hourly owner/name projection.
 // The row scan is the projection's parity oracle; the projection reads through its shared part.
 #![cfg_attr(not(test), allow(dead_code))]
+use replay_frame::frame::DecodedFrame;
 use super::*;
 use dashboard_text::metadata::CountryKeys;
-#[cfg(test)]
-use replay_frame::frame::FrameDecoder;
 use replay_frame::frame::{HourFrame, ViewIdentity};
 use std::collections::{BTreeSet, HashSet};
 
@@ -1461,7 +1460,6 @@ pub(in crate::products) fn scan_history(
         cancelled,
         |blocks| {
             for (block, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(selected);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(e) => {
@@ -1484,7 +1482,7 @@ pub(in crate::products) fn scan_history(
                             "Occupied states request cancelled",
                         ));
                     }
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(decoded) => decoded,
                         Err(e) => {
                             scan.result.warnings.push(format!(

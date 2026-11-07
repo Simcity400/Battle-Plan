@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::LexicalTokenRow, rows::TableRows, rows::VariantDefinitionRow};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 

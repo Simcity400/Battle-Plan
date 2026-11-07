@@ -51,9 +51,7 @@ use ts_rs::TS;
 #[cfg(test)]
 use crate::metadata::validate_campaign;
 #[cfg(test)]
-use replay::container::Replay;
-#[cfg(test)]
-use replay_frame::frame::FrameDecoder;
+use replay::campaign::Replay;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
 
@@ -2117,13 +2115,12 @@ fn research_branch_selected(
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         scan.reject(frame.hour);
                         break;
                     };

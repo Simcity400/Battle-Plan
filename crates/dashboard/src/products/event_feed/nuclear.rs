@@ -12,9 +12,7 @@ use replay_frame::frame::{HourFrame, OperandStatus};
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
 #[cfg(test)]
-use replay::container::Replay;
-#[cfg(test)]
-use replay_frame::frame::FrameDecoder;
+use replay::campaign::Replay;
 #[cfg(test)]
 use std::collections::BTreeSet;
 
@@ -225,25 +223,11 @@ pub(super) fn scan(
     blocks.sort_by_key(|block| block.first_hour);
     let selected = [TableId::Campaign, TableId::NuclearStrikes];
     let mut strikes: Vec<(i32, NuclearStrikeRow)> = Vec::new();
-    for block in &blocks {
-        check_cancel(cancelled)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frames = match replay.read_block_selected(block, &selected) {
-            Ok(frames) => frames,
-            Err(error) => {
-                builder.sampled_unavailable(
-                    "nuclearStrikeCoverage",
-                    "Nuclear strikes",
-                    error.to_string(),
-                    1,
-                );
-                continue;
-            }
-        };
-        for encoded in frames {
+    dashboard_core::blocks::scan_blocks(replay, blocks.iter().copied(), &selected, cancelled, |reads| {
+        for (_, hours) in reads {
             check_cancel(cancelled)?;
-            let frame = match decoder.advance(&encoded) {
-                Ok(frame) => frame,
+            let hours = match hours {
+                Ok(hours) => hours,
                 Err(error) => {
                     builder.sampled_unavailable(
                         "nuclearStrikeCoverage",
@@ -251,23 +235,28 @@ pub(super) fn scan(
                         error.to_string(),
                         1,
                     );
-                    break;
+                    continue;
                 }
             };
-            if let Err(error) = validate_campaign(frame, replay) {
-                builder.sampled_unavailable(
-                    "nuclearStrikeCoverage",
-                    "Nuclear strikes",
-                    error.to_string(),
-                    1,
-                );
-                continue;
-            }
-            for strike in read(frame.into(), builder, cancelled)? {
-                strikes.push((frame.hour, strike));
+            for hour in hours {
+                check_cancel(cancelled)?;
+                let frame = &hour.decoded;
+                if let Err(error) = validate_campaign(frame, replay) {
+                    builder.sampled_unavailable(
+                        "nuclearStrikeCoverage",
+                        "Nuclear strikes",
+                        error.to_string(),
+                        1,
+                    );
+                    continue;
+                }
+                for strike in read(frame.into(), builder, cancelled)? {
+                    strikes.push((frame.hour, strike));
+                }
             }
         }
-    }
+        Ok(())
+    })?;
     if strikes.is_empty() {
         return Ok(());
     }
@@ -282,32 +271,29 @@ pub(super) fn scan(
         TableId::CountryLinks,
         TableId::CountryExperienceGains,
     ];
-    for block in blocks {
-        check_cancel(cancelled)?;
-        if wanted
-            .range(block.first_hour..=block.last_hour)
-            .next()
-            .is_none()
-        {
-            continue;
-        }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
-        for encoded in frames {
+    let named: Vec<_> = blocks
+        .into_iter()
+        .filter(|block| wanted.range(block.first_hour..=block.last_hour).next().is_some())
+        .collect();
+    dashboard_core::blocks::scan_blocks(replay, named, &selected, cancelled, |reads| {
+        for (_, hours) in reads {
             check_cancel(cancelled)?;
-            let Ok(frame) = decoder.advance(&encoded) else {
-                break;
-            };
-            if !wanted.contains(&frame.hour) || validate_campaign(frame, replay).is_err() {
+            let Ok(hours) = hours else {
                 continue;
-            }
-            if let Ok(names) = Names::at(frame, branch, frame.hour) {
-                names_at.insert(frame.hour, names);
+            };
+            for hour in hours {
+                check_cancel(cancelled)?;
+                let frame = &hour.decoded;
+                if !wanted.contains(&frame.hour) || validate_campaign(frame, replay).is_err() {
+                    continue;
+                }
+                if let Ok(names) = Names::at(frame, branch, frame.hour) {
+                    names_at.insert(frame.hour, names);
+                }
             }
         }
-    }
+        Ok(())
+    })?;
     for (read_hour, strike) in strikes {
         check_cancel(cancelled)?;
         project(

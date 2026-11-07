@@ -24,13 +24,11 @@ use installed_content_raids::{
     raids::target::state as target_state,
 };
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::RaidRow, rows::RaidScope, rows::RaidTargetRow, rows::TableId, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::Ordering;
@@ -1359,7 +1357,6 @@ fn scan(
                         "Raids request cancelled",
                     ));
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -1370,7 +1367,7 @@ fn scan(
                             "Raids request cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {
@@ -1424,7 +1421,6 @@ fn recording_available(
                         "Raids availability cancelled",
                     ));
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -1435,7 +1431,7 @@ fn recording_available(
                             "Raids availability cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

@@ -335,7 +335,7 @@ fn source(inputs: &[DecodedFrame]) -> Source {
         },
         "memory.battleplan".into(),
         Arc::new(
-            replay::container::Replay::from_records(
+            replay::campaign::Replay::from_records(
                 fixtures::CAMPAIGN.into(),
                 &[fixtures::records(1, frames)],
             )

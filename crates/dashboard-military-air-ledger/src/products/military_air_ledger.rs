@@ -14,13 +14,11 @@ use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::{branch_bounds, tagged_countries};
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::BuildingBombingDamageCause, rows::TableId, rows::tables};
 #[cfg(any(test, feature = "test-support"))]
 use replay_frame::frame::DecodedFrame;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
@@ -600,11 +598,10 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let frames = frames?;
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let decoded = decoder.advance(&frame)?;
+                    let decoded = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded)?;
                     validate_campaign(decoded, replay)?;
                     scan.observe(decoded)?;
                 }

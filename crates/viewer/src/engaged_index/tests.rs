@@ -1124,11 +1124,8 @@ fn a_snapshot_extends_the_index_only_with_the_same_blocks_and_branch_starts() {
     let records = || crate::playback::tests::records(1, &[100, 101, 102]);
     let older = Arc::new(open(records()));
     let same = Arc::new(Replay::open(older.bytes().to_vec()).unwrap());
-    // Equal metadata, one block byte changed.
-    let mut bytes = older.bytes().to_vec();
-    let block = &older.index[0];
-    bytes[(block.offset + block.length - 1) as usize] ^= 1;
-    let changed = Arc::new(Replay::open(bytes).unwrap());
+    // Equal metadata, one block's bytes changed.
+    let changed = Arc::new(Replay::open(older.damaged_block(&older.index[0]).unwrap()).unwrap());
     assert_eq!(
         (&changed.index, &changed.branches),
         (&older.index, &older.branches)
@@ -1171,7 +1168,7 @@ fn file_backed_append_inherits_only_unchanged_index_branch_session_and_gap_metad
     newer.gaps[0].reason.push_str(" changed");
     assert!(!super::extends(&older, &newer));
     newer.gaps[0] = saved;
-    newer.index[0].raw_length += 1;
+    newer.index[0].last_hour += 1;
     assert!(!super::extends(&older, &newer));
     drop(older);
     drop(newer);

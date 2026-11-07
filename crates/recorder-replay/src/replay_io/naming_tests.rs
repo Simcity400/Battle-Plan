@@ -2,7 +2,7 @@ use super::*;
 use crate::recording_name::RecordingName;
 use crate::test_support::{
     ALLOCATION_CAMPAIGN, allocation_records, allocation_test_directory, named_session_records,
-    write_campaign_spool,
+    write_campaign_spool, write_capture,
 };
 
 fn hour(year: i32) -> Hour {
@@ -298,7 +298,8 @@ fn a_failed_rename_keeps_the_saved_recording_and_the_next_save_retries() {
         None,
         fixture.naming(true),
         false,
-        |replay, destination| replay.write_atomic(destination),
+        session_ended(&second),
+        place_built,
         |_, _| Err(std::io::Error::other("held open by another program")),
         &mut |_, _, _| {},
     )
@@ -664,6 +665,7 @@ fn checkpointed_spools_keep_the_full_prediction_after_reading_resumes_or_restart
                     .collect::<Vec<_>>(),
             )
             .unwrap();
+            write_capture(&campaign, 1, &later);
             let mut ahead = Ahead::default();
             ahead.read(&session, &fixture.output).unwrap();
             let expected =
@@ -1090,43 +1092,19 @@ fn predictions_wait_for_decisions_and_exclude_refused_loads_exactly_as_save_does
         ahead.names(&session, &fixture.output, fixture.naming(true)),
         names
     );
-    // The session's native capture of both loads publishes only the admitted one's branch, once
-    // though a publication whose copy landed left its source behind.
+    // The session's native capture of both loads saves only the admitted one's branch.
     let native = super::tests::native_recording(&[(9, hour(1936), 1), (10, hour(1942), 1)]);
-    let campaign_dir = session.join(CAMPAIGN);
-    let source = campaign_dir.join("columnar.0.h4col");
-    let admitted = admissions.loads[CAMPAIGN].clone();
-    for _ in 0..2 {
-        fs::write(&source, &native).unwrap();
-        publish_columnar(
-            &campaign_dir,
-            &fixture.output,
-            Some(&admitted),
-            false,
-            &mut std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-        assert!(!source.exists());
-    }
-    let folder = replay::columnar_file::campaign_folder(&fixture.output, CAMPAIGN.as_bytes());
-    assert_eq!(fs::read_dir(&folder).unwrap().count(), 1);
+    fs::write(session.join(CAMPAIGN).join("columnar.0.h4col"), &native).unwrap();
     let saved = fixture.save(&session);
     assert_eq!(
         saved.replays[0].file_stem().unwrap(),
         names[CAMPAIGN].as_str()
     );
     assert_eq!(hours_of(&saved.replays[0]), [hour(1936)]);
-    let published = replay::columnar_file::campaign_folder(&fixture.output, CAMPAIGN.as_bytes())
-        .join(replay::columnar_file::published_name(
-            session.file_name().unwrap(),
-            0,
-        ));
-    let published = replay::columnar_frames::Recording::open_path(published)
-    .unwrap();
-    assert!(published.damage().is_empty(), "{:?}", published.damage());
-    assert_eq!(published.run_count(), 1);
-    assert_eq!(published.run(0).unwrap().branch, 9);
-    assert_eq!(published.capture().unwrap().unwrap().run_sessions, [0]);
+    let replay = Replay::open_path(&saved.replays[0]).unwrap();
+    assert!(replay.damaged_parts == 0, "{:?}", replay.warnings);
+    assert_eq!(replay.sources.len(), 1);
+    assert_eq!(replay.recording().run(replay.sources[0].run).unwrap().branch, 9);
 }
 
 #[test]
@@ -1401,14 +1379,7 @@ fn exact_published_prefix_accepts_a_file_backed_recording() {
         |_| Ok(()),
     )
     .unwrap();
-    let valid = recovered.valid_bytes;
-    assert_eq!(
-        published_prefix(&previous, &[(0, recovered)], |_, frame| {
-            read_frame_at(&mut fs::File::open(&spool)?, frame.placement, valid)
-        })
-        .unwrap(),
-        1
-    );
+    assert_eq!(published_prefix(&previous, &[(0, recovered)]), 1);
 }
 
 #[test]

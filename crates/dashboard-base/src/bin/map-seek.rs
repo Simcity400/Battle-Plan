@@ -1,24 +1,22 @@
-//! How fast a change-run index serves the map of a native columnar recording, as JSON: its
+//! How fast a change-run index serves the map of a campaign's recording, as JSON: its
 //! preparation's wall, the process's CPU per recorded hour and the index's bytes per hour;
 //! moves to random hours far apart, to hours near the one held and hour after hour, each timed
 //! without and then with its frame's build; rows read by key from a few tables; and the
 //! process's peak memory after preparing and after reading.
 //!
-//! `map-seek <recording.h4col> [--replay <replay.battleplan>] [--index <file.h4runs>]
-//!  [--prepared] [--threads N] [--workers N] [--level L] [--seeks N] [--play HOURS] [--seed S]`
+//! `map-seek <campaign.battleplan> [--index <file.h4runs>] [--prepared] [--threads N]
+//!  [--workers N] [--level L] [--seeks N] [--play HOURS] [--seed S]`
 //!
 //! The index is prepared into `--index` (by default the recording's path with `.h4runs` added)
-//! on `--threads` workers, unless `--prepared` reads the one there. The replay, when given,
-//! names the opaque cells' format and the capture mode; a native recording's are this build's
-//! and full.
+//! on `--threads` workers, unless `--prepared` reads the one there.
 
 use dashboard_base::map_tables::selected_tables;
 use replay::{
     columnar_frames::Recording,
     columnar_runs::{self, IndexFile, Layout, Snapshots, Whole},
-    container::Parallel,
+    campaign::Parallel,
 };
-use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
+use replay_data::rows::TableId;
 use replay_frame::frame::{DecodedFrame, TableView};
 use serde_json::{Value, json};
 use std::{
@@ -32,7 +30,6 @@ use std::{
 
 struct Options {
     file: PathBuf,
-    replay: Option<PathBuf>,
     index: Option<PathBuf>,
     prepared: bool,
     threads: usize,
@@ -48,13 +45,12 @@ fn invalid(what: impl Into<String>) -> io::Error {
 }
 
 fn options() -> io::Result<Options> {
-    let usage = "map-seek <recording.h4col> [--replay <replay.battleplan>] [--index <file.h4runs>] [--prepared] [--threads N] [--workers N] [--level L] [--seeks N] [--play HOURS] [--seed S]";
+    let usage = "map-seek <campaign.battleplan> [--index <file.h4runs>] [--prepared] [--threads N] [--workers N] [--level L] [--seeks N] [--play HOURS] [--seed S]";
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
     let mut args = std::env::args_os().skip(1);
     let mut file = None;
     let mut options = Options {
         file: PathBuf::new(),
-        replay: None,
         index: None,
         prepared: false,
         threads: cores,
@@ -72,9 +68,6 @@ fn options() -> io::Result<Options> {
     };
     while let Some(arg) = args.next() {
         match arg.to_str() {
-            Some("--replay") => {
-                options.replay = Some(PathBuf::from(args.next().ok_or_else(|| invalid(usage))?))
-            }
             Some("--index") => {
                 options.index = Some(PathBuf::from(args.next().ok_or_else(|| invalid(usage))?))
             }
@@ -267,13 +260,9 @@ fn keys(frame: &DecodedFrame, table: TableId, count: usize) -> Vec<u128> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = options()?;
-    let (format, mode) = match &options.replay {
-        Some(path) => {
-            let replay = replay::container::Replay::open_path(path)?;
-            (replay.format, replay.capture_mode)
-        }
-        None => (FormatVersion::CURRENT, CaptureMode::Full),
-    };
+    let replay = replay::campaign::Replay::open_path(&options.file)?;
+    let (format, mode) = (replay.format, replay.capture_mode);
+    drop(replay);
     let tables = selected_tables();
     let path = options.index.clone().unwrap_or_else(|| {
         let mut path = options.file.clone().into_os_string();
@@ -284,11 +273,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     recording.select(tables);
     let hours = recording.hours();
     let file_bytes = recording.len();
-    // The one native recording given, every session of it ended.
     let whole = Whole {
         campaign: recording.campaign().to_vec(),
         recordings: vec![recording],
-        pending: Vec::new(),
     };
 
     let preparation = if options.prepared {
@@ -329,7 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let opened = Instant::now();
     let file = Arc::new(IndexFile::open(&path)?);
     let open = opened.elapsed();
-    if !file.indexes(&whole.recordings, &whole.pending, tables) {
+    if !file.indexes(&whole.recordings, tables) {
         return Err(invalid(format!(
             "{} does not index {}",
             path.display(),

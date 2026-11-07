@@ -10,10 +10,10 @@ use crate::{
     Source,
     metadata::{TaggedCountry, tagged_countries, tagged_countries_indexed, validate_campaign},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::SharedView, frame::ViewIdentity,
+    frame::DecodedFrame, frame::SharedView, frame::ViewIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -368,7 +368,6 @@ fn add_measures(
         cancelled,
         |blocks| {
             for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -379,7 +378,7 @@ fn add_measures(
                             "Balance history cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {
@@ -464,7 +463,6 @@ fn add_territory(
         cancelled,
         |blocks| {
             for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -475,7 +473,7 @@ fn add_territory(
                             "State count history cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {
@@ -629,7 +627,6 @@ pub fn scan_histories(
         cancelled,
         |blocks| {
             for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -640,7 +637,7 @@ pub fn scan_histories(
                             "Country history cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

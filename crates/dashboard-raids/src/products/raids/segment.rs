@@ -9,7 +9,7 @@
 
 use dashboard_base::prepared::{frame_changes::FrameChanges, kept::kept_changes};
 use dashboard_keyed::segment::{Reader, Segmented, Touched};
-use replay::{columnar_frames::view_heap_bytes, container::TableFields};
+use replay::{columnar_frames::view_heap_bytes, campaign::TableFields};
 use replay_data::{
     format::FormatVersion,
     rows::{ProvinceRow, TableId, TableSchema, column, tables},

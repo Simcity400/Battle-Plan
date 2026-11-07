@@ -1213,7 +1213,7 @@ mod tests {
             },
         )
         .unwrap();
-        let replay = replay::container::Replay::open_path(&saved.unwrap()).unwrap();
+        let replay = replay::campaign::Replay::open_path(&saved.unwrap()).unwrap();
         let hours: Vec<_> = replay
             .index
             .iter()
@@ -1351,7 +1351,7 @@ mod tests {
         detached(&live).unwrap();
         assert!(live.join("history-requests/detached").exists());
         let recording = save(&live);
-        let replay = replay::container::Replay::open(fs::read(recording).unwrap()).unwrap();
+        let replay = replay::campaign::Replay::open(fs::read(recording).unwrap()).unwrap();
         let hours: Vec<_> = replay
             .index
             .iter()

@@ -6,7 +6,7 @@ use dashboard_series::{
     family::Directory,
     memory::{Memory, publish},
 };
-use replay::{columnar_frames::synthetic::Synthetic, container::TableFields};
+use replay::{columnar_frames::synthetic::Synthetic, campaign::TableFields};
 use replay_data::{
     format::FormatVersion,
     rows::{

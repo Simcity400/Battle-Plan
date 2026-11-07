@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn a_null_retained_visibility_template_needs_no_content_or_trigger_frame() {
         let frame = dashboard_base::test_fixtures::source(1, 24, None);
-        let replay = replay::container::Replay::from_records(
+        let replay = replay::campaign::Replay::from_records(
             dashboard_base::test_fixtures::CAMPAIGN.into(),
             &[dashboard_base::test_fixtures::records(
                 1,

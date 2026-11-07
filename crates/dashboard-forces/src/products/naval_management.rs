@@ -9,7 +9,7 @@ use dashboard_text::{
     metadata::{link_slot, tagged_country},
     variant_names::{self, Tags, Texts},
 };
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

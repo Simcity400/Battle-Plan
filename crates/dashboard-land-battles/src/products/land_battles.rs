@@ -40,7 +40,7 @@ use dashboard_base::{
 };
 use dashboard_core::{config::LoadContext, transport::json_len};
 use dashboard_text::metadata::{LinkTags, check_cancel};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -53,7 +53,7 @@ use ts_rs::TS;
 use {
     dashboard_text::metadata::{slot_read, validate_campaign},
     replay_data::{rows::TableId, rows::tables},
-    replay_frame::frame::{DecodedFrame, FrameDecoder},
+    replay_frame::frame::DecodedFrame,
 };
 
 pub mod emit;
@@ -1418,7 +1418,6 @@ fn scan(
         |blocks| {
             for (block, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
                 let Ok(frames) = frames else {
                     census.gap(block.first_hour)?;
                     census.warn(block.first_hour, "Unread replay block; ending not recorded");
@@ -1426,7 +1425,7 @@ fn scan(
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         census.gap(frame.hour)?;
                         census.warn(frame.hour, "Unread replay frame; ending not recorded");
                         break;
@@ -1475,13 +1474,12 @@ fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> 
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

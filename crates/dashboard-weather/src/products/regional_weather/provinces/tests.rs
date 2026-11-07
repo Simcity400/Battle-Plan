@@ -377,7 +377,7 @@ fn missing_weather_row_and_unavailable_table_are_not_zero_or_empty_membership() 
 fn reached_hour_reads_only_its_block_and_reuses_frame_cache_without_preparation() {
     let stack = content_stack();
     let replay =
-        replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, vec![weather(10)])])
+        replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, vec![weather(10)])])
             .unwrap();
     let later = continuation_records(&replay, 1, vec![weather(100), weather(101)]);
     let replay = replay.append(&[later]).unwrap();

@@ -698,7 +698,7 @@ mod loader_tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{container::Replay, spool::Record};
+        use replay::{campaign::Replay, spool::Record};
         use std::sync::atomic::AtomicBool;
         let (_, folder) = crate::catalogue::tests::folder_catalogue(&[
             ("hoi4.exe", "test"),
@@ -790,7 +790,7 @@ mod loader_tests {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{CAMPAIGN, records, source};
-        use replay::{container::Replay, spool::Record};
+        use replay::{campaign::Replay, spool::Record};
         use std::sync::{Barrier, atomic::AtomicBool};
         let files: &[(&str, &str)] = &[
             ("hoi4.exe", "test"),

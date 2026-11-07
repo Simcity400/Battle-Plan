@@ -1,6 +1,6 @@
 //! Recording files: a recording is its folder and the campaign its header names.
 
-use crate::container::{AtomicPublisher, Budgeted, PublishStage, Replay};
+use crate::campaign::{Replay, is_older_layout};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -27,11 +27,13 @@ fn at(path: &Path, error: io::Error) -> io::Error {
     io::Error::new(error.kind(), format!("{}: {error}", path.display()))
 }
 
-/// The campaign a recording's header names; `None` for an identity that names no campaign.
+/// The campaign a recording names; `None` for an identity that names no campaign, and for a
+/// recording of an older layout, which no session continues.
 pub fn campaign_of(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    File::open(path)
-        .and_then(|file| Replay::read_campaign_uuid(&mut Budgeted::new(file)))
-        .map_err(|error| at(path, error))
+    match Replay::read_campaign_uuid(path) {
+        Err(error) if is_older_layout(&error) => Ok(None),
+        result => result.map_err(|error| at(path, error)),
+    }
 }
 
 /// Recordings by the campaign their header names, in lower case.
@@ -300,33 +302,6 @@ pub fn rename(from: &Path, stem: &str) -> io::Result<PathBuf> {
     }
 }
 
-/// Publishes a synced sibling under the first free name, never replacing a file.
-struct NewPublisher<'a> {
-    folder: &'a Path,
-    stem: &'a str,
-    temporary: PathBuf,
-    published: Option<PathBuf>,
-}
-
-impl AtomicPublisher for NewPublisher<'_> {
-    type Writer = Budgeted<File>;
-    fn create(&mut self) -> io::Result<Self::Writer> {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&self.temporary)
-            .map(Budgeted::new)
-    }
-    fn sync(&mut self, writer: &mut Self::Writer) -> io::Result<()> {
-        writer.get_ref().sync_all()
-    }
-    fn replace(&mut self, writer: Self::Writer) -> io::Result<()> {
-        drop(writer);
-        self.published = Some(place_new(&self.temporary, self.folder, self.stem)?);
-        Ok(())
-    }
-}
-
 /// Move the synced file `source` into `folder` as `stem`, numbered past any file there.
 pub fn place_new(source: &Path, folder: &Path, stem: &str) -> io::Result<PathBuf> {
     for number in 1_u64.. {
@@ -339,27 +314,28 @@ pub fn place_new(source: &Path, folder: &Path, stem: &str) -> io::Result<PathBuf
     Err(io::Error::other("no free recording name"))
 }
 
-/// Publish a new recording as `stem` in `folder`, numbered past any file there.
+/// Publish a new recording as `stem` in `folder`, numbered past any file there: `write` fills a
+/// new sibling file, which is synced, then placed under the first free name.
 pub fn publish_new(
-    replay: &Replay,
     folder: &Path,
     stem: &str,
-    checkpoint: impl FnMut(PublishStage) -> io::Result<()>,
+    write: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<PathBuf> {
-    let mut publisher = NewPublisher {
-        folder,
-        stem,
-        temporary: folder.join(format!("{stem}.{EXTENSION}.{}.tmp", std::process::id())),
-        published: None,
-    };
-    let result = replay.publish_with(&mut publisher, checkpoint);
-    match (result, publisher.published) {
-        (Ok(()), Some(published)) => Ok(published),
-        (result, _) => {
-            let _ = fs::remove_file(&publisher.temporary);
-            result.and(Err(io::Error::other("recording was not published")))
-        }
+    let temporary = folder.join(format!("{stem}.{EXTENSION}.{}.tmp", std::process::id()));
+    let placed = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .and_then(|mut file| {
+            write(&mut file)?;
+            file.sync_all()
+        })
+        .and_then(|()| place_new(&temporary, folder, stem));
+    if placed.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
+    placed
 }
 
 /// A folder's naming lock, held by a save from finding a recording to renaming it, and by a user rename.
@@ -414,13 +390,34 @@ mod tests {
         root
     }
 
-    /// A file with a recording's header naming `campaign`; nothing after it.
+    /// A recording of `campaign` holding one session and no hours.
     fn header(path: &Path, campaign: &str) {
-        let mut bytes = b"H4RP".to_vec();
-        bytes.extend_from_slice(&crate::FORMAT_VERSION.to_le_bytes());
-        bytes.extend_from_slice(&crate::KEYFRAME_INTERVAL.to_le_bytes());
-        bytes.extend_from_slice(&(campaign.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(campaign.as_bytes());
+        let session = crate::identity::SessionStart {
+            id: 1,
+            process_id: 1,
+            process_start_time: 1,
+            qpc_frequency: 1,
+            sample_boundary: crate::identity::SampleBoundary::EndOfHour,
+            capture_mode: crate::identity::CaptureMode::Full,
+            identity: crate::identity::Identity {
+                game_version: "synthetic".into(),
+                exe_hash: [1; 32],
+                exe_size: 1,
+                vanilla_hash: [2; 32],
+                dlc: vec![],
+                mods: vec![],
+                coverage_policy: 1,
+                language: "english".into(),
+                recorder_version: "synthetic".into(),
+                collector_hash: [3; 32],
+                verification: crate::identity::Verification::Unchecked,
+            },
+        };
+        let bytes = crate::campaign::fixtures::encode_records(
+            campaign.as_bytes().to_vec(),
+            &[vec![crate::spool::Record::SessionStart(session)]],
+        )
+        .unwrap();
         fs::write(path, bytes).unwrap();
     }
 
@@ -522,43 +519,14 @@ mod tests {
     #[test]
     fn a_new_recording_never_replaces_a_file_at_its_name() {
         let folder = scratch("publish");
-        let replay = Replay::from_records(
-            b"00000000-0000-4000-8000-000000000000".to_vec(),
-            &[vec![crate::spool::Record::SessionStart(
-                crate::identity::SessionStart {
-                    id: 1,
-                    process_id: 1,
-                    process_start_time: 1,
-                    qpc_frequency: 1,
-                    sample_boundary: crate::identity::SampleBoundary::EndOfHour,
-                    capture_mode: crate::identity::CaptureMode::Full,
-                    identity: crate::identity::Identity {
-                        game_version: "synthetic".into(),
-                        exe_hash: [1; 32],
-                        exe_size: 1,
-                        vanilla_hash: [2; 32],
-                        dlc: vec![],
-                        mods: vec![],
-                        coverage_policy: 1,
-                        language: "english".into(),
-                        recorder_version: "synthetic".into(),
-                        collector_hash: [3; 32],
-                        verification: crate::identity::Verification::Unchecked,
-                    },
-                },
-            )]],
-        )
-        .unwrap();
         // Another file takes the name after it was found free.
-        let published = publish_new(&replay, &folder, "Germany 1936", |stage| {
-            if stage == PublishStage::BeforeReplace {
-                fs::write(folder.join("Germany 1936.battleplan"), b"another")?;
-            }
-            Ok(())
+        let published = publish_new(&folder, "Germany 1936", |file| {
+            io::Write::write_all(file, b"recording")?;
+            fs::write(folder.join("Germany 1936.battleplan"), b"another")
         })
         .unwrap();
         assert_eq!(published, folder.join("Germany 1936 (2).battleplan"));
-        assert_eq!(fs::read(&published).unwrap(), replay.bytes());
+        assert_eq!(fs::read(&published).unwrap(), b"recording");
         assert_eq!(
             fs::read(folder.join("Germany 1936.battleplan")).unwrap(),
             b"another"

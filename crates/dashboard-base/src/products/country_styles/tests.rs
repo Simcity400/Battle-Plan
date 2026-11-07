@@ -1,7 +1,7 @@
 use super::HourKey;
 use crate::test_fixtures::{CAMPAIGN, records, source};
 use installed_content_localisation::localisation::Localisation;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};

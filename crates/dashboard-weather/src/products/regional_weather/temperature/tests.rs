@@ -606,7 +606,7 @@ fn bind_reads_recorded_layered_temperature_content_once_and_refuses_unverified_s
         panic!("fixture session")
     };
     session.identity.verification = replay_data::identity::Verification::Unchecked;
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[records],
     )

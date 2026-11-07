@@ -11,6 +11,7 @@ doctest = false
 
 [dependencies]
 replay.workspace = true
+replay-columnar.workspace = true
 installed-content-country-names.workspace = true
 installed-content-localisation.workspace = true
 weather-period.workspace = true

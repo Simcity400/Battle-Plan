@@ -1,4 +1,5 @@
 //! Whole-branch parity oracle; production reads accepted prepared pages.
+use replay_frame::frame::DecodedFrame;
 use super::*;
 
 pub(super) fn scan(
@@ -23,7 +24,6 @@ pub(super) fn scan(
         cancelled,
         |blocks| {
             for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -34,7 +34,7 @@ pub(super) fn scan(
                             "Operative placement request cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, &replay).is_err() {

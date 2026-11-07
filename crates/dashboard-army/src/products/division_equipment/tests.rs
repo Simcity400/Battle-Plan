@@ -770,7 +770,7 @@ fn supplying_reads_made_at_once_are_the_reads_made_in_order() {
         })
         .collect();
     let replay = Arc::new(
-        replay::container::Replay::from_records(
+        replay::campaign::Replay::from_records(
             dashboard_base::test_fixtures::CAMPAIGN.into(),
             &[dashboard_base::test_fixtures::records(1, frames)],
         )

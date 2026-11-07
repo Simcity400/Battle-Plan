@@ -27,7 +27,7 @@ use dashboard_text::{
     scripted_text,
 };
 #[cfg(test)]
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::StateResistanceRow, rows::StateRow,
     rows::TableId, rows::tables,

@@ -772,7 +772,7 @@ pub fn recover_reader<T: SpoolRecord + Send>(
         keep,
         observe,
         true,
-        crate::container::pack::workers(),
+        crate::packing::workers(),
     )
 }
 
@@ -954,7 +954,7 @@ impl<T: SpoolRecord + Send> Tail<T> {
             length,
             keep,
             observe,
-            crate::container::pack::workers(),
+            crate::packing::workers(),
         );
         self.recovery(length, failure, true).map(Some)
     }
@@ -1005,7 +1005,7 @@ impl<T: SpoolRecord + Send> Tail<T> {
             (&mut self.records, &mut self.accepted, &mut self.placements);
         let mut failure = None;
         let mut ended = false;
-        crate::container::pack::ordered(
+        crate::packing::ordered(
             threads,
             || {
                 if ended {

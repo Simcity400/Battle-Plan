@@ -5,7 +5,6 @@
 #[global_allocator]
 static TEST_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-pub mod blocks;
 pub mod combat_selection;
 pub mod debug_fields;
 pub mod diagnostics_panel;

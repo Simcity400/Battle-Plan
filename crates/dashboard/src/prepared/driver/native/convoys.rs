@@ -18,7 +18,7 @@ use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::Segment,
     columns,
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink},
 };
 use replay_data::{

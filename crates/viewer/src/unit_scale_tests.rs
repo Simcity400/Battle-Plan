@@ -1,5 +1,5 @@
 //! Opt-in layer measurements against the synthetic replay example's output.
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::{rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 use std::{

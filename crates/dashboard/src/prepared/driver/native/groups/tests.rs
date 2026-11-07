@@ -14,7 +14,7 @@ use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, file_source,
 use dashboard_world::{Needs, World};
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator},
 };
 use replay_data::{
@@ -364,7 +364,7 @@ fn rows(source: &crate::Source, cuts: &[i32]) -> Answer {
                 index,
                 TABLES,
                 |raw, frame| {
-                    let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                    let facts = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
                     let Branch { scan, changes, .. } = &mut *branch;
                     changes.observe_changed(scan, frame, &facts, source, &context)?;
                     if cuts.contains(&frame.hour) {

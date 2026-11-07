@@ -1,7 +1,7 @@
 //! The panel's recordings, listed only while it asks, from directory listings and file metadata.
 use crate::flags::{BackgroundPriority, FlagImage};
 use recorder::controller::{self, Waiting, WaitingCampaign, WaitingName, WaitingNames};
-use replay::{container::Replay, recorder_settings::RecorderSettings, recording_files};
+use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},

@@ -2,7 +2,7 @@
 use super::*;
 use crate::products::Product;
 use crate::test_fixtures::{CAMPAIGN, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{CompletedFocusRow, FocusRow, TableRows};
 use std::sync::Arc;
 

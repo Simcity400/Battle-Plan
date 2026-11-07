@@ -3,29 +3,32 @@
 use std::{io, sync::Arc};
 
 use installed_content_core::content::facts::{Pack, PackSource};
-use replay::container::Replay;
+use replay::campaign::Replay;
 
-/// A recording's fact pack bytes, read where it holds them.
-struct RecordingFacts(Arc<Replay>);
+/// A recording's fact pack bytes, read where it holds them: its newest pack's.
+struct RecordingFacts(Arc<Replay>, usize);
 
 impl PackSource for RecordingFacts {
     fn read_at(&self, offset: u64, out: &mut [u8]) -> io::Result<()> {
-        self.0.read_facts_at(offset, out)
+        self.0.read_facts(self.1, offset, out)
     }
 }
 
 /// The game facts `replay` carries, or why it carries none.
 pub fn recorded(replay: &Arc<Replay>) -> Result<Arc<Pack>, String> {
-    let Some(region) = replay.fact_packs.last().copied() else {
+    let Some(at) = replay.fact_packs.len().checked_sub(1) else {
         return Err(
-            "this recording was made before recordings carried their game facts; upgrade it with a game installation that matches it"
+            "this recording carries no game facts; upgrade it with a game installation that matches it"
                 .to_owned(),
         );
     };
+    replay
+        .verify_facts(at)
+        .map_err(|error| format!("the recording's game facts cannot be read: {error}"))?;
     Pack::open(
-        Arc::new(RecordingFacts(Arc::clone(replay))),
-        region.offset,
-        region.length,
+        Arc::new(RecordingFacts(Arc::clone(replay), at)),
+        0,
+        replay.fact_packs[at].stored,
     )
     .map(Arc::new)
     .map_err(|error| format!("the recording's game facts cannot be read: {error}"))

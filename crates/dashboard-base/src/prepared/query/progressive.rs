@@ -6,16 +6,14 @@ use crate::{
     products::country_groups::HourSpan,
 };
 use super::frames::Walk;
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::TableId;
-use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::RecordedFrame as Frame, frame::TableUpdate,
-};
+use replay_frame::{frame::DecodedFrame, frame::RecordedFrame as Frame, frame::TableUpdate};
 use std::{
     cell::Cell,
     collections::BTreeMap,
     io,
-    sync::{Arc, atomic::AtomicBool},
+    sync::atomic::AtomicBool,
 };
 
 /// One frame's values: `(tag, field)` -> (native holder identity, raw value).
@@ -100,12 +98,6 @@ thread_local! {
     static WITHOUT_DECODES: Cell<bool> = const { Cell::new(false) };
     /// Whether a sampled read refused to while [`WITHOUT_DECODES`] was set.
     static DECODE_REFUSED: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(test)]
-thread_local! {
-    static ON_UNCACHED_READ: std::cell::RefCell<Option<Box<dyn Fn()>>> =
-        const { std::cell::RefCell::new(None) };
 }
 
 /// Runs `query` without decoding recorded blocks: a sampled read that would
@@ -216,7 +208,7 @@ pub fn histories(
     coverage: Option<&Coverage>,
     identities: &BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
     exact: &BTreeMap<(String, String), Vec<(i32, i32, u32, u32)>>,
-    replay: &replay::container::Replay,
+    replay: &replay::campaign::Replay,
     requested: &[String],
     cancelled: &AtomicBool,
 ) -> io::Result<crate::products::country_history::RecordedHistories> {
@@ -389,9 +381,7 @@ pub fn histories(
         check_cancel(cancelled)?;
         decodes_allowed()?;
         let selected = [TableId::Campaign, TableId::Countries, TableId::CountryLinks];
-        let keyframe = replay.read_keyframe_recorded(first, &selected)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let frame = decoder.advance(&keyframe)?;
+        let frame = &replay.block_first_frame(first, &selected)?;
         check_cancel(cancelled)?;
         // Another campaign's frame is no evidence, as the frame readers find.
         if validate_campaign(frame, replay).is_ok()
@@ -748,16 +738,7 @@ fn supplying_read(
     let mut expected = hour;
     let mut validate_carry = table == TableId::Clock;
     let mut supplying = None;
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
     'search: for block in blocks {
-        if let Some(position) = replay.block_position(block) {
-            consumer.at(position);
-        }
         check_cancel(cancelled)?;
         let Some(reads) =
             super::frames::block(source, block, &[TableId::Campaign, table], cancelled)?
@@ -976,17 +957,7 @@ fn tail_cached_selected(
     keys.dedup();
     let wanted: std::collections::BTreeSet<_> = requested.iter().collect();
     let mut result = TailData::default();
-    let replay = source.replay_ref();
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
     for block in blocks {
-        if let Some(position) = replay.block_position(block) {
-            consumer.at(position);
-        }
         check_cancel(cancelled)?;
         if source.replay_ref().gaps.iter().any(|gap| {
             gap.branch == branch
@@ -1000,12 +971,8 @@ fn tail_cached_selected(
             &(&selected, &keys, all),
             cancelled,
             || {
-                let keyframe = source.replay_ref().read_keyframe_recorded(block, tables)?;
-                let mut decoder = FrameDecoder::for_tables(tables);
-                sample(
-                    decoder.advance(&keyframe)?,
-                    if all { None } else { Some(cached_requested) },
-                )
+                let keyframe = source.replay_ref().block_first_frame(block, tables)?;
+                sample(&keyframe, if all { None } else { Some(cached_requested) })
             },
         )?;
         let spans = crate::prepared::prefix::without_gaps(
@@ -1186,7 +1153,6 @@ pub fn tail_projected<T: Send + Sync + 'static>(
     sample: Sample<'_>,
     finish: impl Fn() -> T,
     restore: impl Fn(&T),
-    bytes: impl Fn(&T) -> usize,
     cancelled: &AtomicBool,
 ) -> io::Result<TailData> {
     check_cancel(cancelled)?;
@@ -1521,9 +1487,9 @@ fn state_tail_recorded_bounded(
 fn with_predecessors<'a>(
     source: &'a Source,
     branch: u64,
-    block: &'a replay::container::BlockIndex,
+    block: &'a replay::campaign::BlockIndex,
     cadence: i32,
-) -> Vec<&'a replay::container::BlockIndex> {
+) -> Vec<&'a replay::campaign::BlockIndex> {
     let first = block.first_hour.saturating_sub(cadence.saturating_sub(1));
     source
         .replay_ref()
@@ -1589,35 +1555,6 @@ pub type TailData = (
 );
 struct BlockSamples(TailData);
 
-fn block_sample_bytes(block: &BlockSamples) -> usize {
-    tail_bytes(&block.0)
-}
-
-/// Inline and retained allocation capacities of compact tail observations.
-pub fn tail_bytes(tail: &TailData) -> usize {
-    let (runs, approximate, identities) = tail;
-    std::mem::size_of::<TailData>()
-        + approximate.capacity() * std::mem::size_of::<HourSpan>()
-        + runs
-            .iter()
-            .map(|((tag, field), values)| {
-                2 * std::mem::size_of::<((String, String), Vec<Run>)>()
-                    + tag.capacity()
-                    + field.capacity()
-                    + values.capacity() * std::mem::size_of::<Run>()
-            })
-            .sum::<usize>()
-        + identities
-            .iter()
-            .map(|((tag, field), values)| {
-                2 * std::mem::size_of::<((String, String), Vec<(i32, i32, u32, u32)>)>()
-                    + tag.capacity()
-                    + field.capacity()
-                    + values.capacity() * std::mem::size_of::<(i32, i32, u32, u32)>()
-            })
-            .sum::<usize>()
-}
-
 /// Cache exact block observations, including their supplying-read predecessor,
 /// then clip them for each ask. Stateless reads bound a missing edge fold to the
 /// request's read window; a held whole-block fold can answer it directly. Daily
@@ -1632,7 +1569,7 @@ fn cached_recorded_blocks(
     requested: &[(String, String)],
     cached_requested: &[(String, String)],
     window: (i64, i32),
-    blocks: Vec<&replay::container::BlockIndex>,
+    blocks: Vec<&replay::campaign::BlockIndex>,
     sample: SampleRecorded<'_>,
     state_hours: Option<&[i32]>,
     bounded: bool,
@@ -1648,17 +1585,7 @@ fn cached_recorded_blocks(
     let mut keys = cached_requested.to_vec();
     keys.sort();
     keys.dedup();
-    let replay = source.replay_ref();
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
     for block in blocks {
-        if let Some(position) = replay.block_position(block) {
-            consumer.at(position);
-        }
         let whole = (&selected, &keys, cadence, all, None::<(i64, i32)>);
         let extent = bounded
             .then_some((
@@ -1818,10 +1745,6 @@ fn cached_recorded_blocks(
     Ok(result)
 }
 
-/// About three blocks of a window are read at once per query: ahead of the
-/// decode, without holding many blocks' frames in memory.
-const EXACT_READ_AHEAD: usize = 2;
-
 /// [`sample_blocks_recorded`] with a sampler of frames alone.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn sample_blocks(
@@ -1830,7 +1753,7 @@ fn sample_blocks(
     tables: &[TableId],
     requested: &[(String, String)],
     window: (i64, i32),
-    blocks: Vec<&replay::container::BlockIndex>,
+    blocks: Vec<&replay::campaign::BlockIndex>,
     sample: Sample<'_>,
     state_hours: Option<&[i32]>,
     cancelled: &AtomicBool,
@@ -1861,7 +1784,7 @@ fn sample_blocks_recorded(
     tables: &[TableId],
     requested: &[(String, String)],
     window: (i64, i32),
-    blocks: Vec<&replay::container::BlockIndex>,
+    blocks: Vec<&replay::campaign::BlockIndex>,
     sample: SampleRecorded<'_>,
     state_hours: Option<&[i32]>,
     exact: bool,
@@ -1907,79 +1830,25 @@ fn sample_blocks_recorded(
             }
         }
     }
-    let consumer = replay.section_consumer(
-        blocks
-            .first()
-            .and_then(|block| replay.block_position(block))
-            .unwrap_or(0),
-    );
     if exact {
-        // Blocks are read ahead on spare cores (or found in the source's frame
-        // cache) while their hours are decoded and sampled here, in block order.
-        // A read held ahead keeps its cache entry leased, so it stays counted until used.
-        let read =
-            |block: &replay::container::BlockIndex| -> io::Result<super::frames::LeasedReads<'_>> {
-                if let Some(position) = replay.block_position(block) {
-                    consumer.reading(position);
-                }
-                Ok(
-                    match super::frames::block(source, block, tables, cancelled)? {
-                        Some(reads) => reads,
-                        None => {
-                            #[cfg(test)]
-                            ON_UNCACHED_READ.with_borrow(|hook| {
-                                if let Some(hook) = hook {
-                                    hook();
-                                }
-                            });
-                            let mut selected = tables.to_vec();
-                            selected.sort_unstable();
-                            selected.dedup();
-                            super::frames::LeasedReads::uncached(vec![super::frames::BlockRead {
-                                tables: selected,
-                                frames: Arc::new(replay.read_block_recorded_selected_with(
-                                    block,
-                                    tables,
-                                    || check_cancel(cancelled),
-                                )?),
-                            }])
-                        }
-                    },
-                )
-            };
-        dashboard_core::blocks::scan_blocks_by(
-            blocks,
-            EXACT_READ_AHEAD,
+        // Each block's hours are walked on a thread of their own while they are sampled here,
+        // in block order.
+        let mut selected = tables.to_vec();
+        selected.sort_unstable();
+        selected.dedup();
+        dashboard_core::blocks::scan_blocks(
+            replay,
+            blocks.iter().copied(),
+            &selected,
             cancelled,
-            &read,
             |reads| {
                 for (block, read) in reads {
-                    if let Some(position) = replay.block_position(block) {
-                        consumer.at(position);
-                    }
                     check_cancel(cancelled)?;
                     let start = i64::from(block.first_hour).max(first) as i32;
                     let end = block.last_hour.min(window.1);
-                    let reads = read?;
-                    let mut decoders = reads
-                        .iter()
-                        .map(|read| {
-                            let selected = tables
-                                .iter()
-                                .copied()
-                                .filter(|table| read.tables.binary_search(table).is_ok())
-                                .collect::<Vec<_>>();
-                            (
-                                FrameDecoder::for_tables(&selected),
-                                selected,
-                                read.frames.as_slice(),
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    let hours = decoders.first().map_or(0, |(_, _, frames)| frames.len());
-                    for position in 0..hours {
+                    for hour in read? {
                         check_cancel(cancelled)?;
-                        let decoded = &advance(&mut decoders, position)?;
+                        let decoded = &hour.decoded;
                         if decoded.hour > end {
                             break;
                         }
@@ -1992,12 +1861,7 @@ fn sample_blocks_recorded(
                             continue;
                         }
                         let recorded = Recorded {
-                            reads: decoders
-                                .iter()
-                                .map(|(_, selected, frames)| {
-                                    (selected.as_slice(), &frames[position])
-                                })
-                                .collect(),
+                            reads: vec![(selected.as_slice(), &hour.recorded)],
                         };
                         let observed = sample(decoded, Some(&recorded), Some(requested))?;
                         if decoded.hour < start
@@ -2056,16 +1920,11 @@ fn sample_blocks_recorded(
         return Ok((runs, approximate, identities));
     }
     for block in blocks {
-        if let Some(position) = replay.block_position(block) {
-            consumer.at(position);
-        }
         check_cancel(cancelled)?;
         let start = i64::from(block.first_hour).max(first) as i32;
         let end = block.last_hour.min(window.1);
         // Only the block's keyframe sections are read: no decode through the block.
-        let keyframe = replay.read_keyframe_recorded(block, tables)?;
-        let mut decoder = FrameDecoder::for_tables(tables);
-        let frame = decoder.advance(&keyframe)?;
+        let frame = &replay.block_first_frame(block, tables)?;
         let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
         if replay.gaps.iter().any(|gap| {
             gap.branch == branch && gap.first_hour <= frame.hour && gap.last_hour >= frame.hour
@@ -2110,32 +1969,6 @@ fn sample_blocks_recorded(
     Ok((runs, approximate, identities))
 }
 
-/// The hour at `position` of a block held as several reads (each with its
-/// decoder and the request's tables it holds), decoded by each read's decoder
-/// and joined: each table from the read holding it, every other table
-/// unselected as a decoder of the request's tables alone leaves it. Each
-/// table's view depends only on its own updates, so the joined frame is that
-/// one decoder's frame. The caller drops it before the next hour, so decoders
-/// keep applying their deltas in place.
-fn advance(
-    decoders: &mut [(FrameDecoder, Vec<TableId>, &[Frame])],
-    position: usize,
-) -> io::Result<DecodedFrame> {
-    let mut joined: Option<DecodedFrame> = None;
-    for (decoder, selected, frames) in decoders.iter_mut() {
-        let decoded = decoder.advance(&frames[position])?;
-        match &mut joined {
-            None => joined = Some(decoded.clone()),
-            Some(joined) => {
-                for table in selected.iter() {
-                    joined.tables[table.index()] = decoded.tables[table.index()].clone();
-                }
-            }
-        }
-    }
-    joined.ok_or_else(|| crate::invalid("A block read holds no frames"))
-}
-
 /// The exact and rough reads as they were before shared block reads and
 /// read-ahead: every block read here, one at a time. Parity tests compare
 /// [`sample_blocks`] with it.
@@ -2147,7 +1980,7 @@ fn sample_blocks_serial(
     tables: &[TableId],
     requested: &[(String, String)],
     window: (i64, i32),
-    blocks: Vec<&replay::container::BlockIndex>,
+    blocks: Vec<&replay::campaign::BlockIndex>,
     sample: Sample<'_>,
     state_hours: Option<&[i32]>,
     cancelled: &AtomicBool,
@@ -2197,7 +2030,7 @@ fn sample_blocks_serial(
         let end = block.last_hour.min(window.1);
         if exact {
             let frames = replay.read_block_selected(block, tables)?;
-            let mut decoder = FrameDecoder::for_tables(tables);
+            let mut decoder = replay_frame::frame::FrameDecoder::for_tables(tables);
             for frame in &frames {
                 check_cancel(cancelled)?;
                 let decoded = decoder.advance(frame)?;
@@ -2260,9 +2093,7 @@ fn sample_blocks_serial(
             }
         } else {
             // Only the block's keyframe sections are read: no decode through the block.
-            let keyframe = replay.read_keyframe_recorded(block, tables)?;
-            let mut decoder = FrameDecoder::for_tables(tables);
-            let frame = decoder.advance(&keyframe)?;
+            let frame = &replay.block_first_frame(block, tables)?;
             let spans = crate::prepared::prefix::without_gaps(source, branch, start, end);
             if replay.gaps.iter().any(|gap| {
                 gap.branch == branch && gap.first_hour <= frame.hour && gap.last_hour >= frame.hour
@@ -2312,7 +2143,7 @@ fn sample_blocks_serial(
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, continuation_records, records, source as frame};
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use std::sync::Arc;
 
     #[test]
@@ -2717,7 +2548,7 @@ mod tests {
                 .replay_ref()
                 .seek_selected(1, first, Some(measure))
                 .unwrap();
-            let replay::container::SeekResult::Frame(alone) = alone else {
+            let replay::campaign::SeekResult::Frame(alone) = alone else {
                 panic!("the first hour is recorded");
             };
             for table in measure {
@@ -2959,7 +2790,6 @@ mod tests {
             .unwrap();
         let tables = crate::prepared_measure::TABLES;
         let flag = AtomicBool::new(false);
-        source.replay_ref().log_section_decodes();
         let (arrived, at_read) = channel();
         let (release, released) = channel();
         let result = std::thread::scope(|scope| {
@@ -2985,10 +2815,6 @@ mod tests {
         };
         assert_eq!(error.kind(), io::ErrorKind::Interrupted);
         assert_eq!(frames::reads(&source).0, 1);
-        assert!(
-            source.replay_ref().section_decodes().is_empty(),
-            "the token must reach the replay reader before it decodes any table"
-        );
         assert_eq!(frames::held(&source), 0);
         flag.store(false, Ordering::Release);
         let following = frames::block(&source, block, tables, &flag)
@@ -2996,98 +2822,6 @@ mod tests {
             .expect("the following read must fill the abandoned cache slot");
         assert!(!following.is_empty());
         assert_eq!(frames::reads(&source).0, 2);
-    }
-
-    #[test]
-    fn cancelling_an_uncacheable_exact_read_stops_at_the_fallback_boundary() {
-        use super::super::frames;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let source = Arc::new(varied_source());
-        let replay = source.replay_ref();
-        let block = &replay.index[0];
-        let tables = [TableId::Campaign, TableId::Countries];
-        let flag = Arc::new(AtomicBool::new(false));
-        let samples = std::cell::RefCell::new(Vec::new());
-        let sample =
-            |frame: &DecodedFrame, _: Option<&Recorded<'_>>, _: Option<&[(String, String)]>| {
-                samples.borrow_mut().push(frame.hour);
-                Ok(Samples::new())
-            };
-        let read = || {
-            sample_blocks_recorded(
-                &source,
-                block.branch,
-                &tables,
-                &[],
-                (i64::from(block.first_hour), block.last_hour),
-                vec![block],
-                &sample,
-                None,
-                true,
-                &flag,
-            )
-        };
-        replay.cache_decoded_sections(false);
-        replay.log_section_decodes();
-        frames::UNCACHEABLE.set(vec![TableId::Countries]);
-        let boundaries = Arc::new(AtomicUsize::new(0));
-        let at_boundary = Arc::new(AtomicUsize::new(0));
-        for cancel in [false, true] {
-            replay.log_section_decodes();
-            samples.borrow_mut().clear();
-            boundaries.store(0, Ordering::Release);
-            {
-                let source = Arc::clone(&source);
-                let flag = Arc::clone(&flag);
-                let boundaries = Arc::clone(&boundaries);
-                let at_boundary = Arc::clone(&at_boundary);
-                ON_UNCACHED_READ.set(Some(Box::new(move || {
-                    boundaries.fetch_add(1, Ordering::AcqRel);
-                    let decoded = source.replay_ref().wire_decodes().len();
-                    assert!(decoded > 0, "the first cache read must actually decode");
-                    at_boundary.store(decoded, Ordering::Release);
-                    if cancel {
-                        flag.store(true, Ordering::Release);
-                    }
-                })));
-            }
-            let result = read();
-            ON_UNCACHED_READ.set(None);
-            assert_eq!(
-                boundaries.load(Ordering::Acquire),
-                1,
-                "Ok(None) must be reached"
-            );
-            let before = at_boundary.load(Ordering::Acquire);
-            let after = replay.wire_decodes().len();
-            if cancel {
-                let error = result.unwrap_err();
-                assert_eq!(error.kind(), io::ErrorKind::Interrupted);
-                assert_eq!(error.to_string(), "Dashboard request cancelled");
-                assert_eq!(after, before, "the cancelled fallback must decode no table");
-                assert!(samples.borrow().is_empty());
-            } else {
-                result.unwrap();
-                assert!(
-                    after > before,
-                    "the uncancelled probe must decode the fallback"
-                );
-                assert_eq!(
-                    *samples.borrow(),
-                    (block.first_hour..=block.last_hour).collect::<Vec<_>>()
-                );
-            }
-            assert_eq!(frames::held(&source), 0);
-        }
-        flag.store(false, Ordering::Release);
-        samples.borrow_mut().clear();
-        read().unwrap();
-        frames::UNCACHEABLE.set(Vec::new());
-        assert_eq!(
-            *samples.borrow(),
-            (block.first_hour..=block.last_hour).collect::<Vec<_>>()
-        );
-        assert_eq!(frames::reads(&source).0, 3);
     }
 
     #[test]
@@ -3241,19 +2975,14 @@ mod tests {
         let fixture = crate::prepared::series::tests::Fixture::new();
         let mut replay = renamed_seed_recording();
         // Only the requested branch's first block is decoded; no later payload is
-        // needed to join supplied spans. Earlier blocks stay readable because the
-        // reader admits blocks in recording order.
-        let outside = replay.bytes().len() as u64;
+        // needed to join supplied spans.
         let keep = replay
             .index
             .iter()
             .position(|block| block.branch == 1)
             .unwrap();
-        for (position, block) in replay.index.iter_mut().enumerate() {
-            if position > keep {
-                // Offsets stay ordered for block lookup; any read runs past the file.
-                block.length = outside;
-            }
+        for position in keep + 1..replay.index.len() {
+            replay = Replay::open(replay.damaged_block(&replay.index[position]).unwrap()).unwrap();
         }
         let spans = BTreeMap::from([
             (("mod/new".into(), "fuel".into()), vec![(20, 21, 7, 9001)]),
@@ -3420,10 +3149,8 @@ mod tests {
         let mut replay = renamed_seed_recording();
         let selected = [TableId::Countries, TableId::CountryLinks];
         let first = replay.index.iter().find(|block| block.branch == 1).unwrap();
-        let keyframe = replay.read_keyframe_recorded(first, &selected).unwrap();
-        let mut decoder = FrameDecoder::for_tables(&selected);
         let mut prefix = HistoryScan::new(false, &[]);
-        prefix.observe(decoder.advance(&keyframe).unwrap());
+        prefix.observe(&replay.block_first_frame(first, &selected).unwrap());
         let mut writer = fixture.writer();
         writer
             .write_at(
@@ -3433,13 +3160,12 @@ mod tests {
             )
             .unwrap();
         writer.commit().unwrap();
-        let outside = replay.bytes().len() as u64;
-        for block in &mut replay.index {
-            block.offset = outside;
+        for position in 0..replay.index.len() {
+            replay = Replay::open(replay.damaged_block(&replay.index[position]).unwrap()).unwrap();
         }
         let first = replay.index.iter().find(|block| block.branch == 1).unwrap();
         assert!(
-            replay.read_keyframe_recorded(first, &selected).is_err(),
+            replay.block_first_frame(first, &selected).is_err(),
             "the seed read must fail if attempted"
         );
         let coverage = Coverage {
@@ -3993,7 +3719,6 @@ mod tests {
                 &sample,
                 || metadata.take(),
                 |held| metadata.set(*held),
-                |_| std::mem::size_of::<Option<i32>>(),
                 &flag,
             )
             .unwrap()
@@ -4068,7 +3793,6 @@ mod tests {
                 &crate::prepared_measure::sample,
                 || (),
                 |_: &()| {},
-                |_| 0,
                 &flag,
             )
             .unwrap();

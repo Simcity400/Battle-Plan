@@ -17,6 +17,7 @@
 //! The family is prepared from native recordings (`dashboard_ideas`); the row recording's scan
 //! below ([`Scan`]) is kept as its parity oracle.
 
+use replay_frame::frame::DecodedFrame;
 use super::{
     CountryParams, Product,
     idea_format::{LocalisedText, ModifierFormat},
@@ -39,11 +40,9 @@ use installed_content_core::{
     characters::BuiltTemplate, coverage::Gap, modifiers::Modifier, modifiers::Modifiers,
 };
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::{rows::TableId, rows::tables};
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Arc;
@@ -1406,14 +1405,13 @@ fn scan_selected(
         |blocks| {
             for (_, frames) in blocks {
                 crate::metadata::check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&TABLES);
                 let Ok(frames) = frames else {
                     scan.unreadable += 1;
                     continue;
                 };
                 for frame in frames {
                     crate::metadata::check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         scan.unreadable += 1;
                         break;
                     };

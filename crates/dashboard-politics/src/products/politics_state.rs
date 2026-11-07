@@ -29,7 +29,7 @@ use dashboard_base::{
     },
 };
 use dashboard_text::catalogue::View;
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

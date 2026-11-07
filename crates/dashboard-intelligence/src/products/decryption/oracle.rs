@@ -1,4 +1,5 @@
 //! Whole-branch parity oracle; production reads accepted prepared pages.
+use replay_frame::frame::DecodedFrame;
 use super::*;
 
 pub(super) fn scan(
@@ -26,7 +27,6 @@ pub(super) fn scan(
         |blocks| {
             for (block, frames) in blocks {
                 metadata::check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(error) => {
@@ -39,7 +39,7 @@ pub(super) fn scan(
                 };
                 for frame in frames {
                     metadata::check_cancel(cancelled)?;
-                    let decoded = match decoder.advance(&frame).and_then(|decoded| {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded).and_then(|decoded| {
                         metadata::validate_campaign(decoded, replay)?;
                         Ok(decoded)
                     }) {

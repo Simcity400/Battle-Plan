@@ -298,7 +298,7 @@ fn the_shared_registry_keeps_every_live_frame_and_prunes_dead_entries_on_decode(
     held.clear();
     assert!(weak.upgrade().is_none(), "the registry owns no frame");
     let current = state.frame(1, 228).unwrap();
-    let replay::container::SeekResult::Frame(expected) = replay.seek(1, 228).unwrap() else {
+    let replay::campaign::SeekResult::Frame(expected) = replay.seek(1, 228).unwrap() else {
         panic!("recorded hour")
     };
     assert_eq!(current, Current::Frame(Arc::from(expected)));

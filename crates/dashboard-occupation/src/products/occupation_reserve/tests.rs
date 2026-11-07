@@ -436,7 +436,7 @@ fn occupation_reserve_public_query_shape_and_cancellation() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let flag = AtomicBool::new(false);
     let frame = frame(100, Some(&[(1, 0, 2, 8)]), true, 2);
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[dashboard_base::test_fixtures::records(
             1,

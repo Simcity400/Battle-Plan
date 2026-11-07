@@ -2,16 +2,14 @@
 //! backend of every family ([`plan`]), the publication every family commits
 //! through ([`publication`]), and the entry ordinary preparation and its
 //! restoration go through. A recording's change-run index ([`super::change_runs`])
-//! is written by a lane of the families' union run over the native recording
-//! it indexes, or else prepared first. A recording with a native columnar recording
-//! beside it is prepared from that, every family by its native backend or refused
-//! by name ([`native`]); any other refuses every family and job by name ([`rows`]).
+//! is written by a lane of the families' union run over the recording it indexes,
+//! or else prepared first. Every family is prepared by its native backend or refused
+//! by name ([`native`]).
 
 pub mod native;
 pub(crate) mod plan;
 pub(crate) mod publication;
 pub mod registry;
-mod rows;
 
 use super::{
     Section, State,
@@ -51,17 +49,8 @@ pub fn prepare(
         let recording = native::recording(source)?;
         // An index of the recording the families walk is one more lane of their union run: the
         // recording is walked once. Any other is prepared first, in runs of its own.
-        let (riding, _) = index.take(recording.as_ref(), cancelled)?;
-        let mut done = match recording {
-            Some(recording) => {
-                native::prepare(source, content, recording, riding, cancelled, &mut forward)?
-            }
-            None => {
-                let done = rows::prepare(source, content, cancelled)?;
-                forward(&done);
-                done
-            }
-        };
+        let (riding, _) = index.take(Some(&recording), cancelled)?;
+        let mut done = native::prepare(source, content, recording, riding, cancelled, &mut forward)?;
         if let Some(reason) = refused {
             map_refused(&mut done.sections, &reason);
         }
@@ -84,10 +73,7 @@ pub fn restore(
         Outcome::Indexed => None,
         Outcome::Refused(reason) => Some(reason),
     };
-    let mut restored = match native::recording(source)? {
-        Some(recording) => native::restore(source, content, &recording, cancelled)?,
-        None => rows::restore(source, content, cancelled)?,
-    };
+    let mut restored = native::restore(source, content, &native::recording(source)?, cancelled)?;
     if let (Some(accepted), Some(reason)) = (&mut restored, refused) {
         map_refused(&mut accepted.sections, &reason);
     }

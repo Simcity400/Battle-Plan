@@ -3,13 +3,13 @@
 //! saves both full-handle words.
 use super::{Report, complete, country_context, invalid, required_country_tag};
 use installed_content_save::Save;
-use replay::{container::Replay, container::SeekResult};
+use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{
     rows::CountryRow, rows::DivisionDeletionDisposition, rows::EquipmentDestructionCause,
     rows::EquipmentDestructionCoverage, rows::Recorded, rows::RowCodec, rows::TableId,
     rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -226,20 +226,26 @@ fn division_history(replay: &Replay, frame: &DecodedFrame) -> io::Result<Divisio
         .iter()
         .filter(|block| block.branch == frame.branch && block.first_hour < frame.hour)
     {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for earlier in replay.read_block_selected(block, &selected)? {
-            if earlier.hour >= frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &selected,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour >= frame.hour {
+                return Ok(false);
             }
-            if earlier.hour > next_hour {
-                history.unrecorded_hours += (i64::from(earlier.hour) - i64::from(next_hour)) as u64;
+            if hour_frame.hour > next_hour {
+                history.unrecorded_hours += (i64::from(hour_frame.hour) - i64::from(next_hour)) as u64;
             }
-            next_hour = earlier
+            next_hour = hour_frame
                 .hour
                 .checked_add(1)
                 .ok_or_else(|| invalid("division deletion history hour overflows"))?;
-            history.observe(decoder.advance(&earlier)?)?;
-        }
+            history.observe(Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?)?;
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     if frame.hour > next_hour {
         history.unrecorded_hours += (i64::from(frame.hour) - i64::from(next_hour)) as u64;

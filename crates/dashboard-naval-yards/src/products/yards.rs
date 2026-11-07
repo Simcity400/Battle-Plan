@@ -20,7 +20,7 @@ use dashboard_text::{
     variant_names::{self, RawVariant, Tags, Texts},
 };
 pub use naming::*;
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{self, TABLE_COUNT, TableId, TableSchema, tables},

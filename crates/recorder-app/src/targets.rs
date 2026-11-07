@@ -1,6 +1,6 @@
 //! Where each campaign records: the save folder, or its last New file's folder; one recording each.
 use replay::{
-    container::Replay, recorder_settings::NextLoad, recorder_settings::RecorderSettings,
+    campaign::Replay, recorder_settings::NextLoad, recorder_settings::RecorderSettings,
     recording_files,
 };
 use replay_data::scope::CaptureMode;
@@ -174,7 +174,7 @@ pub(crate) mod tests {
 
     /// A file with a recording's header naming `campaign`.
     pub(crate) fn recording_file(path: &Path, campaign: &str) {
-        let replay = replay::container::Replay::from_records(
+        let replay = replay::campaign::Replay::from_records(
             campaign.as_bytes().to_vec(),
             &[vec![replay::spool::Record::SessionStart(
                 replay_data::identity::SessionStart {

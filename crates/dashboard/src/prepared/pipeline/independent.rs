@@ -72,7 +72,7 @@ use crate::{
 };
 use dashboard_base::prepared::pages::{Committed, HeldPages, Pages};
 use dashboard_base::prepared::priority::{JobPriority, Level};
-use replay::{container::BlockIndex, container::Replay};
+use replay::{campaign::BlockIndex, campaign::Replay};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
@@ -1176,7 +1176,7 @@ pub(super) fn prepare(
             .collect();
         replay.section_reader(run.progress.next_block, &tables, run.own.family().name)
     };
-    let section_consumers: Vec<Option<replay::container::SectionConsumer>> = runs
+    let section_consumers: Vec<Option<replay::campaign::SectionConsumer>> = runs
         .iter()
         .map(|run| (at_once || !run.own.paced()).then(|| reader(run)))
         .collect();
@@ -1342,7 +1342,7 @@ pub(super) fn prepare(
                 .zip(section_consumers)
                 .partition(|(run, _)| run.own.paced());
             let prepare_one =
-                |run: Run, section_consumer: Option<replay::container::SectionConsumer>| -> Ran {
+                |run: Run, section_consumer: Option<replay::campaign::SectionConsumer>| -> Ran {
                     let (mut own_timings, mut own_workers) = local();
                     // A paced family's reader is registered as it starts.
                     let section_consumer = section_consumer.unwrap_or_else(|| reader(&run));
@@ -1618,7 +1618,7 @@ fn prepare_family(
     phase: &Phase<'_>,
     pool: &Pool,
     member: Option<shared::Member<'_>>,
-    section_consumer: replay::container::SectionConsumer,
+    section_consumer: replay::campaign::SectionConsumer,
     run: Run,
     pace_all: bool,
     commits: &Group<'_>,

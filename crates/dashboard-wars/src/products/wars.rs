@@ -35,10 +35,8 @@ use dashboard_text::metadata::branch_bounds;
 use dashboard_text::metadata::validate_campaign;
 use native::{Blob, Pair, World, pair};
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows, rows::TableId, rows::tables};
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
@@ -1343,7 +1341,6 @@ fn scan_selected(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(invalid("Wars request cancelled"));
                 }
-                let mut decoder = FrameDecoder::for_tables(TABLES);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(e) => {
@@ -1355,7 +1352,7 @@ fn scan_selected(
                     if cancelled.load(Ordering::Acquire) {
                         return Err(invalid("Wars request cancelled"));
                     }
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(frame) => frame,
                         Err(e) => {
                             walk.warnings.insert(format!("Wars frame unreadable: {e}"));

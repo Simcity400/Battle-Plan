@@ -2,8 +2,8 @@
 //! executor and read as the row decoder's frames, so the viewer and products read any hour's
 //! tables without walking the recording.
 //!
-//! One index holds a recording's native recordings, one per session ([`whole`]), their runs in
-//! turn, and names the sessions still being recorded, whose hours it holds none of yet.
+//! One index holds a campaign recording's runs ([`whole`]) as the recording held them when it
+//! was prepared.
 //! [`Preparation`] is one lane of a segment run of each: every segment's walk writes its
 //! strips' pages, packed with zstd on the walk's worker, to a file of its own in the
 //! preparation's folder, its open pages' bytes to another until they close; the lane's emit
@@ -20,19 +20,16 @@
 //! at a few keys.
 
 use crate::{
-    branches::BranchStart,
+    campaign::{Parallel, Replay},
     columnar_file::Capture,
     columnar_frames::{Damage, Recording, Segment, Views, metrics, schema, wire},
-    container::{BlockIndex, Parallel, Replay},
     format::FormatVersion,
     frame::{DecodedFrame, Metrics, TableView},
-    identity::{Identity, IdentityCodec, SessionStart},
     rows::TableId,
     scope::CaptureMode,
     segments::{
         self, Cancellation, Chunk, Ending, Hour, Lane, Loss, Operator, Settings, Sink, Start,
     },
-    spool::ControlRecord,
 };
 use engine_allocation::labels::{self, Kind as Label};
 use job_priority::SpawnCarried as _;
@@ -524,342 +521,18 @@ fn copy(path: &Path, length: u64, out: &mut impl Write, buffer: &mut Vec<u8>) ->
     Ok(())
 }
 
-/// Why `runs` (branch, first hour, ordinals) do not hold exactly the hours `index`'s blocks
-/// record, naming the first hours at fault; none when they do: every block's first and last
-/// hours lie in a run of its branch, every run's hours lie within its branch's blocks, and no
-/// two runs hold one hour. An hour inside a block that no run holds was dropped, as a native
-/// run ends at every dropped hour; the row recording skips it within the block. No runs hold
-/// no blocks.
-pub fn uncovered<'b, I>(index: I, runs: &[(u64, i32, u32)]) -> Option<String>
-where
-    I: IntoIterator<Item = &'b BlockIndex>,
-    I::IntoIter: Clone,
-{
-    let index = index.into_iter();
-    let span = |first: i32, ordinals: u32| {
-        let first = i64::from(first);
-        (first, first + i64::from(ordinals) - 1)
-    };
-    let held = |branch: u64, hour: i32| {
-        runs.iter().any(|&(run, first, ordinals)| {
-            let (first, last) = span(first, ordinals);
-            run == branch && (first..=last).contains(&i64::from(hour))
-        })
-    };
-    for block in index.clone() {
-        if let Some(hour) = [block.first_hour, block.last_hour]
-            .into_iter()
-            .find(|&hour| !held(block.branch, hour))
-        {
-            return Some(format!(
-                "No native run holds hour {hour} of branch {}",
-                block.branch
-            ));
-        }
-    }
-    for (at, &(branch, first, ordinals)) in runs.iter().enumerate() {
-        let (start, last) = span(first, ordinals);
-        // A run's hours, block after block of its branch, with no hour outside one.
-        let mut next = start;
-        let mut blocks: Vec<&BlockIndex> = index
-            .clone()
-            .filter(|block| {
-                block.branch == branch
-                    && i64::from(block.last_hour) >= start
-                    && i64::from(block.first_hour) <= last
-            })
-            .collect();
-        blocks.sort_by_key(|block| block.first_hour);
-        for block in blocks {
-            if i64::from(block.first_hour) > next {
-                break;
-            }
-            next = next.max(i64::from(block.last_hour) + 1);
-        }
-        if ordinals != 0 && next <= last {
-            return Some(format!(
-                "Branch {branch}'s native run from hour {first} holds hour {next}, which the \
-                 recording does not"
-            ));
-        }
-        let overlaps = runs[..at].iter().any(|&(other, earlier, count)| {
-            let (from, to) = span(earlier, count);
-            other == branch && from <= last && start <= to
-        });
-        if overlaps {
-            return Some(format!(
-                "Two native runs of branch {branch} hold hour {first} or hours after it"
-            ));
-        }
-    }
-    None
-}
-
-/// Whether `runs` hold exactly the hours `index`'s blocks record ([`uncovered`]).
-pub fn covers(index: &[BlockIndex], runs: &[(u64, i32, u32)]) -> bool {
-    uncovered(index, runs).is_none()
-}
-
-/// The value `bytes` record in format `format`, when they hold exactly one.
-fn recorded<T: IdentityCodec>(bytes: &[u8], format: u16) -> Option<T> {
-    let mut decoder = crate::codec::Decoder::new(bytes);
-    decoder.format = format;
-    let value = T::decode(&mut decoder).ok()?;
-    decoder.finish().ok()?;
-    Some(value)
-}
-
-/// `value` in its recorded form.
-fn encoded(value: &impl IdentityCodec) -> Option<Vec<u8>> {
-    let mut out = Vec::new();
-    value.encode(&mut out).ok().map(|()| out)
-}
-
-/// What of a replay its native recordings are held against: its campaign and capture mode, its
-/// sessions, the session of each branch, the hours its blocks record, and its control records,
-/// which record where each session's capture ended.
-#[derive(Clone, Copy)]
-struct Sessions<'r> {
-    campaign: &'r [u8],
-    capture_mode: u8,
-    sessions: &'r [SessionStart],
-    branches: &'r [BranchStart],
-    index: &'r [BlockIndex],
-    controls: &'r [ControlRecord],
-}
-
-impl<'r> Sessions<'r> {
-    fn of(replay: &'r Replay) -> Self {
-        Self {
-            campaign: &replay.campaign_id,
-            capture_mode: replay.capture_mode.byte(),
-            sessions: &replay.sessions,
-            branches: &replay.branches,
-            index: &replay.index,
-            controls: &replay.controls,
-        }
-    }
-
-    /// Whether it records that session `id`'s capture ended: the last of the session's control
-    /// records is its detach, or its capture's failure. A capture that went on after a detach
-    /// records its reattachment after it.
-    fn ended(self, id: u64) -> bool {
-        self.controls
-            .iter()
-            .rev()
-            .find(|control| control.session() == id)
-            .is_some_and(|control| {
-                matches!(
-                    control,
-                    ControlRecord::Detach { .. } | ControlRecord::Partial { .. }
-                )
-            })
-    }
-
-    /// Whether `branch` is of a session whose capture it does not record the end of.
-    fn open(self, branch: u64) -> bool {
-        self.of_branch(branch)
-            .is_some_and(|at| !self.ended(self.sessions[at].id))
-    }
-
-    /// The starts of its sessions whose capture it does not record the end of, encoded as it
-    /// records them, in its sessions' order.
-    fn pending(self) -> io::Result<Vec<Vec<u8>>> {
-        let mut pending = Vec::new();
-        for session in self.sessions {
-            if !self.ended(session.id) {
-                let start = encoded(session)
-                    .ok_or_else(|| invalid("A session's start cannot be encoded"))?;
-                engine_allocation::reserve(&mut pending, 1)?;
-                pending.push(start);
-            }
-        }
-        Ok(pending)
-    }
-
-    /// The branches of the sessions whose starts, as it encodes them, `starts` holds, each
-    /// with its session.
-    fn branches_of(self, starts: &[Vec<u8>]) -> Vec<(u64, u64)> {
-        self.branches
-            .iter()
-            .filter(|branch| {
-                self.sessions
-                    .iter()
-                    .find(|session| session.id == branch.session)
-                    .and_then(encoded)
-                    .is_some_and(|start| starts.contains(&start))
-            })
-            .map(|branch| (branch.id, branch.session))
-            .collect()
-    }
-
-    /// The place among its sessions of the session `branch` belongs to.
-    fn of_branch(self, branch: u64) -> Option<usize> {
-        let session = self.branches.iter().find(|held| held.id == branch)?.session;
-        self.sessions.iter().position(|held| held.id == session)
-    }
-
-    /// Whether `capture`, the capture of a recording of `runs` (branch, first hour, ordinals),
-    /// is its: its campaign and capture mode, and for every run the session its branch belongs
-    /// to, with that session's content identity. The capture holds them in the row recording's
-    /// format, so they are compared as read, not as this release would encode them.
-    fn captured(self, capture: &Capture, runs: &[(u64, i32, u32)]) -> bool {
-        let content = recorded::<Identity>(&capture.content, capture.format);
-        capture.campaign_id == self.campaign
-            && capture.capture_mode == self.capture_mode
-            && capture.run_sessions.len() == runs.len()
-            && runs
-                .iter()
-                .zip(&capture.run_sessions)
-                .all(|(&(branch, _, _), &session)| {
-                    self.of_branch(branch).is_some_and(|at| {
-                        let held = &self.sessions[at];
-                        capture
-                            .sessions
-                            .get(session as usize)
-                            .and_then(|start| recorded::<SessionStart>(start, capture.format))
-                            .as_ref()
-                            == Some(held)
-                            && content.as_ref() == Some(&held.identity)
-                    })
-                })
-    }
-}
-
-/// Whether `capture`, the capture of a recording of `runs` (branch, first hour, ordinals), is
-/// `replay`'s: its campaign and capture mode, and for every run the session its branch
-/// belongs to in `replay`, with that session's content identity.
-pub fn captures(capture: &Capture, runs: &[(u64, i32, u32)], replay: &Replay) -> bool {
-    Sessions::of(replay).captured(capture, runs)
-}
-
-/// What one index of a replay holds: its campaign, the native recordings of its sessions whose
-/// capture ended, in its sessions' order, and the starts of its sessions still being recorded,
-/// encoded as it records them, none of whose hours the index holds yet. A replay none of whose
-/// sessions ended has an index of no native recording.
+/// What one index of a campaign's recording holds: its campaign and the recording.
 pub struct Whole {
     pub campaign: Vec<u8>,
     pub recordings: Vec<Recording>,
-    pub pending: Vec<Vec<u8>>,
 }
 
-/// `recordings`, each with its name, as the native recordings one index of `replay` holds:
-/// each undamaged and naming its capture, which is the capture of one of `replay`'s sessions
-/// ([`captures`]), ordered as `replay`'s sessions are and a session's several as given, and
-/// together holding exactly the hours `replay` records of the sessions whose capture it records
-/// the end of, gaps and all ([`uncovered`]), none or not; a session's several hold its hours
-/// together, none twice and none left between them. A session it records no end of is still being
-/// recorded: its hours are pending, and a native recording of it is left for when it ends. Why
-/// not, naming the recording, the session or the hours at fault.
-pub fn whole(
-    recordings: Vec<(String, Recording)>,
-    replay: &Replay,
-) -> io::Result<Result<Whole, String>> {
-    whole_of(recordings, Sessions::of(replay))
-}
-
-/// [`whole`], against `replay`'s sessions and hours.
-fn whole_of(
-    recordings: Vec<(String, Recording)>,
-    replay: Sessions<'_>,
-) -> io::Result<Result<Whole, String>> {
-    let mut placed: Vec<(usize, String, Recording, Vec<(u64, i32, u32)>)> = Vec::new();
-    for (name, recording) in recordings {
-        if let Some(damage) = recording.damage().first() {
-            return Ok(Err(format!("{name} cannot be read whole: {damage}")));
-        }
-        let Some(held) = recorded_runs(&recording)? else {
-            return Ok(Err(format!("{name} cannot be read whole")));
-        };
-        let capture = match recording.capture() {
-            Ok(Some(capture)) => capture,
-            Ok(None) => return Ok(Err(format!("{name} names no capture"))),
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
-                return Ok(Err(format!("{name}'s capture cannot be read: {error}")));
-            }
-            Err(error) => return Err(error),
-        };
-        let session = held
-            .first()
-            .and_then(|&(branch, _, _)| replay.of_branch(branch));
-        let Some(session) = session.filter(|_| {
-            recording.campaign() == replay.campaign && replay.captured(&capture, &held)
-        }) else {
-            return Ok(Err(format!(
-                "{name} is not the native recording of a session of this recording"
-            )));
-        };
-        if !replay.ended(replay.sessions[session].id) {
-            continue;
-        }
-        engine_allocation::reserve(&mut placed, 1)?;
-        placed.push((session, name, recording, held));
-    }
-    // Stable: a session's captures keep the order given, the order they were published in.
-    placed.sort_by_key(|&(session, _, _, _)| session);
-    for captures in placed.chunk_by(|a, b| a.0 == b.0) {
-        let [(session, ..), _, ..] = captures else {
-            continue;
-        };
-        let mut runs = Vec::new();
-        for (_, _, _, held) in captures {
-            engine_allocation::reserve(&mut runs, held.len())?;
-            runs.extend_from_slice(held);
-        }
-        let session = *session;
-        let blocks = replay.index.iter().filter(move |block| {
-            !replay.open(block.branch) && replay.of_branch(block.branch) == Some(session)
-        });
-        if let Some(reason) = uncovered(blocks, &runs) {
-            let names: Vec<&str> = captures.iter().map(|(_, name, _, _)| name.as_str()).collect();
-            return Ok(Err(format!(
-                "{} do not hold session {}'s hours together: {reason}",
-                names.join(", "),
-                replay.sessions[session].id
-            )));
-        }
-    }
-    let mut runs = Vec::new();
-    for (_, _, _, held) in &placed {
-        engine_allocation::reserve(&mut runs, held.len())?;
-        runs.extend_from_slice(held);
-    }
-    let finished = replay
-        .index
-        .iter()
-        .filter(|block| !replay.open(block.branch));
-    if let Some(reason) = uncovered(finished, &runs) {
-        // Ended sessions whose branches the recording holds hours of, with no native recording.
-        let missing: Vec<String> = replay
-            .sessions
-            .iter()
-            .enumerate()
-            .filter(|&(at, session)| {
-                !placed.iter().any(|&(held, _, _, _)| held == at)
-                    && replay.ended(session.id)
-                    && replay.branches.iter().any(|branch| {
-                        branch.session == session.id
-                            && replay.index.iter().any(|block| block.branch == branch.id)
-                    })
-            })
-            .map(|(_, session)| session.id.to_string())
-            .collect();
-        return Ok(Err(match missing.as_slice() {
-            [] => reason,
-            missing => format!(
-                "No native recording holds the hours of session {}: {reason}",
-                missing.join(", ")
-            ),
-        }));
-    }
-    Ok(Ok(Whole {
-        campaign: engine_allocation::copy_vec(replay.campaign)?,
-        recordings: placed
-            .into_iter()
-            .map(|(_, _, recording, _)| recording)
-            .collect(),
-        pending: replay.pending()?,
-    }))
+/// The recording `replay` holds, as an index of it holds it.
+pub fn whole(replay: &Replay) -> io::Result<Whole> {
+    Ok(Whole {
+        campaign: engine_allocation::copy_vec(&replay.campaign_id)?,
+        recordings: vec![replay.recording().selecting(&TableId::ALL)?],
+    })
 }
 
 /// Each readable run of `recording` (branch, first hour, ordinals); none when any cannot be
@@ -907,7 +580,6 @@ pub struct Preparation<W> {
     firsts: Vec<u32>,
     /// The tables each native recording's lane reads: those indexed it does not withhold.
     reads: Vec<Vec<TableId>>,
-    pending: Vec<Vec<u8>>,
     tables: Vec<usize>,
     /// The same tables, as its lanes read them.
     ids: Vec<TableId>,
@@ -921,7 +593,7 @@ pub struct Preparation<W> {
 
 impl<W: Write + Send + 'static> Preparation<W> {
     /// The index of `tables` of `whole`'s native recordings, of its campaign, their runs in
-    /// turn, naming its pending sessions, laid out as `layout`, its pages packed at zstd
+    /// turn, laid out as `layout`, its pages packed at zstd
     /// `level`, into `out`, its walks' files in a folder of its own in `scratch`. Every
     /// readable run is indexed whole; an unreadable one holds no hours.
     pub fn new(
@@ -990,11 +662,6 @@ impl<W: Write + Send + 'static> Preparation<W> {
             natives,
             firsts,
             reads,
-            pending: whole
-                .pending
-                .iter()
-                .map(|start| engine_allocation::copy_vec(start))
-                .collect::<io::Result<_>>()?,
             tables,
             kinds,
             level,
@@ -1099,7 +766,6 @@ impl<W: Write + Send + 'static> Preparation<W> {
             tables: self.index.tables.clone(),
             runs: runs_of(&self.index),
             natives: self.natives,
-            pending: self.pending,
         }
         .write()?;
         let (mut out, directory_at) = self.store.finish()?;
@@ -1124,7 +790,7 @@ impl<W: Write + Send + 'static> Preparation<W> {
 /// The index of `tables` of `whole` ([`whole`]): its native recordings, of one campaign, laid
 /// out as `layout` and packed at `level`, written to `out` by a segment run of each in turn on
 /// `threads` workers, its walks' files and the runs' spool in a folder of its own in `scratch`,
-/// stopping once `stop` is set, and its pending sessions named: every recording applies every
+/// stopping once `stop` is set: every recording applies every
 /// table indexed. Each run's statistics. An index stopped, or any segment of which reached its
 /// emit short or not at all, is refused and never finished.
 #[allow(clippy::too_many_arguments)]
@@ -1321,8 +987,6 @@ pub struct Summary {
     pub tables: Vec<usize>,
     pub runs: Vec<(u64, i32, u32)>,
     pub natives: Vec<Native>,
-    /// Each pending session's start, encoded as its recording records it.
-    pub pending: Vec<Vec<u8>>,
 }
 
 impl Summary {
@@ -1384,11 +1048,6 @@ impl Summary {
                 writer.raw(reason.as_bytes())?;
             }
         }
-        writer.varint(self.pending.len() as u64)?;
-        for start in &self.pending {
-            writer.varint(start.len() as u64)?;
-            writer.raw(start)?;
-        }
         Ok(writer.into_bytes())
     }
 
@@ -1443,11 +1102,6 @@ impl Summary {
                 withheld,
             });
         }
-        let count = reader.count()?;
-        let mut pending = engine_allocation::vec(count.min(bytes.len()))?;
-        for _ in 0..count {
-            pending.push(owned(&mut reader)?);
-        }
         reader.finish()?;
         if natives
             .iter()
@@ -1462,24 +1116,22 @@ impl Summary {
             tables,
             runs,
             natives,
-            pending,
         })
     }
 
-    /// Whether it indexes exactly `tables` of `recordings`, in order, with `pending` the
-    /// sessions still being recorded: of their campaign, each with the same identity and
-    /// capture, and every run of the same branch, first hour and hours, holding what it holds.
-    /// Another recording in place of one, one more or one fewer, or a session pending or no
-    /// longer, is not indexed.
-    pub fn indexes(
-        &self,
-        recordings: &[Recording],
-        pending: &[Vec<u8>],
-        tables: &[TableId],
-    ) -> bool {
+    /// Whether it indexes exactly `tables` of `recordings`, in order: of their campaign, each
+    /// with the same identity and capture, and every run of the same branch, first hour and
+    /// hours, holding what it holds. Another recording in place of one, one more or one fewer,
+    /// is not indexed.
+    pub fn indexes(&self, recordings: &[Recording], tables: &[TableId]) -> bool {
         let mut expected: Vec<usize> = tables.iter().map(|table| table.index()).collect();
         expected.sort_unstable();
         expected.dedup();
+        self.tables == expected && self.holds_runs(recordings)
+    }
+
+    /// Whether its runs are exactly `recordings`', in order, each holding what it holds.
+    fn holds_runs(&self, recordings: &[Recording]) -> bool {
         let mut runs = self.runs.iter();
         let natives = recordings
             .iter()
@@ -1503,50 +1155,12 @@ impl Summary {
                         )
                     })
             });
-        self.tables == expected
-            && recordings.len() == self.natives.len()
-            && natives
-            && runs.next().is_none()
-            && self.pending == pending
+        recordings.len() == self.natives.len() && natives && runs.next().is_none()
     }
 
-    /// Whether it holds exactly the hours `replay` records, gaps and all, but those of its
-    /// pending sessions, of its campaign and sessions: every native recording's capture is one
-    /// of `replay`'s sessions ([`captures`]), its pending sessions are exactly those `replay`
-    /// records no end of, and together the native recordings' runs hold the hours of the
-    /// others ([`uncovered`]). An index of a recording naming no capture serves no replay.
+    /// Whether it holds exactly the hours `replay`'s recording holds, as that is now.
     pub fn records(&self, replay: &Replay) -> bool {
-        self.held_by(Sessions::of(replay))
-    }
-
-    /// [`Self::records`], against `replay`'s sessions and hours.
-    fn held_by(&self, replay: Sessions<'_>) -> bool {
-        let mut runs = &self.runs[..];
-        let captured = self.natives.iter().all(|native| {
-            let all = runs;
-            let (held, rest) = all.split_at(native.chains.len().min(all.len()));
-            runs = rest;
-            native
-                .capture
-                .as_ref()
-                .is_some_and(|capture| replay.captured(capture, held))
-        });
-        let held = replay
-            .index
-            .iter()
-            .filter(|block| !replay.open(block.branch));
-        self.campaign == replay.campaign
-            && captured
-            && replay
-                .pending()
-                .is_ok_and(|pending| pending == self.pending)
-            && uncovered(held, &self.runs).is_none()
-    }
-
-    /// The branches of `replay` whose session it holds pending, each with its session: their
-    /// hours are not indexed yet.
-    pub fn pending(&self, replay: &Replay) -> Vec<(u64, u64)> {
-        Sessions::of(replay).branches_of(&self.pending)
+        self.campaign == replay.campaign_id && self.holds_runs(std::slice::from_ref(replay.recording()))
     }
 
     /// Whether it holds `tables`.
@@ -1799,21 +1413,9 @@ impl IndexFile {
         self.summary.holds(tables)
     }
 
-    /// Whether it indexes exactly `tables` of `recordings`, with `pending` the sessions still
-    /// being recorded ([`Summary::indexes`]).
-    pub fn indexes(
-        &self,
-        recordings: &[Recording],
-        pending: &[Vec<u8>],
-        tables: &[TableId],
-    ) -> bool {
-        self.summary.indexes(recordings, pending, tables)
-    }
-
-    /// The branches of `replay` whose session it holds pending, each with its session
-    /// ([`Summary::pending`]).
-    pub fn pending(&self, replay: &Replay) -> Vec<(u64, u64)> {
-        self.summary.pending(replay)
+    /// Whether it indexes exactly `tables` of `recordings` ([`Summary::indexes`]).
+    pub fn indexes(&self, recordings: &[Recording], tables: &[TableId]) -> bool {
+        self.summary.indexes(recordings, tables)
     }
 
     /// Whether it holds exactly the hours `replay` records ([`Summary::records`]).

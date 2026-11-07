@@ -1,5 +1,5 @@
 use crate::test_fixtures::{CAMPAIGN, ownership_frame, records, scale_frame};
-use replay::{container::Replay, spool::Record};
+use replay::{campaign::Replay, spool::Record};
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{frame::TableUpdate, frame::TableView};
 use std::sync::atomic::AtomicBool;
@@ -399,7 +399,7 @@ fn land_owners_keep_partial_positive_evidence_and_do_not_reuse_lost_baselines() 
 }
 
 #[test]
-fn land_owner_scan_honors_cancellation_and_block_budget() {
+fn land_owner_scan_honors_cancellation_and_reports_an_unreadable_block() {
     let mut replay = Replay::from_records(
         CAMPAIGN.into(),
         &[records(1, vec![ownership_frame(1, 100, 11)])],
@@ -411,9 +411,8 @@ fn land_owner_scan_honors_cancellation_and_block_budget() {
             .kind(),
         std::io::ErrorKind::Interrupted
     );
-    // The container refuses an oversized block before decompressing it; the
-    // product reports the gap instead of trusting a partial catalogue.
-    replay.index[0].raw_length = replay::container::MAX_BLOCK_RAW_BYTES as u64 + 1;
+    // The product reports the gap instead of trusting a partial catalogue.
+    replay = Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap();
     let owners = crate::land_owners(&replay, None, &AtomicBool::new(false)).unwrap();
     assert!(owners.countries.is_empty());
     assert!(!owners.warnings.is_empty());

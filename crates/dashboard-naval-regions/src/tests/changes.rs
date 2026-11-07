@@ -5,7 +5,7 @@ use dashboard_base::prepared::{
     prepass::Family,
     series::tests::{Fixture, assert_payloads_equal},
 };
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_frame::frame::SharedView;
 use serde::{Deserialize, Serialize};
 use std::io;

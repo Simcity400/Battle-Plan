@@ -9,7 +9,7 @@ use super::{
     facts::{self, Facts},
     prepared::{Prepared, PreparedContent},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{cadence, rows::TableId};
 use replay_frame::frame::{DecodedFrame, not_selected};
 use serde::{Deserialize, Serialize};

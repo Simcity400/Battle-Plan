@@ -4,7 +4,7 @@ use crate::{
     Artwork, FocusDatabase, Source,
     metadata::{check_cancel, validate_campaign},
 };
-use replay::container::{Replay, SeekResult};
+use replay::campaign::{Replay, SeekResult};
 use replay_data::rows::TableId;
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use serde::{Deserialize, Serialize};
@@ -302,7 +302,7 @@ impl FrameCache {
 }
 
 /// Reconstruct one exact hour without holding the shared cache mutex, reading its block only
-/// through that hour, then checking the whole block before the frame is kept.
+/// through that hour.
 fn read_frame(
     replay: &Replay,
     branch: u64,
@@ -311,11 +311,9 @@ fn read_frame(
     cancelled: &AtomicBool,
 ) -> io::Result<DecodedFrame> {
     check_cancel(cancelled)?;
-    let block = replay
-        .index
-        .iter()
-        .find(|block| block.branch == branch && block.first_hour <= hour && hour <= block.last_hour)
-        .ok_or_else(|| dashboard_core::refused("Focus artwork hour was not recorded"))?;
+    if replay.block_at(branch, hour).is_none() {
+        return Err(dashboard_core::refused("Focus artwork hour was not recorded"));
+    }
     let mut selected = BTreeSet::from(BASIC_TABLES);
     if scoped {
         selected.extend(crate::scripted_text::TABLES.iter().copied());
@@ -335,8 +333,6 @@ fn read_frame(
         }
     };
     validate_campaign(&decoded, replay)?;
-    // Only a frame of a verified block is kept.
-    replay.verify_block_with(block, || check_cancel(cancelled))?;
     check_cancel(cancelled)?;
     Ok(*decoded)
 }
@@ -1355,10 +1351,7 @@ mod tests {
             &reused.tables[TableId::Countries.index()]
         ));
         assert_eq!(frames.cache.lock().unwrap().reads, 3);
-        let mut bytes = replay.bytes().to_vec();
-        let block = &replay.index[0];
-        bytes[(block.offset + block.length - 1) as usize] ^= 0x40;
-        let corrupt = Replay::open(bytes).unwrap();
+        let corrupt = Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap();
         let invalid = SharedFrames::default();
         assert!(invalid.at(&corrupt, 1, 10, true, &live).is_err());
         assert!(
@@ -1420,7 +1413,7 @@ mod tests {
                 let cached = cache
                     .at(source.replay_ref(), 1, hour, false, &cancelled)
                     .unwrap();
-                let replay::container::SeekResult::Frame(direct) = source
+                let replay::campaign::SeekResult::Frame(direct) = source
                     .replay_ref()
                     .seek_selected(1, hour, Some(&BASIC_TABLES))
                     .unwrap()
@@ -1539,10 +1532,7 @@ mod tests {
             &[records(1, vec![focus_scale_frame(100, 1, 0, &["focus_a"])])],
         )
         .unwrap();
-        let block = &valid.index[0];
-        let mut bytes = valid.bytes().to_vec();
-        bytes[(block.offset + block.length - 1) as usize] ^= 0x40;
-        let corrupt = Replay::open(bytes).unwrap();
+        let corrupt = Replay::open(valid.damaged_block(&valid.index[0]).unwrap()).unwrap();
         let (source, context, _folder) = product_source(corrupt);
         let params = CountryParams {
             branch_id: "1".into(),

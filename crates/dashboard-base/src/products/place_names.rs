@@ -31,9 +31,9 @@ use crate::{
     transport::json_len,
 };
 use installed_content_country_names::country_names;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{StateRow, TableId, tables};
-use replay_frame::frame::{ColumnFrame, DecodedFrame, DecodedSource, FrameDecoder, TableView};
+use replay_frame::frame::{ColumnFrame, DecodedFrame, DecodedSource, TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
@@ -787,9 +787,17 @@ fn read_names(
     } else {
         &NAME_TABLES
     };
-    for (block, mut hours) in blocks {
+    let keys: Vec<usize> = blocks.keys().copied().collect();
+        let wanted_hours = blocks.into_values();
+    dashboard_core::blocks::scan_blocks(
+        replay,
+        keys.iter().map(|&block| &replay.index[block]),
+        tables,
+        cancelled,
+        |reads| {
+            for ((_, read), mut hours) in reads.zip(wanted_hours) {
         check_cancel(cancelled)?;
-        let frames = match replay.read_block_selected(&replay.index[block], tables) {
+        let frames = match read {
             Ok(frames) => frames,
             Err(error) => {
                 for request in hours.values().flatten() {
@@ -800,13 +808,12 @@ fn read_names(
                 continue;
             }
         };
-        let mut decoder = FrameDecoder::for_tables(tables);
         for frame in frames {
             if hours.is_empty() {
                 break;
             }
             check_cancel(cancelled)?;
-            let decoded = match decoder.advance(&frame) {
+            let decoded = match Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(&frame.decoded) {
                 Ok(decoded) => decoded,
                 Err(error) => {
                     for request in hours.values().flatten() {
@@ -845,7 +852,10 @@ fn read_names(
                 }
             }
         }
-    }
+            }
+            Ok(())
+        },
+    )?;
     Ok((places, states))
 }
 

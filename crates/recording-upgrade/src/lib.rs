@@ -1,6 +1,6 @@
-//! Recording upgrades. Each step takes a recording lacking one change of the recording format
-//! to a copy that has it, losing nothing it held; the steps run in order, and the original is
-//! kept in a `.originals` folder beside it, which the recording library does not list.
+//! Recording upgrades. Each step adds to a recording lacking one change of the recording format
+//! what it lacks, losing nothing it held: the steps run in order, each added as a revision of the
+//! recording in place, after which the revision before stays in the file.
 
 use std::{
     io,
@@ -8,7 +8,7 @@ use std::{
 };
 
 use installed_content_core::content::{ResolveOptions, facts, proof};
-use replay::container::Replay;
+use replay::campaign::{CampaignWriter, Replay};
 
 /// Where an upgrade looks for what a recording needs: game folders, newest first, which may
 /// hold older versions of the game, and the user folder whose mods they mount.
@@ -25,89 +25,52 @@ pub enum Outcome {
     /// It has every change already.
     Current,
     Upgraded {
-        /// Where the original now is.
-        original: PathBuf,
         /// One line per step taken.
         steps: Vec<String>,
     },
 }
 
-/// One change of the recording format, made losslessly.
+/// One change of the recording format, made losslessly: what it adds, and a line saying so.
 struct Step {
     name: &'static str,
     applies: fn(&Replay) -> bool,
-    write: fn(&Replay, &Path, &Folders) -> io::Result<String>,
+    add: fn(&Replay, &Path, &Folders) -> io::Result<String>,
 }
 
 const STEPS: &[Step] = &[Step {
     name: "game facts",
     applies: |replay| replay.fact_packs.is_empty(),
-    write: add_facts,
+    add: add_facts,
 }];
 
-/// Upgrades the recording at `path` in place, keeping the original.
+/// Upgrades the recording at `path` in place.
 pub fn upgrade(path: &Path, folders: &Folders) -> io::Result<Outcome> {
     let opened = Replay::open_path(path)?;
     if STEPS.iter().all(|step| !(step.applies)(&opened)) {
         return Ok(Outcome::Current);
     }
     uncontinued(path, &opened)?;
-    let before = opened.revision();
     drop(opened);
-    let mut current = path.to_owned();
+    // No save adds to it meanwhile: every save holds the folder's naming lock.
+    let folder = std::fs::canonicalize(path)?;
+    let folder = folder.parent().unwrap_or_else(|| Path::new("."));
+    let _names = replay::recording_files::NamesLock::wait(folder)?;
     let mut steps = Vec::new();
-    let mut staged = Vec::new();
-    let result = (|| {
-        for (index, step) in STEPS.iter().enumerate() {
-            let replay = Replay::open_path(&current)?;
-            if !(step.applies)(&replay) {
-                continue;
-            }
-            let out = staging(path, index);
-            let _ = std::fs::remove_file(&out);
-            let summary = (step.write)(&replay, &out, folders)
-                .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", step.name)))?;
-            steps.push(format!("{}: {summary}", step.name));
-            staged.push(out.clone());
-            current = out;
+    for step in STEPS {
+        let replay = Replay::open_path(path)?;
+        uncontinued(path, &replay)?;
+        if !(step.applies)(&replay) {
+            continue;
         }
-        io::Result::Ok(())
-    })();
-    let finished = result.and_then(|()| {
-        if steps.is_empty() {
-            return Ok(Outcome::Current);
-        }
-        // No save starts an unsaved continuation of it, and no writer opens it, from the checks
-        // to the replacement, so nothing saved meanwhile is replaced or left unable to save.
-        let folder = std::fs::canonicalize(path)?;
-        let folder = folder.parent().unwrap_or_else(|| Path::new("."));
-        let _names = replay::recording_files::NamesLock::wait(folder)?;
-        let _excluding_writers = exclude_writers(path)?;
-        let now = Replay::open_path(path)?;
-        if now.revision() != before {
-            return Err(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "the recording was saved while it was upgraded; upgrade it again",
-            ));
-        }
-        uncontinued(path, &now)?;
-        drop(now);
-        let original = keep_original(path)?;
-        if let Err((replaced, error)) = publish(&current, path) {
-            // The original stays kept unless the recording certainly still holds it.
-            if !replaced {
-                let _ = std::fs::remove_file(&original);
-            }
-            return Err(error);
-        }
-        Ok(Outcome::Upgraded { original, steps })
-    });
-    for file in staged {
-        if file != current || finished.is_err() {
-            let _ = std::fs::remove_file(file);
-        }
+        let summary = (step.add)(&replay, path, folders)
+            .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", step.name)))?;
+        steps.push(format!("{}: {summary}", step.name));
     }
-    finished
+    Ok(if steps.is_empty() {
+        Outcome::Current
+    } else {
+        Outcome::Upgraded { steps }
+    })
 }
 
 /// Refuses a recording an unsaved recording is, or continues: that continuation must go on
@@ -129,74 +92,10 @@ fn uncontinued(path: &Path, replay: &Replay) -> io::Result<()> {
     }
 }
 
-fn staging(path: &Path, step: usize) -> PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_owned();
-    name.push(format!(".upgrade{step}.tmp"));
-    path.with_file_name(name)
-}
-
-/// `staged` in `path`'s place in one step, so the recording is never absent from its path; on
-/// failure, whether the replacement may have happened.
-fn publish(staged: &Path, path: &Path) -> Result<(), (bool, io::Error)> {
-    #[cfg(windows)]
-    {
-        use replay::publication::ReplaceError;
-        replay::publication::replace_file(staged, path).map_err(|error| match error {
-            ReplaceError::Unrenamed(error) => (false, error),
-            ReplaceError::Unflushed(error) => (true, error),
-        })
-    }
-    #[cfg(not(windows))]
-    {
-        std::fs::rename(staged, path).map_err(|error| (false, error))
-    }
-}
-
-/// The recording held open sharing reads and its replacement only, so no recorder can open it to
-/// add a save.
-fn exclude_writers(path: &Path) -> io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        const FILE_SHARE_READ: u32 = 1;
-        const FILE_SHARE_DELETE: u32 = 4;
-        options.share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE);
-    }
-    options.open(path).map_err(|error| {
-        io::Error::new(
-            error.kind(),
-            format!("the recording is being written; upgrade it later ({error})"),
-        )
-    })
-}
-
-/// Keeps the original beside the recording in `.originals`, under a name no other holds, as a
-/// second name of the same file, or a copy where the volume has no links.
-fn keep_original(path: &Path) -> io::Result<PathBuf> {
-    let folder = path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(".originals");
-    std::fs::create_dir_all(&folder)?;
-    let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-    let mut kept = folder.join(path.file_name().unwrap_or_default());
-    let mut number = 1;
-    while kept.exists() {
-        number += 1;
-        kept = folder.join(format!("{stem} ({number}).battleplan"));
-    }
-    if std::fs::hard_link(path, &kept).is_err() {
-        std::fs::copy(path, &kept)?;
-        std::fs::File::open(&kept)?.sync_all()?;
-    }
-    Ok(kept)
-}
-
 /// Adds the game facts the recording depends on, proven layer by layer from whichever game
 /// folders still hold each as recorded; facts no folder holds are withheld by name.
-fn add_facts(replay: &Replay, out: &Path, folders: &Folders) -> io::Result<String> {
+fn add_facts(replay: &Replay, path: &Path, folders: &Folders) -> io::Result<String> {
+
     let identity = &replay.identity;
     let mut candidates = Vec::new();
     let mut unusable = Vec::new();
@@ -230,7 +129,20 @@ fn add_facts(replay: &Replay, out: &Path, folders: &Folders) -> io::Result<Strin
         withheld,
     };
     let (pack, stats) = facts::write(&source, identity, tables, &folders.cache, &|| false)?;
-    replay.write_with_facts(out, &pack)?;
+    let level = replay::recorder_settings::RecorderSettings::load()
+        .map(|settings| settings.compression)
+        .unwrap_or_default()
+        .level();
+    let mut writer = CampaignWriter::resume(replay, path, level)?;
+    let before = replay.revision();
+    if let Err(error) = writer
+        .add_facts(&pack)
+        .and_then(|()| writer.revise(|file| file.sync_data()))
+    {
+        drop(writer);
+        let _ = replay::campaign::writer::roll_back(path, before);
+        return Err(error);
+    }
     let opened = facts::Pack::open(std::sync::Arc::new(pack), 0, stats.pack_bytes)?;
     let mut summary = format!(
         "{} files, {:.1} MB, carried in {:.1} MB",

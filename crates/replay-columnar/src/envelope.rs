@@ -1,4 +1,4 @@
-//! A columnar recording's saved-file envelope (`H4COLUMN` version 4).
+//! A recording's saved-file envelope (`H4COLUMN` version 6): one campaign, every session in it.
 //!
 //! The file is append-only: zstd extents in any order, then a [`Root`] extent, then a
 //! fixed [`FOOTER_BYTES`] footer naming the root. A writer appends extents, syncs, appends
@@ -17,9 +17,9 @@
 //! of the page before ([`IndexPage::chained`]), never past a restart, which walks start from.
 //! A restart's table is stored as a change from the run's
 //! previous restart's ([`RestartTable::base`]), every [`KEYFRAME_RESTARTS`]th whole. Dictionary
-//! ids are run-local. Each run's pages are listed by its own [`RunDirectory`] extent and the
-//! recording's control records by [`Kind::Controls`] extents, so a revision rewrites only the
-//! active run's directory and a small root.
+//! ids are run-local. Each run's pages are listed by its own [`RunDirectory`] extent, the
+//! campaign's records by [`Kind::Controls`] extents and its game facts by [`Kind::Facts`]
+//! extents, so a revision rewrites only the directories of the runs it adds to and a small root.
 //!
 //! The chain covers each block's extents by their digests ([`chain_block`]).
 
@@ -34,9 +34,9 @@ use std::io;
 mod tests;
 
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
-/// 5: each table's hours stored once per block of [`UNIT_ORDINALS`]; 4: restarts hold their
-/// kept tables' last complete reads ([`crate::restart::Last`]).
-pub const VERSION: u32 = 5;
+/// 6: a whole campaign in one file, its records and game facts in the root; 5: each table's
+/// hours stored once per block of [`UNIT_ORDINALS`].
+pub const VERSION: u32 = 6;
 pub const HEADER_BYTES: usize = 12;
 pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
@@ -128,8 +128,10 @@ pub enum Kind {
     Root = 6,
     /// One run's place in the campaign and its pages ([`RunDirectory`]).
     RunDirectory = 7,
-    /// Control records, opaque here and read by `replay`; each revision appends one.
+    /// Campaign records, opaque here and read by `replay`; each revision appends one.
     Controls = 8,
+    /// One pack of the game facts the recording carries, opaque here.
+    Facts = 9,
 }
 
 impl Kind {
@@ -143,6 +145,7 @@ impl Kind {
             6 => Self::Root,
             7 => Self::RunDirectory,
             8 => Self::Controls,
+            9 => Self::Facts,
             _ => return Err(invalid(format!("Unknown extent kind {byte}"))),
         })
     }
@@ -689,8 +692,10 @@ pub struct Root {
     pub revision: u64,
     /// Each run's directory, in run order.
     pub runs: Vec<Extent>,
-    /// The control records' extents, in the order `replay` reads them.
+    /// The campaign records' extents, in the order `replay` reads them.
     pub controls: Vec<Extent>,
+    /// The game facts packs' extents, oldest first.
+    pub facts: Vec<Extent>,
 }
 
 impl Root {
@@ -701,7 +706,7 @@ impl Root {
         writer.varint(identity.len() as u64)?;
         writer.raw(&identity)?;
         writer.varint(self.revision)?;
-        for list in [&self.runs, &self.controls] {
+        for list in [&self.runs, &self.controls, &self.facts] {
             writer.varint(list.len() as u64)?;
             for extent in list {
                 extent.write(&mut writer)?;
@@ -715,7 +720,7 @@ impl Root {
         let length = reader.count()?;
         let identity = Identity::read(reader.raw(length)?)?;
         let revision = reader.varint()?;
-        let mut lists = [Vec::new(), Vec::new()];
+        let mut lists = [Vec::new(), Vec::new(), Vec::new()];
         for list in &mut lists {
             let count = bounded(reader.count()?, usize::MAX, bytes, EXTENT_BYTES)?;
             *list = engine_allocation::vec(count)?;
@@ -724,18 +729,19 @@ impl Root {
             }
         }
         reader.finish()?;
-        let [runs, controls] = lists;
+        let [runs, controls, facts] = lists;
         let root = Self {
             identity,
             revision,
             runs,
             controls,
+            facts,
         };
         root.validate()?;
         Ok(root)
     }
 
-    /// Run `n`'s directory is the `n`th; controls are controls.
+    /// Run `n`'s directory is the `n`th; controls are controls and facts facts.
     fn validate(&self) -> io::Result<()> {
         for (at, run) in self.runs.iter().enumerate() {
             run.expect(
@@ -745,6 +751,9 @@ impl Root {
         }
         for controls in &self.controls {
             controls.expect(Kind::Controls, 0)?;
+        }
+        for facts in &self.facts {
+            facts.expect(Kind::Facts, 0)?;
         }
         Ok(())
     }

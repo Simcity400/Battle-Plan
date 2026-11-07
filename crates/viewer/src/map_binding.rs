@@ -1,5 +1,5 @@
 //! The change-run index a replay's map is read from: bound, or found in the replay's store.
-use replay::container::Replay;
+use replay::campaign::Replay;
 use std::{
     io,
     path::PathBuf,

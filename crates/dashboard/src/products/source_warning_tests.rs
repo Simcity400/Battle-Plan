@@ -1,7 +1,7 @@
 //! A source's lazy content warnings, as the product route serves them.
 
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use std::sync::{Arc, atomic::AtomicBool};
 
 pub(crate) const DIAGNOSTIC_PRODUCTS: [&str; 2] = ["diagnostic-a", "diagnostic-b"];

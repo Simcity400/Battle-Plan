@@ -489,7 +489,7 @@ mod tests {
             },
             "prepared-only.battleplan".into(),
             std::sync::Arc::new(
-                replay::container::Replay::from_records(
+                replay::campaign::Replay::from_records(
                     crate::test_fixtures::CAMPAIGN.into(),
                     &[crate::test_fixtures::records(
                         1,

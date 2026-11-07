@@ -478,7 +478,7 @@ fn query_daily_rule_prefix_and_zero_vs_unknown() {
         supremacy(25, Some(0), &[(11, 0)]),
     ];
     let (fixture, _) = publish::<NavalSupremacyObserver>(&frames);
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         test_fixtures::CAMPAIGN.into(),
         &[test_fixtures::records(1, frames.clone())],
     )
@@ -835,7 +835,7 @@ fn mod_replace_path_seas_names_terrain_and_defines_keep_raw_values() {
     };
     session.identity = identity;
     let replay =
-        replay::container::Replay::from_records(test_fixtures::CAMPAIGN.into(), &[records])
+        replay::campaign::Replay::from_records(test_fixtures::CAMPAIGN.into(), &[records])
             .unwrap();
     let flag = AtomicBool::new(false);
     let source = dashboard_base::Source::from_replay(
@@ -888,7 +888,7 @@ fn mod_replace_path_seas_names_terrain_and_defines_keep_raw_values() {
 }
 
 fn source_for_queries(frames: Vec<DecodedFrame>) -> dashboard_base::Source {
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         test_fixtures::CAMPAIGN.into(),
         &[test_fixtures::records(1, frames)],
     )

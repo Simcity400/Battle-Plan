@@ -139,7 +139,7 @@ pub fn strategic_regions(
 }
 
 pub fn check_replay(
-    replay: &replay::container::Replay,
+    replay: &replay::campaign::Replay,
     allow_unverified: bool,
     warnings: &mut Vec<String>,
 ) -> io::Result<()> {

@@ -31,11 +31,11 @@ pub fn sample_counts() -> Option<Vec<u32>> {
     })
 }
 
-pub fn campaign_key(replay: &replay::container::Replay) -> String {
+pub fn campaign_key(replay: &replay::campaign::Replay) -> String {
     try_campaign_key(replay).expect("campaign key allocation failed")
 }
 
-pub fn try_campaign_key(replay: &replay::container::Replay) -> io::Result<String> {
+pub fn try_campaign_key(replay: &replay::campaign::Replay) -> io::Result<String> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let length = engine_allocation::mul(replay.campaign_id.len(), 2)?;
     let mut key = engine_allocation::vec(length)?;

@@ -14,7 +14,7 @@ use super::{
 use crate::{Source, invalid, prepared::query::frames};
 use dashboard_core::transport::json_len;
 use dashboard_text::metadata::check_cancel;
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io, sync::atomic::AtomicBool};
 use ts_rs::TS;
@@ -150,7 +150,7 @@ fn load_with(
         return Ok(reply.reply);
     }
     // One block's hours at a time, so a block the pass cannot read is sought hour by hour.
-    let mut groups: Vec<(Option<&replay::container::BlockIndex>, &[i32])> = Vec::new();
+    let mut groups: Vec<(Option<&replay::campaign::BlockIndex>, &[i32])> = Vec::new();
     let mut rest = &hours[..];
     while let Some(&first) = rest.first() {
         let block = source.replay_ref().index.iter().find(|block| {
@@ -172,15 +172,15 @@ fn load_with(
     let blocks: Vec<_> = groups.iter().filter_map(|(block, _)| *block).collect();
     let hours_of: HashMap<u64, &[i32]> = groups
         .iter()
-        .filter_map(|(block, now)| block.map(|block| (block.offset, *now)))
+        .filter_map(|(block, now)| block.map(|block| (block.key(), *now)))
         .collect();
     let reader = std::thread::current().id();
-    let prefetch = |block: &replay::container::BlockIndex| {
+    let prefetch = |block: &replay::campaign::BlockIndex| {
         if std::thread::current().id() != reader {
             let _ = frames::hours(
                 source,
                 branch,
-                hours_of[&block.offset],
+                hours_of[&block.key()],
                 STYLE_TABLES,
                 cancelled,
                 |_, _| Ok(()),
@@ -218,7 +218,7 @@ fn load_with(
 fn read_groups(
     source: &Source,
     branch: u64,
-    groups: &[(Option<&replay::container::BlockIndex>, &[i32])],
+    groups: &[(Option<&replay::campaign::BlockIndex>, &[i32])],
     mut reply: Reply,
     cancelled: &AtomicBool,
 ) -> io::Result<CountryColourReply> {

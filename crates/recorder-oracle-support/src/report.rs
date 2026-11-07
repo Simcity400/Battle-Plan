@@ -4,7 +4,7 @@ use std::{
 };
 
 use installed_content_save::Decimal;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     BranchId, Hour, display::Step, identity::SampleBoundary, rows::TableId, rows::TableRows,
 };
@@ -104,17 +104,23 @@ pub fn last_read_hours(
         if daily.iter().all(|table| last.contains_key(table)) {
             break;
         }
-        for frame in replay.read_block_selected(index, &[])? {
-            if frame.hour > hour {
-                break;
-            }
-            for &table in &daily {
-                if daily_read(frame.hour, &frame.metrics, table) {
-                    let entry = last.entry(table).or_insert(frame.hour);
-                    *entry = (*entry).max(frame.hour);
+        replay.read_block_alone(
+            index,
+            &[],
+            |_, frame| {
+                if frame.hour > hour {
+                    return Ok(());
                 }
-            }
-        }
+                for &table in &daily {
+                    if daily_read(frame.hour, &frame.metrics, table) {
+                        let entry = last.entry(table).or_insert(frame.hour);
+                        *entry = (*entry).max(frame.hour);
+                    }
+                }
+                Ok(())
+            },
+            || Ok(()),
+        )?;
     }
     Ok(last)
 }

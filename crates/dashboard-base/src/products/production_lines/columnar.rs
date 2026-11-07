@@ -39,7 +39,7 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns::{self, Status},
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink, State},
 };
 use replay_data::{

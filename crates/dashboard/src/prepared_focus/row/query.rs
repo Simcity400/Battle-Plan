@@ -2,7 +2,7 @@
 //! that hour's block read on the progress its first hour starts from.
 use super::*;
 use crate::prepared::series::Reader;
-use replay::{container::BlockChange, container::BlockIndex};
+use replay::{campaign::BlockChange, campaign::BlockIndex};
 
 fn country_reader<'a>(
     store: &'a store::Store,

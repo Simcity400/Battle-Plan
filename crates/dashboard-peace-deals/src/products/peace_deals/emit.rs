@@ -17,7 +17,7 @@ use dashboard_series::{
     Cell, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
     family::{Actors, Directory, Place},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use std::io;
 
 /// The family's keys are spelled under it.

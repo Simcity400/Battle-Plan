@@ -1,6 +1,6 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, continuation_records, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryRow, rows::LexicalTokenRow, rows::ProjectProgramRow, rows::ScriptVariableEntry,
     rows::ScriptVariablesRow, rows::TableRows,

@@ -1,5 +1,5 @@
 use dashboard_keyed::{Observer, Values, countries::Countries};
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{LexicalTokenRow, TableId, tables},

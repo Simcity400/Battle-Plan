@@ -151,7 +151,7 @@ fn partial_province_tables_keep_proven_points_and_missing_titles_are_counted() {
 fn selected_title_names_keep_current_original_reserved_and_rename_operands() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::{
         rows::CountryAppearanceRow, rows::CountryLinkRow, rows::CountryRow, rows::ProvinceNameRow,
         rows::Recorded, rows::ReservedCountryNamingRow, rows::StateRow,
@@ -350,7 +350,7 @@ fn prepared_sinking_titles_match_oracle_after_two_commits_resume_append_and_coun
         },
         "memory.battleplan".into(),
         Arc::new(
-            replay::container::Replay::from_records(
+            replay::campaign::Replay::from_records(
                 dashboard_base::test_fixtures::CAMPAIGN.into(),
                 &[dashboard_base::test_fixtures::records(1, inputs.clone())],
             )

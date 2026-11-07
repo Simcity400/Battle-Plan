@@ -259,7 +259,7 @@ impl Cache {
         vision: &Arc<Vision>,
         nato: bool,
         selected: &Arc<Vec<Unit>>,
-        replay: &Arc<replay::container::Replay>,
+        replay: &Arc<replay::campaign::Replay>,
         mode: &ModeHover,
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Arc<Tooltip> {
@@ -322,7 +322,7 @@ impl<K: PartialEq> Holder<K> {
         &mut self,
         key: K,
         same: bool,
-        replay: &Arc<replay::container::Replay>,
+        replay: &Arc<replay::campaign::Replay>,
         wake: impl Fn() + Send + Sync + 'static,
         build: impl FnOnce(&dyn air_region::Rosters) -> Tooltip,
     ) -> Arc<Tooltip> {

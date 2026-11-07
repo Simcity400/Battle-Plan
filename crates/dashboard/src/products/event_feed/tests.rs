@@ -3,7 +3,7 @@ use crate::{
     SourceKey,
     test_fixtures::{CAMPAIGN, records, scale_frame, source},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::*;
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 

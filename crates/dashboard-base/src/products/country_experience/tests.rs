@@ -1,5 +1,5 @@
 use crate::test_fixtures::{CAMPAIGN, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 use std::sync::atomic::AtomicBool;
@@ -628,7 +628,7 @@ fn gain_runs_visit_only_changed_countries_and_banked_reads() {
                         }
                     }
                 }
-                let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                let changes = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
                 scan.step(frame, replay.format, Some(&changes), |_, identity, read| {
                     if read.read_hour == frame.hour {
                         let queue = &reference[identity.0 as usize];
@@ -726,7 +726,7 @@ fn assert_banked_row_joins(count: u32) {
             &TableId::ALL,
             |raw, frame| {
                 let before = sparse.work().row_visits;
-                let changes = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                let changes = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
                 let dense = FrameChanges {
                     rows_changed: changes.rows_changed,
                     table_read: changes.table_read,

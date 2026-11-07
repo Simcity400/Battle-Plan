@@ -417,7 +417,7 @@ impl Fixture {
         self.corrupt_bytes_preserving_stamp(block.offset, block.length);
     }
     fn corrupt_diagnostics_preserving_stamp(&self, replay: &Replay, block: &BlockIndex) {
-        use replay::container::Section;
+        use replay::campaign::Section;
         // Native keyframe anchors may need an accepted block's directory and
         // table sections. Poison only diagnostics: reading accepted frames still
         // fails, while the unaccepted tail keeps all its native dependencies.

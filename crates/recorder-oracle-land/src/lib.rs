@@ -5,7 +5,7 @@ use installed_content_save::Decimal;
 use recorder_oracle_support::fixtures;
 use recorder_oracle_support::report::Report;
 use recorder_oracle_support::support::*;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::TableId;
 #[cfg(test)]
 use replay_data::rows::TableRows;

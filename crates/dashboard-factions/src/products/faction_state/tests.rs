@@ -94,7 +94,7 @@ fn source(frames: Vec<DecodedFrame>) -> Source {
         },
         "memory.battleplan".into(),
         Arc::new(
-            replay::container::Replay::from_records(fixtures::CAMPAIGN.into(), &[records]).unwrap(),
+            replay::campaign::Replay::from_records(fixtures::CAMPAIGN.into(), &[records]).unwrap(),
         ),
         &AtomicBool::new(false),
     )
@@ -1708,7 +1708,7 @@ fn prepare_by_blocks(source: &Source, context: &LoadContext, restore: bool) -> F
                 index,
                 columnar::tables(),
                 |raw, frame| {
-                    let changes = tracker.observe_updates(frame, raw, replay.format);
+                    let changes = tracker.observe_updates(frame, raw.clone(), replay.format);
                     state.observe(source, context, frame, &changes, &flag)
                 },
                 || Ok(()),
@@ -1787,7 +1787,7 @@ fn goal_hour(hour: i32) -> DecodedFrame {
     frame
 }
 /// Four recorded blocks of three hours each, the first one's replay given.
-fn goal_blocks(first: Arc<replay::container::Replay>, revision: &str) -> Source {
+fn goal_blocks(first: Arc<replay::campaign::Replay>, revision: &str) -> Source {
     let hours: Vec<_> = (100..112).map(goal_hour).collect();
     let mut replay = first;
     for chunk in hours[3..].chunks(3) {
@@ -1881,7 +1881,7 @@ fn assert_goal_parity(source: &Source, context: &LoadContext, files: &Fixture, r
 fn goal_history_without_content_shows_every_hour_as_that_hours_faction_details_reply() {
     let first = (100..103).map(goal_hour).collect();
     let first = Arc::new(
-        replay::container::Replay::from_records(
+        replay::campaign::Replay::from_records(
             fixtures::CAMPAIGN.into(),
             &[fixtures::records(1, first)],
         )

@@ -21,7 +21,7 @@
 //!
 //! A combat kind registers its sides as a [`Sides`] source in [`SOURCES`]:
 //! land and naval. The pass is one more decoder consumer: it reads
-//! blocks through [`Replay::read_block_selected`] and never shares the
+//! blocks through [`Replay::read_block_alone`] and never shares the
 //! playback decoder.
 //!
 //! Whatever the perspective, fold the recording player's own flag history too.
@@ -37,11 +37,9 @@
 //! [`check_recorded_bytes`] uses the same fold for a dump.
 
 use job_priority::SpawnCarried as _;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
-use replay_frame::{
-    branches::BranchReason, branches::BranchStart, frame::DecodedFrame, frame::FrameDecoder,
-};
+use replay_frame::{branches::BranchReason, branches::BranchStart, frame::DecodedFrame};
 use std::{
     collections::BTreeMap,
     io, mem,
@@ -556,27 +554,32 @@ impl Pass {
             if folded.is_some_and(|last| block.last_hour <= last) {
                 continue;
             }
-            let Ok(frames) = replay.read_block_selected(block, tables) else {
+            let mut stopped = false;
+            let read = replay.read_block_alone(
+                block,
+                tables,
+                |_, decoded| {
+                    if stopped || self.cancelled() {
+                        stopped = true;
+                        return Ok(());
+                    }
+                    if folded.is_some_and(|last| decoded.hour <= last) {
+                        return Ok(());
+                    }
+                    let campaign = core::<tables::Campaign>(decoded)
+                        .is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id);
+                    let load = loads.get(&block.branch).copied().flatten();
+                    self.fold_hour(block.branch, decoded.hour, campaign.then_some(decoded), load);
+                    hours += 1;
+                    Ok(())
+                },
+                || Ok(()),
+            );
+            if stopped {
+                return hours;
+            }
+            if read.is_err() {
                 self.failed_block(block.branch, block.last_hour);
-                continue;
-            };
-            let mut decoder = FrameDecoder::for_tables(tables);
-            for frame in frames {
-                if self.cancelled() {
-                    return hours;
-                }
-                // Earlier hours still advance the decoder's baselines.
-                let decoded = decoder.advance(&frame);
-                if folded.is_some_and(|last| frame.hour <= last) {
-                    continue;
-                }
-                let decoded = decoded.ok().filter(|decoded| {
-                    core::<tables::Campaign>(decoded)
-                        .is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id)
-                });
-                let load = loads.get(&block.branch).copied().flatten();
-                self.fold_hour(block.branch, frame.hour, decoded, load);
-                hours += 1;
             }
         }
         hours

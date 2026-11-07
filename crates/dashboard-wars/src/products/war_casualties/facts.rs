@@ -10,7 +10,7 @@ use super::{NAME_INPUTS, NAME_TABLES, SCAN_TABLES, joins};
 use dashboard_world::{Hold, Needs, World as Shared};
 use replay::{
     columns,
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink},
 };
 use replay_data::{

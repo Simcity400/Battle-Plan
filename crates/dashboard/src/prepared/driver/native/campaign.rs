@@ -5,7 +5,7 @@ use super::check_cancel;
 use dashboard_text::metadata::validate_campaign;
 use replay::{
     columnar_frames::{Damage, Recording, Views, Walker, schema},
-    container::Replay,
+    campaign::Replay,
     segments::State,
 };
 use replay_data::rows::TableId;

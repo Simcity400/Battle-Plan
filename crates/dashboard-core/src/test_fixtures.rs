@@ -150,7 +150,7 @@ pub fn records(branch: u64, frames: Vec<DecodedFrame>) -> Vec<Record> {
 /// A new segment of an existing branch repeats its original context before a
 /// fresh keyframe; its first hour does not redefine when the branch began.
 pub fn continuation_records(
-    replay: &replay::container::Replay,
+    replay: &replay::campaign::Replay,
     branch: u64,
     frames: Vec<DecodedFrame>,
 ) -> Vec<Record> {
@@ -504,8 +504,8 @@ pub fn named_frame(hour: i32, name: Option<&[u8]>) -> DecodedFrame {
     frame
 }
 
-pub fn replay(frames: Vec<DecodedFrame>) -> replay::container::Replay {
-    replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
+pub fn replay(frames: Vec<DecodedFrame>) -> replay::campaign::Replay {
+    replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap()
 }
 
 /// Equipment types from authored texts, as `installed_content_core::equipment` reads a folder's files.

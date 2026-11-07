@@ -1,9 +1,9 @@
 //! Retained rocket output has no historical spending/delivery serializer.
 //! Check the recorded event counters and independent signed totals along a branch.
 use super::{Report, complete, daily_read, invalid};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::RocketProductionOutputRow, rows::RowCodec, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
 pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -22,13 +22,19 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
         .iter()
         .filter(|block| block.branch == frame.branch && block.first_hour <= frame.hour)
     {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for encoded in replay.read_block_selected(block, &selected)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &selected,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            check.observe(decoder.advance(&encoded)?)?;
-        }
+            check.observe(Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?)?;
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     report.compared("RocketProductionOutput continuity", check.compared);
     Ok(())

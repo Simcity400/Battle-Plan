@@ -21,7 +21,7 @@ use dashboard_keyed::{
     delta::same_rows,
     query::{KeyedWindow, Opened, Query},
 };
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{self, TableId, TableRows, tables},

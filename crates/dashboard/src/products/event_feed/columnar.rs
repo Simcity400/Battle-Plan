@@ -21,7 +21,7 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink, Start},
 };
 use replay_data::{
@@ -514,7 +514,7 @@ fn charged(kind: EventFeedKind) -> bool {
 fn seeking(
     source: Option<&crate::Source>,
     branch: u64,
-) -> Option<impl Fn(i32) -> io::Result<replay::container::SeekResult> + '_> {
+) -> Option<impl Fn(i32) -> io::Result<replay::campaign::SeekResult> + '_> {
     source.map(|source| {
         move |hour| {
             dashboard_base::prepared::query::frames::seek(
@@ -1231,7 +1231,7 @@ pub(crate) fn save_feed(
 fn natives(
     feed: &mut Observer,
     identities: &HistoryScan,
-    (catalogue, seek): (Option<&Catalogue>, Option<impl Fn(i32) -> io::Result<replay::container::SeekResult>>),
+    (catalogue, seek): (Option<&Catalogue>, Option<impl Fn(i32) -> io::Result<replay::campaign::SeekResult>>),
     pack: &PackHeader,
     facts: Facts,
 ) -> io::Result<Vec<Draft>> {

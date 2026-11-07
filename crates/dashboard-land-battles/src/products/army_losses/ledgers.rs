@@ -32,7 +32,7 @@ use dashboard_base::{
     source::Source,
 };
 use dashboard_text::metadata::check_cancel;
-use replay::container::{BlockChange, BlockIndex, TableFields};
+use replay::campaign::{BlockChange, BlockIndex, TableFields};
 use replay_data::{
     rows::{CombatLogEquipmentRow, CombatLogMonthRow, SliceReadRow, TableId, tables},
     sliced::read_hour,

@@ -24,7 +24,7 @@ use dashboard_core::invalid;
 use dashboard_text::metadata::recorded_rows;
 use dashboard_text::metadata::check_cancel;
 use dashboard_text::metadata::tagged_countries_indexed;
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::rows::TableId;
 use replay_data::rows::tables;

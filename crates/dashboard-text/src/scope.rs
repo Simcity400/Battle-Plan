@@ -211,21 +211,8 @@ fn walked<T: TableSchema>(why: std::io::Error) -> Failure {
     crate::triggers::refusal::input_error(T::ID, why)
 }
 
-/// A table's rows, and why an entry it lacks is unknown.
-pub(crate) fn table<T: TableSchema>(
-    frame: &dyn replay_frame::frame::DecodedSource,
-) -> (&[T::Row], String) {
-    let view = frame.view(T::ID.index());
-    let rows = match view {
-        TableView::Complete(rows) | TableView::Truncated { rows, .. } => {
-            rows.rows::<T>().unwrap_or_default()
-        }
-        TableView::Unavailable { .. } | TableView::NotRecorded { .. } => &[],
-    };
-    (rows, gap(view))
-}
-
-/// [`table`] of any frame's tables, each row holding the fields `mask` names.
+/// A table's rows of any frame's tables, each row holding the fields `mask` names, and why
+/// an entry it lacks is unknown.
 pub(crate) fn table_in<'a, T: TableSchema>(
     frame: HourFrame<'a>,
     mask: u64,

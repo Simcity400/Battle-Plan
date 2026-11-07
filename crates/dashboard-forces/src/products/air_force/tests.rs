@@ -1,7 +1,7 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
 use dashboard_core::transport;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::AirWingRow, rows::TableId, rows::TableRows, rows::WingEquipmentRow};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 

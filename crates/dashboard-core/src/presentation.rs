@@ -30,7 +30,7 @@ impl Presentation {
     /// The identity of `selected` for this recording's folders, read from the mods' metadata.
     pub fn current(
         options: &ResolveOptions,
-        replay: &replay::container::Replay,
+        replay: &replay::campaign::Replay,
         selected: &[Choice],
         cancel: &AtomicBool,
     ) -> io::Result<Self> {
@@ -51,7 +51,7 @@ impl Presentation {
 }
 
 /// The mods the recording was made with, as the selection is matched against them.
-pub fn recorded_mods(replay: &replay::container::Replay) -> Vec<RecordedMod> {
+pub fn recorded_mods(replay: &replay::campaign::Replay) -> Vec<RecordedMod> {
     replay
         .identity
         .mods
@@ -84,7 +84,7 @@ impl Presented {
     pub fn mount(
         recorded: &ResolvedContent,
         options: &ResolveOptions,
-        replay: &replay::container::Replay,
+        replay: &replay::campaign::Replay,
         presentation: &Presentation,
         cancel: &AtomicBool,
     ) -> io::Result<Self> {

@@ -1,10 +1,10 @@
 use super::*;
 use dashboard_base::test_fixtures::{CAMPAIGN, records, source};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::OperativeMembershipRow, rows::Recorded, rows::SimulationFeatureRow, rows::TableRows,
 };
-use replay_frame::frame::TableView;
+use replay_frame::frame::{FrameDecoder, TableView};
 use std::sync::Arc;
 
 pub(super) fn operative(id: u64) -> OperativeMembershipRow {

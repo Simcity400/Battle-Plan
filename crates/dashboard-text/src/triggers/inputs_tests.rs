@@ -755,7 +755,7 @@ fn check_mode_reports_a_dependence_that_misses_a_read() {
 
 #[test]
 fn a_block_read_by_its_changes_confirms_through_changed_and_quiet_hours() {
-    use replay::container::BlockChange;
+    use replay::campaign::BlockChange;
     // Political power changes every hour; the flag at 10.
     let state = |hour: Hour| State {
         power: i64::from(hour),

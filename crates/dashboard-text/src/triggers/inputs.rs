@@ -31,9 +31,9 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use replay::{container::QuietHours, container::TableFields};
+use replay::{campaign::QuietHours, campaign::TableFields};
 use replay_data::{
-    BranchId, Hour, rows::DeltaRow, rows::RowCodec, rows::TableId, rows::full_mask, rows::tables,
+    BranchId, Hour, rows::DeltaRow, rows::TableId, rows::full_mask, rows::tables,
 };
 use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity, view_reads};
 use std::sync::LazyLock;
@@ -352,18 +352,12 @@ impl TableRead {
         }
     }
 
-    /// Whether the key range holds `key`; an owned read holds only some of
-    /// those rows, by the hour's links.
-    pub(crate) fn holds(&self, key: u128) -> bool {
-        self.rows
-            .is_none_or(|(first, last)| first <= key && key <= last)
-    }
-
     /// Whether this read reads the row keyed `key` of `frame`: in its key
     /// range and, if owned, its country's or unresolved by `frame`'s links.
     #[cfg(test)]
     pub(crate) fn reads_row(&self, key: u128, frame: &'_ DecodedFrame) -> bool {
-        self.holds(key)
+        self.rows
+            .is_none_or(|(first, last)| first <= key && key <= last)
             && self.owner.is_none_or(|owner| {
                 owner.by.slots(frame).is_none_or(|slots| {
                     slots

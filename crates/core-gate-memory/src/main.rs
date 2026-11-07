@@ -19,7 +19,7 @@ mod synthetic_tests;
 use detail::Detail;
 use gate::{Admission, Lost, SegmentReport};
 use manifest::{Manifest, invalid};
-use replay::{columnar_frames::Recording, container::Replay};
+use replay::{columnar_frames::Recording, campaign::Replay};
 use replay_data::{
     codec::Decoder,
     identity::{Identity, IdentityCodec},

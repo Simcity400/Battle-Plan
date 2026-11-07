@@ -14,16 +14,9 @@ pub(super) struct DecoderState {
     dropper: Option<Arc<Dropper>>,
 }
 impl DecoderState {
-    /// The campaign lane's read setup: its change-run workers and block read-ahead.
-    fn reading(playback: Playback, workers: usize, dropper: Option<&Arc<Dropper>>) -> Playback {
-        let playback = playback.with_map_workers(workers).with_display_changes();
-        match dropper {
-            Some(dropper) => {
-                let reader = BlockReader::new(playback.replay_handle(), Arc::clone(dropper));
-                playback.with_reader(reader)
-            }
-            None => playback,
-        }
+    /// The campaign lane's read setup: its change-run workers and display changes.
+    fn reading(playback: Playback, workers: usize, _dropper: Option<&Arc<Dropper>>) -> Playback {
+        playback.with_map_workers(workers).with_display_changes()
     }
     fn seed(&mut self, playback: Playback) {
         self.frames.clear();

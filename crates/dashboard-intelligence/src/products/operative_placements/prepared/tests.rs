@@ -1,7 +1,7 @@
 use super::super::tests::{frame, operative};
 use super::*;
 use dashboard_base::{prepared::series::tests::Fixture, test_fixtures};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::TableRows;
 use replay_frame::frame::TableView;
 

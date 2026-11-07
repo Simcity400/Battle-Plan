@@ -296,7 +296,7 @@ fn columnar_capture_metadata_has_the_same_player_report_as_rows() {
         Record::BranchStart(branch) => branch,
         _ => unreachable!(),
     };
-    let row = Replay::from_records(
+    let row = crate::campaign::fixtures::encode_records(
         capture.campaign_id.clone(),
         &[vec![
             Record::SessionStart(session()),
@@ -332,7 +332,7 @@ fn columnar_capture_metadata_has_the_same_player_report_as_rows() {
     ));
     std::fs::create_dir_all(&directory).unwrap();
     for (name, bytes) in [
-        ("rows.battleplan", row.bytes()),
+        ("rows.battleplan", &row[..]),
         ("columns.h4col", &columnar[..]),
     ] {
         let path = directory.join(name);

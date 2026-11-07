@@ -748,7 +748,7 @@ fn air_aces_picker_unread_block_is_unknown_instead_of_absent() {
         Some(true),
         "an empty complete roster is recorded"
     );
-    replay.index[0].offset = u64::MAX;
+    replay = Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap();
     assert_eq!(recording_available(&replay, 1, &flag).unwrap(), None);
     let source = Source::from_replay(
         dashboard_base::source::SourceKey {

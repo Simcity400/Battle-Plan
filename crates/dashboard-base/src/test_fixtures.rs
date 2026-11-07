@@ -6,7 +6,7 @@ use replay::spool::Record;
 use replay_frame::frame::DecodedFrame;
 
 /// A real read-only recording binding for native query tests, with scratch outside Git.
-pub fn file_source(replay: replay::container::Replay) -> (crate::Source, std::path::PathBuf) {
+pub fn file_source(replay: replay::campaign::Replay) -> (crate::Source, std::path::PathBuf) {
     let root = std::env::temp_dir().join(format!("replay-query-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&root).unwrap();
     let path = root.join("campaign.battleplan");
@@ -96,7 +96,7 @@ pub fn source_with_content(
         },
         "memory.battleplan".into(),
         std::sync::Arc::new(
-            replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap(),
+            replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap(),
         ),
         &std::sync::atomic::AtomicBool::new(false),
     )

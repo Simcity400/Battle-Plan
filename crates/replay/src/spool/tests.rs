@@ -1242,7 +1242,7 @@ fn gap_only_context_requires_explicit_loss_and_never_replaces_a_keyframe() {
 
 #[test]
 fn two_loads_during_disk_outage_preserve_fresh_and_resumed_branch_gaps() {
-    use crate::container::{Replay, SeekResult};
+    use crate::campaign::{Replay, SeekResult};
 
     for resumed in [false, true] {
         let session = session();

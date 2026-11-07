@@ -25,7 +25,7 @@ impl GameFacts {
         let stopping = Arc::clone(&cancelled);
         let layers = content.layers.clone();
         let identity = identity.clone();
-        let file = session.join(replay::container::SESSION_FACTS_FILE);
+        let file = session.join(replay::campaign::SESSION_FACTS_FILE);
         let cache = replay::recorder_settings::directory();
         let thread = std::thread::Builder::new()
             .name("game facts".into())
@@ -73,7 +73,7 @@ fn pack(
         cancelled.load(Ordering::Acquire)
     })
     .map_err(|error| error.to_string())?;
-    let bytes = replay::container::encode_session_facts(identity, &pack).map_err(|e| e.to_string())?;
+    let bytes = replay::campaign::encode_session_facts(identity, &pack).map_err(|e| e.to_string())?;
     let staged = file.with_extension("bin.tmp");
     std::fs::write(&staged, &bytes)
         .and_then(|()| std::fs::rename(&staged, file))

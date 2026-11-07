@@ -11,7 +11,7 @@ use dashboard_core::config::LoadContext;
 
 use installed_content_core::defines::Defines;
 
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{self, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -973,7 +973,7 @@ mod tests {
         let mut current = supplied.clone();
         current.hour += 1;
         current.metrics.table_ns[TableId::CountryFuel.index()] = 0;
-        let replay = replay::container::Replay::from_records(
+        let replay = replay::campaign::Replay::from_records(
             CAMPAIGN.into(),
             &[records(1, vec![supplied, current])],
         )
@@ -1071,7 +1071,7 @@ mod tests {
             }
             frame
         };
-        let replay = replay::container::Replay::from_records(
+        let replay = replay::campaign::Replay::from_records(
             CAMPAIGN.into(),
             &[records(1, (0..24).map(make).collect())],
         )
@@ -1154,7 +1154,7 @@ mod tests {
         use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records};
         let frame = dashboard_core::test_fixtures::source(1, 7, None);
         let replay =
-            replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])])
+            replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])])
                 .unwrap();
         let (source, root) = file_source(replay);
         let params = IntelDetailsParams {

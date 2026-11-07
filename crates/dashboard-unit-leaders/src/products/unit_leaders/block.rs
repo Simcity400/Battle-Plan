@@ -58,7 +58,7 @@ use dashboard_base::prepared::{
 };
 use dashboard_text::triggers::inputs::{BlockTables, QuietTables, TableChange, TableChanges};
 use replay::{
-    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
+    campaign::BlockIndex, campaign::QuietHours, campaign::Replay, campaign::TableFields,
 };
 use replay_data::{
     BranchId, format::FormatVersion, rows::CountryCounterInputRow, rows::CountryRow,

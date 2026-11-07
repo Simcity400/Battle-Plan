@@ -1,5 +1,5 @@
 //! Synthetic performance input from a supplied recording; not a native fidelity oracle.
-use replay::{container::Replay, container::SeekResult, spool::Record};
+use replay::{campaign::Replay, campaign::SeekResult, spool::Record};
 use replay_data::{
     rows::CountryLinkRow, rows::LandCombatRow, rows::LandCombatSideRow, rows::TableId,
     rows::TableRows,

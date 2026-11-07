@@ -230,7 +230,7 @@ impl<'a> OriginalTagLists<'a> {
     /// Read requested snapshots independently; no earlier-hour reconstruction
     /// can establish the native cache's mutation order.
     pub fn derive(
-        replay: &replay::container::Replay,
+        replay: &replay::campaign::Replay,
         branch: replay_data::BranchId,
         hours: &std::collections::BTreeSet<Hour>,
         cancelled: &std::sync::atomic::AtomicBool,
@@ -250,13 +250,19 @@ impl<'a> OriginalTagLists<'a> {
                     "request cancelled",
                 ));
             }
-            let mut decoder = replay_frame::frame::FrameDecoder::for_tables(&selected);
-            for frame in replay.read_block_selected(block, &selected)? {
-                let decoded = decoder.advance(&frame)?;
+            replay.visit_blocks(
+                &[block],
+                &selected,
+                None,
+                |_, _, hour_frame| {
+                let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
                 if hours.contains(&decoded.hour) {
                     out.insert(decoded.hour, OriginalTagLists::read(decoded));
                 }
-            }
+                    Ok(true)
+                },
+                || Ok(()),
+            )?;
         }
         Ok(out)
     }

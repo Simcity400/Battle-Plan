@@ -188,23 +188,19 @@ impl Product for UnitLeaderPortraits {
             reply_bytes(&reply)?;
             return Ok(reply);
         };
-        let frames = replay.read_block_selected(block, &selected)?;
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in frames {
+        let found = replay.seek_selected_with(block.branch, params.hour, Some(&selected), || {
             if cancelled.load(Ordering::Acquire) {
-                return Err(io::Error::new(
+                Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "Portrait request cancelled",
-                ));
+                ))
+            } else {
+                Ok(())
             }
-            if frame.hour > params.hour {
-                break;
-            }
-            let decoded = decoder.advance(&frame)?;
+        })?;
+        if let replay::campaign::SeekResult::Frame(decoded) = &found {
+            let decoded: &replay_frame::frame::DecodedFrame = decoded;
             validate_campaign(decoded, &replay)?;
-            if frame.hour != params.hour {
-                continue;
-            }
             let politics = context
                 .content()
                 .and_then(|content| politics_content::politics_content(source, content));
@@ -229,7 +225,6 @@ impl Product for UnitLeaderPortraits {
                     missing,
                 });
             }
-            break;
         }
         let reply = UnitLeaderPortraitsReply {
             portraits,

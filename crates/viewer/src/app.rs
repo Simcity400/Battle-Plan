@@ -493,7 +493,7 @@ fn start_prompt(mode: CameraMode) -> &'static str {
 }
 
 /// The capture mode of a recording that leaves tables out, and what it leaves out.
-pub(crate) fn capture_mode_notice(ui: &mut egui::Ui, replay: &replay::container::Replay) {
+pub(crate) fn capture_mode_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
     let mode = replay.capture_mode;
     if let Some(omits) = replay_data::scope::omits(mode) {
         ui.horizontal_wrapped(|ui| {
@@ -513,7 +513,7 @@ fn mode_name(mode: replay_data::scope::CaptureMode) -> &'static str {
     }
 }
 
-pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::container::Replay) {
+pub(crate) fn partial_notice(ui: &mut egui::Ui, replay: &replay::campaign::Replay) {
     if let Some(replay::spool::ControlRecord::Partial { reason, .. }) = replay.partial() {
         ui.horizontal_wrapped(|ui| {
             ui.colored_label(egui::Color32::YELLOW, "Partial recording:");
@@ -7953,7 +7953,7 @@ pub(crate) mod tests {
 
     #[test]
     fn unload_releases_campaign_map_admission_and_discards_a_late_loader() {
-        use replay::{container::Replay, spool::Record};
+        use replay::{campaign::Replay, spool::Record};
         use replay_data::{
             identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
             identity::SessionStart, identity::Verification,
@@ -8231,7 +8231,7 @@ pub(crate) mod tests {
                 }),
             ]])
             .unwrap();
-        let labels = |replay: &replay::container::Replay| {
+        let labels = |replay: &replay::campaign::Replay| {
             let ctx = egui::Context::default();
             let mut output = ctx.run_ui(Default::default(), |ui| super::partial_notice(ui, replay));
             output.textures_delta.clear();
@@ -8256,7 +8256,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_map_recording_names_its_mode_and_what_it_leaves_out() {
-        use replay::{container::Replay, spool::Record};
+        use replay::{campaign::Replay, spool::Record};
         use replay_data::scope::CaptureMode;
         let healthy = crate::playback::tests::fixture();
         let mut session = healthy.sessions[0].clone();

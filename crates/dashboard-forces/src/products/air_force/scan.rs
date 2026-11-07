@@ -6,9 +6,9 @@ use dashboard_base::products::{
     force_census::{Countries, changed_ids},
 };
 use dashboard_text::metadata::{IdentityTrack, slot_read, validate_campaign};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::AirWingRow, rows::TableId, rows::WingEquipmentRow, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{HashMap, HashSet},
     sync::atomic::Ordering,
@@ -872,7 +872,6 @@ pub(super) fn scan_with_decode(
                 let Some((_, frames)) = next else {
                     break;
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -884,7 +883,7 @@ pub(super) fn scan_with_decode(
                         ));
                     }
                     decoding(true);
-                    let decoded = decoder.advance(&frame);
+                    let decoded = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded);
                     decoding(false);
                     let Ok(decoded) = decoded else {
                         break;

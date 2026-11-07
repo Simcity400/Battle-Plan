@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn gaps_after_keeps_a_terminal_gap_beyond_the_last_recorded_frame() {
         use crate::test_fixtures::{CAMPAIGN, records};
-        use replay::{container::Replay, spool::Record};
+        use replay::{campaign::Replay, spool::Record};
         use replay_frame::branches::Gap;
 
         let mut recorded = records(1, vec![frame(1, 1, None), frame(1, 2, None)]);
@@ -479,7 +479,7 @@ mod tests {
             prepared::query::{keyframes, progressive},
             test_fixtures::{CAMPAIGN, records},
         };
-        use replay::{container::Replay, spool::Record};
+        use replay::{campaign::Replay, spool::Record};
         use replay_frame::branches::Gap;
 
         let mut records = records(1, vec![frame(1, 1, Some(1)), frame(1, 2, Some(2))]);
@@ -529,7 +529,6 @@ mod tests {
             tables,
             &flag,
             &|_| -> io::Result<Option<()>> { panic!("a diagnostic hour is not sampled") },
-            &|_| 0,
             |_, _| panic!("a diagnostic hour is not observed"),
         )
         .unwrap();

@@ -16,7 +16,7 @@ use dashboard_text::scripted_text;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::{metadata::check_cancel, metadata::validate_campaign};
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::rows::TableId;
 use replay_data::{rows::Recorded, rows::tables};

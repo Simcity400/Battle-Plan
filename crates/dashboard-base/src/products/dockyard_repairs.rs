@@ -12,7 +12,7 @@ use crate::{
         },
     },
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{NavalBaseRow, TableId};
 use replay_derive::naval_repairs;
 use serde::{Deserialize, Serialize};

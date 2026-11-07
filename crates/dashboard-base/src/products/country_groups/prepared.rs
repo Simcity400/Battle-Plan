@@ -30,7 +30,7 @@ use crate::{
 };
 #[cfg(any(test, feature = "test-support"))]
 use replay::{
-    container::BlockIndex, container::QuietHours, container::Replay, container::TableFields,
+    campaign::BlockIndex, campaign::QuietHours, campaign::Replay, campaign::TableFields,
 };
 use replay_data::rows::TableId;
 #[cfg(any(test, feature = "test-support"))]
@@ -418,7 +418,7 @@ pub fn observe_block(
         TABLES,
         |raw, frame| {
             let _cpu = ::replay_frame::cpu::scope("fold driver", None);
-            let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+            let facts = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
             if stopped || from.is_some_and(|from| frame.hour < from) {
                 return Ok(());
             }

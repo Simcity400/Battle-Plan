@@ -9,6 +9,7 @@
 //! refusal cannot be flown and says why; the files a name loads are read only
 //! when the map flies it.
 
+use replay_frame::frame::DecodedFrame;
 use crate::{
     Source,
     catalogue::{self, CachedResult, Catalogue, View},
@@ -16,7 +17,6 @@ use crate::{
 };
 use installed_content_equipment_graphics::{equipment_graphics, equipment_graphics::aircraft};
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
@@ -297,9 +297,8 @@ fn recorded_designs(source: &Source, cancelled: &AtomicBool) -> io::Result<Vec<(
                 let Ok(frames) = frames else {
                     continue;
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if !crate::metadata::slot_read(

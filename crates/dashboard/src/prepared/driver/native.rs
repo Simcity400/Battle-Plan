@@ -118,37 +118,30 @@ pub(crate) fn names() -> Vec<&'static str> {
         .collect()
 }
 
-/// The native columnar recording of `source`'s replay that it is prepared from: an undamaged
-/// one of its campaign's ([`crate::prepared::change_runs::native_files`]) recording exactly the
-/// replay's hours, whose capture is the replay's ([`columnar_runs::captures`]). None when there
-/// is none.
-pub(crate) fn recording(source: &Source) -> io::Result<Option<Recording>> {
-    let campaign = &source.replay_ref().campaign_id;
-    let candidates = crate::prepared::change_runs::native_files(source.path(), campaign)?;
-    for candidate in candidates {
-        let recording = match Recording::open_path(&candidate) {
-            Ok(recording) => recording,
-            Err(error) if error.kind() == io::ErrorKind::InvalidData => continue,
-            Err(error) => return Err(error),
-        };
-        let captured = match recording.capture() {
-            Ok(Some(capture)) => columnar_runs::recorded_runs(&recording)?
-                .is_some_and(|runs| columnar_runs::captures(&capture, &runs, source.replay_ref())),
-            Ok(None) | Err(_) => false,
-        };
-        if captured && pairs(source, &recording)? {
-            return Ok(Some(recording));
-        }
-    }
-    Ok(None)
+/// The columnar recording `source` is prepared from: its recording's runs, read through a reader
+/// of its own.
+pub(crate) fn recording(source: &Source) -> io::Result<Recording> {
+    let replay = source.replay_ref();
+    replay.recording().selecting(&replay_data::rows::TableId::ALL)
 }
 
-/// Whether `recording` records exactly the hours of `source`'s replay, of its campaign.
+/// Whether `recording`, undamaged, is of `source`'s campaign and records every hour its replay
+/// holds.
 fn pairs(source: &Source, recording: &Recording) -> io::Result<bool> {
     let replay = source.replay_ref();
-    Ok(recording.campaign() == replay.campaign_id
-        && columnar_runs::recorded_runs(recording)?
-            .is_some_and(|runs| columnar_runs::covers(&replay.index, &runs)))
+    if recording.campaign() != replay.campaign_id {
+        return Ok(false);
+    }
+    let Some(runs) = columnar_runs::recorded_runs(recording)? else {
+        return Ok(false);
+    };
+    Ok(replay.index.iter().all(|block| {
+        runs.iter().any(|&(branch, first, ordinals)| {
+            branch == block.branch
+                && first <= block.first_hour
+                && i64::from(block.last_hour) < i64::from(first) + i64::from(ordinals)
+        })
+    }))
 }
 
 /// What a native preparation prepares, and how.

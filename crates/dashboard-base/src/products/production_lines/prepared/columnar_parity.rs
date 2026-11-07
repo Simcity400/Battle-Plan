@@ -24,7 +24,7 @@ fn decoded(replay: &Replay) -> Vec<DecodedFrame> {
     let mut frames = Vec::new();
     for block in &replay.index {
         replay
-            .read_block_recorded_alone(
+            .read_block_alone(
                 block,
                 tables(false),
                 |_, frame| {

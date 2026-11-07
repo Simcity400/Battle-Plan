@@ -14,7 +14,7 @@ use installed_content_core::{
 };
 use installed_content_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
-use replay::{compression::Compression, recorder_settings::RecorderSettings};
+use replay::recorder_settings::RecorderSettings;
 use replay_data::identity::IdentityCodec;
 use replay_data::{identity::SessionStart, scope::CaptureMode};
 use replay_data::{witness::TerminalWitness, witness::WITNESS_FILE_NAME};
@@ -83,6 +83,7 @@ impl Checkpoints {
             };
             let began = Instant::now();
             let auto_save = settling.is_none_or(|settling| settling.save.load(Ordering::Acquire));
+            // A checkpoint the session's end overtakes stops there: the session's save takes its hours.
             let result = replay_io::checkpoint_campaign(
                 session,
                 target,
@@ -91,7 +92,16 @@ impl Checkpoints {
                 auto_save,
                 ahead,
                 naming,
-                &|| Ok(()),
+                &|| {
+                    if stopped.load(Ordering::Acquire) {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::Interrupted,
+                            "the session is ending",
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
             );
             match result {
                 Ok(Some(done)) => {
@@ -113,6 +123,7 @@ impl Checkpoints {
                     self.retry
                         .insert(campaign, Instant::now() + CHECKPOINT_RETRY);
                 }
+                Err(_) if stopped.load(Ordering::Acquire) => return,
                 Err(error) => {
                     eprintln!(
                         "Checkpoint of campaign {campaign} failed; its spool keeps its hours for the session's save: {error}"
@@ -521,106 +532,11 @@ fn background_naming<T>(work: impl FnOnce() -> T) -> T {
     job_priority::JobPriority::run(Arc::new(AtomicBool::new(true)), work)
 }
 
-// The loaded 1941 run lost coordinator CPU with 1.5 GB unwritten; one normal open block is not debt.
-#[derive(Default)]
-struct PackingCatchUp {
-    since: Option<Duration>,
-}
-
-impl PackingCatchUp {
-    fn update(&mut self, now: Duration, backlog: Option<&replay_io::PackingBacklog>) -> bool {
-        let Some(backlog) = backlog else {
-            self.since = None;
-            return false;
-        };
-        let seconds = replay::container::Outstanding {
-            rows: backlog.runnable.work.rows,
-            ..Default::default()
-        }
-        .runnable_seconds();
-        let closed = backlog.runnable.closed_blocks;
-        match self.since {
-            None if seconds >= 12.0 || closed >= 2 => self.since = Some(now),
-            Some(since)
-                if seconds <= 3.0
-                    && closed == 0
-                    && now.saturating_sub(since) >= Duration::from_secs(10) =>
-            {
-                self.since = None
-            }
-            _ => {}
-        }
-        self.since.is_some()
-    }
-}
-
-fn packing_progress(
-    packing: &replay::container::Packing,
-    ahead: &replay_io::Ahead,
-    session: &Path,
-    policy: &mut PackingCatchUp,
-    elapsed: Duration,
-    last: &mut Option<Duration>,
-) -> Option<f64> {
-    let backlog = ahead.backlog(session);
-    let known = backlog.as_ref().ok();
-    let runnable = known.map(|backlog| backlog.runnable);
-    let blocked = known.map(|backlog| backlog.blocked);
-    let before = packing.mode();
-    if before == "catch_up_normal" && policy.since.is_none() {
-        policy.since = Some(elapsed);
-    }
-    packing.catch_up(policy.update(elapsed, known));
-    packing
-        .watch_progress(runnable.is_some_and(|debt| debt.work.rows > 0 || debt.closed_blocks > 0));
-    let mode = packing.mode();
-    if before != mode
-        || last.is_none_or(|last| elapsed.saturating_sub(last) >= Duration::from_secs(5))
-    {
-        *last = Some(elapsed);
-        let (read, written, packed) = (ahead.frames_read(), ahead.written(), ahead.hours());
-        println!(
-            "Packing progress: {}",
-            json!({
-                "elapsed_s": elapsed.as_secs_f64(),
-                "scope": "accepted current spool tails; counts reset on retirement or campaign removal",
-                "tail_read_hours": read,
-                "tail_written_hours": written,
-                "tail_packed_hours": packed,
-                "unwritten_hours": read.saturating_sub(written),
-                "unpacked_hours": read.saturating_sub(packed),
-                "backlog_scope": "runnable admitted prefix; blocked includes unadmitted, refused or stopped work",
-                "backlog_error": backlog.as_ref().err(),
-                "runnable_unwritten_hours": runnable.map(|debt| debt.unwritten_hours),
-                "closed_unpacked_blocks": runnable.map(|debt| debt.closed_blocks),
-                "rows_bytes": runnable.map(|debt| debt.work.rows),
-                "compression_work_bytes": runnable.map(|debt| debt.work.compression),
-                "verified_pending_raw_bytes": runnable.map(|debt| debt.work.readback),
-                "open_raw_bytes": runnable.map(|debt| debt.work.open),
-                "estimated_pack_readback_s": runnable.map(|debt| debt.work.stop_seconds()),
-                "blocked_unwritten_hours": blocked.map(|debt| debt.unwritten_hours),
-                "blocked_closed_unpacked_blocks": blocked.map(|debt| debt.closed_blocks),
-                "blocked_rows_bytes": blocked.map(|debt| debt.work.rows),
-                "blocked_compression_work_bytes": blocked.map(|debt| debt.work.compression),
-                "blocked_verified_pending_raw_bytes": blocked.map(|debt| debt.work.readback),
-                "blocked_open_raw_bytes": blocked.map(|debt| debt.work.open),
-                "priority_mode": mode,
-                "priority_mode_scope": "requested; OS transition failures are reported to stderr",
-                "cpu_credits": replay::container::Packing::workers(),
-                "logical_io_mib_s": if mode == "foreground" { None } else { Some(32) },
-                "logical_io_bytes": packing.io_bytes(),
-                "limiter_wait_thread_s": packing.io_wait().as_secs_f64(),
-            })
-        );
-    }
-    runnable.map(|debt| debt.work.runnable_seconds())
-}
-
 type AheadResult = (replay_io::Ahead, Option<Localisation>, Duration, Duration);
 
 /// Continuously packs a growing spool at every speed, independently of the hourly callback.
 struct FinalizingAhead {
-    packing: Option<Arc<replay::container::Packing>>,
+    packing: Option<Arc<replay::packing::Packing>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<AheadResult>>,
     asked: Arc<AtomicBool>,
@@ -662,7 +578,6 @@ impl FinalizingAhead {
         target: &Path,
         content: &GatheredContent,
         settling: Option<Arc<Settling>>,
-        compression: Option<Compression>,
         idle: Option<Arc<Event>>,
     ) -> Self {
         let stop = settling
@@ -674,12 +589,8 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
-        // Rows pack at Low unless the command line chose; the setting is the columnar writer's.
-        let packing = replay::container::Packing::new()
-            .map(|packing| {
-                packing.set_compression(compression.unwrap_or(Compression::Low));
-                Arc::new(packing)
-            })
+        let packing = replay::packing::Packing::new()
+            .map(Arc::new)
             .inspect_err(|error| {
                 eprintln!("Continuous packing could not start; spool retained: {error}");
             })
@@ -713,26 +624,20 @@ impl FinalizingAhead {
                 };
                 let mut settled = Settled::new();
                 let mut checkpoints = Checkpoints::default();
-                println!("Continuous packing: background_cpu_credits={} logical_io_mib_s=32 burst_mib=8 natural_block_hours=720; collector has no dependency on these workers", replay::container::Packing::workers());
-                let mut service_scale = 1.0_f64;
-                let mut catch_up = PackingCatchUp::default();
-                let progress_began = Instant::now();
-                let mut last_progress = None;
-                let mut last_work = None;
                 let settings = RecorderSettings::path();
                 while !stopped() {
                     packing.wait_for_game();
-                    let work_before = last_work;
-                    let frames_before = ahead.written();
                     let before = thread_cpu();
-                    packing.watch_progress(last_work.is_some_and(|work| work > 0.001));
-                    {
-                        let _phase = replay::container::Packing::phase(replay::container::Phase::Drain);
-                        if let Err(error) = ahead.read(&session, &target) {
-                            fail(error);
+                    let grew = {
+                        let _phase = replay::packing::Packing::phase(replay::packing::Phase::Drain);
+                        match ahead.read(&session, &target) {
+                            Ok(grew) => grew,
+                            Err(error) => {
+                                fail(error);
+                                false
+                            }
                         }
-                    }
-                    let _ = packing_progress(&packing, &ahead, &session, &mut catch_up, progress_began.elapsed(), &mut last_progress);
+                    };
                     let naming = replay_io::Naming {
                         localisation: localisation.as_ref(),
                         settings: &settings,
@@ -745,32 +650,15 @@ impl FinalizingAhead {
                             .unwrap_or_else(std::sync::PoisonError::into_inner) = named;
                     }
                     reading += thread_cpu() - before;
-                    packing.watch_progress(true);
                     if let Some(settling) = &settling
                         && let Err(error) =
                             settle(&session, &target, &mut ahead, settling, &mut settled, naming)
                     {
                         eprintln!("Set-aside campaigns could not be looked at: {error}");
                     }
-                    {
-                        let began = Instant::now();
-                        let before_work = ahead.backlog(&session).ok().map(|backlog| backlog.runnable.work.runnable_seconds());
-                        packing.watch_progress(before_work.is_some_and(|work| work > 0.001));
-                        let slice = Duration::from_secs_f64(before_work.map_or(0.05, |work| (service_scale * work).clamp(0.05, 1.0)));
-                        let busy = || stopped() || began.elapsed() >= slice;
-                        let before = thread_cpu();
-                        if let Err(error) = ahead.write(&session, &target, &busy) {
-                            fail(error);
-                        }
-                        writing += thread_cpu() - before;
-                        let after_work = ahead.backlog(&session).ok().map(|backlog| backlog.runnable.work.runnable_seconds());
-                        if let (Some(before), Some(after)) = (before_work, after_work)
-                            && before - after > 0.01
-                        {
-                            service_scale = 0.75 * service_scale + 0.25 * (began.elapsed().as_secs_f64() / (before - after)).clamp(0.1, 20.0);
-                        }
-                    }
-                    packing.watch_progress(true);
+                    let before = thread_cpu();
+                    ahead.write(&stopped);
+                    writing += thread_cpu() - before;
                     checkpoints.run(
                         &session,
                         &target,
@@ -779,11 +667,7 @@ impl FinalizingAhead {
                         naming,
                         &stopping,
                     );
-                    let work_after = packing_progress(&packing, &ahead, &session, &mut catch_up, progress_began.elapsed(), &mut last_progress);
-                    let progressed = ahead.written() != frames_before
-                        || matches!((work_before, work_after), (Some(before), Some(after)) if after < before);
-                    last_work = work_after;
-                    if (work_after.is_none_or(|work| work <= 0.001) || !progressed) && !stopped() {
+                    if !grew && !stopped() {
                         std::thread::sleep(Duration::from_millis(100));
                     }
                 }
@@ -823,19 +707,9 @@ impl FinalizingAhead {
         self.stop.store(true, Ordering::Release);
         match self.thread.take().map(std::thread::JoinHandle::join) {
             Some(Ok((ahead, localisation, reading, writing))) => {
-                let work = ahead.outstanding();
                 println!(
-                    "Stop outstanding: rows_bytes={} compression_work_bytes={} verified_pending_raw_bytes={} open_raw_bytes={} estimated_pack_readback_s={:.3} (offline service seed; excludes detach and staging)",
-                    work.rows,
-                    work.compression,
-                    work.readback,
-                    work.open,
-                    work.stop_seconds()
-                );
-                let (read, written) = (ahead.frames_read(), ahead.written());
-                println!(
-                    "Finalize ahead: tail_read_hours={read} tail_written_hours={written} tail_packed_hours={} lifetime_coordinator_read_cpu_s={:.3} lifetime_coordinator_write_cpu_s={:.3} (helper CPU excluded)",
-                    ahead.hours(),
+                    "Finalize ahead: tail_read_hours={} lifetime_read_cpu_s={:.3} lifetime_capture_write_cpu_s={:.3}",
+                    ahead.frames_read(),
                     reading.as_secs_f64(),
                     writing.as_secs_f64(),
                 );
@@ -1076,7 +950,6 @@ struct Options {
     operation_outcomes: bool,
     politics_capture: bool,
     capture_mode: CaptureMode,
-    compression: Option<Compression>,
     #[cfg(feature = "alloc-fault-injection")]
     alloc_fault: Option<AllocationFault>,
 }
@@ -1147,7 +1020,7 @@ fn usage() -> String {
     #[cfg(not(feature = "alloc-fault-injection"))]
     let fault_option = "";
     format!(
-        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--compression low|high] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
+        "recorder [record] [--out <directory>] [--user-dir <Paradox directory>] [--once] [--capture-mode full|map] [--no-game-score] [--disable-operation-outcomes] [--disable-politics-capture]{fault_option}
 recorder detach [--out <directory>]
 recorder refresh [--out <directory>]
 recorder finalize <session-directory> [--out <directory>]
@@ -1194,7 +1067,6 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
         operation_outcomes: true,
         politics_capture: true,
         capture_mode: CaptureMode::Full,
-        compression: None,
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: None,
     };
@@ -1206,14 +1078,6 @@ fn parse_options(command: &str, args: Vec<OsString>) -> Result<Options, String> 
                 options.user = Some(PathBuf::from(args.next().ok_or_else(usage)?))
             }
             Some("--once") if command == "record" => options.once = true,
-            Some("--compression") if command == "record" => {
-                let name = args.next().ok_or_else(usage)?;
-                options.compression = Some(
-                    name.to_str()
-                        .and_then(Compression::from_name)
-                        .ok_or_else(|| "--compression must be low or high".to_owned())?,
-                );
-            }
             Some("--capture-mode") if command == "record" => {
                 let name = args.next().ok_or_else(usage)?;
                 options.capture_mode = name
@@ -1554,7 +1418,6 @@ pub(crate) struct CaptureOptions<'a> {
     pub politics_capture: bool,
     /// Which tables the session records; one mode per recording file.
     pub capture_mode: CaptureMode,
-    pub compression: Option<Compression>,
     /// A session that reached no spool (the game closed at its menu, say) ends
     /// quietly instead of as a failed finalization.
     pub nothing_recorded_is_ok: bool,
@@ -1638,7 +1501,6 @@ fn cli_capture<'a>(options: &'a Options, user: &'a Path) -> CaptureOptions<'a> {
         operation_outcomes: options.operation_outcomes,
         politics_capture: options.politics_capture,
         capture_mode: options.capture_mode,
-        compression: options.compression,
         nothing_recorded_is_ok: false,
         live_status: false,
         admit: None,
@@ -1812,7 +1674,6 @@ pub(crate) fn capture(
         operation_outcomes,
         politics_capture,
         capture_mode,
-        compression,
         nothing_recorded_is_ok,
         live_status,
         admit,
@@ -2096,7 +1957,6 @@ pub(crate) fn capture(
         target,
         &content,
         settling.clone(),
-        compression,
         Some(Arc::clone(&idle)),
     );
     let status_path = directory.join("status.json");
@@ -5003,113 +4863,6 @@ pub fn discard_waiting(session: &Path, campaign: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn packing_escalation_uses_work_and_closed_blocks_with_hysteresis_and_a_hold() {
-        let mut policy = PackingCatchUp::default();
-        let at = Duration::from_secs;
-        let backlog = |rows, closed| replay_io::PackingBacklog {
-            runnable: replay_io::PackingDebt {
-                work: replay::container::Outstanding {
-                    rows,
-                    ..Default::default()
-                },
-                closed_blocks: closed,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        for seconds in 0..100 {
-            assert!(!policy.update(at(seconds), Some(&backlog(45_917_453, 1))));
-        }
-        assert!(policy.update(at(100), Some(&backlog(100_000_000, 0))));
-        assert!(policy.update(at(101), Some(&backlog(0, 0))));
-        assert!(policy.update(at(109), Some(&backlog(0, 0))));
-        assert!(policy.update(at(110), Some(&backlog(30_000_000, 0))));
-        assert!(policy.update(at(111), Some(&backlog(0, 1))));
-        assert!(!policy.update(at(112), Some(&backlog(20_000_000, 0))));
-        assert!(!policy.update(at(113), Some(&backlog(60_000_000, 1))));
-        assert!(policy.update(at(114), Some(&backlog(0, 2))));
-        assert!(policy.update(at(123), Some(&backlog(0, 0))));
-        assert!(!policy.update(at(124), Some(&backlog(0, 0))));
-    }
-
-    #[test]
-    fn blocked_debt_cannot_enter_or_hold_catch_up_after_healthy_work_drains() {
-        let mut policy = PackingCatchUp::default();
-        let mut backlog = replay_io::PackingBacklog {
-            blocked: replay_io::PackingDebt {
-                work: replay::container::Outstanding {
-                    rows: 1_500_000_000,
-                    compression: 500_000_000,
-                    readback: 500_000_000,
-                    open: 500_000_000,
-                },
-                unwritten_hours: 4000,
-                closed_blocks: 6,
-            },
-            ..Default::default()
-        };
-        let at = Duration::from_secs;
-        assert!(!policy.update(at(0), Some(&backlog)));
-        backlog.runnable.work.rows = 100_000_000;
-        backlog.runnable.closed_blocks = 2;
-        assert!(policy.update(at(1), Some(&backlog)));
-        backlog.runnable = Default::default();
-        assert!(policy.update(at(10), Some(&backlog)));
-        assert!(!policy.update(at(11), Some(&backlog)));
-        for now in 12..100 {
-            assert!(!policy.update(at(now), Some(&backlog)));
-        }
-        backlog.runnable.closed_blocks = 2;
-        assert!(policy.update(at(100), Some(&backlog)));
-        assert!(!policy.update(at(101), None));
-        assert!(policy.since.is_none());
-    }
-
-    #[test]
-    fn unknown_backlog_leaves_catch_up_without_undoing_stop_promotion() {
-        let directory = crate::test_support::allocation_test_directory("unknown-packing-policy");
-        let session = directory.join("session");
-        let target = directory.join("target");
-        replay_io::begin_admissions(&session, &target).unwrap();
-        fs::write(session.join(replay_io::ADMISSIONS_FILE), b"not json").unwrap();
-        let ahead = replay_io::Ahead::default();
-        let packing = replay::container::Packing::new().unwrap();
-        let mut policy = PackingCatchUp::default();
-        let mut last = None;
-        packing.run(|| {
-            packing.catch_up(true);
-            assert_eq!(packing.mode(), "catch_up_normal");
-            assert_eq!(
-                packing_progress(
-                    &packing,
-                    &ahead,
-                    &session,
-                    &mut policy,
-                    Duration::from_secs(1),
-                    &mut last
-                ),
-                None
-            );
-            assert_eq!(packing.mode(), "background");
-            assert!(policy.since.is_none());
-            packing.promote();
-            assert_eq!(
-                packing_progress(
-                    &packing,
-                    &ahead,
-                    &session,
-                    &mut policy,
-                    Duration::from_secs(2),
-                    &mut last
-                ),
-                None
-            );
-            assert_eq!(packing.mode(), "foreground");
-        });
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
     fn failed_cli_timestamp_never_blocks_detach_or_invents_the_controller_poll_time() {
         let root = crate::test_support::allocation_test_directory("stop-timestamp-failure");
         fs::create_dir(root.join("stop.request")).unwrap();
@@ -5204,7 +4957,7 @@ mod tests {
         write_load_segment(&campaign, 1, 10, 5..=6, RELOAD);
         let mut ahead = replay_io::Ahead::default();
         ahead.read(&session, &target).unwrap();
-        ahead.write(&session, &target, &|| false).unwrap();
+        ahead.write(&|| false);
         assert_eq!(ahead.completed_through(&campaign), Some(0));
         Checkpoints::default().run(
             &session,
@@ -5219,7 +4972,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(recorded_frames(&saved), [(9, 2), (9, 3), (9, 4)]);
-        assert_eq!(ahead.written(), 2);
+        assert_eq!(ahead.frames_read(), 2);
     }
 
     #[test]
@@ -5266,7 +5019,7 @@ mod tests {
         fs::write(&leading, bytes).unwrap();
         let mut ahead = replay_io::Ahead::default();
         ahead.read(&session, &target).unwrap();
-        ahead.write(&session, &target, &|| false).unwrap();
+        ahead.write(&|| false);
         assert_eq!(ahead.completed_through(&campaign), None);
         let mut hours = vec![start_session, Record::BranchStart(start)];
         for hour in 3..=4 {
@@ -5283,9 +5036,10 @@ mod tests {
             .flat_map(|record| replay::spool::encode_record(record).unwrap())
             .collect();
         fs::write(campaign.join("spool.0001.h4s"), bytes).unwrap();
+        crate::test_support::write_capture(&campaign, 1, &hours);
         write_load_segment(&campaign, 2, 10, 5..=6, RELOAD);
         ahead.read(&session, &target).unwrap();
-        ahead.write(&session, &target, &|| false).unwrap();
+        ahead.write(&|| false);
         assert_eq!(ahead.completed_through(&campaign), Some(1));
         Checkpoints::default().run(
             &session,
@@ -5300,7 +5054,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(recorded_frames(&saved), [(9, 3), (9, 4)]);
-        let saved = replay::container::Replay::open_path(&saved).unwrap();
+        let saved = replay::campaign::Replay::open_path(&saved).unwrap();
         let Record::Control(control) = commands else {
             unreachable!()
         };
@@ -5325,7 +5079,7 @@ mod tests {
     }
 
     use super::*;
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use std::{cell::RefCell, collections::BTreeMap};
 
     /// A capture leaving before its content is verified stops the scan and waits for it: once
@@ -5663,6 +5417,7 @@ mod tests {
                                 .collect::<Vec<_>>(),
                         )
                         .unwrap();
+                        crate::test_support::write_capture(&current, number, &recovered.records);
                     }
                     let settling = Settling::default();
                     *locked(&settling.loaded) = Some(CURRENT.to_owned());
@@ -5847,7 +5602,7 @@ mod tests {
                 recorded_frames(&saved),
                 [(8, 1), (8, 2), (9, 3), (9, 4), (10, 5), (10, 6)]
             );
-            let revision = replay::container::Replay::open_path(&saved)
+            let revision = replay::campaign::Replay::open_path(&saved)
                 .unwrap()
                 .revision();
             for session in sessions {
@@ -5859,14 +5614,11 @@ mod tests {
                 );
                 let bookkeeping = read_status(&session.join(name).join("saved.json")).unwrap();
                 assert_eq!(bookkeeping["replay"], json!(saved));
+                let root: String =
+                    revision.root.iter().map(|byte| format!("{byte:02x}")).collect();
                 assert_eq!(
                     bookkeeping["revision"],
-                    json!([
-                        revision.end,
-                        revision.trailer,
-                        revision.length,
-                        revision.crc,
-                    ])
+                    json!([revision.number, revision.length, root])
                 );
                 assert_eq!(
                     replay_io::save_campaign(
@@ -7432,7 +7184,7 @@ mod tests {
         assert_eq!(paths.len(), 1);
         let path = PathBuf::from(paths[0].as_str().unwrap());
         assert_eq!(published_hours(&path), [(9, 2), (9, 3)]);
-        let replay = replay::container::Replay::open_path(&path).unwrap();
+        let replay = replay::campaign::Replay::open_path(&path).unwrap();
         assert_eq!(
             replay
                 .gaps
@@ -7443,7 +7195,7 @@ mod tests {
         );
         assert!(matches!(
             replay.seek(9, 4).unwrap(),
-            replay::container::SeekResult::Gap { .. }
+            replay::campaign::SeekResult::Gap { .. }
         ));
         assert_eq!(fs::read(&spool).unwrap(), bytes);
     }
@@ -8699,6 +8451,7 @@ mod tests {
             .collect();
         fs::create_dir_all(session.join(LATER)).unwrap();
         fs::write(session.join(LATER).join("spool.0000.h4s"), spool).unwrap();
+        crate::test_support::write_capture(&session.join(LATER), 0, &later);
         assert_eq!(
             replay_io::first_spooled_campaign(&session).as_deref(),
             Some(first)

@@ -371,7 +371,7 @@ impl Restarts {
 /// layout or meaning changed since are withheld by name.
 fn recorded_columns(
     root: &Root,
-    capture: impl FnOnce() -> io::Result<Option<crate::columnar_file::Capture>>,
+    format: impl FnOnce() -> io::Result<Option<u16>>,
 ) -> io::Result<(Vec<usize>, Vec<(usize, String)>)> {
     let schema = schema()?;
     if root.identity.schema == envelope::schema_digest(&schema) {
@@ -381,12 +381,12 @@ fn recorded_columns(
         ));
     }
     let differs = |what: &str| invalid(format!("The recording's schema differs from {what}"));
-    let format = match capture() {
-        Ok(Some(capture)) => capture.format,
-        Ok(None) => return Err(differs("this build's, and it names no capture")),
+    let format = match format() {
+        Ok(Some(format)) => format,
+        Ok(None) => return Err(differs("this build's, and it names no format")),
         Err(error) if error.kind() == io::ErrorKind::InvalidData => {
             return Err(differs(&format!(
-                "this build's, and its capture cannot be read: {error}"
+                "this build's, and its records cannot be read: {error}"
             )));
         }
         Err(error) => return Err(error),
@@ -398,14 +398,62 @@ fn recorded_columns(
     Ok((columns, withheld_at(format)?))
 }
 
+/// A recording file's root alone: what its last footer whose root verifies names, the file's
+/// length through that footer, and any extent the root names decoded on demand. Lists and
+/// names a recording without reading its pages.
+pub struct RootFile {
+    source: Source,
+    decoder: Decoder,
+    root: Root,
+    extent: Extent,
+}
+
+impl RootFile {
+    pub fn open(file: File) -> io::Result<Self> {
+        let (source, extent) = Source::open(Held::File(file))?;
+        let mut decoder = Decoder::new()?;
+        let mut raw = Vec::new();
+        decoder.append(&source, &extent, &mut raw)?;
+        let root = Root::read(&raw)?;
+        Ok(Self {
+            source,
+            decoder,
+            root,
+            extent,
+        })
+    }
+
+    pub fn root(&self) -> &Root {
+        &self.root
+    }
+
+    /// The root's envelope, whose digest names the revision.
+    pub fn root_extent(&self) -> &Extent {
+        &self.extent
+    }
+
+    /// The file's length through the footer.
+    pub fn len(&self) -> u64 {
+        self.source.len()
+    }
+
+    /// `extent`, one the root names or one those name, decoded.
+    pub fn raw(&mut self, extent: &Extent) -> io::Result<Vec<u8>> {
+        let mut raw = Vec::new();
+        self.decoder.append(&self.source, extent, &mut raw)?;
+        Ok(raw)
+    }
+}
+
 /// A columnar recording (`H4COLUMN` version 4), read from its file or memory: its root, every
 /// run's directory and the restarts of every page, held from open. A run directory or page
 /// that cannot be read refuses only what it covers ([`Self::damage`]); the rest stays
 /// readable.
 pub struct Recording {
     source: Arc<Source>,
-    /// The root the footer names.
+    /// The root the footer names, and its envelope there.
     root: Root,
+    root_extent: Extent,
     /// The identity block every run's chain starts from.
     identity: Vec<u8>,
     root_identity: envelope::Identity,
@@ -485,20 +533,24 @@ impl Recording {
 
     fn read(held: Held) -> io::Result<Self> {
         let unlocated = |error: io::Error| Damage::wrap(DamageScope::Unlocated, error);
-        let (source, root) = Source::open(held).map_err(unlocated)?;
+        let (source, root_extent) = Source::open(held).map_err(unlocated)?;
         let source = Arc::new(source);
         let mut decoder = Decoder::new()?;
         let mut raw = Vec::new();
         decoder
-            .append(&source, &root, &mut raw)
+            .append(&source, &root_extent, &mut raw)
             .map_err(unlocated)?;
         let root = Root::read(&raw).map_err(unlocated)?;
         let (columns, withheld) = recorded_columns(&root, || {
-            crate::columnar_file::read_capture(&root.controls, |extent| {
-                let mut raw = Vec::new();
-                decoder.append(&source, extent, &mut raw)?;
-                Ok(raw)
-            })
+            let Some(first) = root.controls.first() else {
+                return Ok(None);
+            };
+            let mut raw = Vec::new();
+            decoder.append(&source, first, &mut raw)?;
+            if let Some(format) = crate::campaign::Records::format_of(&raw) {
+                return Ok(Some(format));
+            }
+            Ok(Some(crate::columnar_file::Capture::read(&raw)?.format))
         })?;
         let mut damage = Vec::new();
         let mut runs = engine_allocation::vec(root.runs.len())?;
@@ -542,6 +594,7 @@ impl Recording {
             withheld: engine_allocation::boxed_slice(withheld)?,
             root_identity: root.identity.clone(),
             root,
+            root_extent,
             source,
             runs: engine_allocation::boxed_slice(runs)?,
             segments: engine_allocation::boxed_slice(segments)?,
@@ -571,6 +624,7 @@ impl Recording {
         let mut recording = Self {
             source: Arc::clone(&self.source),
             root: self.root.clone(),
+            root_extent: self.root_extent,
             columns: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.columns)?)?,
             withheld: engine_allocation::boxed_slice(withheld)?,
             identity: engine_allocation::copy_vec(&self.identity)?,
@@ -726,6 +780,14 @@ impl Recording {
     /// when the root holds none.
     pub fn capture(&self) -> io::Result<Option<crate::columnar_file::Capture>> {
         let mut decoder = Decoder::new()?;
+        let mut raw = Vec::new();
+        if let Some(first) = self.controls.first() {
+            decoder.append(&self.source, first, &mut raw)?;
+            // A campaign's recording holds campaign records, not one capture's.
+            if crate::campaign::Records::format_of(&raw).is_some() {
+                return Ok(None);
+            }
+        }
         crate::columnar_file::read_capture(&self.controls, |extent| {
             let mut raw = Vec::new();
             decoder.append(&self.source, extent, &mut raw)?;
@@ -814,6 +876,11 @@ impl Recording {
         &self.root
     }
 
+    /// The digest of the root its footer names, which names its revision.
+    pub fn root_footer_digest(&self) -> io::Result<[u8; 16]> {
+        Ok(self.root_extent.digest)
+    }
+
     /// Every table's block of run `run`'s page `at`, raw: each read through the pages before it
     /// back to the segment's first, the blocks a chained block changes.
     pub fn page_blocks(&self, run: u32, at: usize) -> io::Result<Vec<(u32, Vec<u8>)>> {
@@ -848,6 +915,14 @@ impl Recording {
             previous = blocks;
         }
         Ok(previous)
+    }
+
+    /// `out.len()` stored bytes of `extent` from `at` within it; its digest is the caller's to
+    /// check, once, with [`Self::stored_bytes`].
+    pub fn stored_at(&self, extent: &Extent, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.source
+            .stored_at(extent, at, out)
+            .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))
     }
 
     /// `extent`'s stored bytes, checked against its digest.
@@ -959,6 +1034,11 @@ impl Recording {
     /// The file's length through its last valid footer.
     pub fn len(&self) -> u64 {
         self.source.len()
+    }
+
+    /// Its bytes, when it was opened from memory.
+    pub fn memory(&self) -> Option<&[u8]> {
+        self.source.memory()
     }
 
     /// Run `run`'s page `at`, read again.
@@ -1707,6 +1787,9 @@ impl<'r> Walker<'r> {
                 if records.hours() != page.hours {
                     return Err(damaged(invalid("holds hour records of other hours")));
                 }
+                if page.hours == 0 {
+                    return Err(damaged(invalid("holds no hours")));
+                }
                 let mut decoders: Vec<Option<TableDecoder<'_>>> = engine_allocation::collect_vec((0..TABLE_COUNT).map(|_| None))?;
                 for table in 0..TABLE_COUNT {
                     let Some(range) = self.units[table + 1].clone() else {
@@ -1748,29 +1831,33 @@ impl<'r> Walker<'r> {
                         state.skip(&skipped(recording, &self.lost))?;
                     }
                     self.timings.apply_ns += lap(&mut clock);
+                    // The page is checked whole before its last hour is handed on, so a reader
+                    // that stops there has had every check of what it read.
+                    if ordinal + 1 == end {
+                        records.finish().map_err(damaged)?;
+                        let losing = self.lost.len();
+                        for (table, decoder) in decoders.iter().enumerate() {
+                            if decoder.as_ref().is_some_and(|decoder| decoder.finish().is_err()) {
+                                let error = invalid("does not hold exactly its hours");
+                                if !isolate {
+                                    return Err(damaged(error));
+                                }
+                                // What the walk applied of a block holding more than its hours
+                                // is not to be trusted.
+                                engine_allocation::reserve(&mut self.lost, 1)?;
+                                self.lost.push((table, Damage::wrap(unit(table), error)));
+                            }
+                        }
+                        if self.lost.len() != losing {
+                            state.skip(&skipped(recording, &self.lost))?;
+                        }
+                    }
                     if !visit(state, &manifest, first, &self.lost)? {
                         return Ok(false);
                     }
                     // The visit's time is no part of the walk's.
                     lap(&mut clock);
                     first = false;
-                }
-                records.finish().map_err(damaged)?;
-                let losing = self.lost.len();
-                for (table, decoder) in decoders.iter().enumerate() {
-                    if decoder.as_ref().is_some_and(|decoder| decoder.finish().is_err()) {
-                        let error = invalid("does not hold exactly its hours");
-                        if !isolate {
-                            return Err(damaged(error));
-                        }
-                        // What the walk applied of a block holding more than its hours is not
-                        // to be trusted.
-                        engine_allocation::reserve(&mut self.lost, 1)?;
-                        self.lost.push((table, Damage::wrap(unit(table), error)));
-                    }
-                }
-                if self.lost.len() != losing {
-                    state.skip(&skipped(recording, &self.lost))?;
                 }
                 Ok(true)
             })();

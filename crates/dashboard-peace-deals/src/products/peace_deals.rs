@@ -19,7 +19,7 @@ use dashboard_base::{
     products::country_groups::{HourSpan, war_ongoing},
 };
 use dashboard_text::metadata::branch_bounds;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{LexicalTokenRow, tables};
 use replay_frame::frame::{DecodedFrame, Tables};
 use serde::{Deserialize, Serialize};
@@ -37,8 +37,6 @@ use ts_rs::TS;
 use dashboard_text::metadata::{slot_read, validate_campaign};
 #[cfg(test)]
 use replay_data::rows::TableId;
-#[cfg(test)]
-use replay_frame::frame::FrameDecoder;
 
 pub struct PeaceDeals;
 pub mod emit;
@@ -961,7 +959,6 @@ pub fn scan_branch(
         |blocks| {
             for (block, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(error) => {
@@ -974,7 +971,7 @@ pub fn scan_branch(
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let decoded = match decoder.advance(&frame).and_then(|decoded| {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded).and_then(|decoded| {
                         validate_campaign(decoded, replay)?;
                         Ok(decoded)
                     }) {

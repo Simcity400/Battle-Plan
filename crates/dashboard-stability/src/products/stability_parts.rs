@@ -15,6 +15,7 @@
 //! publication with each country's part names ([`emit`]), and the series family
 //! `stability-parts` answers from it ([`query`]).
 
+use replay_frame::frame::DecodedFrame;
 use super::country_stability::{
     self, BreakdownLine, FormulaBreakdown, ModifierBreakdown, StabilityBreakdown,
 };
@@ -28,9 +29,9 @@ use dashboard_base::{
     products::politics_content::{PoliticsContent, politics_content},
 };
 use dashboard_text::{identity::NamingCountry, metadata::validate_campaign};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView};
+use replay_frame::{frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -394,7 +395,6 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -402,7 +402,7 @@ fn scan(replay: &Replay, branch: u64, tag: &str, cancelled: &AtomicBool) -> io::
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

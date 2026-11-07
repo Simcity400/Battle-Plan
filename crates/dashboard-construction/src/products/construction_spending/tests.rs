@@ -4,7 +4,7 @@ use crate::products::construction_log::tests::{
     railway_line, spending_line, timed_scan,
 };
 use dashboard_core::test_fixtures::{CAMPAIGN, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::ConstructionLineOutputRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::{path::Path, sync::atomic::AtomicBool};

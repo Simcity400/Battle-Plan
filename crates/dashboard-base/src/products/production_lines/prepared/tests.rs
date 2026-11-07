@@ -223,7 +223,7 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
         .unwrap();
     let prefix = pages.pages.clone();
     let previous = prepared.processed.clone();
-    prepared.processed.as_mut().unwrap().length += 1;
+    prepared.processed.as_mut().unwrap().last_hour += 1;
     assert!(prepared.next_block(&replay).is_err());
     assert!(
         prepared
@@ -255,7 +255,7 @@ fn invalid_block_cursors_cannot_publish_coverage_or_completed_scans() {
     assert!(!coverage.complete);
     assert_eq!(
         prepared.directory.last_block,
-        Some((FIRST, FIRST, replay.index[0].offset))
+        Some((FIRST, FIRST, replay.index[0].key()))
     );
     let scan = assemble(
         &prepared.directory,
@@ -865,7 +865,7 @@ fn a_checkpoint_between_blocks_resumes_what_an_uninterrupted_preparation_publish
             .unwrap();
         if position + 1 < replay.index.len() {
             let block = &replay.index[position];
-            resumed.directory.last_block = Some((block.first_hour, block.last_hour, block.offset));
+            resumed.directory.last_block = Some((block.first_hour, block.last_hour, block.key()));
             resumed.save(&mut right, &flag).unwrap();
             resumed = restore(&mut right, &replay);
             assert!(
@@ -1112,7 +1112,7 @@ fn independent_v5_and_public_payloads_keep_same_hour_organisation_versions_delay
             }
             if checkpoint && position + 1 < replay.index.len() {
                 prepared.directory.last_block =
-                    Some((block.first_hour, block.last_hour, block.offset));
+                    Some((block.first_hour, block.last_hour, block.key()));
                 prepared.save(&mut pages, &flag).unwrap();
                 prepared = restore(&mut pages, &replay);
             }
@@ -1181,7 +1181,7 @@ fn assert_reference_publication_tags(
             }
             if checkpoint && position + 1 < replay.index.len() {
                 prepared.directory.last_block =
-                    Some((block.first_hour, block.last_hour, block.offset));
+                    Some((block.first_hour, block.last_hour, block.key()));
                 prepared.save(&mut pages, &flag).unwrap();
                 prepared = restore(&mut pages, replay);
                 assert_eq!(prepared.next_block(replay).unwrap(), position + 1);
@@ -2376,15 +2376,13 @@ fn commits_chain_every_chunk_in_order_across_spills_and_resumes() {
 
 fn unreadable_initial_recording(later: bool) -> Replay {
     use replay_data::rows::{CampaignRow, TableRows};
-    use replay_frame::frame::{TableUpdate, TableView};
-    let frame = production_frame(FIRST, true, true, 9001, &[(5, 70, 8, 0)], Some(&[]));
-    let original = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
-    let mut frames = original.read_block(&original.index[0]).unwrap();
-    frames[0].tables[TableId::Campaign.index()] =
-        TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
+    use replay_frame::frame::TableView;
+    let mut frame = production_frame(FIRST, true, true, 9001, &[(5, 70, 8, 0)], Some(&[]));
+    *frame.tables[TableId::Campaign.index()] =
+        TableView::Complete(TableRows::Campaign(vec![CampaignRow {
             id: b"wrong-initial-campaign".to_vec(),
         }]));
-    let malformed = replay::container::test_work::with_block_frames(&original, &frames).unwrap();
+    let malformed = Replay::from_records(CAMPAIGN.into(), &[records(1, vec![frame])]).unwrap();
     if !later {
         return malformed;
     }
@@ -2414,7 +2412,7 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
         let replay = unreadable_initial_recording(readable_later);
         let mut observed = 0;
         let failure = replay
-            .read_block_recorded_alone(
+            .read_block_alone(
                 &replay.index[0],
                 &Prepared::tables(false),
                 |_, _| {
@@ -2426,14 +2424,10 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
             .unwrap_err();
         assert_eq!(observed, 0);
         assert_eq!(failure.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(
-            replay::container::ReplayStream::failed_hour(&failure),
-            Some(FIRST)
-        );
         if readable_later {
             let mut hours = Vec::new();
             replay
-                .read_block_recorded_alone(
+                .read_block_alone(
                     &replay.index[1],
                     &Prepared::tables(false),
                     |_, frame| {
@@ -2487,7 +2481,7 @@ fn unreadable_initial_blocks_keep_the_seeded_publication_roster_after_committed_
                             .unwrap();
                     } else {
                         prepared.directory.last_block =
-                            Some((block.first_hour, block.last_hour, block.offset));
+                            Some((block.first_hour, block.last_hour, block.key()));
                         prepared.save(&mut stored, &flag).unwrap();
                     }
                     prepared = restore(&mut stored, &replay);
@@ -2945,7 +2939,7 @@ fn pictured_quiet_hours(replay: &Replay) -> usize {
     let before = crate::prepared::prepass::noted("production-lines.quiet_hour");
     for block in &replay.index {
         replay
-            .read_block_recorded_alone(
+            .read_block_alone(
                 block,
                 &Prepared::tables(true),
                 |updates, frame| {

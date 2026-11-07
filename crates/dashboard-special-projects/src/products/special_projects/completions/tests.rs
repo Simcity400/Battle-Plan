@@ -22,7 +22,7 @@ fn completion_presentation_scans_only_blocks_with_pending_hours() {
         assert_eq!(feed.events.len(), usize::from(completed));
         dashboard_core::blocks::SCANNED_BLOCKS.with_borrow(|blocks| {
             let expected = if completed {
-                vec![replay.index[1].offset]
+                vec![replay.index[1].key()]
             } else {
                 vec![]
             };

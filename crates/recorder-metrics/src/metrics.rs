@@ -1,9 +1,9 @@
 //! Exact recorded hook-acquisition metrics for a requested inclusive interval.
 
 use engine_allocation as allocation;
-use replay::{container::Replay, spool::ControlRecord};
+use replay::{campaign::Replay, spool::ControlRecord};
 use replay_data::{BranchId, Hour, cadence::refresh_text, codec::invalid, rows::TableId};
-use replay_frame::{frame::FrameDecoder, frame::TableView};
+use replay_frame::frame::TableView;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, ffi::OsString, io, path::Path};
 
@@ -105,14 +105,18 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
     let mut total = 0u128;
     let mut pool_bytes_max = 0;
     let mut failures = BTreeMap::<String, u64>::new();
-    for index in replay.index.iter().filter(|index| {
-        index.branch == branch && index.first_hour <= last && index.last_hour >= first
-    }) {
-        let mut decoder = FrameDecoder::new();
-        for frame in replay.read_block(index)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay
+        .index
+        .iter()
+        .filter(|index| index.branch == branch && index.first_hour <= last && index.last_hour >= first)
+        .collect();
+    replay.visit_blocks(
+        &blocks,
+        &TableId::ALL,
+        None,
+        |_, _, frame| {
             if !(first..=last).contains(&frame.hour) {
-                continue;
+                return Ok(true);
             }
             if i64::from(frame.hour) != next {
                 return Err(invalid(format!(
@@ -134,7 +138,7 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
                 if !capture_counted(table) {
                     continue;
                 }
-                let reason = match &*decoded.tables[table.index()] {
+                let reason = match &*frame.tables[table.index()] {
                     // The capture mode leaves it out: expected, not a failure.
                     TableView::Complete(_) | TableView::NotRecorded { .. } => continue,
                     TableView::Truncated { missing, .. } => {
@@ -145,8 +149,10 @@ fn report(replay: &Replay, branch: BranchId, first: Hour, last: Hour) -> io::Res
                 let key = format!("{table:?} ({}): {reason}", refresh_text(table));
                 *failures.entry(key).or_default() += 1;
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     if next != end {
         return Err(invalid(format!("metrics missing requested hour {next}")));
     }
@@ -294,7 +300,11 @@ mod tests {
         bytes[4..6].copy_from_slice(&(replay_data::FORMAT_VERSION + 1).to_le_bytes());
         assert!(Replay::open(bytes).is_err());
         let mut bytes = good.bytes().to_vec();
-        bytes[good.index[0].offset as usize] ^= 1;
+        let page = good
+            .recording()
+            .page(good.index[0].run, good.index[0].page as usize)
+            .unwrap();
+        bytes[page.records.offset as usize] ^= 1;
         assert!(report(&Replay::open(bytes).unwrap(), 9, 2, 4).is_err());
     }
 

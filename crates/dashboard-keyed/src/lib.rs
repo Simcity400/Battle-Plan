@@ -45,7 +45,7 @@ use dashboard_base::prepared::{
     frame_changes::FrameChanges, prepass::HeldBytes, series::Accumulator,
 };
 pub use delta::Delta;
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

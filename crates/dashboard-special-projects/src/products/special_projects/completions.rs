@@ -1,11 +1,10 @@
 //! Lean all-country completion scan shared with the project's history builder.
 //! Progress runs stay country-local; the feed caches only actual completions.
 
+use replay_frame::frame::DecodedFrame;
 use super::*;
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
+use replay::campaign::Replay;
 
 #[cfg(any(test, feature = "test-support"))]
 const UNMAPPED_PROJECT_OWNER: &str = "Project owner has no recorded CountryLinks mapping.";
@@ -336,13 +335,12 @@ pub(super) fn present_observations(
                     continue;
                 };
                 let Ok(frames) = frames else { continue };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
                     if frame.hour > last_needed {
                         break;
                     }
                     dashboard_text::metadata::check_cancel(cancelled)?;
-                    let Ok(frame) = decoder.advance(&frame) else {
+                    let Ok(frame) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(frame, replay).is_err() {

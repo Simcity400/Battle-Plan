@@ -26,16 +26,14 @@ use std::{
 };
 
 use installed_content_core::ResolveOptions;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{
     day_night, day_night::Clock, day_night::HourOperands, day_night::ProvinceClock,
     identity::Identity, identity::SessionStart, identity::Verification, rows::ClockState,
     rows::Recorded, rows::TableId, rows::tables,
 };
-use replay_frame::{
-    frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableUpdate, frame::TableView,
-};
+use replay_frame::{frame::DecodedFrame, frame::TableUpdate, frame::TableView};
 
 mod attack;
 mod movement;
@@ -218,10 +216,10 @@ impl Census {
         }
     }
 
-    fn observe(&mut self, frame: &Frame) {
+    fn observe(&mut self, frame: &replay_frame::frame::RecordedFrame) {
         self.hours += 1;
-        for (index, update) in frame.tables.iter().enumerate() {
-            if let TableUpdate::Delta { changed, .. } = update {
+        for index in 0..TABLE_COUNT {
+            if let TableUpdate::Delta { changed, .. } = &frame.tables[index] {
                 self.rows[index] += changed.len() as u64;
                 for row in changed {
                     for (bit, count) in self.fields[index].iter_mut().enumerate() {
@@ -399,27 +397,27 @@ fn run(
     );
     let mut counts = Census::new();
     let mut hours = 0_u64;
-    for block in &replay.index {
-        let frames = if census {
-            replay.read_block(block)?
-        } else {
-            replay.read_block_selected(block, &selected)?
-        };
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in &frames {
+    let blocks: Vec<_> = replay.index.iter().collect();
+    let read = if census { &TableId::ALL[..] } else { &selected[..] };
+    replay.visit_blocks(
+        &blocks,
+        read,
+        None,
+        |_, recorded, decoded| {
             hours += 1;
             if census {
-                counts.observe(frame);
+                counts.observe(recorded);
             }
-            let decoded = decoder.advance(frame)?;
             check_clocks(decoded, &content, &mut clocks);
             temperatures.observe(decoded);
             attack.observe(decoded);
             balances.observe(decoded, &content.layers);
             naval.observe(decoded);
             speeds.observe(decoded);
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     println!("hours: {hours}");
     println!(
         "WeatherProvinces clocks: {} hours ({} without a complete table), {} recorded clocks, {} updated rows ({} not derivable on this content), {} not recorded",

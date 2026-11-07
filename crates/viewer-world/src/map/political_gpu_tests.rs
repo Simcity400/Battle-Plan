@@ -1300,7 +1300,7 @@ fn political_gpu_incremental() {
 fn political_gpu_recording() {
     let path =
         PathBuf::from(std::env::var_os("BATTLE_PLAN_POLITICAL_REPLAY").or_else(|| std::env::var_os("HOI4_POLITICAL_REPLAY")).expect("BATTLE_PLAN_POLITICAL_REPLAY"));
-    let replay = replay::container::Replay::open(std::fs::read(&path).unwrap()).unwrap();
+    let replay = replay::campaign::Replay::open(std::fs::read(&path).unwrap()).unwrap();
     let options = installed_content_core::ResolveOptions {
         game_dir: PathBuf::from(
             std::env::var_os("BATTLE_PLAN_POLITICAL_GAME_DIR").or_else(|| std::env::var_os("HOI4_POLITICAL_GAME_DIR")).expect("BATTLE_PLAN_POLITICAL_GAME_DIR"),

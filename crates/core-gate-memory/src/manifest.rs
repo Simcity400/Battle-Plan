@@ -1,4 +1,4 @@
-use replay::{columns, container::TableFields};
+use replay::{columns, campaign::TableFields};
 use replay_data::rows::TableId;
 use serde::{Deserialize, Serialize};
 use std::{

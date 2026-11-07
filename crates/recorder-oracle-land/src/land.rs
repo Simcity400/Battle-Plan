@@ -2,7 +2,6 @@
 //! No inferred deletion causes.
 use super::*;
 use installed_content_core::{parser::Item, parser::Value};
-use replay_frame::frame::FrameDecoder;
 
 fn equal<T: std::fmt::Debug + PartialEq>(
     report: &mut Report,
@@ -493,19 +492,22 @@ pub fn compare_events(
         .collect::<Vec<_>>();
     blocks.sort_by_key(|b| b.first_hour);
     for b in blocks {
-        let mut decoder = FrameDecoder::for_tables(&SELECTED);
-        for encoded in replay.read_block_selected(b, &SELECTED)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[&b],
+            &SELECTED,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            let decoded = decoder.advance(&encoded)?;
+            let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
             let coverage = decoded.complete::<tables::LandEventCoverage>()?;
             let [c] = coverage else {
                 return Err(invalid("land event coverage must have one row"));
             };
             if !c.complete {
                 report.limitation("land events before attachment, across loads/gaps/recovery or failed observation are unknown",format!("hours {}..{} epoch {}",c.from_hour,c.to_hour,c.epoch));
-                continue;
+                return Ok(true);
             }
             if c.to_hour != decoded.hour || c.from_hour >= c.to_hour {
                 return Err(invalid("land event coverage bounds invalid"));
@@ -524,7 +526,10 @@ pub fn compare_events(
                 });
             }
             destroyed += decoded.complete::<tables::DestroyedDivisions>()?.len();
-        }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     // Only timestamps wholly within a certified interval participate in the
     // reverse comparison. A missing interval is unknown, never zero events.

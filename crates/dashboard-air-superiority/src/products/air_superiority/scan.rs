@@ -1470,12 +1470,11 @@ pub(super) fn extend_days_anchored(
                 check_cancel(cancelled)?;
                 let mut segment = DaySegment::default();
                 let mut frames = frames?.into_iter().peekable();
-                let mut decoder = day_decoder(tables);
                 // Consume each payload after its update; large blocks do not retain all
                 // delta allocations while indexing later hours.
                 while let Some(frame) = frames.next() {
                     check_cancel(cancelled)?;
-                    let decoded = decoder.advance(&frame)?;
+                    let decoded = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded)?;
                     validate_campaign(decoded, replay)?;
                     if let Some(aux) = reads.observe(&frame, decoded, base.is_none())? {
                         match segment.auxiliary.last_mut() {
@@ -1592,13 +1591,12 @@ pub(super) fn scan_window(
         |blocks| {
             for (_, frames) in blocks {
                 let frames = frames?;
-                let mut decoder = day_decoder(MOMENT_TABLES);
                 for frame in frames {
                     check_cancel(cancelled)?;
                     if frame.hour > last {
                         break;
                     }
-                    let decoded = decoder.advance(&frame)?;
+                    let decoded = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded)?;
                     validate_campaign(decoded, replay)?;
                     reads.observe_tables(&frame, decoded, true);
                     if frame.hour < first {

@@ -3,7 +3,7 @@
 use super::*;
 use crate::native_fixtures::{Recorded, UNIT_HOURS, streams};
 use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag};
-use replay::{container::Replay, spool::Record};
+use replay::{campaign::Replay, spool::Record};
 use replay_data::rows::{EquipmentDestructionCause, EquipmentDestructionRow, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
 
@@ -67,7 +67,7 @@ fn recorded() -> (Recorded, ContentOptions) {
     let mut input = records(1, (FIRST..FIRST + UNIT_HOURS).map(losses).collect());
     input[0] = Record::SessionStart(probe.replay_ref().sessions[0].clone());
     let replay = Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
-    recorded.record(&replay, &[(1, FIRST, 1)], STREAMS, write_hour);
+    recorded.record(&replay);
     (recorded, context.content.unwrap())
 }
 

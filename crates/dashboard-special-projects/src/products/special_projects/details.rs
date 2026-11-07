@@ -909,7 +909,7 @@ pub fn details_at_hour(
 mod tests {
     use super::*;
     use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records, source};
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::rows::*;
     use replay_frame::frame::TableView;
     #[test]

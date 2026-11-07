@@ -2,7 +2,7 @@ use super::super::tests::{applied, day, hour, line};
 use super::*;
 use crate::prepared::series::tests::Fixture;
 use crate::prepared::series::{Accumulator, Run};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::OutputPurpose, rows::ProductionLineOutputRow, rows::Recorded, rows::TableId,
     rows::TableRows,

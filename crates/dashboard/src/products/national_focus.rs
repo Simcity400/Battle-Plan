@@ -5,9 +5,9 @@ use crate::{
     Source,
     metadata::{CountryKeys, validate_campaign},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder, frame::ViewIdentity};
+use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -244,7 +244,6 @@ fn focus_branch_observing(
                         "Focus request cancelled",
                     ));
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(_) => continue,
@@ -256,7 +255,7 @@ fn focus_branch_observing(
                             "Focus request cancelled",
                         ));
                     }
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(frame) => frame,
                         Err(_) => break,
                     };

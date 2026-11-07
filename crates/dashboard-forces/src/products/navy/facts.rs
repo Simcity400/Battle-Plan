@@ -8,7 +8,7 @@
 use dashboard_world::{Needs, Roster, Tagged, World};
 use replay::{
     columns,
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink, State},
 };
 use replay_data::{

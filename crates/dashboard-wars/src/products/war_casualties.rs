@@ -45,6 +45,7 @@
 //! Explicit picks follow all recorded holders of the chosen tags through renames;
 //! unrelated holders of an alias are clipped from that projection.
 
+use replay_frame::frame::DecodedFrame;
 use dashboard_base::source::Source;
 use dashboard_base::{
     products::LoadContext, products::MAX_PRODUCT_REPLY_BYTES, products::Product,
@@ -53,9 +54,9 @@ use dashboard_base::{
 use dashboard_text::metadata::{link_slot, mapped_slot, slot_read, validate_campaign};
 use installed_content_country_names::{country_names::CountryNames, country_names::Operands};
 use installed_content_localisation::localisation::Localisation;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{cadence, cadence::Cadence, rows::TableId, rows::tables};
-use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView, frame::ViewIdentity};
+use replay_frame::{frame::SharedView, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
@@ -2490,14 +2491,13 @@ fn scan_frames(
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
                 let Ok(frames) = frames else {
                     builder.scan.gap();
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         builder.scan.gap();
                         break;
                     };

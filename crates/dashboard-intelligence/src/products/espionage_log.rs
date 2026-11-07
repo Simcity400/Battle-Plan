@@ -19,12 +19,12 @@ use dashboard_base::{
 };
 use dashboard_core::config::LoadContext;
 use dashboard_text::metadata::branch_bounds;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::OperationRow, rows::TableId, rows::tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     io,
     sync::atomic::AtomicBool,
 };
@@ -32,8 +32,6 @@ use ts_rs::TS;
 
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{Arc, atomic::Ordering};
 

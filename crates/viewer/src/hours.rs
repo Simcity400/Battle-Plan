@@ -11,9 +11,9 @@
 //! finished ([`Built`]); the frame that shows an hour only uploads it.
 //!
 //! A window's hours are decoded on a lane of their own ([`DecodeLane`]), a
-//! window of hours ahead of the builders, through the replay's shared
-//! [`BlockReader`], which reads the next block before playback reaches it; a
-//! dashboard view uses the source-shared decoder instead. For each decoded
+//! window of hours ahead of the builders, through the playback's cursor, which walks
+//! the recording on a thread of its own; a dashboard view uses the source-shared
+//! decoder instead. For each decoded
 //! hour, the coordinator hands the independent parts of that hour to a pool of
 //! worker threads and assembles them as they come back. Hours are dispatched
 //! in the order the window will need them — the playhead, the hours ahead of
@@ -76,14 +76,14 @@ use viewer_foundation::parallel::Workers;
 use viewer_foundation::profiling::{BuilderSpan, BuilderSpans};
 use viewer_foundation::worker_priority::background_priority;
 
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{BranchId, Hour};
 
 use {
     crate::document::Content, crate::document::Hour as HourView, crate::document::OverlayTables,
     crate::document::PreparedOverlay, crate::engaged_index::EngagedIndex, crate::playback::Current,
     crate::playback::Playback, map_display_data::buildings::Buildings as PreparedBuildings,
-    viewer_foundation::blocks::BlockReader, viewer_foundation::map::camera::Camera,
+    viewer_foundation::map::camera::Camera,
     viewer_foundation::map::name_draw::Placements, viewer_foundation::map::perspective,
     viewer_foundation::map::ribbon_content::OrderField,
     viewer_foundation::map::tables::Limitations, viewer_foundation::map::textures::IntelMap,
@@ -1375,7 +1375,7 @@ impl FrameCache {
 /// keyframe 31–34 ms and a block boundary 0.5–1 s, during which no hour was
 /// dispatched. The coordinator posts requests to the lane mailbox and receives
 /// readiness events without waiting on the lane.
-/// The lane's [`Playback`] reads the next block ahead through its [`BlockReader`].
+/// The lane's [`Playback`] walks the recording on its cursor's thread.
 ///
 // The serial decode lane runs above the builders that wait for it.
 struct DecodeLane {
@@ -2887,9 +2887,7 @@ impl Pipeline {
         let lane = match shared_decoder {
             Some(_) => None,
             None => {
-                let reader = BlockReader::new(Arc::clone(&replay), Arc::new(Dropper::new()?));
                 let mut playback = Playback::unloaded(Arc::clone(&replay))?
-                    .with_reader(reader)
                     .with_map_workers(map_workers(&pool));
                 if let Some(binding) = binding {
                     playback = playback.with_map_binding(binding);

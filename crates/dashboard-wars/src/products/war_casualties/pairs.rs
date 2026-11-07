@@ -4,6 +4,7 @@
 //! war never replaces an earlier war's recorded losses. Windows follow replay
 //! blocks, with no application-selected period or country-count limit.
 
+use replay_frame::frame::DecodedFrame;
 use super::*;
 
 pub struct CasualtyPairs;
@@ -573,12 +574,11 @@ impl Product for CasualtyPairs {
                 cancelled,
                 |blocks| {
                     for (_, frames) in blocks {
-                        let mut decoder = FrameDecoder::for_tables(&SCAN_TABLES);
                         if let Ok(frames) = frames {
                             let mut builder = ScanFrames::new(&replay, branch);
                             for frame in frames {
                                 check_cancel(cancelled)?;
-                                let Ok(decoded) = decoder.advance(&frame) else {
+                                let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                                     break;
                                 };
                                 builder.frame(decoded, &replay);

@@ -20,7 +20,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         install_gates();
-        let replay = replay::container::Replay::from_records(
+        let replay = replay::campaign::Replay::from_records(
             CAMPAIGN.into(),
             &[records(1, vec![world_frame(0, false)])],
         )

@@ -2,7 +2,7 @@
 
 use installed_content_country_names::country_names::{self, CountryNames, Operands};
 use installed_content_localisation::localisation::Localisation;
-use replay::{container::Replay, container::SeekResult, recording_files, spool::Placement};
+use replay::{campaign::Replay, campaign::SeekResult, recording_files, spool::Placement};
 use replay_data::{BranchId, Hour, rows::TableId, rows::tables};
 use replay_frame::frame::{DecodedFrame, Frame, FrameDecoder, TableView};
 use std::{collections::BTreeMap, io};
@@ -202,30 +202,43 @@ fn more_than_one_player(frame: &DecodedFrame) -> bool {
 /// Whether saved hours prove multiplayer or single-player; neither when a roster is missing.
 pub fn known_multiplayer(replay: &Replay, blocks: usize) -> io::Result<Option<bool>> {
     let mut known = true;
-    for block in replay.index.iter().take(blocks) {
-        let mut decoder = FrameDecoder::for_tables(&[TableId::Players]);
-        for frame in replay.read_block_selected(block, &[TableId::Players])? {
-            match roster(decoder.advance(&frame)?) {
-                Some(true) => return Ok(Some(true)),
+    let mut multiplayer = false;
+    let chosen: Vec<_> = replay.index.iter().take(blocks).collect();
+    replay.visit_blocks(
+        &chosen,
+        &[TableId::Players],
+        None,
+        |_, _, frame| {
+            match roster(frame) {
+                Some(true) => multiplayer = true,
                 Some(false) => {}
                 None => known = false,
             }
-        }
+            Ok(!multiplayer)
+        },
+        || Ok(()),
+    )?;
+    if multiplayer {
+        return Ok(Some(true));
     }
     Ok(known.then_some(false))
 }
 
 /// Whether an hour of the first `blocks` held more than one human; stops at the first.
 pub fn multiplayer(replay: &Replay, blocks: usize) -> io::Result<bool> {
-    for block in replay.index.iter().take(blocks) {
-        let mut decoder = FrameDecoder::for_tables(&[TableId::Players]);
-        for frame in replay.read_block_selected(block, &[TableId::Players])? {
-            if more_than_one_player(decoder.advance(&frame)?) {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+    let mut multiplayer = false;
+    let chosen: Vec<_> = replay.index.iter().take(blocks).collect();
+    replay.visit_blocks(
+        &chosen,
+        &[TableId::Players],
+        None,
+        |_, _, frame| {
+            multiplayer = more_than_one_player(frame);
+            Ok(!multiplayer)
+        },
+        || Ok(()),
+    )?;
+    Ok(multiplayer)
 }
 
 /// What a recording's name is made of, its country not yet put in words.

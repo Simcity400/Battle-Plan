@@ -2,11 +2,10 @@
 
 use std::{io, sync::Arc};
 
-use crate::blocks::BlockReader;
 use crate::map_binding::MapBinding;
-use replay::container::Replay;
-use replay_data::{BranchId, Hour, SessionId, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::Frame, frame::FrameDecoder, frame::TableView};
+use replay::campaign::{HourCursor, Replay, SeekResult};
+use replay_data::{BranchId, Hour, SessionId, rows::TableId};
+use replay_frame::{frame::DecodedFrame, frame::TableView};
 
 /// What a playback holds for its hour: the decoded frame, shared so the
 /// window can hand it between threads without a copy, the gap it falls in, or
@@ -38,24 +37,6 @@ pub enum Current {
     },
 }
 
-struct CachedBlock {
-    index: usize,
-    frames: Result<Arc<Vec<Frame>>, String>,
-    decoder: FrameDecoder,
-    next: usize,
-    applied_hour: Option<Hour>,
-    failure: Option<(Hour, String)>,
-}
-
-impl CachedBlock {
-    fn reset(&mut self) {
-        self.decoder = display_decoder();
-        self.next = 0;
-        self.applied_hour = None;
-        self.failure = None;
-    }
-}
-
 /// The recording's daily air rosters as the map counters ask them.
 pub struct AirRosters(viewer_counter_products::map::province_tooltips::air_region::RosterHistory);
 
@@ -74,10 +55,10 @@ pub struct Playback {
     hour: Hour,
     current: Current,
     materialized: bool,
-    cache: Option<CachedBlock>,
-    /// Reads blocks ahead of this playback and frees passed ones elsewhere;
-    /// without one, blocks are read and freed on the calling thread.
-    reader: Option<Arc<BlockReader>>,
+    /// Walks the recording's hours on a thread of its own, from the hour it read last.
+    cursor: Option<HourCursor>,
+    /// Complete views carry change facts, as the display reads them.
+    display_changes: bool,
     map_binding: Option<Arc<MapBinding>>,
     /// The map's hours from the binding's change-run index, which replace the replay's blocks
     /// once open; `map_failure`, why the index serving the replay could not be read, refuses
@@ -91,8 +72,6 @@ pub struct Playback {
     source_path: Option<bool>,
     #[cfg(test)]
     source_paths: Vec<(Hour, bool)>,
-    #[cfg(test)]
-    block_loads: usize,
 }
 
 impl Playback {
@@ -123,8 +102,8 @@ impl Playback {
             hour,
             current: gap(branch, hour, "hour has not been decoded".into()),
             materialized: false,
-            cache: None,
-            reader: None,
+            cursor: None,
+            display_changes: false,
             map_binding: None,
             map: None,
             map_failure: None,
@@ -133,28 +112,17 @@ impl Playback {
             source_path: None,
             #[cfg(test)]
             source_paths: Vec::new(),
-            #[cfg(test)]
-            block_loads: 0,
         })
     }
 
     pub fn with_display_changes(mut self) -> Self {
-        if let Some(cache) = &mut self.cache {
-            cache.decoder = std::mem::take(&mut cache.decoder).with_change_facts();
-        }
+        self.display_changes = true;
+        self.cursor = None;
         self
     }
 
     pub fn replay(&self) -> &Replay {
         &self.replay
-    }
-
-    /// Reads blocks through `reader`, which must read this playback's replay:
-    /// the next block of the branch is read ahead whenever a block is loaded.
-    pub fn with_reader(mut self, reader: Arc<BlockReader>) -> Self {
-        debug_assert!(Arc::ptr_eq(reader.replay(), &self.replay));
-        self.reader = Some(reader);
-        self
     }
 
     pub fn with_map_workers(mut self, workers: usize) -> Self {
@@ -371,13 +339,13 @@ impl Playback {
 
     // Presented frames retain their identity while the load-time decoder, block and map walk go.
     pub fn release_source(&mut self) -> Option<impl Send + 'static + use<>> {
-        let released = (self.cache.take(), self.map.take());
+        let released = (self.cursor.take(), self.map.take());
         (released.0.is_some() || released.1.is_some()).then_some(released)
     }
 
     #[cfg(test)]
     pub(crate) fn holds_source(&self) -> bool {
-        self.cache.is_some()
+        self.cursor.is_some()
     }
 
     /// The timeline includes explicitly lost hours at either end of a branch.
@@ -423,29 +391,14 @@ impl Playback {
         if self.map_failure.is_some() || self.native_map {
             return Some(i64::from(hour));
         }
-        let index = self.replay.index.iter().position(|index| {
-            index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
-        })?;
-        if self.cache.as_ref().is_some_and(|cache| {
-            cache.index == index
-                && (cache.frames.is_err()
-                    || cache
-                        .failure
-                        .as_ref()
-                        .is_some_and(|(failed, _)| *failed <= hour))
-        }) {
-            return None;
-        }
+        let block = self.replay.block_at(branch, hour)?;
         let continued = self
-            .cache
+            .cursor
             .as_ref()
-            .filter(|cache| cache.index == index && cache.failure.is_none())
-            .and_then(|cache| cache.applied_hour)
-            .filter(|applied| *applied < hour);
-        Some(continued.map_or_else(
-            || i64::from(self.replay.index[index].first_hour) - 1,
-            i64::from,
-        ))
+            .filter(|cursor| cursor.continues(branch, hour))
+            .and_then(HourCursor::last)
+            .map(|(_, last)| last);
+        Some(continued.map_or_else(|| i64::from(block.first_hour) - 1, i64::from))
     }
 
     /// Seek to exactly this hour. A hole never borrows the last displayed rows.
@@ -531,10 +484,7 @@ impl Playback {
         if held && self.map.is_none() {
             self.native_map = true;
             self.current = self.unindexed(branch, hour);
-            let released = self.cache.take();
-            if let Some(reader) = &self.reader {
-                reader.drop_later(released);
-            }
+            self.cursor = None;
         }
         Ok(())
     }
@@ -555,7 +505,7 @@ impl Playback {
         }
         self.refresh_map()?;
         let cached_output =
-            self.branch == branch && self.hour == hour && self.cache.is_some() && self.materialized;
+            self.branch == branch && self.hour == hour && self.cursor.is_some() && self.materialized;
         if !cached_output || !materialize {
             // This decode lane's old output is no longer needed. Displayed
             // hours retained by other owners stay immutable; without one the
@@ -568,7 +518,7 @@ impl Playback {
             self.branch = branch;
             self.hour = hour;
             self.current = current;
-            self.cache = None;
+            self.cursor = None;
             self.note_source(branch, hour, true);
             return Ok(());
         }
@@ -580,7 +530,7 @@ impl Playback {
                 hour,
                 reason,
             };
-            self.cache = None;
+            self.cursor = None;
             return Ok(());
         }
         if self.native_map {
@@ -595,120 +545,41 @@ impl Playback {
         }
         self.branch = branch;
         self.hour = hour;
-        let Some(index) = self.replay.index.iter().position(|index| {
-            index.branch == branch && index.first_hour <= hour && hour <= index.last_hour
-        }) else {
+        if self.replay.block_at(branch, hour).is_none() {
             self.current = gap(branch, hour, self.gap_reason(branch, hour));
             return Ok(());
-        };
-
-        if self.cache.as_ref().is_none_or(|cache| cache.index != index) {
-            let frames = match &self.reader {
-                Some(reader) => {
-                    let frames = reader.block(index);
-                    // The branch's next block, read while this one plays.
-                    if self
-                        .replay
-                        .index
-                        .get(index + 1)
-                        .is_some_and(|next| next.branch == branch)
-                    {
-                        reader.prefetch(index + 1);
-                    }
-                    frames
-                }
-                None => self
-                    .replay
-                    .read_block(&self.replay.index[index])
-                    .map(Arc::new)
-                    .map_err(|error| format!("unreadable block: {error}")),
-            };
-            let passed = self.cache.replace(CachedBlock {
-                index,
-                frames,
-                decoder: display_decoder(),
-                next: 0,
-                applied_hour: None,
-                failure: None,
-            });
-            if let Some(reader) = &self.reader {
-                reader.drop_later(passed);
-            }
-            #[cfg(test)]
-            {
-                self.block_loads += 1;
-            }
         }
-
-        let cache = self.cache.as_mut().expect("target block was cached");
-        if cache.applied_hour.is_some_and(|applied| hour < applied)
-            || cache
-                .failure
-                .as_ref()
-                .is_some_and(|(failed, _)| hour < *failed)
+        let changes = self.display_changes;
+        let replay = &self.replay;
+        let cursor = self
+            .cursor
+            .get_or_insert_with(|| HourCursor::new(Arc::clone(replay), &TableId::ALL, changes));
+        // Hours just before the one asked, which a cursor going on builds on its way, are handed
+        // on; a jump builds the hour alone.
+        if let Some((_, last)) = cursor.last().filter(|_| cursor.continues(branch, hour))
+            && hour - last <= PASSED_HOURS
         {
-            cache.reset();
+            for passing in last + 1..hour {
+                if cancelled() {
+                    return Err(io::Error::from(io::ErrorKind::Interrupted));
+                }
+                if let SeekResult::Frame(frame) = cursor.seek(branch, passing)? {
+                    passed(&Arc::new(*frame));
+                }
+            }
         }
-        let frames = match &cache.frames {
-            Ok(frames) => frames,
-            Err(reason) => {
-                self.current = gap(branch, hour, reason.clone());
-                return Ok(());
+        if cancelled() {
+            return Err(io::Error::from(io::ErrorKind::Interrupted));
+        }
+        self.current = match self.cursor.as_mut().expect("a cursor").seek(branch, hour) {
+            Ok(SeekResult::Frame(frame)) => Current::Frame(Arc::new(*frame)),
+            Ok(SeekResult::Gap { reason, .. }) => gap(branch, hour, reason),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => return Err(error),
+            Err(error) => {
+                self.cursor = None;
+                gap(branch, hour, format!("unreadable hour: {error}"))
             }
         };
-        if let Some((_, reason)) = &cache.failure {
-            self.current = gap(branch, hour, reason.clone());
-            return Ok(());
-        }
-        if cache
-            .decoder
-            .current()
-            .is_some_and(|decoded| decoded.hour == hour)
-        {
-            if materialize {
-                self.current = Current::Frame(Arc::clone(
-                    cache.decoder.shared_current().expect("decoded current"),
-                ));
-            }
-            return Ok(());
-        }
-        while let Some(frame) = frames.get(cache.next).filter(|frame| frame.hour <= hour) {
-            let decoded = match cache.decoder.advance_cancellable(frame, cancelled) {
-                Ok(decoded) => decoded,
-                Err(error) if interrupted(&error) => return Err(error),
-                Err(error) => {
-                    let reason = format!("invalid frame baseline at hour {}: {error}", frame.hour);
-                    cache.failure = Some((frame.hour, reason.clone()));
-                    self.current = gap(branch, hour, reason);
-                    return Ok(());
-                }
-            };
-            // read_block validates the wire representation. Like Replay::seek,
-            // validate identity after every applied frame, including the prefix.
-            if let TableView::Complete(rows) = &*decoded.tables[TableId::Campaign.index()]
-                && rows
-                    .rows::<tables::Campaign>()
-                    .is_none_or(|rows| rows.len() != 1 || rows[0].id != self.replay.campaign_id)
-            {
-                let reason = "frame campaign identity differs from replay header".to_owned();
-                cache.failure = Some((frame.hour, reason.clone()));
-                self.current = gap(branch, hour, reason);
-                return Ok(());
-            }
-            cache.next += 1;
-            cache.applied_hour = Some(frame.hour);
-            if frame.hour == hour {
-                // The host shares the decoder output, not another frame directory.
-                if materialize {
-                    self.current = Current::Frame(Arc::clone(
-                        cache.decoder.shared_current().expect("decoded current"),
-                    ));
-                }
-                return Ok(());
-            }
-            passed(cache.decoder.shared_current().expect("applied frame"));
-        }
-        self.current = gap(branch, hour, self.gap_reason(branch, hour));
         Ok(())
     }
 
@@ -757,6 +628,9 @@ pub(crate) fn gap_reason(replay: &Replay, branch: BranchId, hour: Hour) -> Strin
     }
 }
 
+/// Hours a cursor going on to an hour builds on its way, handing them on, at most.
+const PASSED_HOURS: Hour = 48;
+
 fn gap(branch: BranchId, hour: Hour, reason: String) -> Current {
     Current::Gap {
         branch,
@@ -795,7 +669,7 @@ pub(crate) mod tests {
     }
 
     use super::*;
-    use replay::{container::SeekResult, spool::Record};
+    use replay::{campaign::SeekResult, spool::Record};
     use replay_data::{
         identity::Identity, identity::Roster, identity::SessionStart, identity::Verification,
         rows::AirWingRow, rows::ArmyOrderRow, rows::CampaignRow, rows::ClockRow,
@@ -809,7 +683,7 @@ pub(crate) mod tests {
     };
     use replay_frame::{
         branches::BranchReason, branches::BranchStart, branches::Gap, branches::Parentage,
-        frame::FrameEncoder, frame::Metrics, frame::TableUpdate,
+        frame::FrameEncoder, frame::Metrics,
     };
 
     fn session(id: SessionId) -> SessionStart {
@@ -1149,23 +1023,10 @@ pub(crate) mod tests {
         Replay::from_records(b"campaign".to_vec(), &[records]).unwrap()
     }
 
-    /// The fixture with its first block's last section of later entries
-    /// damaged: the block is unreadable, while the next block's keyframes,
-    /// which anchor only to earlier keyframe entries, stay readable.
+    /// The fixture with its first block damaged: the block is unreadable, while the
+    /// next blocks stay readable.
     fn corrupt_first_block(replay: &Replay) -> Replay {
-        let first = &replay.index[0];
-        let sections = replay.block_sections(first).unwrap().unwrap();
-        let last = sections
-            .iter()
-            .rposition(|section| matches!(section.section, replay::container::Section::Later(_)))
-            .unwrap();
-        let after: u64 = sections[last + 1..]
-            .iter()
-            .map(|section| section.compressed)
-            .sum();
-        let mut bytes = replay.bytes().to_vec();
-        bytes[(first.offset + first.length - after - 1) as usize] ^= 0x40;
-        Replay::open(bytes).unwrap()
+        Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap()
     }
 
     fn assert_seek_matches_shared(playback: &mut Playback, branch: BranchId, hour: Hour) {
@@ -1192,21 +1053,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn seeks_share_one_block_and_match_the_shared_reader_through_holes() {
+    fn seeks_match_the_shared_reader_through_holes() {
         let mut playback = Playback::new(fixture()).unwrap();
-        assert_eq!(playback.block_loads, 1);
         for hour in [100, 101, 102, 103, 104, 105, 105, 100, 104, 103, 101] {
             assert_seek_matches_shared(&mut playback, 1, hour);
-            assert_eq!(playback.block_loads, 1);
         }
         assert_seek_matches_shared(&mut playback, 1, 819);
-        assert_eq!(playback.block_loads, 1);
         assert_seek_matches_shared(&mut playback, 1, 820);
-        assert_eq!(playback.block_loads, 2);
         assert!(!playback.step().unwrap());
         assert_eq!(playback.hour(), 820);
         assert_seek_matches_shared(&mut playback, 1, 105);
-        assert_eq!(playback.block_loads, 3);
         assert!(playback.seek(999, 100).is_err());
         assert_eq!(
             (playback.branch(), playback.session(), playback.hour()),
@@ -1238,75 +1094,6 @@ pub(crate) mod tests {
         }
         assert!(playback.step().unwrap());
         assert_eq!(playback.frame(), Some(&source(1, 104)));
-        assert_eq!(playback.block_loads, 1);
-    }
-
-    #[test]
-    fn a_reader_reads_the_next_block_ahead_and_matches_the_shared_reader() {
-        let replay = Arc::new(fixture());
-        let reader = BlockReader::new(
-            Arc::clone(&replay),
-            Arc::new(crate::hours::Dropper::new().unwrap()),
-        );
-        let mut playback = Playback::unloaded(Arc::clone(&replay))
-            .unwrap()
-            .with_reader(Arc::clone(&reader));
-        let reads = || reader.reads.load(std::sync::atomic::Ordering::SeqCst);
-        for hour in [100, 101, 102, 104, 105, 100] {
-            assert_seek_matches_shared(&mut playback, 1, hour);
-        }
-        // The first block, then the second read ahead of the playhead.
-        reader.settle();
-        assert_eq!(reads(), 2);
-        assert_seek_matches_shared(&mut playback, 1, 820);
-        assert_eq!(reads(), 2, "the read-ahead block served the boundary");
-        // The second block is current now, with no block after it.
-        assert_eq!(reader.kept(), (Some(1), None));
-        // Back to the first block: read again, and the second read ahead of
-        // it is the one already kept.
-        assert_seek_matches_shared(&mut playback, 1, 105);
-        reader.settle();
-        assert_eq!(reads(), 3);
-        assert_eq!(reader.kept(), (Some(0), Some(1)));
-    }
-
-    #[test]
-    fn a_reader_reports_a_corrupt_block_as_the_plain_reader_does() {
-        let replay = Arc::new(corrupt_first_block(&fixture()));
-        let mut playback = Playback::unloaded(Arc::clone(&replay))
-            .unwrap()
-            .with_reader(BlockReader::new(
-                Arc::clone(&replay),
-                Arc::new(crate::hours::Dropper::new().unwrap()),
-            ));
-        for hour in [100, 105, 820] {
-            assert_seek_matches_shared(&mut playback, 1, hour);
-        }
-        assert!(playback.frame().is_some());
-    }
-
-    #[test]
-    fn a_failed_baseline_is_not_walked_again() {
-        // Opening the branch decodes its first hour, 100.
-        let mut playback = Playback::new(fixture()).unwrap();
-        assert_eq!(playback.walk_start(1, 105), Some(100));
-        assert_eq!(
-            playback.walk_start(1, 100),
-            Some(99),
-            "a step back restarts"
-        );
-        playback.seek(1, 101).unwrap();
-        assert_eq!(playback.walk_start(1, 105), Some(101), "continues from 101");
-        // A baseline that failed at 104 makes every later hour of the block a
-        // gap with no walk, and leaves an earlier hour's walk from the keyframe.
-        let cache = playback.cache.as_mut().unwrap();
-        cache.failure = Some((104, "invalid frame baseline".into()));
-        assert_eq!(playback.walk_start(1, 104), None);
-        assert_eq!(playback.walk_start(1, 105), None);
-        // Before it, a seek restarts the block (Playback::seek resets on a
-        // failure after the hour), so the walk is from the keyframe.
-        assert_eq!(playback.walk_start(1, 101), Some(99));
-        assert_eq!(playback.walk_start(1, 102), Some(99));
     }
 
     #[test]
@@ -1349,46 +1136,26 @@ pub(crate) mod tests {
         );
     }
 
-    #[test]
-    fn corrupt_blocks_are_cached_and_do_not_hide_the_next_keyframe() {
-        let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
-        for hour in [100, 101, 105, 100] {
-            assert_seek_matches_shared(&mut playback, 1, hour);
-            assert!(matches!(
-                playback.current(),
-                Current::Gap { reason, .. } if reason.starts_with("unreadable block:")
-            ));
-            assert_eq!(playback.block_loads, 1);
-        }
-        assert_seek_matches_shared(&mut playback, 1, 820);
-        assert!(playback.frame().is_some());
-        assert_eq!(playback.block_loads, 2);
+    /// Every hour of the corrupt first block is a gap naming why, as the shared reader refuses it.
+    fn assert_unreadable(playback: &mut Playback, hour: Hour) {
+        playback.seek(1, hour).unwrap();
+        assert!(playback.replay().seek(1, hour).is_err());
+        assert!(matches!(
+            playback.current(),
+            Current::Gap { reason, .. } if reason.starts_with("unreadable hour:")
+        ));
     }
 
     #[test]
-    fn a_bad_campaign_prefix_cannot_be_hidden_by_a_later_valid_snapshot() {
-        let mut playback = Playback::new(fixture()).unwrap();
-        let cache = playback.cache.as_mut().unwrap();
-        let frames = Arc::get_mut(cache.frames.as_mut().unwrap()).unwrap();
-        frames[1].tables[TableId::Campaign.index()] =
-            TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
-                id: b"other".to_vec(),
-            }]));
-        frames[2].tables[TableId::Campaign.index()] =
-            TableUpdate::Snapshot(TableRows::Campaign(vec![CampaignRow {
-                id: b"campaign".to_vec(),
-            }]));
-        for hour in [104, 105, 101, 104] {
-            playback.seek(1, hour).unwrap();
-            assert!(matches!(
-                playback.current(),
-                Current::Gap { reason, .. } if reason == "frame campaign identity differs from replay header"
-            ));
+    fn a_corrupt_block_is_a_gap_and_does_not_hide_the_next_block() {
+        let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
+        for hour in [100, 101, 100] {
+            assert_unreadable(&mut playback, hour);
         }
-        playback.seek(1, 100).unwrap();
-        assert_eq!(playback.frame(), Some(&source(1, 100)));
-        playback.seek(1, 820).unwrap();
-        assert_eq!(playback.frame(), Some(&source(1, 820)));
+        for hour in [105, 820] {
+            assert_seek_matches_shared(&mut playback, 1, hour);
+            assert!(playback.frame().is_some());
+        }
     }
 
     #[test]
@@ -1442,7 +1209,6 @@ pub(crate) mod tests {
         assert_eq!(playback.range(1), Some((98, 103)));
         assert_eq!(playback.hour(), 98);
         assert!(playback.frame().is_none());
-        assert_eq!(playback.block_loads, 0);
         playback.seek(1, 103).unwrap();
         assert!(playback.frame().is_none());
         assert!(!playback.step().unwrap());
@@ -1454,32 +1220,7 @@ pub(crate) mod tests {
         let mut playback = Playback::unloaded(Arc::clone(&replay)).unwrap();
         playback.advance_cancellable(1, 104, &|| false).unwrap();
         assert!(!playback.materialized);
-        assert!(matches!(playback.current(), Current::Gap { .. }));
-        let before = playback
-            .cache
-            .as_ref()
-            .unwrap()
-            .decoder
-            .current()
-            .unwrap()
-            .complete::<tables::Provinces>()
-            .unwrap()
-            .as_ptr();
         playback.advance_cancellable(1, 105, &|| false).unwrap();
-        let after = playback
-            .cache
-            .as_ref()
-            .unwrap()
-            .decoder
-            .current()
-            .unwrap()
-            .complete::<tables::Provinces>()
-            .unwrap()
-            .as_ptr();
-        assert_eq!(
-            before, after,
-            "the private row allocation survives the next native edit"
-        );
         assert_seek_matches_shared(&mut playback, 1, 105);
         let held = playback.current().clone();
         for hour in [820, 102, 104, 100] {
@@ -1499,7 +1240,6 @@ pub(crate) mod tests {
         let Current::Frame(shown) = playback.current().clone() else {
             panic!("hour 105 is recorded");
         };
-        assert_eq!(playback.block_loads, 1);
         assert!(playback.holds_source());
         assert!(playback.release_source().is_some());
         assert!(!playback.holds_source());
@@ -1512,82 +1252,53 @@ pub(crate) mod tests {
             Current::Frame(presented) if Arc::ptr_eq(presented, &shown)
         ));
         assert_eq!((playback.branch(), playback.hour()), (1, 105));
-        assert_eq!(playback.walk_start(1, 105), Some(99));
+        // Hours 104 and 105 are a run of their own, after the lost hours.
+        assert_eq!(playback.walk_start(1, 105), Some(103));
         playback.seek(1, 105).unwrap();
-        assert_eq!(playback.block_loads, 2);
         assert_eq!(playback.frame(), Some(&*shown));
         for hour in [100, 101, 102, 104, 820, 105] {
             assert_seek_matches_shared(&mut playback, 1, hour);
         }
-        assert_eq!(playback.block_loads, 4);
     }
 
     #[test]
-    fn a_released_unreadable_block_is_read_again_to_the_same_gap() {
+    fn an_unreadable_block_is_read_again_to_the_same_gap() {
         let mut playback = Playback::new(corrupt_first_block(&fixture())).unwrap();
         let unreadable = playback.current().clone();
         assert!(matches!(
             &unreadable,
-            Current::Gap { reason, .. } if reason.starts_with("unreadable block:")
+            Current::Gap { reason, .. } if reason.starts_with("unreadable hour:")
         ));
-        assert_eq!(
-            playback.walk_start(1, 101),
-            None,
-            "a failed block is not walked"
-        );
-        assert!(playback.release_source().is_some());
-        assert_eq!(playback.current(), &unreadable);
+        assert!(!playback.holds_source(), "a failed walk is let go");
         assert_eq!(playback.walk_start(1, 101), Some(99));
-        for hour in [100, 101, 105] {
-            assert_seek_matches_shared(&mut playback, 1, hour);
-            assert!(matches!(
-                playback.current(),
-                Current::Gap { reason, .. } if reason.starts_with("unreadable block:")
-            ));
+        playback.seek(1, 100).unwrap();
+        assert_eq!(playback.current(), &unreadable);
+        for hour in [101, 100] {
+            assert_unreadable(&mut playback, hour);
         }
-        assert_eq!(playback.block_loads, 2);
     }
 }
 
 #[cfg(test)]
 mod damaged_recording_tests {
     use super::*;
-    use replay::container::SeekResult;
+    use replay::campaign::SeekResult;
 
     #[test]
-    fn modified_trailer_and_damaged_blocks_open_and_keep_later_playback_exact() {
+    fn a_damaged_block_opens_and_keeps_later_playback_exact() {
         let recording = tests::fixture();
         let expected = match recording.seek(1, 820).unwrap() {
             SeekResult::Frame(frame) => frame,
             other => panic!("{other:?}"),
         };
-        for corrupt_block in [false, true] {
-            let mut bytes = recording.bytes().to_vec();
-            *bytes.last_mut().unwrap() ^= 1;
-            if corrupt_block {
-                let first = &recording.index[0];
-                bytes[(first.offset + first.length - 1) as usize] ^= 1;
-            }
-            let replay = Replay::open(bytes).unwrap();
-            assert!(
-                replay
-                    .warnings
-                    .iter()
-                    .any(|reason| reason.contains("trailer CRC mismatch"))
-            );
-            let mut playback = Playback::new(replay).unwrap();
-            if corrupt_block {
-                assert!(matches!(playback.current(), Current::Gap { .. }));
-            }
-            playback.seek(1, 820).unwrap();
-            assert_eq!(playback.frame().unwrap(), expected.as_ref());
-        }
+        let replay = Replay::open(recording.damaged_block(&recording.index[0]).unwrap()).unwrap();
+        let mut playback = Playback::new(replay).unwrap();
+        assert!(matches!(playback.current(), Current::Gap { .. }));
+        playback.seek(1, 820).unwrap();
+        assert_eq!(playback.frame().unwrap(), expected.as_ref());
     }
 }
 
-fn display_decoder() -> FrameDecoder {
-    FrameDecoder::new().with_change_facts()
-}
 fn interrupted(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::Interrupted
 }

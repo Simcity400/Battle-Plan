@@ -4,6 +4,7 @@
 //! cuts and a resume, read from the prepared layers alone.
 
 use super::test_fixtures::recorded;
+use replay_frame::frame::FrameDecoder;
 use super::{
     emit::{Emit, SCHEMA},
     facts::{self, Projector},

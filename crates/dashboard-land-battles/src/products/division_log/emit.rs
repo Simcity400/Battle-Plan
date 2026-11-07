@@ -6,7 +6,7 @@
 
 use super::{Names, Scan, columnar, windows};
 use dashboard_base::{products::battles::BattleWindow, source::Source};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::format::FormatVersion;
 use serde::{Deserialize, Serialize};
 use std::{io, sync::atomic::AtomicBool};

@@ -1689,7 +1689,7 @@ fn a_failed_block_marks_its_whole_range_unread() {
         frame(base + 1, vec![], &[]),
         frame(base + 2, vec![], &[]),
     ]);
-    replay.index[0].length = 1;
+    replay = Replay::open(replay.damaged_block(&replay.index[0]).unwrap()).unwrap();
     let scanned = scan(&replay, 1, "GER", &AtomicBool::new(false)).unwrap();
     assert_missing(&scanned, base, base + 2);
 }

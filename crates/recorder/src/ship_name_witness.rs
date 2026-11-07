@@ -11,7 +11,7 @@ use engine_dlc::cdlc_manager;
 use engine_executable::build::hash_executable;
 use engine_native::{Memory, capture_text::Owned, cfleet, cgame_state, cship, read, walk::Outcome};
 use installed_content_core::content::{GatherOptions, gather};
-use replay::container::{Replay, SeekResult};
+use replay::campaign::{Replay, SeekResult};
 use replay_data::{
     identity::{COVERAGE_POLICY_VERSION, Dlc, Identity, Mod, SampleBoundary, Verification},
     rows::{Recorded, TableId, TableRows},

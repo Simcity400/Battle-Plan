@@ -7,7 +7,7 @@ use dashboard_base::prepared::{
 use dashboard_core::test_fixtures::{CAMPAIGN, continuation_records, records};
 use replay::{
     columnar_frames::synthetic::{Input, Sample, Synthetic},
-    container::Replay,
+    campaign::Replay,
 };
 use replay_data::rows::{RowCodec, RowsVisit, TableRows};
 use replay_frame::frame::TableView;
@@ -120,7 +120,7 @@ fn row_reference(replay: &Replay, at: usize, row: &mut Prepared, content: Option
             &replay.index[at],
             &selection.tables,
             |raw, frame| {
-                let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                let facts = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
                 extract.observe(replay, frame, &facts)
             },
             || Ok(()),
@@ -430,7 +430,7 @@ fn parity_with_content(runs: &[Vec<DecodedFrame>], content: Option<Arc<Content>>
                     &replay.index[at],
                     &selection.tables,
                     |raw, frame| {
-                        let facts = tracker.observe_updates(frame, Arc::new(raw), replay.format);
+                        let facts = tracker.observe_updates(frame, Arc::new(raw.clone()), replay.format);
                         extract.observe(&replay, frame, &facts)
                     },
                     || Ok(()),

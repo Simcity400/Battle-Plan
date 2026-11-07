@@ -7,7 +7,7 @@ use crate::products::{
 };
 use dashboard_base::{prepared::pages::Pages, products::battles::BattleWindow, source::Source};
 use dashboard_series::Writer;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::NavalResultSourceRow;
 use serde::{Deserialize, Serialize};
 use std::{

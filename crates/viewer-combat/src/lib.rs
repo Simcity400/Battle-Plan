@@ -367,7 +367,7 @@ pub type HoverHit<'a> = (&'a str, Option<&'a str>, [f32; 4], Option<u32>);
 impl Window {
     pub fn prepare_air(
         &mut self,
-        replay: &Arc<replay::container::Replay>,
+        replay: &Arc<replay::campaign::Replay>,
         columnar: Option<Arc<replay::columnar_runs::IndexFile>>,
         wake: impl Fn() + Send + Sync + 'static,
     ) {

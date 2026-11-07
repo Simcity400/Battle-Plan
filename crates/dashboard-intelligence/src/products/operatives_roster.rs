@@ -32,9 +32,7 @@ use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
 use dashboard_text::metadata::validate_campaign;
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
+use replay::campaign::Replay;
 
 #[cfg(any(test, feature = "test-support"))]
 mod oracle;

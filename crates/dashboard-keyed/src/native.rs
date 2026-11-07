@@ -26,7 +26,7 @@ use dashboard_series::{
     carry::Carry,
     family::{Actors, Directory, Place},
 };
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     codec::{Decoder, put_bytes64, put_varint},
     format::FormatVersion,

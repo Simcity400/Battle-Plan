@@ -5,10 +5,11 @@ use serde::{Deserialize, Serialize};
 
 mod stream;
 
-const SCHEMA: u32 = 4;
+const SCHEMA: u32 = 5;
 const SECTION: &str = "source-metadata-v1";
 const REFUSAL_SCHEMA: &str = "source-metadata-refusals-v1";
-type IndexEntry = (u64, i32, i32, u64, u64, u64);
+/// A block: its branch, first and last hours, run and page.
+type IndexEntry = (u64, i32, i32, u32, u32);
 
 #[derive(Serialize, Deserialize, PartialEq, Eq)]
 struct Inputs {
@@ -20,13 +21,19 @@ struct Inputs {
 }
 impl Inputs {
     fn is_prefix_of(&self, current: &Self, replay: &Replay) -> io::Result<bool> {
+        // A save adds pages to the runs it continues as well as new runs: every block read
+        // before is still there.
         if self.header != current.header
             || self.index.len() > current.index.len()
             || self
                 .index
                 .iter()
-                .zip(&current.index)
-                .any(|(old, new)| old != new)
+                .any(|old| {
+                    current
+                        .index
+                        .binary_search_by_key(&(old.3, old.4), |new| (new.3, new.4))
+                        .map_or(true, |at| current.index[at] != *old)
+                })
             || self
                 .sessions
                 .iter()
@@ -59,7 +66,6 @@ impl Inputs {
         replay.identity.encode(&mut header)?;
         header.extend_from_slice(&replay.campaign_id);
         header.extend_from_slice(&replay.format.version().to_le_bytes());
-        header.extend_from_slice(&replay.keyframe_interval.to_le_bytes());
         Ok(Self {
             header,
             index: replay
@@ -70,9 +76,8 @@ impl Inputs {
                         index.branch,
                         index.first_hour,
                         index.last_hour,
-                        index.offset,
-                        index.length,
-                        index.raw_length,
+                        index.run,
+                        index.page,
                     )
                 })
                 .collect(),
@@ -210,7 +215,13 @@ pub(super) fn read(
         path,
         cancelled,
         &previous,
-        cached.inputs.index.len(),
+        &|block| {
+            cached
+                .inputs
+                .index
+                .binary_search_by_key(&(block.run, block.page), |held| (held.3, held.4))
+                .is_ok()
+        },
     )?;
     Ok(Some(Restored {
         metadata,
@@ -268,16 +279,9 @@ mod tests {
             writer.commit().unwrap();
         }
         fn replace_with_rejected_old_payload(&self, replay: &Replay) {
-            let mut bytes = replay.bytes().to_vec();
-            let old = &replay.index[0];
-            bytes[old.offset as usize..(old.offset + old.length) as usize].fill(0);
-            std::fs::write(&self.path, bytes).unwrap();
+            std::fs::write(&self.path, replay.damaged_block(&replay.index[0]).unwrap()).unwrap();
             let rejected = Replay::open_path(&self.path).unwrap();
-            assert!(
-                rejected
-                    .visit_block(&rejected.index[0], None, |_| Ok(false))
-                    .is_err()
-            );
+            assert!(rejected.read_block(&rejected.index[0]).is_err());
         }
     }
     impl Drop for Fixture {
@@ -430,38 +434,20 @@ mod tests {
 
     #[test]
     fn two_branch_append_save_and_second_reopen_rebuild_public_damage_bytes_in_branch_order() {
-        fn unreadable(recording: &Replay) -> Replay {
-            let mut blocks = recording
-                .index
-                .iter()
-                .map(|block| recording.read_block(block).unwrap())
-                .collect::<Vec<_>>();
-            for frames in &mut blocks {
-                frames[0].tables[TableId::Campaign.index()] =
-                    replay_frame::frame::TableUpdate::Snapshot(
-                        replay_data::rows::TableRows::Campaign(vec![
-                            replay_data::rows::CampaignRow {
-                                id: b"different synthetic campaign".to_vec(),
-                            },
-                        ]),
-                    );
-            }
-            replay::container::test_work::with_independent_block_frames(
-                recording,
-                &blocks.iter().map(Vec::as_slice).collect::<Vec<_>>(),
-            )
-            .unwrap()
+        fn unreadable(branch: u64, hour: i32) -> Vec<replay_frame::frame::DecodedFrame> {
+            let mut frame = scale_frame(branch, hour, 2);
+            *frame.tables[TableId::Campaign.index()] = replay_frame::frame::TableView::Complete(
+                replay_data::rows::TableRows::Campaign(vec![replay_data::rows::CampaignRow {
+                    id: b"different synthetic campaign".to_vec(),
+                }]),
+            );
+            vec![frame]
         }
-        let initial = unreadable(
-            &Replay::from_records(
-                CAMPAIGN.into(),
-                &[
-                    records(1, vec![scale_frame(1, 10, 2)]),
-                    records(2, vec![scale_frame(2, 20, 2)]),
-                ],
-            )
-            .unwrap(),
-        );
+        let initial = Replay::from_records(
+            CAMPAIGN.into(),
+            &[records(1, unreadable(1, 10)), records(2, unreadable(2, 20))],
+        )
+        .unwrap();
         let fixture = Fixture::new(&initial);
         let first = fixture.open();
         assert!(
@@ -472,26 +458,15 @@ mod tests {
                 .all(|branch| branch.catalogue_hour.is_none())
         );
         fixture.save(&first);
-        let appended = unreadable(
-            &initial
-                .append(&[continuation_records(
-                    &initial,
-                    1,
-                    vec![scale_frame(1, 11, 2)],
-                )])
-                .unwrap(),
-        );
-        for (old, new) in initial.index.iter().zip(&appended.index) {
-            assert_eq!(
-                (old.offset, old.length, old.raw_length),
-                (new.offset, new.length, new.raw_length)
-            );
-        }
+        let appended = initial
+            .append(&[continuation_records(&initial, 1, unreadable(1, 11))])
+            .unwrap();
+        assert_eq!(appended.index[..initial.index.len()], initial.index[..]);
         std::fs::write(&fixture.path, appended.bytes()).unwrap();
         let restored = fixture.open();
         assert!(restored.cached_inputs.is_some());
         let appended_bytes = concat!(
-            r#"["branch blocks are not contiguous","session blocks are not contiguous","Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
+            r#"["Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 2 block 20 – 20 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 1 block 11 – 11 is unreadable: frame campaign identity differs from replay header"]"#,
         );
@@ -503,7 +478,7 @@ mod tests {
         let reopened = fixture.open();
         assert!(reopened.cached_inputs.is_some());
         let expected_damage = concat!(
-            r#"{"parts":3,"firstHour":10,"lastHour":20,"reasons":["branch blocks are not contiguous","session blocks are not contiguous","Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
+            r#"{"parts":3,"firstHour":10,"lastHour":20,"reasons":["Branch 1 block 10 – 10 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 1 block 11 – 11 is unreadable: frame campaign identity differs from replay header","#,
             r#""Branch 2 block 20 – 20 is unreadable: frame campaign identity differs from replay header"]}"#,
         );
@@ -746,7 +721,7 @@ mod tests {
     }
 
     #[test]
-    fn appended_branch_catalogue_reuses_metadata_and_resolves_keyframe_anchors() {
+    fn appended_branch_catalogue_reuses_metadata_without_reading_old_blocks() {
         let initial = Replay::from_records(
             CAMPAIGN.into(),
             &[records(
@@ -761,26 +736,7 @@ mod tests {
         let grown = initial
             .append(&[records(2, vec![scale_frame(2, 20, 3)])])
             .unwrap();
-        // An appended keyframe can use an earlier branch's keyframe as an
-        // anchor. Preserve those entries while damaging old later Countries
-        // entries: resolving an anchor succeeds, rereading that catalogue fails.
-        let old = &grown.index[0];
-        let sections = grown.block_sections(old).unwrap().unwrap();
-        let later = sections
-            .iter()
-            .rposition(|entry| {
-                matches!(
-                    entry.section,
-                    replay::container::Section::Later(TableId::Countries)
-                )
-            })
-            .unwrap();
-        let after: u64 = sections[later + 1..]
-            .iter()
-            .map(|entry| entry.compressed)
-            .sum();
-        let mut bytes = grown.bytes().to_vec();
-        bytes[(old.offset + old.length - after - 1) as usize] ^= 0x40;
+        let bytes = grown.damaged_block(&grown.index[0]).unwrap();
         std::fs::write(&fixture.path, &bytes).unwrap();
         let resident = Replay::open(bytes).unwrap();
         let held = Replay::open_path(&fixture.path).unwrap();

@@ -224,7 +224,7 @@ fn admit(processor: &mut Processor, campaign: &[u8; 36], load: i64, hour: i32) {
         .unwrap();
     processor.write_prepared(prepared).unwrap();
 }
-fn replay(store: &Arc<Mutex<Store>>) -> replay::container::Replay {
+fn replay(store: &Arc<Mutex<Store>>) -> replay::campaign::Replay {
     let segments = store
         .lock()
         .unwrap()
@@ -233,7 +233,7 @@ fn replay(store: &Arc<Mutex<Store>>) -> replay::container::Replay {
         .filter(|((campaign, _), _)| campaign == ID)
         .map(|((_, index), bytes)| (*index, recover_prefix(bytes)))
         .collect::<Vec<_>>();
-    replay::container::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
+    replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap()
 }
 fn block(store: &Arc<Mutex<Store>>, hour: i32, fail: bool) -> Release {
     let gate = Arc::new(Gate::default());
@@ -511,7 +511,7 @@ fn parent(processor: &mut Processor, branch: BranchId) -> Parentage {
         .clone()
 }
 
-fn written_parent(written: &replay::container::Replay, branch: BranchId) -> Parentage {
+fn written_parent(written: &replay::campaign::Replay, branch: BranchId) -> Parentage {
     let start = written.branches.iter().find(|start| start.id == branch);
     start.unwrap().parent.clone()
 }

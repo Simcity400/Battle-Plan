@@ -492,7 +492,7 @@ impl Viewer {
         self.visual_check_after_load.asked(loading);
         let service = embedded.service();
         let options = self.config.resolve_options().ok();
-        let recorded_mods = |replay: &replay::container::Replay| {
+        let recorded_mods = |replay: &replay::campaign::Replay| {
             replay
                 .identity
                 .mods

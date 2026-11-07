@@ -3,7 +3,7 @@ use dashboard_base::{
     source::SourceKey,
     test_fixtures::{CAMPAIGN, records, source},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow, rows::ShipCounterInputs,
     rows::ShipModelRow, rows::ShipRow, rows::TableId, rows::TableRows, rows::TaskForceRow,

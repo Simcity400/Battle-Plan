@@ -4,7 +4,7 @@
 use super::admission;
 use dashboard_base::prepared::prepass::HeldBytes;
 use dashboard_keyed::{Delta, Values, delta::Names};
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{Recorded, TableId, WeatherRegionRow, tables},

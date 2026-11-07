@@ -2,8 +2,10 @@
 //! Names are resolved at each country's first observed hour in the user's game
 //! language (`installed_content_country_names::country_names`); without game content they are tags.
 #[cfg(test)]
-use super::LoadContext;
+use replay_frame::frame::DecodedFrame;
 use super::Product;
+#[cfg(test)]
+use super::LoadContext;
 #[cfg(test)]
 use crate::Source;
 #[cfg(test)]
@@ -21,11 +23,11 @@ use installed_content_country_names::country_names::CountryNames;
 #[cfg(test)]
 use installed_content_localisation::localisation::Localisation;
 #[cfg(test)]
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(test)]
 use replay_data::{rows::TableId, rows::tables};
 #[cfg(test)]
-use replay_frame::frame::{FrameDecoder, TableView, ViewIdentity};
+use replay_frame::frame::{TableView, ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use std::{
@@ -94,10 +96,9 @@ pub fn land_owners(
                     continue;
                 }
             };
-            let mut decoder = FrameDecoder::for_tables(TABLES);
             for frame in frames {
                 check()?;
-                let decoded = match decoder.advance(&frame) {
+                let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                     Ok(decoded) if validate_campaign(decoded, replay).is_ok() => decoded,
                     _ => {
                         scan.incomplete = true;

@@ -12,9 +12,9 @@
 //! decodes are allowed.
 
 use crate::{Source, metadata::check_cancel, products::country_groups::HourSpan};
-use replay::container::BlockIndex;
+use replay::campaign::BlockIndex;
 use replay_data::rows::TableId;
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     io,
     sync::{Arc, atomic::AtomicBool},
@@ -61,7 +61,6 @@ pub fn after<T: Send + Sync + 'static>(
     tables: &[TableId],
     cancelled: &AtomicBool,
     sample: &(impl Fn(&DecodedFrame) -> io::Result<Option<T>> + Sync),
-    bytes: &(impl Fn(&T) -> usize + Sync),
     mut visit: impl FnMut(&[HourSpan], &T) -> io::Result<()>,
 ) -> io::Result<Vec<HourSpan>> {
     blocks_after(
@@ -74,11 +73,9 @@ pub fn after<T: Send + Sync + 'static>(
         &(),
         None,
         cancelled,
-        bytes,
         &|block| {
-            let keyframe = source.replay_ref().read_keyframe_recorded(block, tables)?;
-            let mut decoder = FrameDecoder::for_tables(tables);
-            sample(decoder.advance(&keyframe)?)
+            let keyframe = source.replay_ref().block_first_frame(block, tables)?;
+            sample(&keyframe)
         },
         |spans, observation| {
             visit(spans, observation)?;
@@ -102,7 +99,6 @@ pub fn blocks_after<T: Send + Sync + 'static>(
     params: &(impl serde::Serialize + Sync),
     binding: Option<&store::SourceKey>,
     cancelled: &AtomicBool,
-    bytes: &(impl Fn(&T) -> usize + Sync),
     sample: &(impl Fn(&BlockIndex) -> io::Result<Option<T>> + Sync),
     mut visit: impl FnMut(&[HourSpan], &T) -> io::Result<bool>,
 ) -> io::Result<Vec<HourSpan>> {
@@ -126,22 +122,12 @@ pub fn blocks_after<T: Send + Sync + 'static>(
     if blocks.is_empty() {
         return Ok(Vec::new());
     }
-    let consumer = replay.section_consumer(
-        blocks
-            .iter()
-            .filter_map(|(block, _)| replay.block_position(block))
-            .min()
-            .unwrap_or(0),
-    );
     let cache = super::observations::scope(source, product, binding);
     let mut selected: Vec<_> = tables.iter().map(|table| table.index()).collect();
     selected.sort_unstable();
     selected.dedup();
     blocks.sort_by_key(|(block, _)| block.first_hour);
     let read = |block: &BlockIndex| -> io::Result<Arc<Option<T>>> {
-        if let Some(position) = replay.block_position(block) {
-            consumer.reading(position);
-        }
         cache.get(
             block,
             &(&selected, params),
@@ -175,9 +161,6 @@ pub fn blocks_after<T: Send + Sync + 'static>(
         // Cache-only requests stay on this thread so a miss cannot decode or
         // wait on a worker. The observation cache refuses missing or busy slots.
         for (block, _) in &blocks {
-            if let Some(position) = replay.block_position(block) {
-                consumer.at(position);
-            }
             let observation = read(block)?;
             accept(block, &observation)?;
         }
@@ -189,9 +172,6 @@ pub fn blocks_after<T: Send + Sync + 'static>(
             &read,
             |reads| {
                 for (block, observation) in reads {
-                    if let Some(position) = replay.block_position(block) {
-                        consumer.at(position);
-                    }
                     check_cancel(cancelled)?;
                     // An unreadable keyframe samples nothing: its hours stay pending.
                     if let Ok(observation) = observation {
@@ -250,7 +230,6 @@ mod tests {
             &[TableId::Campaign],
             &AtomicBool::new(false),
             &|frame| Ok(Some(frame.hour)),
-            &|_: &i32| std::mem::size_of::<i32>(),
             |spans, hour| {
                 seen.push((*hour, spans.to_vec()));
                 Ok(())
@@ -308,7 +287,6 @@ mod tests {
                 &"mod country",
                 None,
                 &flag,
-                &|_: &i32| std::mem::size_of::<i32>(),
                 &read,
                 |spans, hour| {
                     seen.push((*hour, spans.to_vec()));
@@ -351,7 +329,6 @@ mod tests {
             &"another mod country",
             None,
             &flag,
-            &|_: &i32| std::mem::size_of::<i32>(),
             &read,
             |_, _| Ok(true),
         )
@@ -385,7 +362,6 @@ mod tests {
             &(),
             None,
             &AtomicBool::new(false),
-            &|_: &i32| std::mem::size_of::<i32>(),
             &|_| -> io::Result<Option<i32>> {
                 calls.fetch_add(1, Ordering::Relaxed);
                 Ok(Some(0))
@@ -420,7 +396,6 @@ mod tests {
                 &[TableId::Campaign],
                 &AtomicBool::new(false),
                 &|frame| Ok(Some(frame.hour)),
-                &|_: &i32| std::mem::size_of::<i32>(),
                 |_, _| Ok(()),
             )
         });
@@ -435,7 +410,6 @@ mod tests {
             &[TableId::Campaign],
             &AtomicBool::new(false),
             &|frame| Ok(Some(frame.hour)),
-            &|_: &i32| std::mem::size_of::<i32>(),
             |_, _| Ok(()),
         )
         .unwrap();
@@ -448,8 +422,7 @@ mod tests {
                 None,
                 &[TableId::Campaign],
                 &AtomicBool::new(false),
-                &|_| panic!("retained observations must be reused"),
-                &|_: &i32| std::mem::size_of::<i32>(),
+                &|_| -> io::Result<Option<i32>> { panic!("retained observations must be reused") },
                 |_, _| Ok(()),
             )
         });
@@ -466,7 +439,6 @@ mod tests {
                 &[TableId::Campaign],
                 &AtomicBool::new(false),
                 &|frame| Ok(Some(frame.hour)),
-                &|_: &i32| std::mem::size_of::<i32>(),
                 |_, _| Ok(()),
             )
         });
@@ -486,7 +458,6 @@ mod tests {
             &[TableId::Campaign],
             &flag,
             &|frame| Ok(Some(frame.hour)),
-            &|_: &i32| size_of::<i32>(),
             |_, _| Ok(()),
         )
         .unwrap();
@@ -501,7 +472,6 @@ mod tests {
                 &[TableId::Campaign],
                 &flag,
                 &|_| panic!("a saved block must not decode again"),
-                &|_: &i32| size_of::<i32>(),
                 |spans, hour| {
                     seen.push((*hour, spans.to_vec()));
                     Ok(())

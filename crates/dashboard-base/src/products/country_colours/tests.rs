@@ -5,7 +5,7 @@ use crate::products::{
     country_styles::{CountryStyleParams, CountryStyles, HourStyles, STYLE_TABLES},
 };
 use crate::test_fixtures::{CAMPAIGN, continuation_records, file_source, records, source};
-use replay::container::{Replay, Section, SeekResult};
+use replay::campaign::{Replay, SeekResult};
 use replay_data::rows::{CountryAppearanceRow, CountryRow, PoliticsRow, TableId, TableRows};
 use replay_frame::frame::{DecodedFrame, TableView};
 use std::{
@@ -296,50 +296,20 @@ fn blocks_read_ahead_answer_as_each_hour_seeks_in_hour_order() {
     );
 }
 
-/// `replay` with the last byte of `section` of its first block flipped.
-fn damaged_section(replay: &Replay, section: Section) -> Replay {
-    let block = &replay.index[0];
-    let sections = replay
-        .block_sections(block)
-        .unwrap()
-        .expect("a grouped synthetic block");
-    let stored: u64 = sections.iter().map(|size| size.compressed).sum();
-    let mut offset = block.offset + block.length - stored;
-    for size in sections {
-        if size.section == section {
-            let mut bytes = replay.bytes().to_vec();
-            bytes[usize::try_from(offset + size.compressed - 1).unwrap()] ^= 1;
-            return Replay::open(bytes).unwrap();
-        }
-        offset += size.compressed;
-    }
-    panic!("the synthetic block has no {section:?} section");
+/// `replay` with `table`'s block in its first block damaged.
+fn damaged_table(replay: &Replay, table: TableId) -> Replay {
+    Replay::open(replay.damaged_table(&replay.index[0], table).unwrap()).unwrap()
 }
 
 #[test]
 fn a_damaged_naming_table_is_unread_as_country_styles_reads_it() {
     let whole = replay(vec![frame(100, RED), frame(101, RED), frame(102, RED)]);
     // Politics names countries; colours alone would not need it, but country-styles reads it.
-    let source = memory(damaged_section(
-        &whole,
-        Section::Keyframe(TableId::Politics),
-    ));
+    let source = memory(damaged_table(&whole, TableId::Politics));
     let reply = assert_parity(&source, &[100, 101, 102]);
     assert_eq!(reply.unread.len(), 3);
     assert!(reply.runs.is_empty());
-    assert_seek_parity(
-        &damaged_section(&whole, Section::Keyframe(TableId::Politics)),
-        &[100, 101, 102],
-    );
-}
-
-#[test]
-fn damage_after_the_first_hour_reads_what_a_direct_seek_reads() {
-    let whole = replay(vec![frame(100, RED), frame(101, RED), frame(102, RED)]);
-    // Only hours after the keyframe need the later Politics updates.
-    let damaged = damaged_section(&whole, Section::Later(TableId::Politics));
-    assert_seek_parity(&damaged, &[100, 101, 102]);
-    assert_parity(&memory(fresh(&damaged)), &[100, 101, 102]);
+    assert_seek_parity(&damaged_table(&whole, TableId::Politics), &[100, 101, 102]);
 }
 
 #[test]
@@ -370,12 +340,9 @@ fn every_hour_after_a_campaign_mismatch_says_so_as_a_seek_does() {
 }
 
 #[test]
-fn a_malformed_block_tail_reads_what_a_seek_reads() {
+fn a_malformed_block_reads_what_a_seek_reads() {
     let whole = replay(vec![frame(100, RED), frame(101, None), frame(102, RED)]);
-    let block = &whole.index[0];
-    let mut bytes = whole.bytes().to_vec();
-    bytes[usize::try_from(block.offset + block.length - 1).unwrap()] ^= 1;
-    let damaged = Replay::open(bytes).unwrap();
+    let damaged = Replay::open(whole.damaged_block(&whole.index[0]).unwrap()).unwrap();
     assert_seek_parity(&damaged, &[100, 101, 102]);
     assert_parity(&memory(damaged), &[100, 101, 102]);
 }

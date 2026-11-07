@@ -1609,7 +1609,7 @@ mod tests {
         for target in [101, 102] {
             let (_send, receive) = std::sync::mpsc::sync_channel(1);
             let playback = Playback::new(crate::playback::tests::fixture()).unwrap();
-            let replay::container::SeekResult::Frame(next) =
+            let replay::campaign::SeekResult::Frame(next) =
                 playback.replay().seek(1, 101).unwrap()
             else {
                 panic!("recorded ready hour")

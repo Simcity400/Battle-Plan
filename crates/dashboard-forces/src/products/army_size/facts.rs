@@ -13,7 +13,7 @@ use dashboard_world::{Divisions, Needs, Tagged, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    container::Replay,
+    campaign::Replay,
     segments::{self, Operator, Sink, State},
 };
 use replay_data::{

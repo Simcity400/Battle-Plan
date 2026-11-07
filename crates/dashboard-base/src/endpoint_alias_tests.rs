@@ -1,5 +1,5 @@
 //! The public accepted-stream seam resolves storage-only aliases before typed endpoints.
-use replay::container::{Replay, ReplayStream};
+use replay::campaign::Replay;
 use replay_data::rows::{self, *};
 use replay_frame::frame::{
     DecodedFrame, FrameDecoder, FrameEncoder, TableView,
@@ -235,20 +235,22 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
         records.push(replay::spool::Record::Frame(raw));
     }
     let replay = Replay::from_records(crate::test_fixtures::CAMPAIGN.into(), &[records]).unwrap();
-    let mut stream = ReplayStream::new(&TableId::ALL).unwrap();
     let mut writer = EndpointWriter::for_tables(&TableId::ALL);
     let mut coarse = EndpointWriter::for_tables(&TableId::ALL);
     let mut previous = None;
     let mut previous_coarse = None;
     let mut interval = Vec::new();
     let mut count = 0;
-    while stream
-        .next_block_recorded_with(
-            &replay,
-            |raw, frame| {
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay
+        .visit_blocks(
+            &blocks,
+            &TableId::ALL,
+            None,
+            |_, raw, frame| {
                 assert_eq!(canonical(frame), expected[count]);
-                writer.observe(&raw, frame)?;
-                coarse.observe(&raw, frame)?;
+                writer.observe(raw, frame)?;
+                coarse.observe(raw, frame)?;
                 let mut bytes = Vec::new();
                 writer.finish(frame, &mut bytes)?;
                 let step = EndpointStep::decode(&bytes)?;
@@ -298,11 +300,10 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
                 }
                 previous = Some(restored);
                 count += 1;
-                Ok(())
+                Ok(true)
             },
             || Ok(()),
         )
-        .unwrap()
-    {}
+        .unwrap();
     assert_eq!(count, 52);
 }

@@ -12,11 +12,11 @@
 use super::politics_content::PoliticsContent;
 use crate::{catalogue, metadata::validate_campaign};
 use installed_content_localisation::localisation::Argument;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::LexicalTokenRow, rows::ModifierDefinitionRow, rows::TableId, rows::tables,
 };
-use replay_frame::{frame::FrameDecoder, frame::SharedView, frame::TableView};
+use replay_frame::{frame::SharedView, frame::TableView};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -88,28 +88,31 @@ pub(crate) fn recorded(
                 "Idea request cancelled",
             ));
         }
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        let Ok(frames) = replay.read_block_selected(block, &selected) else {
-            continue;
-        };
         // The block's last hour holding both tables complete, kept as shared views;
         // the lookup is built once, from that hour only.
         let mut last: Option<(SharedView, SharedView)> = None;
-        for frame in frames {
-            let Ok(decoded) = decoder.advance(&frame) else {
-                break;
-            };
-            if validate_campaign(decoded, replay).is_err() {
-                break;
-            }
-            if decoded.complete::<tables::ModifierDefinitions>().is_ok()
-                && decoded.complete::<tables::LexicalTokens>().is_ok()
-            {
-                last = Some((
-                    decoded.tables[TableId::ModifierDefinitions.index()].clone(),
-                    decoded.tables[TableId::LexicalTokens.index()].clone(),
-                ));
-            }
+        let read = replay.visit_blocks(
+            &[block],
+            &selected,
+            None,
+            |_, _, decoded| {
+                if validate_campaign(decoded, replay).is_err() {
+                    return Ok(false);
+                }
+                if decoded.complete::<tables::ModifierDefinitions>().is_ok()
+                    && decoded.complete::<tables::LexicalTokens>().is_ok()
+                {
+                    last = Some((
+                        decoded.tables[TableId::ModifierDefinitions.index()].clone(),
+                        decoded.tables[TableId::LexicalTokens.index()].clone(),
+                    ));
+                }
+                Ok(true)
+            },
+            || Ok(()),
+        );
+        if read.is_err() && last.is_none() {
+            continue;
         }
         let Some((definitions, lexical)) = last else {
             continue;

@@ -1681,7 +1681,7 @@ fn requests_share_only_the_portrait_size_the_view_draws() {
             .is_none()
     );
     assert_eq!(reply.people[0].portrait_hour, 100);
-    let replay::container::SeekResult::Frame(frame) = replay.seek(1, 100).unwrap() else {
+    let replay::campaign::SeekResult::Frame(frame) = replay.seek(1, 100).unwrap() else {
         panic!("frame");
     };
     for (edge, expected) in [(86, (64, 86)), (118, (88, 118))] {
@@ -2740,7 +2740,7 @@ fn leader_visibility_from_changes(checking: bool) {
         format::FormatVersion, rows::CountryLinkRow, rows::CountryRow, rows::LexicalTokenRow,
         rows::ScriptFlagRow, rows::ScriptVariablesRow, rows::TableRows,
     };
-    use replay_frame::{frame::FrameEncoder, frame::TableView};
+    use replay_frame::{frame::FrameDecoder, frame::FrameEncoder, frame::TableView};
     let (catalogue, _folder) = dashboard_base::catalogue::tests::folder_catalogue(&[(
         "common/defines/test.lua",
         "NDefines={NGame={MAX_SCRIPTED_LOC_RECURSION=30}}",

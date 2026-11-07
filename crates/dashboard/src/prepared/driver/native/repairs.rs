@@ -11,7 +11,7 @@ use dashboard_base::{
     },
 };
 use dashboard_world::Needs;
-use replay::{columnar_frames::Segment, container::Replay};
+use replay::{columnar_frames::Segment, campaign::Replay};
 use replay_data::rows::TableId;
 use std::{io, sync::atomic::AtomicBool};
 

@@ -10,7 +10,6 @@ use viewer_foundation::map::perspective::Resolution;
 use viewer_foundation::map::ui_scale::extent;
 use viewer_foundation::map::ui_scale::valid;
 // Removed when the in-flight playback import is updated.
-pub use viewer_foundation::blocks;
 use viewer_foundation::profile_writer::profile_flush;
 mod app;
 use viewer_combat as combat;

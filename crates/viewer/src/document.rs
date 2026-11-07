@@ -50,7 +50,7 @@ use std::{
 };
 
 use installed_content_core::{ResolveOptions, map, map::MapData};
-use replay::{container::Replay, container::SeekResult};
+use replay::{campaign::Replay, campaign::SeekResult};
 use replay_data::{BranchId, rows::tables as row_tables};
 use replay_frame::frame::DecodedFrame;
 
@@ -2170,9 +2170,11 @@ impl Document {
             // Decide only the initial hour's flag candidates, in the same stores the
             // hour workers will use. This requests no atlas cells; any refused
             // operands leave the original worker/acquire cold path in place.
-            let h_initial_flags = job_priority::spawn_in(scope, || {
-                if let crate::playback::Current::Frame(frame) = playback.current() {
-                    let _ = counters::warm_initial_flags(frame, &counter_assets);
+            // The playback's hour cursor is not shared with workers; its current hour is.
+            let (initial, initial_assets) = (playback.current(), &counter_assets);
+            let h_initial_flags = job_priority::spawn_in(scope, move || {
+                if let crate::playback::Current::Frame(frame) = initial {
+                    let _ = counters::warm_initial_flags(frame, initial_assets);
                 }
             });
             let h_movement = job_priority::spawn_in(scope, || -> io::Result<_> {
@@ -4810,7 +4812,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 const _: fn() = || {
     fn shared<T: Send + Sync>() {}
     shared::<Content>();
-    shared::<replay::container::Replay>();
+    shared::<replay::campaign::Replay>();
     shared::<replay_frame::frame::DecodedFrame>();
 };
 

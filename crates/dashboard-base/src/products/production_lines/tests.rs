@@ -11,7 +11,7 @@ use crate::test_fixtures::{
     CAMPAIGN, LineFixture, OutputFixture, PRODUCTION_HOUR as FIRST, equipment_types,
     production_frame, records,
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::CountryLinkRow, rows::TableId, rows::TableRows};
 use replay_frame::frame::TableView;
 
@@ -486,7 +486,7 @@ fn an_unreadable_block_is_marked_and_counted() {
         &[records(1, (FIRST..=FIRST + 800).map(frame).collect())],
     )
     .unwrap();
-    // A block holds at most a keyframe interval (720 hours): 104–823, then 824–904.
+    // A block holds at most a page (720 hours): 104–823, then 824–904.
     assert!(replay.index.len() >= 2, "the fixture spans several blocks");
     // The block holding the read at 834 can no longer be read.
     let broken = replay
@@ -494,7 +494,7 @@ fn an_unreadable_block_is_marked_and_counted() {
         .iter()
         .position(|block| block.first_hour <= FIRST + 730 && FIRST + 730 <= block.last_hour)
         .unwrap();
-    replay.index[broken].length = 1;
+    replay = Replay::open(replay.damaged_block(&replay.index[broken]).unwrap()).unwrap();
     let (first, last) = (
         replay.index[broken].first_hour,
         replay.index[broken].last_hour,

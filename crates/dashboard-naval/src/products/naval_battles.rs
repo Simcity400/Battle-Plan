@@ -15,7 +15,7 @@ use dashboard_base::{
 };
 use dashboard_core::{config::LoadContext, transport::json_len};
 use dashboard_text::metadata::{LinkTags, check_cancel};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::NavalResultCountryRow, rows::NavalResultMemberRow, rows::NavalResultRow, rows::RowCodec,
     rows::TableId, rows::tables,
@@ -29,7 +29,7 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
-use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
+use dashboard_text::metadata::validate_campaign;
 
 pub mod columnar;
 mod details;
@@ -1539,10 +1539,9 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
                         continue;
                     }
                 };
-                let mut decoder = FrameDecoder::for_tables(&CENSUS_TABLES);
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(decoded) => decoded,
                         Err(error) => {
                             scan.hour = frame.hour;
@@ -1586,13 +1585,12 @@ fn recording_available(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> 
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

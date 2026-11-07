@@ -246,7 +246,7 @@ fn balances_without_the_tables_refuse_by_name() {
 #[test]
 fn a_table_left_to_the_native_capture_is_read_from_its_index_never_refused_as_unrecorded() {
     use dashboard_base::test_fixtures::{CAMPAIGN, file_source, records, source};
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::scope::CaptureMode;
     let cancelled = AtomicBool::new(false);
     let context = LoadContext { content: None };

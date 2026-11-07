@@ -87,7 +87,6 @@ use ts_rs::TS;
 use {
     dashboard_text::metadata::{IdentityTrack, link_slot, tagged_countries, validate_campaign},
     replay_data::{cadence, rows::tables},
-    replay_frame::frame::FrameDecoder,
     std::collections::VecDeque,
 };
 

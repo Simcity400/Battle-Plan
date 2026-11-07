@@ -10,9 +10,9 @@ use dashboard_text::metadata::{
     branch_bounds, link_slot, mapped_slot, slot_read, validate_campaign,
 };
 use engine_native::cbuilding_database::RAILWAY_TEMPLATE_TOKEN;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{BuildingRow, Recorded, TableId, TableSchema, tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder, SharedView, TableView};
+use replay_frame::frame::{DecodedFrame, SharedView, TableView};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     io,
@@ -231,7 +231,6 @@ pub fn scan_with_reads(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -239,7 +238,7 @@ pub fn scan_with_reads(
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

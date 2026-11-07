@@ -1,4 +1,5 @@
 //! Recording scan retained only as the loss parity oracle.
+use replay_frame::frame::DecodedFrame;
 use super::*;
 
 pub(super) const SELECTED: [TableId; 19] = [
@@ -93,7 +94,6 @@ pub fn scan(
             if cancelled.load(Ordering::Acquire) {
                 return Err(cancel());
             }
-            let mut decoder = FrameDecoder::for_tables(&selected);
             let Ok(frames) = frames else {
                 continue;
             };
@@ -101,7 +101,7 @@ pub fn scan(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let Ok(decoded) = decoder.advance(&frame) else {
+                let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                     break;
                 };
                 if validate_campaign(decoded, replay).is_err() {

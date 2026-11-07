@@ -108,7 +108,7 @@ pub fn scan(
         prepared.advance_block(
             &mut pages,
             replay,
-            replay.block_position(block).unwrap(),
+            replay.index.iter().position(|held| held == *block).unwrap(),
             icons,
             cancelled,
         )?;

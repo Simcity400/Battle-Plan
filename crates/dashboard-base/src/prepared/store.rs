@@ -232,7 +232,7 @@ mod tests {
     fn a_bound_publication_follows_its_manifest_and_goes_with_its_last_source() {
         use crate::test_fixtures::{CAMPAIGN, records, source};
         let input = records(1, vec![source(1, 100, Some(1))]);
-        let replay = replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+        let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
         let (bound, root) = crate::test_fixtures::file_source(replay);
         let (store, key) = files(&bound, None).unwrap();
         let folder = store.folder().to_owned();
@@ -262,7 +262,7 @@ mod tests {
     fn a_source_keeps_its_bound_settings_until_they_are_rebound() {
         use crate::test_fixtures::{CAMPAIGN, records, source};
         let input = records(1, vec![source(1, 100, Some(1))]);
-        let replay = replay::container::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
+        let replay = replay::campaign::Replay::from_records(CAMPAIGN.into(), &[input]).unwrap();
         let (source, root) = crate::test_fixtures::file_source(replay);
         let user = root.join("user");
         std::fs::create_dir(&user).unwrap();

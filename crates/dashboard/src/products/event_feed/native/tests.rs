@@ -581,7 +581,7 @@ fn complete_empty_history_is_distinct_from_an_unobserved_empty_interval() {
 #[test]
 fn registered_history_loads_later_publication_without_using_the_later_country_instance() {
     use crate::test_fixtures::{CAMPAIGN, records};
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::rows::CampaignRow;
     let mut frames = Vec::new();
     for hour in 105..=120 {

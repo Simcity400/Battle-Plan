@@ -1,7 +1,7 @@
 //! A local census and adjacent drains, seeded with the earlier seen handles.
 use super::*;
 use dashboard_base::prepared::query::{earlier, progressive};
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use std::cell::RefCell;
 
 pub(super) fn query(

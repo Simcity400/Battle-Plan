@@ -7,9 +7,9 @@
 use super::{ContentRead, Report, complete, country_context, invalid};
 use engine_air_history::air_loss_sites::FIELD_COUNT;
 use installed_content_save::air::Pack;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
@@ -64,16 +64,22 @@ pub fn compare_air_losses(
         .collect();
     blocks.sort_by_key(|block| block.first_hour);
     for block in blocks {
-        let mut decoder = FrameDecoder::for_tables(&ORACLE_TABLES);
-        for encoded in replay.read_block_selected(block, &ORACLE_TABLES)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &ORACLE_TABLES,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            let decoded = decoder.advance(&encoded)?;
+            let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
             if decoded.hour >= check.start {
                 check.observe(decoded, regions)?;
             }
-        }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     check.finish(save, report)
 }

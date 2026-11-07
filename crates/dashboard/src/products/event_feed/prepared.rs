@@ -672,7 +672,7 @@ impl Observer {
     #[cfg(test)]
     pub(crate) fn observe(
         &mut self,
-        replay: &replay::container::Replay,
+        replay: &replay::campaign::Replay,
         frame: &DecodedFrame,
         identities: &crate::products::country_history::HistoryScan,
         cancelled: &AtomicBool,

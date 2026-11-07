@@ -27,13 +27,13 @@ impl Progress {
     pub fn current() -> Option<Self> {
         CURRENT
             .with_borrow(Clone::clone)
-            .or_else(crate::container::pack::progress)
+            .or_else(crate::packing::progress)
     }
 
     /// Each 64 KiB of compression or reading: a packing thread waits out the game's tick
     /// here, before a callback that may lock.
     pub fn completed() {
-        crate::container::pack::wait_here();
+        crate::packing::wait_here();
         if let Some(progress) = Self::current() {
             (progress.0)();
         }
@@ -43,19 +43,6 @@ impl Progress {
 impl Drop for Guard {
     fn drop(&mut self) {
         CURRENT.with_borrow_mut(|slot| *slot = self.previous.take());
-    }
-}
-
-pub(crate) struct Reader<T>(pub T);
-
-impl<T: std::io::Read> std::io::Read for Reader<T> {
-    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
-        let length = output.len().min(64 * 1024);
-        let count = self.0.read(&mut output[..length])?;
-        if count != 0 {
-            Progress::completed();
-        }
-        Ok(count)
     }
 }
 
@@ -75,13 +62,13 @@ mod tests {
             observed.fetch_add(1, Ordering::Relaxed);
         })
         .install();
-        let mut source = crate::container::Budgeted::new(Cursor::new(vec![1; 192 * 1024]));
+        let mut source = crate::packing::Budgeted::new(Cursor::new(vec![1; 192 * 1024]));
         let mut bytes = vec![0; 192 * 1024];
         source.read_exact(&mut bytes).unwrap();
         assert_eq!(ticks.load(Ordering::Relaxed), 3);
         assert_eq!(source.read(&mut bytes).unwrap(), 0);
         assert_eq!(ticks.load(Ordering::Relaxed), 3);
-        let mut destination = crate::container::Budgeted::new(Vec::new());
+        let mut destination = crate::packing::Budgeted::new(Vec::new());
         destination.write_all(&bytes).unwrap();
         assert_eq!(ticks.load(Ordering::Relaxed), 6);
         drop(progress);

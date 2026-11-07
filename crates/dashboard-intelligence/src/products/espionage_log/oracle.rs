@@ -1,4 +1,5 @@
 //! Whole-branch parity oracle; production reads accepted prepared pages.
+use replay_frame::frame::DecodedFrame;
 use super::*;
 
 pub(super) fn scan(
@@ -33,7 +34,6 @@ pub(super) fn scan(
         cancelled,
         |blocks| {
             for (_, frames) in blocks {
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     builder.warn("Unread replay block; operation history has a gap");
                     continue;
@@ -45,7 +45,7 @@ pub(super) fn scan(
                             "Espionage request cancelled",
                         ));
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         builder.warn("Unread replay frame; operation history has a gap");
                         break;
                     };

@@ -1,5 +1,6 @@
 use super::*;
 use replay::spool::Record;
+use std::io::Read as _;
 use replay_data::{identity::CaptureMode, identity::SampleBoundary, identity::Verification};
 
 #[test]
@@ -119,7 +120,7 @@ fn event_feed_history_seeds_sequence_generation_and_counts_from_retained_rows() 
 }
 
 #[test]
-fn compatibility_old_campaign_is_refused_before_recording_history_is_seeded() {
+fn an_older_layout_recording_is_left_as_it_is_and_the_campaign_records_anew() {
     let id = "01234567-89ab-cdef-0123-456789abcdef";
     let root =
         std::env::temp_dir().join(format!("hoi4_history_compatibility_{}", std::process::id()));
@@ -129,21 +130,12 @@ fn compatibility_old_campaign_is_refused_before_recording_history_is_seeded() {
         Replay::from_records(id.into(), &[vec![Record::SessionStart(session.clone())]]).unwrap();
     // A new process session can attach without needing an old session's hour to resume.
     let session = SessionStart { id: 2, ..session };
-    let bytes = replay::container::relabelled(replay.bytes(), 94).unwrap();
-    assert_eq!(Replay::open(bytes.clone()).unwrap().format.version(), 94);
     let path = root.join(format!("{id}.battleplan"));
-    fs::write(&path, &bytes).unwrap();
+    let older = [b"H4RP".as_slice(), &94_u16.to_le_bytes(), id.as_bytes()].concat();
+    fs::write(&path, &older).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();
-    let error = prepared.take(id, &session).err().unwrap().to_string();
-    assert_eq!(
-        error,
-        format!(
-            "existing campaign replay is format 94; recording appends require format {}; move it aside or use another replay directory",
-            FormatVersion::CURRENT.version()
-        )
-    );
-    assert_eq!(fs::read(&path).unwrap(), bytes);
-    // Moving the old file aside starts without its parentage or lease.
+    assert!(prepared.take(id, &session).unwrap().1.is_none());
+    assert_eq!(fs::read(&path).unwrap(), older);
     drop(prepared);
     fs::remove_file(&path).unwrap();
     let mut prepared = PreparedCampaigns::load(&root, &session, |_| Ok(())).unwrap();

@@ -5,7 +5,7 @@ use dashboard_base::{
     products::{LoadContext, Product, check_reply_budget, equipment},
 };
 use dashboard_text::metadata::{check_cancel, link_slot, validate_campaign};
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{MarketPool, MarketPriceLevel, MarketSubsidy, TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_fixtures::{CAMPAIGN, records, source as frame};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryFactoriesRow, rows::CountryLinkRow,
     rows::CountryRow, rows::TableId, rows::TableRows, rows::tables,

@@ -12,7 +12,7 @@ use crate::{
     metadata::{CountryKeys, check_cancel},
     prepared::series::{self, Accumulator},
 };
-use replay::container::{Replay, TableFields};
+use replay::campaign::{Replay, TableFields};
 use replay_data::{rows::CompletedFocusRow, rows::TableId, rows::tables};
 use replay_frame::{frame::DecodedFrame, frame::TableView, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};

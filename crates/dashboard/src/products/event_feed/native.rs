@@ -5,7 +5,7 @@ use super::{Builder, EventFeedCause, EventFeedKind, EventFeedRow, check_cancel};
 use crate::metadata::validate_campaign;
 #[cfg(test)]
 use crate::products::country_history::NativeNames as Names;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     event_feed_rows::EventFeedCause as NativeCause,
     event_feed_rows::EventFeedCountry,

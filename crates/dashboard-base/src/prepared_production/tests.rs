@@ -74,7 +74,7 @@ fn observer_frame(countries: u32, invalid_tag: bool) -> DecodedFrame {
 }
 
 fn observer_format(frame: &DecodedFrame) -> FormatVersion {
-    replay::container::Replay::from_records(
+    replay::campaign::Replay::from_records(
         crate::test_fixtures::CAMPAIGN.into(),
         &[crate::test_fixtures::records(1, vec![frame.clone()])],
     )
@@ -723,7 +723,7 @@ fn production_endpoint_warning_clock_matches_every_oracle_hour_across_two_commit
                 "warning clock emitted hourly pages"
             );
             for (end, at) in accepted.iter().enumerate() {
-                let replay = replay::container::Replay::from_records(
+                let replay = replay::campaign::Replay::from_records(
                     crate::test_fixtures::CAMPAIGN.into(),
                     &[crate::test_fixtures::records(1, accepted[..=end].to_vec())],
                 )
@@ -1187,7 +1187,7 @@ fn an_open_rocket_join_can_change_an_earlier_committed_endpoint_only_under_an_ap
         prefix::Prefix,
     };
     let flag = AtomicBool::new(false);
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         crate::test_fixtures::CAMPAIGN.into(),
         &[crate::test_fixtures::records(
             1,

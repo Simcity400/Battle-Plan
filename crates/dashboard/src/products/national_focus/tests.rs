@@ -1,6 +1,6 @@
 use super::{COMPLETED_OWNER_INSPECTIONS, HeldFocusRead, completed_for_owner, ordered};
 use crate::test_fixtures::{CAMPAIGN, records, scale_frame, scale_tag, source};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CompletedFocusRow, rows::CountryLinkRow, rows::CountryRow, rows::TableId, rows::TableRows,
 };

@@ -20,9 +20,7 @@ use std::{
 use ts_rs::TS;
 
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::atomic::AtomicBool;
 

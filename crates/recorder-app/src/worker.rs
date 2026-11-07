@@ -11,7 +11,7 @@ use recorder::controller::{
     self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, SetAside,
     Stage, Waiting,
 };
-use replay::{container::Replay, recorder_settings::RecorderSettings, recording_files};
+use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
 use replay_data::scope::CaptureMode;
 use serde_json::Value;
 use std::{

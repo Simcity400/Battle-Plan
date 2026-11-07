@@ -33,14 +33,12 @@ use crate::{
 use dashboard_world::{Mark, Viewed};
 use installed_content_core::faction_templates::Catalog;
 use installed_content_localisation::localisation::Localisation;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{
     CapitulationRow, CountryLinkRow, CountryRow, FactionMemberRow, FactionRow, HumanControllerRow,
     TableId, TableSchema, WarRelationRow, mask, tables,
 };
 use replay_frame::frame::{DecodedFrame, HourFrame, SharedView};
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -1692,10 +1690,9 @@ fn scan_from(
                     scan.continuation.unreadable_blocks += 1;
                     continue;
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         scan.continuation.stopped += 1;
                         break;
                     };
@@ -2983,14 +2980,6 @@ impl Scan {
             prepared::TABLES,
             cancelled,
             &|frame| Ok(Some(frame.clone())),
-            &|frame: &replay_frame::frame::DecodedFrame| {
-                std::mem::size_of::<replay_frame::frame::DecodedFrame>()
-                    + frame
-                        .tables
-                        .iter()
-                        .map(|view| crate::prepared::query::frames::view_bytes(view))
-                        .sum::<usize>()
-            },
             |spans, frame| {
                 self.carry(carried);
                 self.begin_block();

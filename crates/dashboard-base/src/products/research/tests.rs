@@ -2,7 +2,7 @@ use super::test_fixtures::{research_frame, sliced_research_frame};
 use super::{Country, Inventory, base_cost, remaining};
 use crate::ResearchOutcome;
 use crate::test_fixtures::{CAMPAIGN, fixture_research_inputs, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CountryLinkRow, rows::ResearchAppliedBonusRow, rows::ResearchInputRow,
     rows::ResearchTechnologyRow, rows::TableId, rows::TableRows,

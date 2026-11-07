@@ -9,7 +9,7 @@ use dashboard_world::{Hold, Needs, World};
 use replay::{
     columnar_frames::metrics,
     columns,
-    container::TableFields,
+    campaign::TableFields,
     segments::{self, Sink},
 };
 use replay_data::{

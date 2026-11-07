@@ -3,12 +3,12 @@
 //! one before it or starts a new epoch with its coverage marked, events stay
 //! in sequence, and the save hour's events join the recorded world.
 use super::Report;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::MapEventFamily, rows::MapEventFault, rows::MapEventPayload, rows::MapEventsRow,
     rows::TableId, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeSet, io};
 
 pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io::Result<()> {
@@ -26,12 +26,15 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
     let mut previous: Option<MapEventsRow> = None;
     let mut count = 0;
     for block in blocks {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for encoded in replay.read_block_selected(block, &selected)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &selected,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            let decoded = decoder.advance(&encoded)?;
+            let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
             let Ok(rows) = decoded.complete::<tables::MapEvents>() else {
                 if decoded.hour == frame.hour {
                     report.failed_comparisons.insert(
@@ -40,7 +43,7 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
                     );
                 }
                 previous = None;
-                continue;
+                return Ok(true);
             };
             let [row] = rows else {
                 report.difference(
@@ -48,7 +51,7 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
                     rows.len().to_string(),
                     "one hourly interval",
                 );
-                continue;
+                return Ok(true);
             };
             if let Err(reason) = observe(previous.as_ref(), row, decoded.hour) {
                 report.difference(
@@ -60,7 +63,10 @@ pub fn compare(replay: &Replay, frame: &DecodedFrame, report: &mut Report) -> io
             report_coverage(row, decoded.hour, frame.hour, report);
             count += row.events.len();
             previous = Some(row.clone());
-        }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     if let Some(row) = previous.as_ref().filter(|row| row.to_hour == frame.hour) {
         joins(frame, row, report)?;

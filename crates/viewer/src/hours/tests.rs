@@ -508,10 +508,7 @@ fn a_part_that_never_runs_leaves_its_slot_empty_not_pending() {
 }
 
 pub(super) fn lane_over(replay: &Arc<Replay>) -> DecodeLane {
-    DecodeLane::start(Playback::unloaded(Arc::clone(replay)).unwrap().with_reader(
-        BlockReader::new(Arc::clone(replay), Arc::new(Dropper::new().unwrap())),
-    ))
-    .unwrap()
+    DecodeLane::start(Playback::unloaded(Arc::clone(replay)).unwrap()).unwrap()
 }
 
 fn long_replay(hours: &[Hour]) -> Arc<Replay> {
@@ -656,7 +653,7 @@ fn the_decode_lane_decodes_wanted_hours_ahead_and_serves_any_other() {
     assert_eq!(decoded(frame_within(&lane, 1, 820)), Some(820));
     assert_eq!(decoded(frame_within(&lane, 1, 103)), None);
     let expected = match replay.seek(1, 101).unwrap() {
-        replay::container::SeekResult::Frame(frame) => *frame,
+        replay::campaign::SeekResult::Frame(frame) => *frame,
         other => panic!("{other:?}"),
     };
     match frame_within(&lane, 1, 101) {
@@ -893,7 +890,7 @@ fn sparse_playback_decode_is_identical_to_an_independent_paused_seek_at_every_sa
         let Current::Frame(actual) = frame_within(&lane, 1, hour) else {
             panic!("sample {hour} is not a frame")
         };
-        let replay::container::SeekResult::Frame(expected) = replay.seek(1, hour).unwrap() else {
+        let replay::campaign::SeekResult::Frame(expected) = replay.seek(1, hour).unwrap() else {
             panic!("paused {hour} is not a frame")
         };
         assert_eq!(actual.as_ref(), expected.as_ref(), "hour {hour}");
@@ -1003,7 +1000,7 @@ fn forward_playback_retains_only_targets_not_cancellation_endpoints_or_behind_ho
     let Current::Frame(actual) = frame_within(&lane, 1, 290) else {
         panic!("target frame")
     };
-    let replay::container::SeekResult::Frame(expected) = replay.seek(1, 290).unwrap() else {
+    let replay::campaign::SeekResult::Frame(expected) = replay.seek(1, 290).unwrap() else {
         panic!("expected frame")
     };
     assert_eq!(actual.as_ref(), expected.as_ref());
@@ -1097,7 +1094,7 @@ fn evicted_backward_and_branch_requests_match_independent_source_seeks() {
     for (branch, hour) in [(1, 290), (1, 100), (2, 70), (1, 300), (2, 25), (1, 10)] {
         lane.want(vec![(branch, hour)], 0);
         let actual = source_frame(&lane.client(), branch, hour);
-        let replay::container::SeekResult::Frame(expected) = replay.seek(branch, hour).unwrap()
+        let replay::campaign::SeekResult::Frame(expected) = replay.seek(branch, hour).unwrap()
         else {
             panic!("recorded hour")
         };

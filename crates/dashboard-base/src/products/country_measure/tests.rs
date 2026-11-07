@@ -1,5 +1,5 @@
 use crate::test_fixtures::{CAMPAIGN, records, source};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use std::sync::{Arc, atomic::AtomicBool};
 
 #[test]

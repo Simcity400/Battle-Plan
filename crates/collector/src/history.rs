@@ -1,16 +1,16 @@
 //! Prepare exact prior branch history before installing the hourly hook.
 
 use crate::spooling::campaign_name;
-use replay::{container::Replay, recording_files};
+use replay::{campaign::Replay, recording_files};
 use replay_data::{
-    codec::invalid, format::FormatVersion, identity::Identity, identity::SessionStart,
+    codec::invalid, identity::Identity, identity::SessionStart,
 };
 use replay_data::rows::TableId;
 use replay_frame::branches::BranchTracker;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{self, Read},
+    io,
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -152,36 +152,9 @@ impl PreparedCampaigns {
     }
 
     fn read(path: &Path, name: &str, session: &SessionStart) -> io::Result<Prepared> {
-        // Freeze the initial copy; the callback subsequently uses only the resident snapshot.
-        let mut snapshot = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ)
-            .open(path)?;
-        let mut bytes = Vec::new();
-        let length =
-            usize::try_from(snapshot.metadata()?.len()).map_err(|_| engine_allocation::oom())?;
-        engine_allocation::reserve_exact(&mut bytes, length)?;
-        let mut chunk = [0_u8; 8192];
-        loop {
-            let count = match snapshot.read(&mut chunk) {
-                Ok(0) => break,
-                Ok(count) => count,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            };
-            engine_allocation::reserve(&mut bytes, count)?;
-            bytes.extend_from_slice(&chunk[..count]);
-        }
+        // The file only grows by later revisions, so the one opened stays readable as it was.
         let lease = lease(path)?;
-        drop(snapshot);
-        let replay = Replay::open(bytes)?;
-        if replay.format != FormatVersion::CURRENT {
-            return Err(invalid(format!(
-                "existing campaign replay is format {}; recording appends require format {}; move it aside or use another replay directory",
-                replay.format.version(),
-                FormatVersion::CURRENT.version()
-            )));
-        }
+        let replay = Replay::open_path(path)?;
         let completion_sequence = completion_sequence(&replay)?;
         let naval_result_sequence = naval_result_sequence(&replay)?;
         let event_ledger_sequences = event_ledger_sequences(&replay)?;
@@ -404,49 +377,56 @@ pub(crate) fn lease(path: &Path) -> io::Result<File> {
 
 fn completion_sequence(replay: &Replay) -> io::Result<u64> {
     use replay_data::rows::tables;
-    use replay_frame::frame::FrameDecoder;
     let selected = COMPLETIONS;
     let mut maximum = 0;
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in replay.read_block_selected(block, &selected)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &blocks,
+        &selected,
+        None,
+        |_, _, decoded| {
             if let Ok(rows) = decoded.complete::<tables::OperationCompletions>() {
                 maximum = maximum.max(rows.iter().map(|row| row.sequence).max().unwrap_or(0));
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     Ok(maximum)
 }
 
 fn map_event_history(replay: &Replay) -> io::Result<(u64, u64)> {
     use replay_data::rows::tables;
-    use replay_frame::frame::FrameDecoder;
     let selected = MAP_EVENTS;
     let mut latest = (0, 0);
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in replay.read_block_selected(block, &selected)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &blocks,
+        &selected,
+        None,
+        |_, _, decoded| {
             if let Ok([row]) = decoded.complete::<tables::MapEvents>() {
                 latest = (
                     latest.0.max(row.epoch),
                     latest.1.max(row.next_sequence.saturating_sub(1)),
                 );
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     Ok(latest)
 }
 
 fn politics_epoch(replay: &Replay) -> io::Result<u64> {
-    use replay_frame::frame::FrameDecoder;
     let selected = crate::extended::politics::TABLES;
     let mut latest = 0;
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in replay.read_block_selected(block, &selected)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &blocks,
+        &selected,
+        None,
+        |_, _, decoded| {
             for table in selected {
                 let rows = match &*decoded.tables[table.index()] {
                     replay_frame::frame::TableView::Complete(rows)
@@ -471,20 +451,24 @@ fn politics_epoch(replay: &Replay) -> io::Result<u64> {
                     _ => unreachable!("politics selection"),
                 }
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     Ok(latest)
 }
 
 fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
     use replay_data::rows::tables;
-    use replay_frame::{frame::FrameDecoder, frame::TableView};
+    use replay_frame::frame::TableView;
     let selected = NAVAL_RESULTS;
     let mut maximum = 0;
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in replay.read_block_selected(block, &selected)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &blocks,
+        &selected,
+        None,
+        |_, _, decoded| {
             if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
                 &*decoded.tables[TableId::NavalResultSources.index()]
             {
@@ -493,20 +477,24 @@ fn naval_result_sequence(replay: &Replay) -> io::Result<u64> {
                     .ok_or_else(|| invalid("naval result source history contains another table"))?;
                 maximum = maximum.max(rows.iter().map(|row| row.id).max().unwrap_or(0));
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     Ok(maximum)
 }
 
 fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 4]> {
     use replay_data::rows::tables;
-    use replay_frame::{frame::FrameDecoder, frame::TableView};
+    use replay_frame::frame::TableView;
     let selected = EVENT_LEDGERS;
     let mut maximum = [None; 4];
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in replay.read_block_selected(block, &selected)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &blocks,
+        &selected,
+        None,
+        |_, _, decoded| {
             for (index, table) in selected.into_iter().enumerate() {
                 let rows = match &*decoded.tables[table.index()] {
                     TableView::Complete(rows) | TableView::Truncated { rows, .. } => rows,
@@ -541,8 +529,10 @@ fn event_ledger_sequences(replay: &Replay) -> io::Result<[Option<u64>; 4]> {
                 };
                 maximum[index] = maximum[index].max(last);
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     Ok(maximum)
 }
 
@@ -563,15 +553,17 @@ fn event_feed_history(
     replay_data::event_feed_rows::EventFeedCounts,
 )> {
     use replay_data::rows::tables;
-    use replay_frame::{frame::FrameDecoder, frame::TableView};
+    use replay_frame::frame::TableView;
     let selected = EVENT_FEED;
     let mut maximum = None;
     let mut generation = None;
     let mut counts = replay_data::event_feed_rows::EventFeedCounts::default();
-    for block in &replay.index {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for frame in replay.read_block_selected(block, &selected)? {
-            let decoded = decoder.advance(&frame)?;
+    let blocks: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &blocks,
+        &selected,
+        None,
+        |_, _, decoded| {
             if let TableView::Complete(rows) | TableView::Truncated { rows, .. } =
                 &*decoded.tables[TableId::EventFeedHistory.index()]
             {
@@ -587,8 +579,10 @@ fn event_feed_history(
                     }
                 }
             }
-        }
-    }
+            Ok(true)
+        },
+        || Ok(()),
+    )?;
     Ok((maximum, generation, counts))
 }
 

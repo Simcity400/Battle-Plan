@@ -5,9 +5,9 @@
 use super::{PoolRun, ScannedBalance, TradeDirection, TradeRun, mark};
 use dashboard_base::products::{resources::Learned, territory::CountryReads};
 use dashboard_text::metadata::{IdentityTrack, validate_campaign};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -442,7 +442,6 @@ pub fn scan(
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -450,7 +449,7 @@ pub fn scan(
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

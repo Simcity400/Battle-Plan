@@ -74,7 +74,7 @@ fn publish(fixture: &Fixture, frames: &[DecodedFrame]) -> Scan<block::Observer> 
 
 pub(super) fn source(frames: Vec<DecodedFrame>) -> dashboard_base::Source {
     let replay =
-        replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
+        replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, frames)]).unwrap();
     dashboard_base::Source::from_replay(
         dashboard_base::SourceKey {
             source_id: "weather-test".into(),
@@ -639,7 +639,7 @@ fn daily_query_uses_sparse_recorded_hours_not_weather_coverage_as_its_calendar()
     frames.extend(later.iter().cloned());
     publish(&fixture, &frames);
     let replay =
-        replay::container::Replay::from_records(CAMPAIGN.into(), &[records(1, first)]).unwrap();
+        replay::campaign::Replay::from_records(CAMPAIGN.into(), &[records(1, first)]).unwrap();
     let continuation = dashboard_base::test_fixtures::continuation_records(&replay, 1, later);
     let replay = replay.append(&[continuation]).unwrap();
     let source = dashboard_base::Source::from_replay(
@@ -697,7 +697,7 @@ fn schema_fields_watch_all_witnesses_and_the_weather_family_is_country_independe
         "air_defence",
     ] {
         let watched =
-            replay::container::TableFields::named(TableId::WeatherRegions, &[field]).unwrap();
+            replay::campaign::TableFields::named(TableId::WeatherRegions, &[field]).unwrap();
         assert_ne!(fields[0].fields & watched.fields, 0);
     }
     assert!(!fields[0].read);

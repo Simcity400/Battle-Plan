@@ -1,6 +1,6 @@
 use super::test_fixtures::{Threat, tension_frame, tension_slot};
 use dashboard_base::test_fixtures::{CAMPAIGN, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::CountryLinkRow, rows::TableId, rows::TableRows};
 use replay_frame::{frame::DecodedFrame, frame::TableView};
 use std::sync::{Arc, atomic::AtomicBool};

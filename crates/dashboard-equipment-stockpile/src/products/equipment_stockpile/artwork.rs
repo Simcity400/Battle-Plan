@@ -13,7 +13,7 @@ use dashboard_text::{
     metadata::{link_slot, tagged_country, validate_campaign},
 };
 use installed_content_core::{content::ArtworkMode, equipment::Database};
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};

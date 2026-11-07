@@ -8,9 +8,9 @@ use super::{
 };
 use dashboard_base::products::country_history::{branch_histories, observe_identity};
 use dashboard_text::metadata::{IdentityTrack, link_slot, slot_read, validate_campaign};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::CountryLinkRow, rows::NukeRow, rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::HashMap,
     sync::{Arc, atomic::Ordering},
@@ -379,12 +379,11 @@ fn census(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Ce
                 let Ok(frames) = frames else {
                     continue;
                 };
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 for frame in frames {
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancelled_error());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

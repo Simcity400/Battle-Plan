@@ -806,7 +806,7 @@ pub(crate) struct HourTexts<'a> {
     /// The hour that read the occurrences, and its tables, if at hand.
     hour: i32,
     read: Option<replay_frame::frame::HourFrame<'a>>,
-    seek: Option<&'a dyn Fn(i32) -> io::Result<replay::container::SeekResult>>,
+    seek: Option<&'a dyn Fn(i32) -> io::Result<replay::campaign::SeekResult>>,
     sought: std::cell::RefCell<BTreeMap<i32, Result<std::rc::Rc<replay_frame::frame::DecodedFrame>, String>>>,
     /// A failed read fails the hour's preparation.
     failure: std::cell::RefCell<Option<io::Error>>,
@@ -818,7 +818,7 @@ impl<'a> HourTexts<'a> {
     pub(crate) fn new(
         hour: i32,
         read: Option<replay_frame::frame::HourFrame<'a>>,
-        seek: Option<&'a dyn Fn(i32) -> io::Result<replay::container::SeekResult>>,
+        seek: Option<&'a dyn Fn(i32) -> io::Result<replay::campaign::SeekResult>>,
     ) -> Self {
         Self {
             hour,
@@ -856,8 +856,8 @@ impl<'a> HourTexts<'a> {
         let _phase = replay_frame::cpu::scope_phase("ef-w:present-seek");
         let read = match self.seek {
             Some(seek) => seek(hour).map(|found| match found {
-                replay::container::SeekResult::Frame(frame) => Ok(*frame),
-                replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+                replay::campaign::SeekResult::Frame(frame) => Ok(*frame),
+                replay::campaign::SeekResult::Gap { reason, .. } => Err(reason),
             }),
             None => Ok(Err("its naming hour's world is not at hand".into())),
         };
@@ -1966,7 +1966,6 @@ fn focus_completion_rows(
     context: &LoadContext,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    use replay_frame::frame::FrameDecoder;
     let replay = source.replay_ref();
     let mut focus_art = None;
     if let Ok(content) = context.content()
@@ -2012,10 +2011,9 @@ fn focus_completion_rows(
                         continue;
                     }
                 };
-                let mut decoder = FrameDecoder::for_tables(&needed);
                 for frame in read {
                     check_cancel(cancelled)?;
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(decoded) => decoded,
                         Err(reason) => {
                             builder.sampled_unavailable(

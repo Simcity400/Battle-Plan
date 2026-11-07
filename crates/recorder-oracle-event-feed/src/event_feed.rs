@@ -1,11 +1,11 @@
 //! Native events are transient; saves cannot certify their action or actor roles.
 use super::Report;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     event_feed_rows::EventFeedCounts, event_feed_rows::EventFeedCoverage,
     event_feed_rows::EventFeedHistoryRow, rows::TableId, rows::tables,
 };
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::io;
 
 pub fn compare(
@@ -28,12 +28,15 @@ pub fn compare(
         .collect();
     blocks.sort_by_key(|block| block.first_hour);
     for block in blocks {
-        let mut decoder = FrameDecoder::for_tables(&selected);
-        for encoded in replay.read_block_selected(block, &selected)? {
-            if encoded.hour > frame.hour {
-                break;
+        replay.visit_blocks(
+            &[block],
+            &selected,
+            None,
+            |_, _, hour_frame| {
+            if hour_frame.hour > frame.hour {
+                return Ok(false);
             }
-            let decoded = decoder.advance(&encoded)?;
+            let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(hour_frame)?;
             let rows = decoded.complete::<tables::EventFeedHistory>()?;
             let [row] = rows else {
                 report.difference(
@@ -41,7 +44,7 @@ pub fn compare(
                     rows.len().to_string(),
                     "one hourly history row",
                 );
-                continue;
+                return Ok(true);
             };
             if let Err(reason) = check.observe(row, decoded.hour) {
                 report.difference(
@@ -52,7 +55,10 @@ pub fn compare(
             }
             state.observe(row)?;
             report_coverage(row, decoded.hour, frame.hour, report);
-        }
+                Ok(true)
+            },
+            || Ok(()),
+        )?;
     }
     super::script_events::compare(frame, document, &state, report)
 }

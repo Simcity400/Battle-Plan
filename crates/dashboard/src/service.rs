@@ -566,7 +566,7 @@ impl Service {
             .reload();
     }
 
-    pub fn map_settings(&self, replay: &replay::container::Replay) -> ResolvedMapSettings {
+    pub fn map_settings(&self, replay: &replay::campaign::Replay) -> ResolvedMapSettings {
         self.inner
             .map_settings
             .lock()
@@ -576,7 +576,7 @@ impl Service {
 
     pub fn widget_map_settings(
         &self,
-        replay: &replay::container::Replay,
+        replay: &replay::campaign::Replay,
         id: &str,
     ) -> ResolvedMapSettings {
         self.scoped_map_settings(&map_settings::widget_key(

@@ -137,7 +137,7 @@ fn parity(countries: usize, baseline_step: usize) {
         if step == 0 {
             continue;
         }
-        let replay = replay::container::Replay::from_records(
+        let replay = replay::campaign::Replay::from_records(
             dashboard_base::test_fixtures::CAMPAIGN.into(),
             &[dashboard_base::test_fixtures::records(
                 1,
@@ -528,7 +528,7 @@ fn a_batch_over_a_gap_answers_as_cuts_at_every_hour_do() {
             }
         }
     }
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[dashboard_base::test_fixtures::records(1, frames.clone())],
     )

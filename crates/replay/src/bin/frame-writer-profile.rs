@@ -19,7 +19,7 @@ use replay::{
     columnar_file::{Capture, FileWriter, Settings},
     columnar_frames::schema,
     columnar_journal::JournalWriter,
-    container::{Replay, ReplayStream},
+    campaign::Replay,
     native_frame::{FrameWriter, OneThread, RowFrame},
 };
 use replay_columnar::envelope;
@@ -67,7 +67,6 @@ fn main() -> io::Result<()> {
     let mut reference: Option<FrameWriter> = None;
     let source_bytes = std::fs::metadata(&input)?.len();
     let replay = Replay::open_path(&input)?;
-    let mut stream = ReplayStream::new(&TableId::ALL)?;
     let mut content = Vec::new();
     replay_data::identity::IdentityCodec::encode(&replay.identity, &mut content)?;
     let identity = envelope::Identity {
@@ -101,9 +100,12 @@ fn main() -> io::Result<()> {
     let mut encoder = FrameEncoder::new();
     let mut carried: Vec<Option<Arc<replay_data::rows::TableRows>>> = vec![None; TABLE_COUNT];
     let started = Instant::now();
-    while stream.next_block_recorded_with(
-        &replay,
-        |recorded, decoded| {
+    let index: Vec<_> = replay.index.iter().collect();
+    replay.visit_blocks(
+        &index,
+        &TableId::ALL,
+        None,
+        |_, recorded, decoded| {
             let tables = std::array::from_fn(|index| match &*decoded.tables[index] {
                 TableView::Complete(rows) => {
                     let unchanged = matches!(recorded.tables[index], TableUpdate::Unchanged { .. });
@@ -213,10 +215,10 @@ fn main() -> io::Result<()> {
             encoder.commit(row_frame)?;
             encoder_ns += begin.elapsed().as_nanos() as u64;
             hours += 1;
-            Ok(())
+            Ok(true)
         },
         || Ok(()),
-    )? {}
+    )?;
     if let Some((ended, _, _, _)) = frames.take() {
         for (total, ns) in finished_ns.iter_mut().zip(ended.table_ns()) {
             *total += ns;

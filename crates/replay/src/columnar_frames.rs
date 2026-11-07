@@ -16,7 +16,7 @@
 //! [`Metrics::table_ns`] is [`READ_TIME_NOT_RECORDED`], as for recordings that keep no timings.
 
 use crate::{
-    container::Parallel,
+    campaign::Parallel,
     format::FormatVersion,
     frame::{
         DecodedFrame, Metrics, READ_TIME_NOT_RECORDED, RecordedFrame, RowChange, SharedView, Stamp,
@@ -48,7 +48,7 @@ use std::{
 mod input;
 mod reader;
 pub(crate) use reader::Reads;
-pub use reader::{Damage, DamageScope, Recording, Run, Tally, Timings, Walker};
+pub use reader::{Damage, DamageScope, Recording, RootFile, Run, Tally, Timings, Walker};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;

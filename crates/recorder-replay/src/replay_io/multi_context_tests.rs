@@ -2,6 +2,7 @@ use super::*;
 use crate::test_support::{
     ALLOCATION_CAMPAIGN, allocation_frame, allocation_range, allocation_records,
     allocation_test_directory, allocation_witness, recorded_frames, two_load_records,
+    write_capture,
 };
 use replay_frame::branches::BranchReason;
 
@@ -24,6 +25,8 @@ fn allocation_session(name: &str) -> (PathBuf, PathBuf, TerminalWitness) {
     let root = allocation_test_directory(name);
     let session = root.join("session");
     let path = write_spool(&session, ALLOCATION_CAMPAIGN, &allocation_records());
+    // The capture holds the committed hours alone, as tests that add uncommitted ones rely on.
+    write_capture(path.parent().unwrap(), 0, &allocation_records());
     let witness = allocation_witness(fs::metadata(path).unwrap().len());
     (session, root.join("replays"), witness)
 }
@@ -125,6 +128,11 @@ fn bundled_ranges_keep_each_branch_and_derive_an_unwritten_branch_start() {
     primary.load_signal = Some(29);
     primary.failed_hour = Some(23);
     primary.uncommitted = Some(allocation_range(11, Some(29), 21..=22));
+    write_capture(
+        &session.join(std::str::from_utf8(ALLOCATION_CAMPAIGN).unwrap()),
+        0,
+        &records,
+    );
     let mut late = records;
     late.push(Record::BranchStart(BranchStart {
         id: 11,
@@ -202,6 +210,7 @@ fn bundled_campaigns_use_independent_caps_and_recover_a_never_started_campaign()
     let second_cap = encode(&records[..4]).len() as u64;
     assert_ne!(second_cap, primary.committed_bytes);
     let second_spool = write_spool(&session, &second, &records);
+    write_capture(second_spool.parent().unwrap(), 0, &records[..4]);
     let sources: Vec<_> = [first_spool, second_spool]
         .into_iter()
         .map(|path| {
@@ -361,10 +370,8 @@ fn bundled_ranges_append_once_after_published_and_unsaved_checkpoints() {
         };
         let path = save();
         let after = fs::read(&path).unwrap();
-        let slot = Replay::open(before.clone()).unwrap().index[0].offset as usize - 32;
         assert!(after.len() > before.len());
-        assert_eq!(after[..slot], before[..slot]);
-        assert_eq!(after[slot + 32..before.len()], before[slot + 32..]);
+        assert_eq!(after[..before.len()], before);
         assert_contents(
             &path,
             ALLOCATION_CAMPAIGN,
@@ -446,6 +453,7 @@ fn a_checkpointed_branch_merges_its_committed_spool_tail_before_deriving_a_lost_
             let mut first = context.clone();
             first.extend((8..=10).map(|hour| Record::Frame(allocation_frame(1, hour, 19))));
             write_spool(&session, ALLOCATION_CAMPAIGN, &first);
+            write_capture(&campaign, 0, &first);
             let tail = campaign.join("spool.0001.h4s");
             fs::write(&tail, encode(&context)).unwrap();
             let settings = session.join("settings.json");
@@ -471,6 +479,7 @@ fn a_checkpointed_branch_merges_its_committed_spool_tail_before_deriving_a_lost_
             committed.push(Record::Frame(allocation_frame(1, 11, 19)));
             let bytes = encode(&committed);
             fs::write(&tail, &bytes).unwrap();
+            write_capture(&campaign, 1, &committed);
             primary.committed_segment = Some(1);
             primary.committed_bytes = bytes.len() as u64;
             primary.branch = Some(2);

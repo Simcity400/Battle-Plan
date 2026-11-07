@@ -7,9 +7,9 @@ use crate::{
     metadata::{IdentityTrack, slot_read, validate_campaign},
     products::country_history::{Identity, observe_identity, unique_by_slot},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{TableId, tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::sync::atomic::Ordering;
 
 /// One tag's runs, and the identity and hour its last run was extended to.
@@ -368,7 +368,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
@@ -376,7 +375,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

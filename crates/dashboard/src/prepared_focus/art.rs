@@ -554,10 +554,10 @@ impl Presenter {
                 match dashboard_base::prepared::query::frames::seek(
                     source, branch, hour, tables(), &WHOLE,
                 )? {
-                    replay::container::SeekResult::Frame(frame) => {
+                    replay::campaign::SeekResult::Frame(frame) => {
                         Ok(replay_frame::frame::HourFrame::from(&*slot.insert(*frame)))
                     }
-                    replay::container::SeekResult::Gap { reason, .. } => Err(reason),
+                    replay::campaign::SeekResult::Gap { reason, .. } => Err(reason),
                 },
             )
         })

@@ -14,7 +14,7 @@ use dashboard_keyed::{
     countries::{self, Countries},
     query::{KeyedWindow, Opened, Query},
 };
-use replay::container::TableFields;
+use replay::campaign::TableFields;
 use replay_data::{
     format::FormatVersion,
     rows::{TableId, tables},

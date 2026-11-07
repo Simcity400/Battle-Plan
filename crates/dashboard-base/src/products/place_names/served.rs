@@ -1,6 +1,6 @@
 use super::{FrameInputs, Inputs, StateInputs};
 use crate::prepared::served::{self, Ask, Branch, Plan};
-use replay::container::{BlockChange, Replay, TableFields};
+use replay::campaign::{BlockChange, Replay, TableFields};
 use replay_data::rows::TableId;
 use replay_frame::frame::DecodedFrame;
 use serde_json::{Value, json};

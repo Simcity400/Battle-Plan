@@ -21,12 +21,10 @@ use crate::{
 };
 use installed_content_province_area::province_area::ProvinceAreas;
 #[cfg(any(test, feature = "test-support"))]
-use replay::container::Replay;
+use replay::campaign::Replay;
 #[cfg(any(test, feature = "test-support"))]
 use replay_data::rows::{ProvinceRow, StateRow};
 use replay_data::{rows::CountryRow, rows::TableId, rows::tables};
-#[cfg(any(test, feature = "test-support"))]
-use replay_frame::frame::FrameDecoder;
 use replay_frame::{frame::DecodedFrame, frame::ViewIdentity};
 use serde::{Deserialize, Serialize};
 #[cfg(any(test, feature = "test-support"))]
@@ -1180,14 +1178,13 @@ pub fn walk(
         |blocks| {
             for (_, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     failed += 1;
                     continue;
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         failed += 1;
                         break;
                     };

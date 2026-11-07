@@ -394,7 +394,7 @@ fn intel_coverage_public_query_shape_and_cancellation() {
     let fixture = dashboard_base::prepared::series::tests::Fixture::new();
     let flag = AtomicBool::new(false);
     let frame = frame(100, Some(vec![network(1, 2)]), true, 2);
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[dashboard_base::test_fixtures::records(
             1,
@@ -851,7 +851,7 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
         frame(100, Some(vec![network(1, 2)]), true, 2),
         frame(101, None, true, 2),
     ];
-    let replay = replay::container::Replay::from_records(
+    let replay = replay::campaign::Replay::from_records(
         dashboard_base::test_fixtures::CAMPAIGN.into(),
         &[dashboard_base::test_fixtures::records(1, frames.to_vec())],
     )

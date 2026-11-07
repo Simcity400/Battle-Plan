@@ -1,6 +1,6 @@
 use super::{RecordedPortrait, leader_portrait};
 use dashboard_base::test_fixtures::{CAMPAIGN, ownership_frame, records};
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::CharacterPortrait, rows::CharacterPortraitRow, rows::TableId, rows::TableRows,
 };

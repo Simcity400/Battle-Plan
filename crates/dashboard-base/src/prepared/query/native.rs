@@ -6,7 +6,7 @@
 use crate::Source;
 use replay::{
     columnar_runs::{IndexFile, Snapshots},
-    container::Parallel,
+    campaign::Parallel,
 };
 use replay_data::{rows::TableId, scope};
 use replay_frame::frame::{DecodedFrame, TableUpdate, TableView};
@@ -106,18 +106,11 @@ fn cursor(source: &Source, tables: &[TableId]) -> io::Result<Cursor> {
     Ok(cursor)
 }
 
-/// Why `file` holds no `hour` of `branch`: its session still being recorded, or none it holds.
-fn unheld(source: &Source, file: &IndexFile, branch: u64, hour: i32) -> io::Error {
-    let session = file
-        .pending(source.replay_ref())
-        .into_iter()
-        .find_map(|(held, session)| (held == branch).then_some(session));
-    dashboard_core::refused(match session {
-        Some(session) => format!(
-            "session {session} is still being recorded: its hours are read once its native recording lands"
-        ),
-        None => format!("The native capture's index holds no hour {hour} of branch {branch}"),
-    })
+/// Why `file` holds no `hour` of `branch`.
+fn unheld(_source: &Source, _file: &IndexFile, branch: u64, hour: i32) -> io::Error {
+    dashboard_core::refused(format!(
+        "The recording's index holds no hour {hour} of branch {branch}"
+    ))
 }
 
 /// Fills each of `tables` that `frame` leaves to the native capture with its view at the
@@ -304,7 +297,7 @@ pub fn latest_read(
 mod tests {
     use super::*;
     use crate::test_fixtures::{CAMPAIGN, file_source, records, source};
-    use replay::container::Replay;
+    use replay::campaign::Replay;
     use replay_data::scope::CaptureMode;
 
     #[test]

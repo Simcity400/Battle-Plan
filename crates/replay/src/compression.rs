@@ -33,11 +33,4 @@ impl Compression {
             Self::High => crate::columnar_file::Settings::HIGH,
         }
     }
-
-    pub(crate) fn selection_level(self) -> i32 {
-        match self {
-            Self::Low => 3,
-            Self::High => 9,
-        }
-    }
 }

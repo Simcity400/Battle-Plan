@@ -18,11 +18,11 @@
 //! takes what the cache holds and never waits on another request's read: it is
 //! refused at once, to be answered where decodes are allowed.
 use crate::{Source, metadata::check_cancel};
-use replay::{container::BlockIndex, container::SeekResult};
+use replay::{campaign::BlockIndex, campaign::SeekResult};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::{rows::TableId, rows::TableRows};
 use replay_frame::{
-    frame::DecodedFrame, frame::FrameDecoder, frame::RecordedFrame as Frame, frame::SharedView,
+    frame::DecodedFrame, frame::RecordedFrame as Frame, frame::SharedView,
     frame::TableUpdate, frame::TableView,
 };
 use std::{
@@ -120,7 +120,8 @@ pub(crate) fn hold_block<'a>(source: &'a Source, block: &BlockIndex) -> impl Dro
         source,
         Key::Block {
             branch: block.branch,
-            offset: block.offset,
+            run: block.run,
+            page: block.page,
         },
     )
 }
@@ -152,7 +153,7 @@ pub fn keep_latest(source: &Source, keep: bool) {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
-    Block { branch: u64, offset: u64 },
+    Block { branch: u64, run: u32, page: u32 },
     Hour { branch: u64, hour: i32 },
 }
 
@@ -280,9 +281,9 @@ pub fn hours(
         });
         let result = match block {
             Some(block) => {
-                if active != Some(block.offset) {
+                if active != Some((block.run, block.page)) {
                     decoders.clear();
-                    active = Some(block.offset);
+                    active = Some((block.run, block.page));
                 }
                 seek_with(
                     source,
@@ -306,7 +307,7 @@ pub fn hours(
 pub struct Walk<'a> {
     source: &'a Source,
     branch: u64,
-    active: Option<u64>,
+    active: Option<(u32, u32)>,
     last: Option<i32>,
     decoders: BTreeMap<Vec<TableId>, BlockDecoder<'a>>,
 }
@@ -344,9 +345,9 @@ impl<'a> Walk<'a> {
         }) else {
             return seek(source, branch, hour, tables, cancelled);
         };
-        if self.active != Some(block.offset) || self.last.is_some_and(|last| hour < last) {
+        if self.active != Some((block.run, block.page)) || self.last.is_some_and(|last| hour < last) {
             self.decoders.clear();
-            self.active = Some(block.offset);
+            self.active = Some((block.run, block.page));
         }
         self.last = Some(hour);
         let found = seek_with(
@@ -546,16 +547,13 @@ impl HourRead for Decoders<'_, '_, '_> {
     }
 }
 
-/// Request-local decoder state; reconstructed hours are retained only by the
-/// shared hour cache. Different windows never lock each other's block walk.
+/// Request-local walk state: a cursor of the request's tables, which goes on through the block
+/// as its hours are asked in rising order; reconstructed hours are retained only by the shared
+/// hour cache. Different windows never lock each other's walk.
 struct BlockDecoder<'a> {
-    /// Keeps the block's entry held while this decoder reads it.
-    _lease: Option<Lease<'a>>,
+    _source: std::marker::PhantomData<&'a Source>,
     branch: u64,
-    reads: Vec<BlockRead>,
-    decoders: Vec<(FrameDecoder, Vec<TableId>)>,
-    position: usize,
-    frame: Option<DecodedFrame>,
+    cursor: replay::campaign::HourCursor,
     /// Once a frame's campaign differs, every later hour of the block is that gap, as a seek finds.
     mismatch: Option<String>,
 }
@@ -565,7 +563,7 @@ impl<'a> BlockDecoder<'a> {
         source: &'a Source,
         index: &BlockIndex,
         tables: &[TableId],
-        cancelled: &AtomicBool,
+        _cancelled: &AtomicBool,
     ) -> io::Result<Self> {
         #[cfg(test)]
         if let Some(table) = DAMAGED
@@ -576,39 +574,10 @@ impl<'a> BlockDecoder<'a> {
                 format!("damaged {table:?}"),
             ));
         }
-        let (reads, lease) = match leased_block(source, index, tables, cancelled)? {
-            Some((reads, lease)) => (reads, Some(lease)),
-            None => (
-                vec![BlockRead {
-                    tables: tables.to_vec(),
-                    frames: Arc::new(source.replay_ref().read_block_recorded_selected_with(
-                        index,
-                        tables,
-                        || check_cancel(cancelled),
-                    )?),
-                }],
-                None,
-            ),
-        };
-        let decoders = reads
-            .iter()
-            .map(|read| {
-                let selected: Vec<_> = read
-                    .tables
-                    .iter()
-                    .copied()
-                    .filter(|table| tables.binary_search(table).is_ok())
-                    .collect();
-                (FrameDecoder::for_tables(&selected), selected)
-            })
-            .collect();
         Ok(Self {
-            _lease: lease,
+            _source: std::marker::PhantomData,
             branch: index.branch,
-            reads,
-            decoders,
-            position: 0,
-            frame: None,
+            cursor: replay::campaign::HourCursor::new(source.replay(), tables, false),
             mismatch: None,
         })
     }
@@ -621,20 +590,18 @@ impl<'a> BlockDecoder<'a> {
                 reason: reason.clone(),
             });
         }
-        if self.frame.as_ref().is_some_and(|frame| frame.hour != hour) {
-            self.frame = None;
+        check_cancel(cancelled)?;
+        #[cfg(test)]
+        if FAIL_ADVANCE.get() == Some(hour) {
+            FAIL_ADVANCE.set(None);
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "injected advance failure",
+            ));
         }
-        while self.position < self.reads[0].frames.len()
-            && self.reads[0].frames[self.position].hour <= hour
-        {
-            check_cancel(cancelled)?;
-            let mut frame: Option<DecodedFrame> = None;
-            for ((decoder, selected), read) in self.decoders.iter_mut().zip(&self.reads) {
-                let decoded = decoder.advance(&read.frames[self.position])?;
-                if let Err(error) = crate::metadata::validate_campaign(decoded, source.replay_ref())
-                {
-                    self.position = self.reads[0].frames.len();
-                    self.frame = None;
+        match self.cursor.seek(self.branch, hour)? {
+            SeekResult::Frame(frame) => {
+                if let Err(error) = crate::metadata::validate_campaign(&frame, source.replay_ref()) {
                     let reason = error.to_string();
                     self.mismatch = Some(reason.clone());
                     return Ok(SeekResult::Gap {
@@ -643,36 +610,9 @@ impl<'a> BlockDecoder<'a> {
                         reason,
                     });
                 }
-                if decoded.hour != hour {
-                    continue;
-                }
-                if let Some(frame) = &mut frame {
-                    for table in selected {
-                        frame.tables[table.index()] = decoded.tables[table.index()].clone();
-                    }
-                } else {
-                    frame = Some(decoded.clone());
-                }
+                Ok(SeekResult::Frame(frame))
             }
-            #[cfg(test)]
-            if FAIL_ADVANCE.get() == Some(self.reads[0].frames[self.position].hour) {
-                FAIL_ADVANCE.set(None);
-                return Err(io::Error::new(
-                    io::ErrorKind::OutOfMemory,
-                    "injected advance failure",
-                ));
-            }
-            self.frame = frame;
-            self.position += 1;
-        }
-        match &self.frame {
-            Some(frame) if frame.hour == hour => Ok(SeekResult::Frame(Box::new(frame.clone()))),
-            // An hour the block holds no frame of: the gap a seek names.
-            _ => Ok(SeekResult::Gap {
-                branch: self.branch,
-                hour,
-                reason: source.replay_ref().gap_reason(self.branch, hour)?,
-            }),
+            gap => Ok(gap),
         }
     }
 }
@@ -974,7 +914,8 @@ fn leased_block<'a>(
     let wanted = sorted(tables);
     let key = Key::Block {
         branch: block.branch,
-        offset: block.offset,
+        run: block.run,
+        page: block.page,
     };
     // Held from the start, so a block being read or answered stays found.
     let (slot, lease) = leased_slot(source, key)?;
@@ -1032,7 +973,7 @@ fn leased_block<'a>(
     count(source, 1, 0);
     let frames = match source
         .replay_ref()
-        .read_block_recorded_selected_with(block, &added, || check_cancel(cancelled))
+        .read_block_facts(block, &added, || check_cancel(cancelled))
     {
         Err(error)
             if error.kind() == io::ErrorKind::Interrupted

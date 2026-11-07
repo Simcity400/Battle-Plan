@@ -5,9 +5,9 @@ use super::{ScannedTension, TensionAdded, TensionEvent, TensionRead};
 use dashboard_base::{catalogue::display_text, products::country_measure::FixedRun};
 use dashboard_text::metadata::{link_slots, slot_read, validate_campaign};
 use engine_stability::cworld_threat;
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder, TableView};
+use replay_frame::frame::{DecodedFrame, TableView};
 use std::{
     collections::{BTreeMap, HashMap},
     io,
@@ -113,7 +113,6 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     observer.open = false;
                     continue;
@@ -122,7 +121,7 @@ pub fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         observer.open = false;
                         break;
                     };

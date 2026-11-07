@@ -5,7 +5,7 @@ use crate::{
     SourceKey,
     transport::{ProductRequest, SourceReply, bounded_json},
 };
-use replay::{container::Replay, spool::Record};
+use replay::{campaign::Replay, spool::Record};
 use replay_data::{
     identity::CaptureMode, identity::Identity, identity::Roster, identity::SampleBoundary,
     identity::SessionStart, identity::Verification,
@@ -1855,7 +1855,7 @@ fn prepared_production_source() -> (
             .unwrap();
     }
     let recorded = Recorded::new();
-    recorded.record(&replay, &[(1, FIRST, 1)], STREAMS, write_hour);
+    recorded.record(&replay);
     let (service, receive, opened, source, _) =
         open_production_source(recorded.root().join("campaign.battleplan"));
     let before = service.preparation_revision();
@@ -1865,7 +1865,6 @@ fn prepared_production_source() -> (
         None,
         crate::prepared::pipeline::restore(&source, None, &AtomicBool::new(false)),
         crate::prepared::store_epoch(&source),
-        crate::prepared::change_runs::native_revision(source.path()).ok(),
         &AtomicBool::new(false),
     )
     .unwrap();

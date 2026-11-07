@@ -17,7 +17,7 @@ use installed_content_core::province_geometry::ProvinceGeometry;
 use installed_content_localisation::localisation::Argument;
 use installed_content_regions::regions::StrategicRegion;
 use replay_data::{rows::TableId, rows::tables};
-use replay_frame::{frame::DecodedFrame, frame::FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -387,9 +387,17 @@ impl Product for ShipsSunkBattleTitles {
                 blocks.entry(block).or_default().insert(hour);
             }
         }
-        for (block, mut hours) in blocks {
+        let keys: Vec<usize> = blocks.keys().copied().collect();
+        let wanted_hours = blocks.into_values();
+        dashboard_core::blocks::scan_blocks(
+            replay,
+            keys.iter().map(|&block| &replay.index[block]),
+            &tables,
+            flag,
+            |reads| {
+                for ((_, read), mut hours) in reads.zip(wanted_hours) {
             check_cancel(flag)?;
-            let frames = match replay.read_block_selected(&replay.index[block], &tables) {
+            let frames = match read {
                 Ok(frames) => frames,
                 Err(error) => {
                     for hour in hours {
@@ -403,13 +411,12 @@ impl Product for ShipsSunkBattleTitles {
                     continue;
                 }
             };
-            let mut decoder = FrameDecoder::for_tables(&tables);
             for frame in frames {
                 if hours.is_empty() {
                     break;
                 }
                 check_cancel(flag)?;
-                let decoded = decoder.advance(&frame)?;
+                let decoded = Ok::<&replay_frame::frame::DecodedFrame, std::io::Error>(&frame.decoded)?;
                 validate_campaign(decoded, replay)?;
                 if hours.remove(&frame.hour) {
                     let points = recorded_rows::<tables::Provinces>(decoded)?
@@ -428,7 +435,10 @@ impl Product for ShipsSunkBattleTitles {
                     }
                 }
             }
-        }
+                }
+                Ok(())
+            },
+        )?;
         let requests: BTreeSet<_> = selected
             .iter()
             .filter_map(|(&(hour, _), &(_, province))| province.map(|province| (province, hour)))

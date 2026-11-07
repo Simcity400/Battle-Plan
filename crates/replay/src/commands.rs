@@ -1,13 +1,12 @@
 use crate::{
     codec::{Decoder, invalid_static as invalid, put_varint},
-    container::Replay,
+    campaign::Replay,
     spool::ControlRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
-    io::Read,
     path::Path,
 };
 
@@ -26,22 +25,31 @@ pub struct Recording {
 }
 
 impl Recording {
+    /// The commands of a campaign's recording, or of one capture's file in a session spool.
     pub fn open_path(path: &Path) -> io::Result<Self> {
-        let mut magic = [0; 8];
-        std::fs::File::open(path)?.read_exact(&mut magic)?;
-        if &magic == b"H4COLUMN" {
-            let recording = crate::columnar_frames::Recording::open_path(path)?;
-            let capture = recording
-                .capture()?
-                .ok_or_else(|| invalid("columnar command metadata is absent"))?;
-            Self::from_columnar(capture)
-        } else {
-            let replay = Replay::open_path(path)?;
-            Ok(Self {
-                sessions: replay.sessions,
-                branches: replay.branches,
-                controls: replay.controls,
-            })
+        let recording = crate::columnar_frames::Recording::open_path(path)?;
+        let capture = match recording.root().controls.first() {
+            Some(first) => {
+                let bytes = recording.extent_bytes(first)?;
+                if crate::campaign::Records::format_of(&bytes).is_none() {
+                    Some(crate::columnar_file::Capture::read(&bytes)?)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        };
+        drop(recording);
+        match capture {
+            Some(capture) => Self::from_columnar(capture),
+            None => {
+                let replay = Replay::open_path(path)?;
+                Ok(Self {
+                    sessions: replay.sessions,
+                    branches: replay.branches,
+                    controls: replay.controls,
+                })
+            }
         }
     }
 
@@ -310,7 +318,7 @@ impl Packet {
         if raw.len() > crate::spool::MAX_RECORD_BYTES {
             return Err(invalid("command packet exceeds record bound"));
         }
-        // Small packets compress better together in the container's controls extent.
+        // Small packets compress better together in the recording's records extent.
         let compressed = if raw.len() > 1024 {
             Some(zstd::bulk::compress(&raw, 3)?)
         } else {

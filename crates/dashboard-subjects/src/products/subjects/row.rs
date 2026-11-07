@@ -14,9 +14,9 @@ use dashboard_base::{
 use dashboard_text::metadata::{
     CountryKeys, LinkTags, branch_bounds, link_slots, validate_campaign,
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::rows::{TableId, tables};
-use replay_frame::frame::{DecodedFrame, FrameDecoder};
+use replay_frame::frame::DecodedFrame;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -374,7 +374,6 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                 if cancelled.load(Ordering::Acquire) {
                     return Err(cancel());
                 }
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     scan.unreadable_blocks += 1;
                     continue;
@@ -383,7 +382,7 @@ pub fn scan_branch(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::
                     if cancelled.load(Ordering::Acquire) {
                         return Err(cancel());
                     }
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         scan.stopped += 1;
                         break;
                     };

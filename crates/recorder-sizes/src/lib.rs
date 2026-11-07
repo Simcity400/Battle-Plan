@@ -1,4 +1,2 @@
-//! Offline recording size attribution: block sections, columns, compression levels and round-trip hour verification. Uses the recording format codecs directly. Command routing is owned by recorder; no live game is opened.
-#[cfg(test)]
-use recorder_test_support::test_support;
+//! Offline size attribution of a campaign's recording by what each stored byte holds. Command routing is owned by recorder; no live game is opened.
 pub mod sizes;

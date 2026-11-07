@@ -29,7 +29,7 @@ use dashboard_text::{
     table_access::TokenNames,
 };
 use installed_content_localisation::localisation::{Argument, Localisation};
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{TableId, TemplateSettings, tables};
 use replay_frame::frame::DecodedFrame;
 use viewer_foundation::map::native_gui::{Assets, SpriteSetter, assets_in, lifecycle::Instance};

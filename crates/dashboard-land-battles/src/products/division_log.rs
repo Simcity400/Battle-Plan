@@ -18,7 +18,7 @@ use dashboard_text::{
     metadata::{LinkTags, check_cancel, slot_read},
     template_facts::{TemplateNaming, display_naming},
 };
-use replay::container::Replay;
+use replay::campaign::Replay;
 use replay_data::{
     rows::DivisionDeletionDisposition as Disposition, rows::DivisionEquipmentDeletionRow,
     rows::DivisionRow, rows::DivisionStatusRow, rows::DivisionTemplateRow,
@@ -34,7 +34,7 @@ use std::{
 };
 use ts_rs::TS;
 #[cfg(any(test, feature = "test-support"))]
-use {dashboard_text::metadata::validate_campaign, replay_frame::frame::FrameDecoder};
+use dashboard_text::metadata::validate_campaign;
 
 pub mod columnar;
 pub mod emit;
@@ -883,7 +883,6 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
         |blocks| {
             for (block, frames) in blocks {
                 check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&TABLES);
                 let frames = match frames {
                     Ok(frames) => frames,
                     Err(error) => {
@@ -894,7 +893,7 @@ fn scan(replay: &Replay, branch: u64, cancelled: &AtomicBool) -> io::Result<Scan
                 };
                 for frame in frames {
                     check_cancel(cancelled)?;
-                    let decoded = match decoder.advance(&frame) {
+                    let decoded = match Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) {
                         Ok(frame) => frame,
                         Err(error) => {
                             scan.gap();

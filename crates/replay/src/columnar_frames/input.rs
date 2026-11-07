@@ -169,6 +169,14 @@ impl Source {
         self.end
     }
 
+    /// The bytes it holds in memory, through its last valid footer; none for a file.
+    pub(super) fn memory(&self) -> Option<&[u8]> {
+        match &self.held {
+            Held::Memory(bytes) => Some(bytes),
+            Held::File(_) => None,
+        }
+    }
+
     /// Whether extents are read from a file rather than memory.
     pub(super) fn reads_file(&self) -> bool {
         matches!(self.held, Held::File(_))
@@ -194,6 +202,17 @@ impl Source {
         let header = &mut header[..self.place(extent)?.min(FRAME_HEADER)];
         self.held.read(extent.offset, header)?;
         frame_length(extent, header)
+    }
+
+    /// `out.len()` stored bytes of `extent` from `at` within it, once its place is checked; the
+    /// digest is not: the caller checks the extent whole once.
+    pub(super) fn stored_at(&self, extent: &Extent, at: u64, out: &mut [u8]) -> io::Result<()> {
+        let length = self.place(extent)? as u64;
+        let end = at.checked_add(out.len() as u64).filter(|&end| end <= length);
+        if end.is_none() {
+            return Err(invalid("reads past its extent"));
+        }
+        self.held.read(extent.offset + at, out)
     }
 
     /// `extent`'s stored bytes once their place and digest are checked; a file's are read into

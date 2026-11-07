@@ -5502,7 +5502,7 @@ mod write_behind_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use replay::{container::Replay, container::SeekResult};
+    use replay::{campaign::Replay, campaign::SeekResult};
     use replay_data::{rows::Recorded, rows::TableId};
     use replay_frame::frame::DecodedFrame;
 
@@ -6060,7 +6060,7 @@ mod tests {
                     )
                 })
                 .collect();
-            let replay = replay::container::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+            let replay = replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
             let row_path = directory.join("paused.battleplan");
             replay.write_atomic(&row_path).unwrap();
             let history = replay.into_history().unwrap();
@@ -6143,7 +6143,7 @@ mod tests {
                 )
             })
             .collect();
-        let replay = replay::container::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
+        let replay = replay::campaign::Replay::from_recovered(ID.to_vec(), &segments).unwrap();
         let row_path = directory.join("reactivated.battleplan");
         replay.write_atomic(&row_path).unwrap();
         for path in [row_path, campaign.join("columnar.0.h4col")] {
@@ -6396,7 +6396,7 @@ mod tests {
             summary(&records(&after)),
             ["session", "branch", "hour 30", "detach"]
         );
-        let replay = replay::container::Replay::from_recovered(
+        let replay = replay::campaign::Replay::from_recovered(
             ID.to_vec(),
             &[
                 (
@@ -6425,7 +6425,7 @@ mod tests {
     }
 
     fn recorded_frames(path: &Path) -> Vec<(u64, i32)> {
-        let replay = replay::container::Replay::open(fs::read(path).unwrap()).unwrap();
+        let replay = replay::campaign::Replay::open(fs::read(path).unwrap()).unwrap();
         replay
             .index
             .iter()
@@ -6518,7 +6518,7 @@ mod tests {
                 (second, 21)
             ]
         );
-        let replay = replay::container::Replay::open(fs::read(&recording).unwrap()).unwrap();
+        let replay = replay::campaign::Replay::open(fs::read(&recording).unwrap()).unwrap();
         assert_eq!(
             replay
                 .sessions
@@ -6720,18 +6720,35 @@ mod tests {
         drop(processor);
         let once = root.join("once");
         replay_io::finalize_session(&folder, &once).unwrap();
-        let saved = |folder: &Path| {
+        let opened = |folder: &Path| {
             let recording = replay::recording_files::recording_of(folder, ID).unwrap();
-            replay::container::Replay::open(fs::read(recording.unwrap()).unwrap())
-                .unwrap()
-                .reencoded(|_, _, _| Ok(()))
-                .unwrap()
-                .bytes()
-                .to_vec()
+            replay::campaign::Replay::open(fs::read(recording.unwrap()).unwrap()).unwrap()
         };
-        // Checkpoints retain earlier trailers, so compare their complete canonical recordings.
-        assert_eq!(saved(&target), saved(&once));
-        let replay = replay::container::Replay::open(saved(&target)).unwrap();
+        // Each save adds a revision, so compare what the recordings hold.
+        let held = |folder: &Path| {
+            let replay = opened(folder);
+            let mut hours = Vec::new();
+            let blocks: Vec<_> = replay.index.iter().collect();
+            replay
+                .visit_blocks(
+                    &blocks,
+                    &TableId::ALL,
+                    None,
+                    |_, _, frame| {
+                        hours.push(frame.clone());
+                        Ok(true)
+                    },
+                    || Ok(()),
+                )
+                .unwrap();
+            let records = format!(
+                "{:?}",
+                (&replay.sessions, &replay.branches, &replay.gaps, &replay.controls)
+            );
+            (records, hours)
+        };
+        assert_eq!(held(&target), held(&once));
+        let replay = opened(&target);
         assert_eq!(
             replay
                 .gaps

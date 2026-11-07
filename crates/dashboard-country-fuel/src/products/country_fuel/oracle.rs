@@ -1,6 +1,7 @@
 //! Whole-branch reference scans for fuel parity tests only.
+use replay_frame::frame::DecodedFrame;
 use super::*;
-use replay::container::Replay;
+use replay::campaign::Replay;
 
 impl Scan {
     pub(super) fn finish(self, format: replay_data::format::FormatVersion) -> ScannedBranch {
@@ -46,13 +47,12 @@ pub(super) fn scan_branch(
         |blocks| {
             for (_, frames) in blocks {
                 dashboard_text::metadata::check_cancel(cancelled)?;
-                let mut decoder = FrameDecoder::for_tables(&selected);
                 let Ok(frames) = frames else {
                     continue;
                 };
                 for frame in frames {
                     dashboard_text::metadata::check_cancel(cancelled)?;
-                    let Ok(decoded) = decoder.advance(&frame) else {
+                    let Ok(decoded) = Ok::<&DecodedFrame, std::io::Error>(&frame.decoded) else {
                         break;
                     };
                     if validate_campaign(decoded, replay).is_err() {

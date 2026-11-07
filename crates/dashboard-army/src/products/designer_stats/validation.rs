@@ -36,7 +36,7 @@ use std::{collections::BTreeMap, path::PathBuf, sync::atomic::AtomicBool};
 
 use dashboard_base::source::{Source, SourceKey};
 use dashboard_core::config::ContentOptions;
-use replay::container::SeekResult;
+use replay::campaign::SeekResult;
 use replay_data::rows::{DivisionPanelStatsRow, Recorded, TableId, tables};
 
 use super::{Calculator, Persistent, definitions, design_stats, kernel};
