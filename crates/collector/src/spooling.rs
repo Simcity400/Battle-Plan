@@ -4597,6 +4597,7 @@ impl Processor {
                 "phases": crate::spool_phases::SPOOL.status(self.session.qpc_frequency),
                 "helper_phases": crate::spool_phases::HELPER.status(self.session.qpc_frequency),
                 "sizing_phases": crate::spool_phases::SIZING.status(self.session.qpc_frequency),
+                "sizing_steps": crate::sizing_steps::status(),
                 "tick_gate": crate::tick_gate::status(),
                 "columnar": self.campaigns.values().filter_map(|campaign| campaign.columnar.status()).collect::<Vec<_>>(),
                 "columnar_finished": crate::columnar::finished_status(),

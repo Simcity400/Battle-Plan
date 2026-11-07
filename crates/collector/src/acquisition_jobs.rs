@@ -2086,13 +2086,16 @@ fn run_with_memory(
             // Repair before deciding recovery: the drain may withdraw the census.
             let begin = sampling::qpc();
             crate::read_accounting::with_table(replay_data::rows::TableId::VariantChanges, || {
-                request.changes.capture_partitioned(
-                    context.base,
-                    context.hour,
-                    request.workers.lanes(),
-                    |parts| request.workers.context(parts, memory, context.base),
-                    |parts| request.workers.snapshots(parts, memory, context.base),
-                );
+                // SAFETY: the lanes' dispatch drains every part before returning, also on failure.
+                unsafe {
+                    request.changes.capture_partitioned(
+                        context.base,
+                        context.hour,
+                        request.workers.lanes(),
+                        |parts| request.workers.context(parts, memory, context.base),
+                        |parts| request.workers.snapshots(parts, memory, context.base),
+                    );
+                }
             });
             request.changes_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
             request.changes_finished = true;

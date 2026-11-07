@@ -4,7 +4,7 @@ fn pending(
     pointer: usize,
     count: u32,
     capacity: u32,
-) -> (super::super::Entry, HashMap<u64, SourceHeads>) {
+) -> (super::super::Entry, HashMap<u64, SourceHeads>, Batch) {
     assert!(count <= capacity);
     let mut bytes = [0; native::STATS];
     bytes[native::BONUS_SOURCES..][..8].copy_from_slice(&0x100_0000_u64.to_le_bytes());
@@ -50,13 +50,14 @@ fn pending(
             mission_model_next: None,
         },
         heads,
+        batch,
     )
 }
 fn remember(retained: &mut Retained, pointer: usize, count: u32, capacity: u32) -> Arc<Decoded> {
-    let (entry, heads) = pending(pointer, count, capacity);
+    let (entry, heads, batch) = pending(pointer, count, capacity);
     let value = Arc::clone(&entry.value);
     retained.observe(1, pointer, Some(capacity));
-    retained.remember(vec![entry], &heads);
+    retained.remember(&batch.log, vec![entry], &heads);
     value
 }
 
@@ -122,34 +123,34 @@ fn capacity_records_cannot_be_recreated_or_raised_by_optional_promotion() {
         }
     }
     let mut retained = Retained::default();
-    let (entry, heads) = pending(0x1000, 3, 3);
+    let (entry, heads, batch) = pending(0x1000, 3, 3);
     let _hook = Hook;
     engine_allocation::set_hooks(None, Some(terminal));
     collector_test_support::with_allocations_denied(|| retained.observe(1, 0x1000, Some(3)));
     assert_eq!(collector_test_support::DENIALS.load(Ordering::Relaxed), 1);
     assert!(retained.designs.is_empty());
-    retained.remember(vec![entry], &heads);
+    retained.remember(&batch.log, vec![entry], &heads);
     assert!(retained.designs.is_empty());
     remember(&mut retained, 0x1000, 0, 0);
     for count in 1..=3 {
         remember(&mut retained, 0x1000, count, 3);
     }
     assert_eq!(retained.state_count(), 4);
-    let (entry, heads) = pending(0x1000, 3, 3);
+    let (entry, heads, batch) = pending(0x1000, 3, 3);
     let entries = vec![entry];
     collector_test_support::with_allocations_denied(|| {
         retained.observe(1, 0x1000, Some(0));
-        retained.remember(entries, &heads);
+        retained.remember(&batch.log, entries, &heads);
     });
     assert_eq!(collector_test_support::DENIALS.load(Ordering::Relaxed), 0);
     assert_eq!(retained.designs[&1].capacity, 0);
     assert_eq!(retained.state_count(), 1);
     assert_eq!(retained.capacity_visits, 4);
-    let (entry, heads) = pending(0x1000, 0, 0);
+    let (entry, heads, batch) = pending(0x1000, 0, 0);
     let entries = vec![entry];
     collector_test_support::with_allocations_denied(|| {
         retained.observe(1, 0x1000, None);
-        retained.remember(entries, &heads);
+        retained.remember(&batch.log, entries, &heads);
     });
     assert_eq!(collector_test_support::DENIALS.load(Ordering::Relaxed), 0);
     assert!(retained.designs.is_empty());
@@ -159,8 +160,8 @@ fn capacity_records_cannot_be_recreated_or_raised_by_optional_promotion() {
     assert_eq!(retained.designs[&1].pointer, 0x2000);
     assert_eq!(retained.designs[&1].capacity, 0);
     assert_eq!(retained.state_count(), 0);
-    let (entry, heads) = pending(0x1000, 3, 3);
-    retained.remember(vec![entry], &heads);
+    let (entry, heads, batch) = pending(0x1000, 3, 3);
+    retained.remember(&batch.log, vec![entry], &heads);
     assert_eq!(retained.state_count(), 0);
     assert_eq!(TERMINAL.with(std::cell::Cell::get), 0);
 }

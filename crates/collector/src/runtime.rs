@@ -5283,7 +5283,9 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// without them. Loading, world invalidation and a refused hint keep the
 /// original fast cadence. Capacity raises and failed observations do not:
 /// raises creep every second in a growing world, and a skipped hint supplies
-/// no recorded value or failure.
+/// no recorded value or failure. Once a recycled frame has published this
+/// world's captured sizes, every frame grows to them, so the census only
+/// anticipates growth and backs off further.
 struct SizingBackoff {
     last: Option<Instant>,
     interval: Duration,
@@ -5293,6 +5295,7 @@ struct SizingBackoff {
 impl SizingBackoff {
     const FAST: Duration = Duration::from_secs(1);
     const MAX: Duration = Duration::from_secs(5);
+    const SETTLED: Duration = Duration::from_secs(60);
 
     fn new() -> Self {
         Self {
@@ -5315,12 +5318,12 @@ impl SizingBackoff {
         self.interval = Self::FAST;
     }
 
-    fn observed(&mut self, now: Instant, demand: bool) {
+    fn observed(&mut self, now: Instant, demand: bool, settled: bool) {
         self.last = Some(now);
         self.interval = if demand {
             Self::FAST
         } else {
-            (self.interval * 2).min(Self::MAX)
+            (self.interval * 2).min(if settled { Self::SETTLED } else { Self::MAX })
         };
     }
 }
@@ -5360,6 +5363,8 @@ struct SizingShared {
     /// A refused hint (source demand or combat hint growth) since the sizing
     /// thread last checked; it restores the one-second census.
     hint_demand: AtomicBool,
+    /// The admitted world generation whose captured sizes a recycled frame has published.
+    settled_world: AtomicU64,
     #[cfg(test)]
     before_recycle_publish: Mutex<Option<SizingCheck>>,
     #[cfg(test)]
@@ -5388,6 +5393,7 @@ impl SizingShared {
             naval_combat_home_accounted: AtomicUsize::new(0),
             pass_requested: AtomicBool::new(false),
             hint_demand: AtomicBool::new(false),
+            settled_world: AtomicU64::new(u64::MAX),
             #[cfg(test)]
             before_recycle_publish: Mutex::new(None),
             #[cfg(test)]
@@ -5490,6 +5496,11 @@ impl SizingShared {
                 .combat_progress
                 .presize(&live, shared.base);
         }
+        // The world this frame sampled, read before the reset below clears its clock.
+        let admitted = {
+            let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
+            frame.clock.is_some().then_some(frame.world_generation)
+        };
         loop {
             {
                 let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -5509,6 +5520,11 @@ impl SizingShared {
             self.merge_capacities(&mut capacities, proposal);
             if *capacities == proposal {
                 shared.recycle_frame(index);
+                if let Some(generation) = admitted
+                    && crate::world_lifetime::token() == Some(generation)
+                {
+                    self.settled_world.store(generation, Ordering::Release);
+                }
                 return;
             }
             proposal = *capacities;
@@ -5741,6 +5757,7 @@ fn sizing_pass(
         hint_demand,
     ) && once_a_second;
     let span = phases.span(Phase::Sizing);
+    let mut steps = crate::sizing_steps::Steps::begin();
     if let Some(logistics_rows) = registry
         .poll_logistics(&live, base)
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
@@ -5749,6 +5766,7 @@ fn sizing_pass(
             capacities.extended.logistics.raise(logistics_rows)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Logistics);
     let span = span.switch(Phase::Observers);
     crate::relation_changes::collect();
     crate::world_input_changes::collect();
@@ -5841,6 +5859,7 @@ fn sizing_pass(
     crate::line_output::collect();
     crate::construction_ic::collect();
     crate::fuel_awards::collect();
+    steps.mark(crate::sizing_steps::Step::Observers);
     let span = span.switch(Phase::Sizing);
     if state.fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
         state.fuel_demand_at = Instant::now();
@@ -5851,6 +5870,7 @@ fn sizing_pass(
         }
         crate::fuel_awards::presize(&live, base);
     }
+    steps.mark(crate::sizing_steps::Step::FuelDemand);
     // This advisory worker arena has no observer-preparation dependency; do
     // not nest its admission under the independent event-preparation timer.
     if capacity_census {
@@ -5868,6 +5888,7 @@ fn sizing_pass(
         awards.entries = awards.entries.max(entries);
         awards.names = awards.names.max(names);
     });
+    steps.mark(crate::sizing_steps::Step::FuelUnits);
     let span = span.switch(Phase::Observers);
     crate::peace_settlements::collect();
     let span = span.switch(Phase::Sizing);
@@ -5890,6 +5911,7 @@ fn sizing_pass(
     ) {
         crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
     }
+    steps.mark(crate::sizing_steps::Step::Peace);
     let span = span.switch(Phase::Sizing);
     crate::naval_result_sources::prepare(&live, base);
     let naval_result_capacity = crate::naval_result_sources::capacity();
@@ -5897,6 +5919,7 @@ fn sizing_pass(
         let sources = &mut capacities.extended.naval_result_sources;
         *sources = (*sources).max(naval_result_capacity);
     });
+    steps.mark(crate::sizing_steps::Step::NavalResults);
     if let Some(lines) = registry.poll_lines(&live, base) {
         crate::line_output::presize(lines);
         sizing.raise(shared, |capacities| {
@@ -5904,6 +5927,7 @@ fn sizing_pass(
             *entries = (*entries).max(lines);
         });
     }
+    steps.mark(crate::sizing_steps::Step::Lines);
     // A save load rebuilds the country registry before its first hourly
     // tick; presize every buffer while the game is still loading. Sizing
     // only grows, so a larger region roster alone repeats it harmlessly.
@@ -5921,6 +5945,7 @@ fn sizing_pass(
             decode::presize_weather_jobs();
         }
     }
+    steps.mark(crate::sizing_steps::Step::Weather);
     if let Some((slots, regions)) = registry.poll(&live, base) {
         crate::country_scale::note_slots(slots);
         crate::operation_outcomes::resize(slots.max(1));
@@ -5955,15 +5980,18 @@ fn sizing_pass(
         });
         shared.offer_country_cache(country_cells);
     }
+    steps.mark(crate::sizing_steps::Step::Registry);
     if once_a_second {
         if let Err(reason) = crate::construction_ic::presize_from_live(&live, base) {
             sizing.error(reason);
         }
+        steps.mark(crate::sizing_steps::Step::Construction);
         crate::air_losses::prepare(&live, base, registry.slots);
         crate::building_bombing::prepare(&live, base, registry.slots);
         crate::nuclear_strikes::presize(
             crate::building_bombing::buildings().saturating_add(registry.slots),
         );
+        steps.mark(crate::sizing_steps::Step::Losses);
         let source = crate::country_scale::source_demand::Demand::observe_periodic(
             &live,
             base,
@@ -5990,6 +6018,7 @@ fn sizing_pass(
         if let Err(reason) = source {
             sizing.error(reason);
         }
+        steps.mark(crate::sizing_steps::Step::SourceDemand);
         sizing.raise_from_live_observation(shared, |capacities| {
             [
                 crate::country_scale::table_demand::presize_periodic(
@@ -6006,10 +6035,12 @@ fn sizing_pass(
                     .err(),
             ]
         });
+        steps.mark(crate::sizing_steps::Step::TableDemand);
         // These fixed before/after arenas and bounded event logs cannot grow
         // on native writers. Keep their live census at one second, not on
         // the advisory worker-census backoff.
         crate::equipment_destruction::prepare(&live, base, registry.slots);
+        steps.mark(crate::sizing_steps::Step::Destruction);
         // A census during loading undercounts, and its table could not grow before the next load.
         if crate::world_lifetime::token().is_some() {
             collector_naval_management::changes::presize(&live, base);
@@ -6020,12 +6051,14 @@ fn sizing_pass(
             *destruction = (*destruction).max(destruction_capacity);
         });
     }
+    steps.mark(crate::sizing_steps::Step::NavalManagement);
     if capacity_census && let Some(rows) = sizing.demand(registry.poll_intel(&live, base)).flatten()
     {
         sizing.raise(shared, |capacities| {
             capacities.extended.raise_for_country_intel(rows)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Intel);
     if capacity_census
         && let Some(demand) = sizing
             .demand(registry.poll_ace_names(&live, base))
@@ -6056,6 +6089,7 @@ fn sizing_pass(
             capacities.extended.railway_guns.raise_for_names(demand)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Names);
     // Mixed with fixed province/geometry floors; keep the whole map group fast.
     if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
         if let Ok(carrier) = demand.carrier
@@ -6104,6 +6138,7 @@ fn sizing_pass(
             sizing.error(reason);
         }
     }
+    steps.mark(crate::sizing_steps::Step::Map);
     if capacity_census
         && let Some(demand) = sizing
             .demand(registry.poll_presentation_census(&live, base))
@@ -6119,6 +6154,7 @@ fn sizing_pass(
                 .raise_for_census(demand)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Presentation);
     let game_score = lock(&sizing.capacities).extended.game_score.enabled;
     if capacity_census
         && game_score
@@ -6140,6 +6176,7 @@ fn sizing_pass(
             decode::presize_country_pools();
         }
     }
+    steps.mark(crate::sizing_steps::Step::GameScore);
     if capacity_census
         && let Some(demand) = sizing.demand(registry.poll_raids(&live, base)).flatten()
     {
@@ -6150,6 +6187,7 @@ fn sizing_pass(
             capacities.extended.raise_for_raid_arenas(demand)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Raids);
     // Script-variable demand also offers scope-watch storage before native
     // writers run. Keep this mixed character/flag/variable census prompt.
     if let Some(demand) = sizing
@@ -6160,6 +6198,7 @@ fn sizing_pass(
             capacities.extended.raise_for_characters(demand)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Characters);
     if capacity_census
         && let Some(demand) = sizing
             .demand(registry.poll_saved_targets(&live, base))
@@ -6169,6 +6208,7 @@ fn sizing_pass(
             capacities.extended.saved_event_targets.raise(demand)
         });
     }
+    steps.mark(crate::sizing_steps::Step::SavedTargets);
     // This mixed group also prepares operation-completion observer arenas.
     if let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten() {
         for reason in demand.failures() {
@@ -6185,6 +6225,7 @@ fn sizing_pass(
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
         operations.prepare();
     }
+    steps.mark(crate::sizing_steps::Step::Politics);
     if capacity_census
         && let Some(slots) = sizing
             .demand(registry.poll_reserved_visibility(&live, base))
@@ -6194,9 +6235,11 @@ fn sizing_pass(
             capacities.extended.raise_reserved_visibility(slots)
         });
     }
+    steps.mark(crate::sizing_steps::Step::Visibility);
     if background {
         sizing.grow_idle(shared);
     }
+    steps.mark(crate::sizing_steps::Step::IdleGrowth);
     if background
         && capacity_census
         && let Some(hints) = registry.poll_combat_hints(&live, base)
@@ -6211,10 +6254,15 @@ fn sizing_pass(
             sizing.hint_demand.store(true, Ordering::Release);
         }
     }
+    steps.mark(crate::sizing_steps::Step::CombatHints);
     span.finish();
     let demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || hint_demand;
     if capacity_census {
-        state.capacity_census.observed(Instant::now(), demand);
+        let settled =
+            crate::world_lifetime::token() == Some(sizing.settled_world.load(Ordering::Acquire));
+        state
+            .capacity_census
+            .observed(Instant::now(), demand, settled);
     } else if demand {
         state.capacity_census.reset();
     }
@@ -7650,28 +7698,37 @@ mod tests {
         let mut now = start;
         assert!(cadence.due(now, 1, false));
         for seconds in [2, 4, 5, 5] {
-            cadence.observed(now, false);
+            cadence.observed(now, false, false);
             assert_eq!(cadence.interval, Duration::from_secs(seconds));
             assert!(!cadence.due(now + Duration::from_secs(seconds - 1), 1, false));
             now += Duration::from_secs(seconds);
             assert!(cadence.due(now, 1, false));
         }
-        cadence.observed(now, false);
+        cadence.observed(now, false, false);
         // A load with unchanged capacities still resets the slow census.
         now += Duration::from_secs(1);
         assert!(cadence.due(now, 2, false));
-        cadence.observed(now, true);
+        cadence.observed(now, true, false);
         assert_eq!(cadence.interval, SizingBackoff::FAST);
         for demand in [true, false] {
             now += Duration::from_secs(1);
             assert!(cadence.due(now, 2, demand));
-            cadence.observed(now, demand);
+            cadence.observed(now, demand, false);
         }
         assert_eq!(cadence.interval, Duration::from_secs(2));
         // Raises and refusals wake a quiet census at the original cadence,
         // never turn repeated observer wakeups into repeated live censuses.
         assert!(!cadence.due(now + Duration::from_millis(10), 2, true));
         assert!(cadence.due(now + Duration::from_secs(1), 2, true));
+        // Captured sizes lead a settled world; refusals still restore the fast census.
+        for seconds in [2, 4, 8, 16, 32, 60, 60] {
+            cadence.observed(now, false, true);
+            assert_eq!(cadence.interval, Duration::from_secs(seconds));
+            now += Duration::from_secs(seconds);
+            assert!(cadence.due(now, 2, false));
+        }
+        cadence.observed(now, true, true);
+        assert_eq!(cadence.interval, SizingBackoff::FAST);
     }
 
     fn sizing_fixture() -> (Shared, SizingThread) {

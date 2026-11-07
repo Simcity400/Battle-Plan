@@ -58,6 +58,16 @@ const NAMES: &[&str] = &[
     "map_combats",
 ];
 static FAILURES: [DemandFailures; NAMES.len()] = [const { DemandFailures::new() }; NAMES.len()];
+/// Calls and thread cycles of each part, charged from the previous part's end.
+static COSTS: [[std::sync::atomic::AtomicU64; 2]; NAMES.len()] =
+    [const { [const { std::sync::atomic::AtomicU64::new(0) }; 2] }; NAMES.len()];
+pub(crate) fn costs() -> impl Iterator<Item = (&'static str, u64, u64)> + Clone {
+    use std::sync::atomic::Ordering::Relaxed;
+    NAMES
+        .iter()
+        .zip(&COSTS)
+        .map(|(name, cost)| (*name, cost[0].load(Relaxed), cost[1].load(Relaxed)))
+}
 
 pub(crate) fn diagnostics() -> impl serde::Serialize {
     crate::status::map(
@@ -84,18 +94,31 @@ pub(crate) fn presize_periodic(
     extended: &mut extended::Capacities,
     capacity_census: bool,
 ) -> Result<(), &'static str> {
+    let mut clock = crate::spool_phases::thread_cycles();
+    let mut charge = |index: usize| {
+        use std::sync::atomic::Ordering::Relaxed;
+        let now = crate::spool_phases::thread_cycles();
+        COSTS[index][0].fetch_add(1, Relaxed);
+        COSTS[index][1].fetch_add(now.saturating_sub(clock), Relaxed);
+        clock = now;
+    };
     // The dictionary is independent of the campaign root, including a failed
     // or racing world hint. Count both failures without withholding its floor.
     let dictionary = if capacity_census {
-        FAILURES[8].observe(extended.lexical.presize(memory, base, 0))
+        let dictionary = FAILURES[8].observe(extended.lexical.presize(memory, base, 0));
+        charge(8);
+        dictionary
     } else {
         Ok(())
     };
-    let Some(state) = FAILURES[0].observe(super::demand_game_state(memory, base))? else {
+    let state = FAILURES[0].observe(super::demand_game_state(memory, base));
+    charge(0);
+    let Some(state) = state? else {
         return dictionary;
     };
     let mut failure = dictionary.err();
     let mut accept = |index: usize, result: Result<(), &'static str>| {
+        charge(index);
         if let Err(reason) = FAILURES[index].observe(result) {
             failure.get_or_insert(reason);
         }
@@ -117,11 +140,12 @@ pub(crate) fn presize_periodic(
         }
     }
     // These mixed passes also prepare template/deployment, embedded variable/
-    // flag, fleet-region, army-stat, HQ-template and market observers. Keep
-    // them prompt; all other rows/arenas grow from current-boundary inputs.
+    // flag, fleet-region, army-stat, HQ-template, combat-log prune and market
+    // observers. Keep them prompt; all other rows/arenas grow from
+    // current-boundary inputs.
     macro_rules! accept_hint {
         ($index:literal, $result:expr $(,)?) => {
-            if capacity_census || matches!($index, 9 | 10 | 13 | 16 | 33 | 40) {
+            if capacity_census || matches!($index, 9 | 10 | 13 | 16 | 32 | 33 | 40) {
                 accept($index, $result);
             }
         };
@@ -304,7 +328,7 @@ mod tests {
             presize_periodic(&memory, 0, &mut sizing.map, &mut sizing.extended, false).is_err()
         );
         for index in 1..NAMES.len() {
-            let prompt = matches!(index, 9 | 10 | 13 | 16 | 33 | 40);
+            let prompt = matches!(index, 9 | 10 | 13 | 16 | 32 | 33 | 40);
             if !prompt {
                 assert_eq!(failures(index), before[index], "{}", NAMES[index]);
             }

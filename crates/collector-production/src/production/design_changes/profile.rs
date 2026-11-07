@@ -8,8 +8,8 @@ use std::{
 };
 
 const CAPACITY: usize = 64;
-const PHASES: usize = 19;
-pub(super) const CACHE_FIELDS: usize = 15;
+const PHASES: usize = 24;
+pub(super) const CACHE_FIELDS: usize = 20;
 const WIDTH: usize = 4 + PHASES * 3 + CACHE_FIELDS;
 const PHASE_NAMES: [&str; PHASES] = [
     "drain",
@@ -31,6 +31,11 @@ const PHASE_NAMES: [&str; PHASES] = [
     "design_context_seed_plan",
     "design_context_seed_operands",
     "design_context_seed_join",
+    "speculate",
+    "speculate_retained_checks",
+    "cache_decode",
+    "retained_checks",
+    "cached_observe",
 ];
 const CACHE_NAMES: [&str; CACHE_FIELDS] = [
     "full_copy_hits",
@@ -48,6 +53,11 @@ const CACHE_NAMES: [&str; CACHE_FIELDS] = [
     "unreadable_copy",
     "witness_read_failed",
     "insert_overlap_inconsistent",
+    "design_events",
+    "retained_hits",
+    "retained_check_spans",
+    "retained_candidate_reads",
+    "retained_repeats",
 ];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
@@ -67,6 +77,11 @@ pub(super) enum Outcome {
     UnreadableCopy,
     WitnessReadFailed,
     InsertOverlap,
+    DesignEvents,
+    RetainedHits,
+    RetainedCheckSpans,
+    RetainedCandidateReads,
+    RetainedRepeats,
 }
 #[derive(Clone, Copy)]
 #[repr(usize)]
@@ -90,6 +105,11 @@ pub enum Phase {
     ContextSeedPlan,
     ContextSeedOperands,
     ContextSeedJoin,
+    Speculate,
+    SpeculateRetained,
+    CacheDecode,
+    RetainedChecks,
+    CachedObserve,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 pub(super) struct Cost {

@@ -214,7 +214,55 @@ pub(super) struct Witness {
     pieces: Vec<Piece>,
     overlaps: Vec<Overlap>,
 }
+/// The copied span layout and read bytes of a witness's own occurrence, kept once that
+/// occurrence's log is gone.
+pub(super) struct Layout {
+    spans: Vec<(usize, u32, bool, bool)>,
+    bytes: Vec<u8>,
+}
 impl Witness {
+    pub fn layout(&self, log: &RawLog<1>, range: Range<usize>) -> Option<Layout> {
+        let spans = &log.spans[range];
+        let mut layout = engine_allocation::vec(spans.len()).ok()?;
+        layout.extend(
+            spans
+                .iter()
+                .map(|span| (span.addr, span.len, span.ok, span.bulk)),
+        );
+        let len = self.pieces.iter().map(|piece| piece.bytes.len()).sum();
+        let mut bytes = engine_allocation::vec(len).ok()?;
+        for piece in &self.pieces {
+            bytes.extend_from_slice(payload(log, &spans[piece.span]).get(piece.bytes.clone())?);
+        }
+        Some(Layout {
+            spans: layout,
+            bytes,
+        })
+    }
+    /// [`Self::equal`] against the kept layout of this witness's own occurrence.
+    pub fn repeats(&self, layout: &Layout, log: &RawLog<1>, range: Range<usize>) -> bool {
+        let right = &log.spans[range];
+        if right.len() != layout.spans.len()
+            || !right.iter().zip(&layout.spans).all(|(span, &shape)| {
+                (span.addr, span.len, span.ok, span.bulk) == shape
+            })
+        {
+            return false;
+        }
+        if !self.overlaps.iter().all(|overlap| {
+            payload(log, &right[overlap.left])[overlap.offset..overlap.offset + overlap.len]
+                == payload(log, &right[overlap.right])[..overlap.len]
+        }) {
+            return false;
+        }
+        let mut at = 0;
+        self.pieces.iter().all(|piece| {
+            let end = at + piece.bytes.len();
+            let same = payload(log, &right[piece.span])[piece.bytes.clone()] == layout.bytes[at..end];
+            at = end;
+            same
+        })
+    }
     pub fn same_reads(&self, other: &Self) -> bool {
         self.pieces == other.pieces
     }

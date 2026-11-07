@@ -4,11 +4,12 @@ pub(super) struct Entry {
     pub value: Arc<Decoded>,
     pub witness: witness::Witness,
     pub(super) missions: Option<missions::Proof>,
-    charged: std::cell::Cell<u64>,
+    layout: Option<witness::Layout>,
+    charged: AtomicU64,
 }
 impl Entry {
     pub(super) fn charge(&self, stamp: u64) -> usize {
-        if self.charged.replace(stamp) == stamp {
+        if self.charged.swap(stamp, Ordering::Relaxed) == stamp {
             0
         } else {
             self.value.allocated_bytes()
@@ -121,12 +122,31 @@ impl Retained {
             .get(&event.variant)
             .is_some_and(|design| design.pointer == event.pointer && !design.states.is_empty())
     }
+    /// The current state at `count` when this occurrence repeats its kept layout and read bytes.
+    pub(super) fn find_repeat(
+        &self,
+        log: &RawLog<1>,
+        range: std::ops::Range<usize>,
+        event: &Event,
+        count: u32,
+    ) -> Option<&Entry> {
+        let design = self.designs.get(&event.variant)?;
+        if design.pointer != event.pointer {
+            return None;
+        }
+        let entry = design.states.get(&count)?;
+        entry
+            .witness
+            .repeats(entry.layout.as_ref()?, log, range)
+            .then_some(entry)
+    }
     pub(super) fn find(
         &self,
         memory: &impl Memory,
         event: &Event,
         buffer: &mut Vec<u8>,
-    ) -> Option<&Entry> {
+        candidate_reads: &mut u64,
+    ) -> Option<(u32, &Entry)> {
         let count =
             Array::read(memory, event.pointer.checked_add(native::BONUS_SOURCES)?, 8)?.count;
         let design = self.designs.get(&event.variant)?;
@@ -134,6 +154,7 @@ impl Retained {
             return None;
         }
         let entry = design.states.get(&count)?;
+        *candidate_reads += entry.witness.requests.len() as u64;
         let matches = if let Some(proof) = &entry.missions {
             proof.equal(
                 memory,
@@ -145,10 +166,18 @@ impl Retained {
         } else {
             entry.witness.matches(memory, buffer)
         };
-        (matches == Some(true)).then_some(entry)
+        (matches == Some(true)).then_some((count, entry))
+    }
+    /// The state a verdict named, while it is still this design's state at `count`.
+    pub(super) fn verified(&self, event: &Event, count: u32, value: usize) -> Option<&Entry> {
+        let design = self.designs.get(&event.variant)?;
+        let entry = design.states.get(&count)?;
+        (design.pointer == event.pointer && Arc::as_ptr(&entry.value) as usize == value)
+            .then_some(entry)
     }
     pub(super) fn remember(
         &mut self,
+        log: &RawLog<1>,
         entries: Vec<super::Entry>,
         heads: &HashMap<u64, SourceHeads>,
     ) {
@@ -192,13 +221,16 @@ impl Retained {
                 if engine_allocation::reserve_map(&mut design.states, 1).is_err() {
                     continue;
                 }
+                // Optional: without it, only the recorded reads prove a repeat.
+                let layout = witness.layout(log, entry.range);
                 design.states.insert(
                     count,
                     Entry {
                         value: entry.value,
                         witness,
                         missions: entry.missions,
-                        charged: std::cell::Cell::new(0),
+                        layout,
+                        charged: AtomicU64::new(0),
                     },
                 );
             }

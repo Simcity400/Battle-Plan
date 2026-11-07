@@ -1,18 +1,61 @@
-//! A burst's likely full-decode misses walked ahead on the Variants lanes. Each lane owns
-//! copies of its events' spans and runs only the pure walk; the ordered pass decides every
-//! hit or miss and consumes a walk only for byte-identical spans.
+//! A burst's retained-cache tests and likely full-decode misses, run ahead on the Variants
+//! lanes. Test lanes read the batch and the retained cache in place; walk lanes own copies of
+//! their events' spans and run only the pure walk. The ordered pass takes every shared effect
+//! and consumes a walk only for byte-identical spans.
 use super::*;
 use crate::raw::{RawLog, Recorded};
 use collector_raw::raw::Span;
 
 /// Fewer likely misses than this decode inline: the lanes' dispatch would cost more.
 const MIN_BURST: usize = 64;
+/// Fewer retained tests than this run inline.
+const MIN_CHECKS: usize = 64;
 
-/// One lane's copied events and their walks.
+/// One lane's copied events and their walks, or its share of the retained tests.
 pub struct Part {
     base: usize,
     hour: i32,
     jobs: Vec<Job>,
+    checks: Option<Checks>,
+}
+/// Retained tests of the batch's events at `indices`, read in place.
+struct Checks {
+    batch: *const Batch,
+    retained: *const Retained,
+    indices: Vec<usize>,
+    results: Vec<Check>,
+    scratch: Scratch,
+}
+// SAFETY: the planning thread holds the batch and the retained guard, and blocks in
+// `Speculation::run` until every part has returned; lanes only read through these pointers.
+unsafe impl Send for Checks {}
+impl Checks {
+    fn capture(&mut self) {
+        let _phase = profile::Timer::new(profile::Phase::SpeculateRetained);
+        // SAFETY: see `Send`; both outlive this part and nothing writes them meanwhile.
+        let (batch, retained) = unsafe { (&*self.batch, &*self.retained) };
+        // Optional work: a refusal leaves these events to the ordered pass.
+        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.results, self.indices.len()))
+            .is_err()
+        {
+            return;
+        }
+        for &index in &self.indices {
+            self.results.push(check_retained(
+                retained,
+                &batch.log,
+                &batch.events[index],
+                &mut self.scratch,
+            ));
+        }
+    }
+}
+/// The plan's walks and retained tests by event index, and its tests' counters.
+#[derive(Default)]
+pub(super) struct Planned {
+    pub walks: Vec<Option<Box<Prepared>>>,
+    pub checks: Vec<Check>,
+    pub scratch: Scratch,
 }
 struct Job {
     index: usize,
@@ -36,6 +79,9 @@ impl Part {
         for job in &mut self.jobs {
             // Optional work: an allocation refusal drops the speculation, never the hour.
             job.prepared = engine_allocation::advisory(|| job.walk(base, hour));
+        }
+        if let Some(checks) = &mut self.checks {
+            checks.capture();
         }
     }
 }
@@ -89,33 +135,35 @@ impl Prepared {
         (self.walk, self.observed)
     }
 }
-/// Walks the batch's likely misses on the lanes: first occurrences of a pointer, and
-/// occurrences whose span count differs from that pointer's previous one, except those
-/// `reusable` (the retained cache's own hit test) reports. Returns the completed walks by
-/// event index; empty when the burst is small or anything is refused.
+/// Tests the burst's first occurrences of each pointer, and those whose span count differs from
+/// that pointer's previous one, against the retained cache; then walks those it cannot reuse on
+/// the lanes. Returns both by event index; an empty table where the burst is small or anything is
+/// refused leaves that work to the ordered pass.
 pub(super) fn speculate(
     batch: &Batch,
     base: usize,
     hour: i32,
     speculation: &mut super::super::Speculation<'_>,
-    reusable: &mut dyn FnMut(&Event) -> bool,
-) -> Vec<Option<Box<Prepared>>> {
-    engine_allocation::advisory(|| plan(batch, base, hour, speculation, reusable))
-        .unwrap_or_default()
+    retained: Option<&Retained>,
+) -> Planned {
+    let mut planned = Planned::default();
+    engine_allocation::advisory(|| plan(batch, base, hour, speculation, retained, &mut planned));
+    planned
 }
 fn plan(
     batch: &Batch,
     base: usize,
     hour: i32,
     speculation: &mut super::super::Speculation<'_>,
-    reusable: &mut dyn FnMut(&Event) -> bool,
-) -> Option<Vec<Option<Box<Prepared>>>> {
+    retained: Option<&Retained>,
+    planned: &mut Planned,
+) -> Option<()> {
     if speculation.lanes < 2 {
         return None;
     }
     let mut seen = HashMap::new();
     engine_allocation::reserve_map(&mut seen, batch.events.len()).ok()?;
-    let mut candidates = engine_allocation::vec(batch.events.len()).ok()?;
+    let mut first = engine_allocation::vec(batch.events.len()).ok()?;
     for (index, event) in batch.events.iter().enumerate() {
         if event.kind != Kind::Design {
             continue;
@@ -128,10 +176,19 @@ fn plan(
             continue;
         }
         let len = event.end - event.start;
-        if seen.insert(event.pointer, len) != Some(len) && !reusable(event) {
-            candidates.push(index);
+        if seen.insert(event.pointer, len) != Some(len) {
+            first.push(index);
         }
     }
+    if let Some(retained) = retained {
+        let _ = check(batch, base, hour, speculation, retained, &first, planned);
+    }
+    let mut candidates = engine_allocation::vec(first.len()).ok()?;
+    candidates.extend(
+        first
+            .into_iter()
+            .filter(|&index| !matches!(planned.checks.get(index), Some(Check::Hit(_)))),
+    );
     if candidates.len() < MIN_BURST {
         return None;
     }
@@ -165,7 +222,12 @@ fn plan(
                 prepared: None,
             });
         }
-        parts.push(Part { base, hour, jobs });
+        parts.push(Part {
+            base,
+            hour,
+            jobs,
+            checks: None,
+        });
     }
     let parts = (speculation.run)(parts).ok()?;
     let mut table = Vec::new();
@@ -178,5 +240,65 @@ fn plan(
             }
         }
     }
-    Some(table)
+    planned.walks = table;
+    Some(())
+}
+/// The retained tests of `first`'s retained designs, on the lanes for a large burst.
+fn check(
+    batch: &Batch,
+    base: usize,
+    hour: i32,
+    speculation: &mut super::super::Speculation<'_>,
+    retained: &Retained,
+    first: &[usize],
+    planned: &mut Planned,
+) -> Option<()> {
+    let mut indices = engine_allocation::vec(first.len()).ok()?;
+    indices.extend(
+        first
+            .iter()
+            .copied()
+            .filter(|&index| retained.contains(&batch.events[index])),
+    );
+    let mut checks = Vec::new();
+    engine_allocation::reserve(&mut checks, batch.events.len()).ok()?;
+    checks.resize_with(batch.events.len(), Check::default);
+    if indices.len() < MIN_CHECKS {
+        let _phase = profile::Timer::new(profile::Phase::SpeculateRetained);
+        for &index in &indices {
+            checks[index] =
+                check_retained(retained, &batch.log, &batch.events[index], &mut planned.scratch);
+        }
+        planned.checks = checks;
+        return Some(());
+    }
+    let per_lane = indices.len().div_ceil(speculation.lanes);
+    let mut parts = engine_allocation::vec(speculation.lanes).ok()?;
+    for chunk in indices.chunks(per_lane) {
+        parts.push(Part {
+            base,
+            hour,
+            jobs: Vec::new(),
+            checks: Some(Checks {
+                batch,
+                retained,
+                indices: engine_allocation::copy_vec(chunk).ok()?,
+                results: Vec::new(),
+                scratch: Scratch::default(),
+            }),
+        });
+    }
+    // Every part returns before `run` does, so no lane still reads the batch or the cache.
+    let parts = (speculation.run)(parts).ok()?;
+    for part in parts {
+        let Some(mut part) = part.checks else {
+            continue;
+        };
+        for (index, check) in part.indices.iter().zip(part.results) {
+            checks[*index] = check;
+        }
+        planned.scratch.absorb(&mut part.scratch);
+    }
+    planned.checks = checks;
+    Some(())
 }

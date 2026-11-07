@@ -240,8 +240,10 @@ pub(super) struct Cache<'a> {
     counts: [u64; profile::CACHE_FIELDS],
     full_decode: profile::Cost,
     miss: Option<CacheOutcome>,
-    /// Speculative walks by event index, and the event being decoded.
+    /// Speculative walks and planned retained tests by event index, and the event being decoded.
     speculative: Vec<Option<Box<speculative::Prepared>>>,
+    checks: Vec<Check>,
+    scratch: Scratch,
     current: Option<usize>,
 }
 impl Drop for Cache<'_> {
@@ -312,6 +314,121 @@ fn equal(log: &RawLog<1>, left: std::ops::Range<usize>, right: std::ops::Range<u
             .all(|(left, right)| payload(log, left) == payload(log, right))
     }
 }
+enum Overlaps {
+    Consistent,
+    Allocation,
+    Unreadable,
+    Inconsistent,
+}
+/// Orders `range`'s spans by address and checks that overlapping copies agree.
+fn order_overlaps(
+    log: &RawLog<1>,
+    range: std::ops::Range<usize>,
+    order: &mut Vec<usize>,
+) -> Result<Overlaps, &'static str> {
+    order.clear();
+    // The cache is optional: an allocation failure only skips caching, never the hour.
+    if engine_allocation::advisory(|| engine_allocation::reserve(order, range.len())).is_err() {
+        return Ok(Overlaps::Allocation);
+    }
+    order.extend(range);
+    order.sort_unstable_by_key(|index| log.spans[*index].addr);
+    let mut covering: Option<&collector_raw::raw::Span> = None;
+    // Reused decodes need single-valued bytes even when read cursors start afresh.
+    for index in order.iter() {
+        let span = &log.spans[*index];
+        if !span.ok {
+            return Ok(Overlaps::Unreadable);
+        }
+        let end = span
+            .addr
+            .checked_add(span.len as usize)
+            .ok_or("variant snapshot witness address overflow")?;
+        if let Some(previous) = covering {
+            let previous_end = previous.addr + previous.len as usize;
+            if previous_end > span.addr {
+                let offset = span.addr - previous.addr;
+                let len = (previous_end - span.addr).min(span.len as usize);
+                if payload(log, previous)[offset..offset + len] != payload(log, span)[..len] {
+                    return Ok(Overlaps::Inconsistent);
+                }
+            }
+            if previous_end >= end {
+                continue;
+            }
+        }
+        covering = Some(span);
+    }
+    Ok(Overlaps::Consistent)
+}
+/// A retained state an occurrence reproduces: its native source count and value address.
+pub(super) struct Verdict {
+    count: u32,
+    value: usize,
+    repeat: bool,
+}
+/// A retained-cache test taken ahead of the ordered pass, which consumes it in its place.
+#[derive(Default)]
+pub(super) enum Check {
+    #[default]
+    Unchecked,
+    Miss,
+    Hit(Verdict),
+}
+#[derive(Default)]
+pub(super) struct Scratch {
+    order: Vec<usize>,
+    comparison: Vec<u8>,
+    spans: u64,
+    candidate_reads: u64,
+    allocation_skips: u64,
+}
+impl Scratch {
+    pub(super) fn absorb(&mut self, other: &mut Self) {
+        self.spans += std::mem::take(&mut other.spans);
+        self.candidate_reads += std::mem::take(&mut other.candidate_reads);
+        self.allocation_skips += std::mem::take(&mut other.allocation_skips);
+    }
+}
+/// The ordered pass's retained-cache test for an occurrence of a retained design. Read-only,
+/// so lanes may run it; until the pass finishes, retained states are only removed.
+pub(super) fn check_retained(
+    retained: &Retained,
+    log: &RawLog<1>,
+    event: &Event,
+    scratch: &mut Scratch,
+) -> Check {
+    let range = event.start..event.end;
+    scratch.spans += range.len() as u64;
+    if let Some((count, _)) = copied::sources(log, range.clone(), event.pointer)
+        && let Some(entry) = retained.find_repeat(log, range.clone(), event, count)
+    {
+        return Check::Hit(Verdict {
+            count,
+            value: Arc::as_ptr(&entry.value) as usize,
+            repeat: true,
+        });
+    }
+    engine_allocation::advisory(|| {
+        match order_overlaps(log, range.clone(), &mut scratch.order).ok()? {
+            Overlaps::Consistent => {}
+            Overlaps::Allocation => {
+                scratch.allocation_skips += 1;
+                return None;
+            }
+            Overlaps::Unreadable | Overlaps::Inconsistent => return None,
+        }
+        let memory = copied::MemoryView::new(log, range.clone(), &scratch.order);
+        let (count, entry) =
+            retained.find(&memory, event, &mut scratch.comparison, &mut scratch.candidate_reads)?;
+        Some(Verdict {
+            count,
+            value: Arc::as_ptr(&entry.value) as usize,
+            repeat: false,
+        })
+    })
+    .map_or(Check::Miss, Check::Hit)
+}
 impl<'a> Cache<'a> {
     pub fn with_retained(retained: &'a mut Retained) -> Self {
         let mut cache = Self::default();
@@ -328,31 +445,24 @@ impl<'a> Cache<'a> {
         hour: i32,
         speculation: &mut super::Speculation<'_>,
     ) {
-        self.speculative = speculative::speculate(batch, base, hour, speculation, &mut |event| {
-            self.retained_hit(batch, event)
-        });
+        let _phase = profile::Timer::new(profile::Phase::Speculate);
+        let mut planned = speculative::speculate(
+            batch,
+            base,
+            hour,
+            speculation,
+            self.retained.as_deref(),
+        );
+        self.speculative = planned.walks;
+        self.checks = planned.checks;
+        self.absorb(&mut planned.scratch);
     }
-    /// Read-only: the ordered pass's retained-cache test would reuse this occurrence.
-    fn retained_hit(&mut self, batch: &Batch, event: &Event) -> bool {
-        if !self
-            .retained
-            .as_ref()
-            .is_some_and(|retained| retained.contains(event))
-        {
-            return false;
-        }
-        let range = event.start..event.end;
-        engine_allocation::advisory(|| {
-            if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
-                return None;
-            }
-            let memory = copied::MemoryView::new(&batch.log, range.clone(), &self.order);
-            self.retained
-                .as_ref()?
-                .find(&memory, event, &mut self.comparison)
-                .map(|_| ())
-        })
-        .is_some()
+    fn absorb(&mut self, scratch: &mut Scratch) {
+        let mut totals = Scratch::default();
+        totals.absorb(scratch);
+        self.counts[CacheOutcome::RetainedCheckSpans as usize] += totals.spans;
+        self.counts[CacheOutcome::RetainedCandidateReads as usize] += totals.candidate_reads;
+        self.counts[CacheOutcome::AllocationSkipped as usize] += totals.allocation_skips;
     }
     /// The next [`Self::decode`] is the batch's event `index`.
     pub fn at(&mut self, index: usize) {
@@ -380,9 +490,13 @@ impl<'a> Cache<'a> {
             retained.remove(variant);
         }
     }
-    pub fn finish(&mut self, _batch: &Batch) {
+    pub fn finish(&mut self, batch: &Batch) {
         if let Some(retained) = &mut self.retained {
-            retained.remember(std::mem::take(&mut self.entries), &self.source_heads);
+            retained.remember(
+                &batch.log,
+                std::mem::take(&mut self.entries),
+                &self.source_heads,
+            );
         }
     }
     fn consistent(
@@ -398,55 +512,21 @@ impl<'a> Cache<'a> {
         range: std::ops::Range<usize>,
         report: bool,
     ) -> Result<bool, &'static str> {
-        self.order.clear();
-        // The cache is optional: an allocation failure only skips caching, never the hour.
-        if engine_allocation::advisory(|| engine_allocation::reserve(&mut self.order, range.len()))
-            .is_err()
-        {
-            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
-            return Ok(false);
-        }
-        self.order.extend(range);
-        self.order
-            .sort_unstable_by_key(|index| log.spans[*index].addr);
-        let mut covering: Option<&collector_raw::raw::Span> = None;
-        // Reused decodes need single-valued bytes even when read cursors start afresh.
-        for index in &self.order {
-            let span = &log.spans[*index];
-            if !span.ok {
-                if report {
-                    self.counts[CacheOutcome::UnreadableCopy as usize] += 1;
-                }
-                return Ok(false);
-            }
-            let end = span
-                .addr
-                .checked_add(span.len as usize)
-                .ok_or("variant snapshot witness address overflow")?;
-            if let Some(previous) = covering {
-                let previous_end = previous.addr + previous.len as usize;
-                if previous_end > span.addr {
-                    let offset = span.addr - previous.addr;
-                    let len = (previous_end - span.addr).min(span.len as usize);
-                    if payload(log, previous)[offset..offset + len] != payload(log, span)[..len] {
-                        if report {
-                            self.counts[CacheOutcome::InsertOverlap as usize] += 1;
-                        }
-                        return Ok(false);
-                    }
-                }
-                if previous_end >= end {
-                    continue;
-                }
-            }
-            covering = Some(span);
-        }
-        Ok(true)
+        let outcome = match order_overlaps(log, range, &mut self.order)? {
+            Overlaps::Consistent => return Ok(true),
+            Overlaps::Allocation => CacheOutcome::AllocationSkipped,
+            Overlaps::Unreadable if report => CacheOutcome::UnreadableCopy,
+            Overlaps::Inconsistent if report => CacheOutcome::InsertOverlap,
+            Overlaps::Unreadable | Overlaps::Inconsistent => return Ok(false),
+        };
+        self.counts[outcome as usize] += 1;
+        Ok(false)
     }
     fn reuse(&self, index: usize) -> Result<Arc<Decoded>, &'static str> {
         Self::observe(&self.entries[index].value)
     }
     fn observe(value: &Arc<Decoded>) -> Result<Arc<Decoded>, &'static str> {
+        let _phase = profile::Timer::new(profile::Phase::CachedObserve);
         sources::track(&value.definition)?;
         liveness::sample(&value.definition)?;
         value
@@ -542,6 +622,8 @@ impl<'a> Cache<'a> {
         hour: i32,
         shared: &mut Shared,
     ) -> Result<Arc<Decoded>, &'static str> {
+        let _phase = profile::Timer::new(profile::Phase::CacheDecode);
+        self.counts[CacheOutcome::DesignEvents as usize] += 1;
         let range = event.start..event.end;
         self.miss = None;
         let source = copied::sources(&batch.log, range.clone(), event.pointer);
@@ -615,19 +697,41 @@ impl<'a> Cache<'a> {
             .as_ref()
             .is_some_and(|retained| retained.contains(event))
         {
-            let matched = engine_allocation::advisory(|| {
-                if !self.consistent_for(&batch.log, range.clone(), false).ok()? {
-                    return None;
+            let checks = profile::Timer::new(profile::Phase::RetainedChecks);
+            // A planned test stands: until the pass finishes, states are only removed.
+            let check = match self
+                .current
+                .and_then(|index| self.checks.get_mut(index))
+                .map(std::mem::take)
+            {
+                Some(check @ (Check::Hit(_) | Check::Miss)) => check,
+                _ => {
+                    let mut scratch = std::mem::take(&mut self.scratch);
+                    let check = self.retained.as_deref().map_or(Check::Miss, |retained| {
+                        check_retained(retained, &batch.log, event, &mut scratch)
+                    });
+                    self.absorb(&mut scratch);
+                    self.scratch = scratch;
+                    check
                 }
-                let memory = copied::MemoryView::new(&batch.log, range.clone(), &self.order);
-                let entry = self
-                    .retained
-                    .as_ref()?
-                    .find(&memory, event, &mut self.comparison)?;
-                let charge = entry.charge(self.retained_charge);
-                Some((Arc::clone(&entry.value), charge))
-            });
-            if let Some((value, charge)) = matched {
+            };
+            let matched = match check {
+                Check::Hit(verdict) => self.retained.as_deref().and_then(|retained| {
+                    let entry = retained.verified(event, verdict.count, verdict.value)?;
+                    Some((
+                        Arc::clone(&entry.value),
+                        entry.charge(self.retained_charge),
+                        verdict.repeat,
+                    ))
+                }),
+                Check::Miss | Check::Unchecked => None,
+            };
+            drop(checks);
+            if let Some((value, charge, repeat)) = matched {
+                if repeat {
+                    self.counts[CacheOutcome::RetainedRepeats as usize] += 1;
+                }
+                self.counts[CacheOutcome::RetainedHits as usize] += 1;
                 let value = Self::observe(&value)?;
                 // A retained hit supersedes any earlier local revision at this source count.
                 if !Self::verified(

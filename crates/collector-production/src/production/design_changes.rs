@@ -2775,7 +2775,12 @@ impl Captured {
         );
     }
     /// `capture`, with the dirty country context parts acquired by `acquire`.
-    pub fn capture_partitioned(
+    ///
+    /// # Safety
+    /// Snapshot parts borrow this drain's batch and retained cache. `speculate` must return,
+    /// on success, failure or unwind, only once it has dropped or returned every part it was
+    /// given and no other thread still uses one.
+    pub unsafe fn capture_partitioned(
         &mut self,
         base: usize,
         hour: i32,

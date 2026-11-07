@@ -157,6 +157,7 @@ pub(crate) use collector_snapshots::snapshot_plan;
 mod snapshot_integration_tests;
 mod spool_compare;
 mod spool_helper;
+mod sizing_steps;
 mod spool_phases;
 mod spool_segments;
 mod spool_writer;

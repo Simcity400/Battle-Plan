@@ -709,8 +709,12 @@ impl Captured {
 
     fn grow_hints(&mut self, capacities: &mut [usize; 12]) {
         fn resize<T: Default + Clone>(rows: &mut Vec<T>, outcome: Outcome, capacity: &mut usize) {
-            if let Outcome::Truncated { len, unread_rows } = outcome {
-                grow_capacity(capacity, len.saturating_add(unread_rows as usize));
+            match outcome {
+                Outcome::Rows { len } => grow_capacity(capacity, len),
+                Outcome::Truncated { len, unread_rows } => {
+                    grow_capacity(capacity, len.saturating_add(unread_rows as usize));
+                }
+                Outcome::Unavailable { .. } => {}
             }
             if rows.len() < *capacity {
                 crate::table_capture::grow_vec(rows, *capacity);
