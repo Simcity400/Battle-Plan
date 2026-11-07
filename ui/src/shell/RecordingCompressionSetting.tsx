@@ -14,20 +14,20 @@ export default function RecordingCompressionSetting({ client }: { client: Dashbo
     let alive = true;
     if (!client.recorderSettings) { setLoading(false); return; }
     setLoading(true); setError(null);
-    void client.recorderSettings().then(settings => { if (alive) setValue(settings.compression ?? 'low'); })
+    void client.recorderSettings().then(settings => { if (alive) setValue(settings.blockCompression ?? 'high'); })
       .catch(cause => { if (alive) setError(errorMessage(cause)); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [client, retry]);
   const save = async (compression: Compression) => {
     if (!client.setRecordingCompression) return;
     setSaving(true); setError(null);
-    try { const settings = await client.setRecordingCompression(compression); setValue(settings.compression ?? 'low'); }
+    try { const settings = await client.setRecordingCompression(compression); setValue(settings.blockCompression ?? 'high'); }
     catch (cause) { setError(errorMessage(cause)); }
     finally { setSaving(false); }
   };
   return <>
-    <div className="settings-row"><span className="settings-row-text"><strong>Live compression</strong>
-      <small>Low makes slightly larger files. High uses more background CPU and makes the save after Stop slower, especially with few cores. Changes apply to the next block.</small></span>
+    <div className="settings-row"><span className="settings-row-text"><strong>Compression</strong>
+      <small>Low: larger files, less recorder CPU. High: the smallest files, more recorder CPU. The recorder compresses outside the game, never in it. Changes apply to the next block.</small></span>
       <Select label="Recording compression" value={value ?? ''} disabled={loading || saving || value === null || !client.setRecordingCompression}
         options={[...(value ? [] : [{ value: '', label: loading ? 'Loading...' : 'Unavailable' }]), { value: 'low', label: 'Low' }, { value: 'high', label: 'High' }]} onChange={value => { void save(value === 'high' ? 'high' : 'low'); }} />
     </div>

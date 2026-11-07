@@ -1,7 +1,10 @@
 //! Compressed recording containers, spool I/O and durable publication.
 
+pub mod columnar_blocks;
+pub mod columnar_capture;
 pub mod columnar_file;
 pub mod columnar_frames;
+pub mod columnar_journal;
 pub mod columnar_runs;
 pub mod columns;
 pub mod commands;

@@ -1,14 +1,14 @@
-//! Synthetic version 4 recordings, written as the converter writes them, for tests.
+//! Synthetic version 4 recordings, written as the recorder writes them, for tests.
 
 use super::*;
-use replay_columnar::{
-    envelope::{Identity, RestartDirectory, RestartTable},
-    leaf::Writer,
-    restart::{self, Acquisition},
-    state::Bits,
+use crate::{
+    columnar_blocks::BlockBuilder,
+    columnar_file::{FileWriter, Settings},
 };
+use replay_columnar::envelope::Identity;
 
 /// One extent of `raw` appended to `file`, compressed as the converter stores it.
+#[cfg(test)]
 pub(crate) fn append(
     file: &mut Vec<u8>,
     kind: Kind,
@@ -31,368 +31,146 @@ pub(crate) fn append(
     extent
 }
 
-/// A recording of `runs` (branch, first hour, ordinals) as the converter writes one, of
-/// manifests alone: ordinal `n` of run `r` is the hour `hour(r, n)` gives (none leaves it
-/// out), appending one dictionary string, and every `restart_units`th full page ends in a
-/// restart. `tamper` changes each page before it is written. The file, and each run's page
-/// extents.
+fn identity(campaign: &[u8], capture_mode: u8) -> Identity {
+    Identity {
+        schema: envelope::schema_digest(&schema().unwrap()),
+        campaign: campaign.to_vec(),
+        content: Vec::new(),
+        capture_mode,
+    }
+}
+
+/// A file writer into memory, each page changed by `tamper` before it is written.
+fn writer(identity: Identity, tamper: impl Fn(&mut IndexPage) + Send + 'static) -> FileWriter<std::io::Cursor<Vec<u8>>> {
+    let settings = Settings {
+        level: 1,
+        parallel: false,
+    };
+    FileWriter::create(std::io::Cursor::new(Vec::new()), identity, TABLE_COUNT, settings)
+        .unwrap()
+        .with_tamper(tamper)
+}
+
+/// Every page of `file`'s runs, as their directories list them.
+#[cfg(test)]
+fn pages_of(file: &[u8]) -> Vec<Vec<Extent>> {
+    let recording = Recording::open(file.to_vec()).unwrap();
+    (0..recording.run_count())
+        .map(|run| recording.run(run).map(|run| run.page_extents().to_vec()).unwrap_or_default())
+        .collect()
+}
+
+/// A recording of `runs` (branch, first hour, ordinals) as the recorder writes one, of hour
+/// records alone: ordinal `n` of run `r` is the hour `hour(r, n)` gives, appending one
+/// dictionary string, and every `restart_units`th full block ends in a restart. `tamper`
+/// changes each page before it is written. The file, and each run's page extents.
 #[cfg(test)]
 pub(crate) fn recording(
     runs: &[(u64, i32, u32)],
-    hour: impl Fn(u32, u32) -> Option<i32>,
+    hour: impl Fn(u32, u32) -> i32,
     restart_units: u32,
-    tamper: impl Fn(&mut IndexPage),
+    tamper: impl Fn(&mut IndexPage) + Send + 'static,
 ) -> (Vec<u8>, Vec<Vec<Extent>>) {
-    let schema = schema().unwrap();
-    let columns: Vec<usize> = schema.iter().map(Vec::len).collect();
-    let identity = Identity {
-        schema: envelope::schema_digest(&schema),
-        campaign: b"campaign".to_vec(),
-        content: Vec::new(),
-        capture_mode: 0,
-    };
-    let none = Bits::from_words(vec![0; TABLE_COUNT.div_ceil(64)]).unwrap();
-    let mut file = envelope::MAGIC.to_vec();
-    file.extend_from_slice(&envelope::VERSION.to_le_bytes());
-    let (mut directories, mut every_page) = (Vec::new(), Vec::new());
+    let columns: Vec<usize> = schema().unwrap().iter().map(Vec::len).collect();
+    let mut file = writer(identity(b"campaign", 0), tamper);
     for (run, &(branch, first_hour, ordinals)) in (0..).zip(runs) {
-        let mut chain = envelope::chain_start(&identity.chain_bytes().unwrap(), run);
-        let (mut pages, mut restarts, mut next_id) = (Vec::new(), 0, 0);
-        // The strings first used since the run's last restart.
-        let mut pending: Vec<Vec<u8>> = Vec::new();
-        for first in (0..ordinals).step_by(envelope::UNIT_ORDINALS as usize) {
-            let hours = (ordinals - first).min(envelope::UNIT_ORDINALS);
-            let strings: Vec<Vec<u8>> = (first..first + hours)
-                .map(|ordinal| format!("run {run} ordinal {ordinal}").into_bytes())
-                .collect();
-            pending.extend(strings.iter().cloned());
-            let mut unit = Writer::new();
-            for (ordinal, string) in (first..).zip(&strings) {
-                let Some(hour) = hour(run, ordinal) else {
-                    continue;
-                };
-                let manifest = Manifest {
-                    branch,
-                    hour,
-                    flags: 0,
-                    total_ns: 1,
-                    pool_bytes: 0,
-                    dropped_frames: 0,
-                    appends: vec![string],
-                    statuses: vec![Status::NotRecorded; TABLE_COUNT],
-                    read: vec![0; TABLE_COUNT.div_ceil(64)],
-                    samples: Vec::new(),
-                    sections: Vec::new(),
-                }
-                .write(&columns)
-                .unwrap();
-                framing::put_manifest(&mut unit, &manifest).unwrap();
-                chain = envelope::chain_hour(&chain, &manifest, std::iter::empty());
+        file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
+        let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(restart_units);
+        builder.start_run(branch, hour(run, 0)).unwrap();
+        for ordinal in 0..ordinals {
+            let string = format!("run {run} ordinal {ordinal}").into_bytes();
+            let manifest = Manifest {
+                branch,
+                hour: hour(run, ordinal),
+                flags: 0,
+                total_ns: 1,
+                pool_bytes: 0,
+                dropped_frames: 0,
+                appends: vec![&string],
+                statuses: vec![Status::NotRecorded; TABLE_COUNT],
+                read: vec![0; TABLE_COUNT.div_ceil(64)],
+                samples: Vec::new(),
+                sections: Vec::new(),
             }
-            let units = vec![append(
-                &mut file,
-                Kind::Unit,
-                (run, framing::MANIFESTS, first, hours),
-                unit.bytes(),
-            )];
-            let restarts_here = hours == envelope::UNIT_ORDINALS
-                && (first / envelope::UNIT_ORDINALS + 1) % restart_units == 0;
-            let restart = restarts_here.then(|| {
-                let after = first + hours - 1;
-                let strings = std::mem::take(&mut pending);
-                let mut chunk = Writer::new();
-                chunk.varint(strings.len() as u64).unwrap();
-                for string in &strings {
-                    chunk.varint(string.len() as u64).unwrap();
-                    chunk.raw(string).unwrap();
-                }
-                let chunk = append(
-                    &mut file,
-                    Kind::DictionaryChunk,
-                    (run, 0, after, 0),
-                    chunk.bytes(),
-                );
-                let tables = (0..)
-                    .zip(&schema)
-                    .map(|(table, kinds)| {
-                        let bytes = restart::write(
-                            &Table::new(kinds).unwrap(),
-                            Status::NotRecorded,
-                            &Acquisition::default(),
-                            &[],
-                        )
-                        .unwrap();
-                        RestartTable {
-                            table,
-                            extent: append(
-                                &mut file,
-                                Kind::RestartTable,
-                                (run, table, after, 0),
-                                &bytes,
-                            ),
-                            chunks: Vec::new(),
-                        }
-                    })
-                    .collect();
-                let restart = RestartDirectory {
-                    after,
-                    hour: first_hour + after as i32,
-                    ordinal: restarts,
-                    chunk,
-                    ids: (next_id, strings.len() as u32),
-                    tables,
-                };
-                restarts += 1;
-                next_id += strings.len() as u32;
-                restart
-            });
-            let mut page = IndexPage {
-                run,
-                first,
-                hours,
-                first_hour: first_hour + first as i32,
-                last_hour: first_hour + (first + hours - 1) as i32,
-                units,
-                restart,
-                sectioned: none.clone(),
-                read: none.clone(),
-                status_changed: none.clone(),
-                chain,
-            };
-            tamper(&mut page);
-            let raw = page.write().unwrap();
-            pages.push(append(
-                &mut file,
-                Kind::IndexPage,
-                (run, 0, first, hours),
-                &raw,
-            ));
+            .write(&columns)
+            .unwrap();
+            if let Some(block) = builder.hour(&manifest, &[]).unwrap() {
+                file.block(block.block()).unwrap();
+            }
         }
-        let directory = RunDirectory {
-            branch,
-            epoch: envelope::epoch::START,
-            first_hour,
-            ordinals,
-            chain,
-            pages: pages.clone(),
+        if let Some(block) = builder.end_run().unwrap() {
+            file.block(block.block()).unwrap();
         }
-        .write(run)
-        .unwrap();
-        directories.push(append(
-            &mut file,
-            Kind::RunDirectory,
-            (run, 0, 0, 0),
-            &directory,
-        ));
-        every_page.push(pages);
+        file.finish_run().unwrap();
     }
-    let root = Root {
-        identity,
-        revision: 1,
-        runs: directories,
-        controls: Vec::new(),
-    }
-    .write()
-    .unwrap();
-    let root = append(&mut file, Kind::Root, (0, 0, 0, 0), &root);
-    file.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
-    (file, every_page)
+    let bytes = file.finish(|_| Ok(())).unwrap().file.into_inner();
+    let pages = pages_of(&bytes);
+    (bytes, pages)
 }
 
 /// Every ordinal of `runs` at its run's hour.
 #[cfg(test)]
-pub(crate) fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> Option<i32> + '_ {
-    |run, ordinal| Some(runs[run as usize].1 + ordinal as i32)
+pub(crate) fn every(runs: &[(u64, i32, u32)]) -> impl Fn(u32, u32) -> i32 + '_ {
+    |run, ordinal| runs[run as usize].1 + ordinal as i32
 }
 
-/// Two live countries, one retaining its first string through unique-string churn.
+/// Two live countries, one retaining its first string through unique-string churn, a restart
+/// ending every block. `tamper` changes each page before it is written.
 #[cfg(test)]
-pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage)) -> Vec<u8> {
+pub(crate) fn native_recording(units: u32, tamper: impl Fn(&mut IndexPage) + Send + 'static) -> Vec<u8> {
     use super::synthetic::{Input, Sample, Synthetic};
     use crate::rows::CountryRow;
-    let schema = schema().unwrap();
-    let columns: Vec<_> = schema.iter().map(Vec::len).collect();
-    let identity = Identity {
-        schema: envelope::schema_digest(&schema),
-        campaign: b"native synthetic".to_vec(),
-        content: Vec::new(),
-        capture_mode: 0,
-    };
-    let mut chain = envelope::chain_start(&identity.chain_bytes().unwrap(), 0);
-    let mut file = envelope::MAGIC.to_vec();
-    file.extend_from_slice(&envelope::VERSION.to_le_bytes());
+    let mut file = writer(identity(b"native synthetic", 0), tamper);
+    file.start_run(7, envelope::epoch::START, 100).unwrap();
+    let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(1);
+    builder.start_run(7, 100).unwrap();
     let mut synthetic = Synthetic::new(&[TableId::Countries], 7, 100).unwrap();
-    let (mut pages, mut chunk_ends, mut next_id) = (Vec::new(), Vec::new(), 0_usize);
-    for unit in 0..units {
-        let first = unit * envelope::UNIT_ORDINALS;
-        let mut manifests = Writer::new();
-        let mut table_bytes = Writer::new();
-        for ordinal in first..first + envelope::UNIT_ORDINALS {
-            let rows = [
-                CountryRow {
-                    id: 1,
-                    tag: b"old string".to_vec(),
-                    stability_raw: 123,
-                    ..Default::default()
-                },
-                CountryRow {
-                    id: 2,
-                    tag: format!("new string {ordinal}").into_bytes(),
-                    stability_raw: i64::from(ordinal),
-                    ..Default::default()
-                },
-            ];
-            synthetic
-                .table(
-                    TableId::Countries,
-                    Input::Snapshot {
-                        rows: &rows,
-                        partial: None,
-                        read: ordinal % 2 == 0,
-                        sample: if ordinal % 2 == 0 {
-                            Sample::FromReadBit
-                        } else {
-                            Sample::Carried(100 + ordinal as i32 - 1)
-                        },
-                    },
-                )
-                .unwrap();
-            synthetic
-                .end_encoded(|_, manifest, _, _, sections| {
-                    let bytes = manifest.write(&columns).unwrap();
-                    framing::put_manifest(&mut manifests, &bytes).unwrap();
-                    for (_, bytes) in sections {
-                        framing::put_section(&mut table_bytes, bytes).unwrap();
-                    }
-                    chain = envelope::chain_hour(
-                        &chain,
-                        &bytes,
-                        sections.iter().map(|(_, bytes)| bytes.as_slice()),
-                    );
-                })
-                .unwrap();
-        }
-        let after = first + envelope::UNIT_ORDINALS - 1;
-        let state = synthetic.state();
-        let chunk_raw = state.dictionary().chunk(next_id).unwrap();
-        let count = state.dictionary().len() - next_id;
-        let chunk = append(
-            &mut file,
-            Kind::DictionaryChunk,
-            (0, 0, after, 0),
-            &chunk_raw,
-        );
-        let ids = (next_id as u32, count as u32);
-        next_id += count;
-        chunk_ends.push(next_id);
-        let mut tables = Vec::new();
-        for table in 0..schema.len() {
-            let held = state.table(table).unwrap();
-            let acquisition = Acquisition {
-                last_read: state.sampled_at(table),
+    let columns: Vec<_> = schema().unwrap().iter().map(Vec::len).collect();
+    for ordinal in 0..units * envelope::UNIT_ORDINALS {
+        let rows = [
+            CountryRow {
+                id: 1,
+                tag: b"old string".to_vec(),
+                stability_raw: 123,
                 ..Default::default()
-            };
-            let raw = restart::write(
-                held,
-                state.status(table).unwrap(),
-                &acquisition,
-                state.truncated_view(table).unwrap_or(&[]),
+            },
+            CountryRow {
+                id: 2,
+                tag: format!("new string {ordinal}").into_bytes(),
+                stability_raw: i64::from(ordinal),
+                ..Default::default()
+            },
+        ];
+        synthetic
+            .table(
+                TableId::Countries,
+                Input::Snapshot {
+                    rows: &rows,
+                    partial: None,
+                    read: ordinal % 2 == 0,
+                    sample: if ordinal % 2 == 0 {
+                        Sample::FromReadBit
+                    } else {
+                        Sample::Carried(100 + ordinal as i32 - 1)
+                    },
+                },
             )
             .unwrap();
-            let extent = append(
-                &mut file,
-                Kind::RestartTable,
-                (0, table as u32, after, 0),
-                &raw,
-            );
-            let mut chunks = Vec::new();
-            state
-                .text_ids(table, |id| {
-                    chunks.push(chunk_ends.partition_point(|&end| end <= id as usize) as u32);
-                    Ok(())
-                })
-                .unwrap();
-            chunks.sort_unstable();
-            chunks.dedup();
-            tables.push(RestartTable {
-                table: table as u32,
-                extent,
-                chunks,
-            });
+        let (manifest, sections) = synthetic
+            .end_encoded(|_, manifest, _, _, sections| {
+                let bytes = manifest.write(&columns).unwrap();
+                let joined: Vec<u8> = sections.iter().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
+                (bytes, joined)
+            })
+            .unwrap();
+        if let Some(block) = builder.hour(&manifest, &sections).unwrap() {
+            file.block(block.block()).unwrap();
         }
-        let units = vec![
-            append(
-                &mut file,
-                Kind::Unit,
-                (0, 0, first, envelope::UNIT_ORDINALS),
-                manifests.bytes(),
-            ),
-            append(
-                &mut file,
-                Kind::Unit,
-                (
-                    0,
-                    TableId::Countries.index() as u32 + 1,
-                    first,
-                    envelope::UNIT_ORDINALS,
-                ),
-                table_bytes.bytes(),
-            ),
-        ];
-        let mut bits = vec![0; TABLE_COUNT.div_ceil(64)];
-        bits[TableId::Countries.index() / 64] |= 1 << (TableId::Countries.index() % 64);
-        let bits = Bits::from_words(bits).unwrap();
-        let mut page = IndexPage {
-            run: 0,
-            first,
-            hours: envelope::UNIT_ORDINALS,
-            first_hour: 100 + first as i32,
-            last_hour: 100 + after as i32,
-            units,
-            restart: Some(RestartDirectory {
-                after,
-                hour: 100 + after as i32,
-                ordinal: unit,
-                chunk,
-                ids,
-                tables,
-            }),
-            sectioned: bits.clone(),
-            read: bits.clone(),
-            status_changed: bits,
-            chain,
-        };
-        tamper(&mut page);
-        pages.push(append(
-            &mut file,
-            Kind::IndexPage,
-            (0, 0, first, envelope::UNIT_ORDINALS),
-            &page.write().unwrap(),
-        ));
     }
-    let directory = RunDirectory {
-        branch: 7,
-        epoch: envelope::epoch::START,
-        first_hour: 100,
-        ordinals: units * envelope::UNIT_ORDINALS,
-        chain,
-        pages,
-    };
-    let directory = append(
-        &mut file,
-        Kind::RunDirectory,
-        (0, 0, 0, 0),
-        &directory.write(0).unwrap(),
-    );
-    let root = Root {
-        identity,
-        revision: 1,
-        runs: vec![directory],
-        controls: Vec::new(),
-    };
-    let root = append(&mut file, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
-    file.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
-    file
+    if let Some(block) = builder.end_run().unwrap() {
+        file.block(block.block()).unwrap();
+    }
+    file.finish(|_| Ok(())).unwrap().file.into_inner()
 }
 
 /// What a synthetic writer saw of an hour: its frame, and each table's sample hour.
@@ -494,67 +272,42 @@ pub fn written(
     written_captured(campaign, None, runs, restart_units, streams, write)
 }
 
-/// One run of `ordinals` hours, `frame(ordinal)` each, written as the native recorder writes
-/// them: through the frame writer into the columnar file writer, a restart ending every
-/// `restart_units`th unit. The run is the first frame's branch from its hour.
+/// One run of `ordinals` hours, `frame(ordinal)` each, written as the recorder writes them:
+/// through the frame writer, the block builder and the columnar file writer, a restart ending
+/// every `restart_units`th block. The run is the first frame's branch from its hour.
 pub fn recorded(
     campaign: &[u8],
     ordinals: u32,
     restart_units: u32,
     mut frame: impl FnMut(u32) -> crate::frame::FrameInput,
 ) -> Vec<u8> {
-    use crate::{
-        columnar_file::{FileWriter, Hour, Position, Settings},
-        native_frame::FrameWriter,
-    };
+    use crate::native_frame::FrameWriter;
     let mut writer = FrameWriter::new().unwrap();
-    let identity = Identity {
-        schema: envelope::schema_digest(&schema().unwrap()),
-        campaign: campaign.to_vec(),
-        content: Vec::new(),
-        capture_mode: CaptureMode::Full.byte(),
-    };
-    let settings = Settings {
-        restart_units,
-        ..Settings::RECORDING
-    };
-    let mut file = FileWriter::create(
-        std::io::Cursor::new(Vec::new()),
-        identity,
-        writer.columns().to_vec(),
-        settings,
-    )
-    .unwrap();
+    let mut file = writer_plain(identity(campaign, CaptureMode::Full.byte()));
+    let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(restart_units);
     for ordinal in 0..ordinals {
         let input = frame(ordinal);
         if ordinal == 0 {
             file.start_run(input.branch, envelope::epoch::START, input.hour).unwrap();
+            builder.start_run(input.branch, input.hour).unwrap();
         }
         let prepared = writer.hour(&input).unwrap();
-        let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
-        let position = file
-            .hour(Hour {
-                hour: input.hour,
-                manifest: &prepared.manifest,
-                sections: &sections,
-                statuses: prepared.statuses(),
-                read: prepared.read(),
-            })
-            .unwrap();
-        drop(sections);
+        let sections: Vec<u8> = prepared.sections().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
+        let block = builder.hour(&prepared.manifest, &sections).unwrap();
         writer.commit(prepared).unwrap();
-        match position {
-            Position::Open => {}
-            Position::Full { restart: false } => {
-                file.close_position().unwrap();
-            }
-            Position::Full { restart: true } => {
-                let (strings, tables) = writer.restart().unwrap();
-                file.close_with_restart(&strings, &tables).unwrap();
-            }
+        if let Some(block) = block {
+            file.block(block.block()).unwrap();
         }
     }
+    if let Some(block) = builder.end_run().unwrap() {
+        file.block(block.block()).unwrap();
+    }
     file.finish(|_| Ok(())).unwrap().file.into_inner()
+}
+
+/// A file writer into memory.
+fn writer_plain(identity: Identity) -> FileWriter<std::io::Cursor<Vec<u8>>> {
+    writer(identity, |_| {})
 }
 
 /// [`written`], its root's control records holding `capture` when given.
@@ -567,182 +320,44 @@ pub fn written_captured(
     mut write: impl FnMut(&mut super::synthetic::Synthetic, u32, u32),
 ) -> (Vec<u8>, Vec<Seen>) {
     use super::synthetic::Synthetic;
-    let schema = schema().unwrap();
-    let columns: Vec<_> = schema.iter().map(Vec::len).collect();
-    let identity = Identity {
-        schema: envelope::schema_digest(&schema),
-        campaign: campaign.to_vec(),
-        content: Vec::new(),
-        capture_mode: 0,
-    };
-    let mut written = vec![0; TABLE_COUNT.div_ceil(64)];
-    for table in streams {
-        written[table.index() / 64] |= 1 << (table.index() % 64);
-    }
-    let written = Bits::from_words(written).unwrap();
-    let mut file = envelope::MAGIC.to_vec();
-    file.extend_from_slice(&envelope::VERSION.to_le_bytes());
-    let (mut directories, mut seen) = (Vec::new(), Vec::new());
+    let columns: Vec<_> = schema().unwrap().iter().map(Vec::len).collect();
+    let mut file = writer_plain(identity(campaign, 0));
+    let mut seen = Vec::new();
     for (run, &(branch, first_hour, units)) in (0..).zip(runs) {
         let mut synthetic = Synthetic::new(streams, branch, first_hour).unwrap();
-        let mut chain = envelope::chain_start(&identity.chain_bytes().unwrap(), run);
-        let (mut pages, mut chunk_ends) = (Vec::new(), Vec::new());
-        for unit in 0..units {
-            let first = unit * envelope::UNIT_ORDINALS;
-            let after = first + envelope::UNIT_ORDINALS - 1;
-            let mut manifests = Writer::new();
-            let mut sections: Vec<Writer> = streams.iter().map(|_| Writer::new()).collect();
-            for ordinal in first..=after {
-                write(&mut synthetic, run, ordinal);
-                synthetic
-                    .end_encoded(|_, manifest, frame, _, encoded| {
-                        let bytes = manifest.write(&columns).unwrap();
-                        framing::put_manifest(&mut manifests, &bytes).unwrap();
-                        for (section, raw) in encoded {
-                            let at = streams
-                                .iter()
-                                .position(|table| table.index() == section.table)
-                                .unwrap();
-                            framing::put_section(&mut sections[at], raw).unwrap();
-                        }
-                        chain = envelope::chain_hour(
-                            &chain,
-                            &bytes,
-                            encoded.iter().map(|(_, raw)| raw.as_slice()),
-                        );
-                        seen.push((
-                            frame.clone(),
-                            frame.tables.iter().map(SharedView::sampled_at).collect(),
-                        ));
-                    })
-                    .unwrap();
-            }
-            let mut extents = vec![append(
-                &mut file,
-                Kind::Unit,
-                (run, framing::MANIFESTS, first, envelope::UNIT_ORDINALS),
-                manifests.bytes(),
-            )];
-            for (table, bytes) in streams.iter().zip(&sections) {
-                if !bytes.bytes().is_empty() {
-                    let stream = framing::table_stream(table.index());
-                    extents.push(append(
-                        &mut file,
-                        Kind::Unit,
-                        (run, stream, first, envelope::UNIT_ORDINALS),
-                        bytes.bytes(),
+        file.start_run(branch, envelope::epoch::START, first_hour).unwrap();
+        let mut builder = BlockBuilder::new().unwrap().with_restart_blocks(restart_units);
+        builder.start_run(branch, first_hour).unwrap();
+        for ordinal in 0..units * envelope::UNIT_ORDINALS {
+            write(&mut synthetic, run, ordinal);
+            let (manifest, sections) = synthetic
+                .end_encoded(|_, manifest, frame, _, encoded| {
+                    seen.push((
+                        frame.clone(),
+                        frame.tables.iter().map(SharedView::sampled_at).collect(),
                     ));
-                }
-            }
-            extents.sort_by_key(|extent| extent.stream);
-            let restart = if (unit + 1) % restart_units == 0 {
-                let state = synthetic.state();
-                let next_id = chunk_ends.last().copied().unwrap_or(0);
-                let count = state.dictionary().len() - next_id;
-                let chunk = append(
-                    &mut file,
-                    Kind::DictionaryChunk,
-                    (run, 0, after, 0),
-                    &state.dictionary().chunk(next_id).unwrap(),
-                );
-                chunk_ends.push(next_id + count);
-                let mut tables = Vec::new();
-                for table in 0..TABLE_COUNT {
-                    let raw = restart::write(
-                        state.table(table).unwrap(),
-                        state.status(table).unwrap(),
-                        &Acquisition {
-                            last_read: state.sampled_at(table),
-                            ..Default::default()
-                        },
-                        state.truncated_view(table).unwrap_or(&[]),
-                    )
-                    .unwrap();
-                    let mut chunks = Vec::new();
-                    state
-                        .text_ids(table, |id| {
-                            chunks
-                                .push(chunk_ends.partition_point(|&end| end <= id as usize) as u32);
-                            Ok(())
-                        })
-                        .unwrap();
-                    chunks.sort_unstable();
-                    chunks.dedup();
-                    tables.push(RestartTable {
-                        table: table as u32,
-                        extent: append(
-                            &mut file,
-                            Kind::RestartTable,
-                            (run, table as u32, after, 0),
-                            &raw,
-                        ),
-                        chunks,
-                    });
-                }
-                Some(RestartDirectory {
-                    after,
-                    hour: first_hour + after as i32,
-                    ordinal: chunk_ends.len() as u32 - 1,
-                    chunk,
-                    ids: (next_id as u32, count as u32),
-                    tables,
+                    let joined: Vec<u8> = encoded.iter().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
+                    (manifest.write(&columns).unwrap(), joined)
                 })
-            } else {
-                None
-            };
-            let page = IndexPage {
-                run,
-                first,
-                hours: envelope::UNIT_ORDINALS,
-                first_hour: first_hour + first as i32,
-                last_hour: first_hour + after as i32,
-                units: extents,
-                restart,
-                sectioned: written.clone(),
-                read: written.clone(),
-                status_changed: written.clone(),
-                chain,
-            };
-            pages.push(append(
-                &mut file,
-                Kind::IndexPage,
-                (run, 0, first, envelope::UNIT_ORDINALS),
-                &page.write().unwrap(),
-            ));
+                .unwrap();
+            if let Some(block) = builder.hour(&manifest, &sections).unwrap() {
+                file.block(block.block()).unwrap();
+            }
         }
-        let directory = RunDirectory {
-            branch,
-            epoch: envelope::epoch::START,
-            first_hour,
-            ordinals: units * envelope::UNIT_ORDINALS,
-            chain,
-            pages,
-        };
-        directories.push(append(
-            &mut file,
-            Kind::RunDirectory,
-            (run, 0, 0, 0),
-            &directory.write(run).unwrap(),
-        ));
+        if let Some(block) = builder.end_run().unwrap() {
+            file.block(block.block()).unwrap();
+        }
+        file.finish_run().unwrap();
     }
-    let controls = capture
-        .map(|capture| {
-            append(
-                &mut file,
-                Kind::Controls,
-                (0, 0, 0, 0),
-                &capture.write().unwrap(),
-            )
-        })
-        .into_iter()
-        .collect();
-    let root = Root {
-        identity,
-        revision: 1,
-        runs: directories,
-        controls,
+    let finished = match capture {
+        Some(capture) => {
+            let capture = crate::columnar_file::Capture {
+                run_sessions: vec![0; runs.len()],
+                ..capture.clone()
+            };
+            file.finish_with_capture(&capture, |_| Ok(())).unwrap()
+        }
+        None => file.finish(|_| Ok(())).unwrap(),
     };
-    let root = append(&mut file, Kind::Root, (0, 0, 0, 0), &root.write().unwrap());
-    file.extend_from_slice(&envelope::footer(root.offset, root.stored, &root.digest));
-    (file, seen)
+    (finished.file.into_inner(), seen)
 }

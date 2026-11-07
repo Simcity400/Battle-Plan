@@ -491,6 +491,15 @@ impl Charged {
     }
 }
 
+/// What one table's changes of an hour apply to.
+struct Apply<'a> {
+    kinds: &'a [Kind],
+    truncated: bool,
+    table: &'a mut Table,
+    scratch: &'a mut Scratch,
+    changes: &'a mut Changes,
+}
+
 /// Every schema table while a branch is walked.
 pub struct State {
     pub(crate) kinds: Vec<Vec<Kind>>,
@@ -664,6 +673,14 @@ impl State {
     /// Why readers of the walk cannot read `table`; none when they can.
     pub fn withheld(&self, table: usize) -> Option<&str> {
         self.withheld.get(table)?.as_deref()
+    }
+
+    /// `table`'s last complete read as a restart carries it, when it keeps one.
+    pub fn last(&self, table: usize) -> Option<&Last> {
+        if self.skips(table) || !self.keeps.get(table).copied().unwrap_or(false) {
+            return None;
+        }
+        self.last.get(table)?.as_ref()
     }
 
     pub fn table(&self, table: usize) -> Option<&Table> {
@@ -912,6 +929,49 @@ impl State {
         manifest: &Manifest<'_>,
         mut section: impl FnMut(usize) -> io::Result<&'s [u8]>,
     ) -> io::Result<()> {
+        self.apply_with(manifest, |index, entry, apply| {
+            let bytes = section(index)?;
+            if bytes.len() as u64 != entry.bytes {
+                return Err(invalid("Section length differs from its manifest's"));
+            }
+            section::apply(bytes, apply.kinds, apply.truncated, apply.table, apply.scratch, apply.changes)
+        })
+    }
+
+    /// Applies one hour of a block: its record, and each present table it does not skip from
+    /// that table's block decoder, which `decoders` holds by table.
+    pub fn apply_block(
+        &mut self,
+        manifest: &Manifest<'_>,
+        decoders: &mut [Option<crate::block::TableDecoder<'_>>],
+        mut lost: Option<&mut Vec<(usize, io::Error)>>,
+    ) -> io::Result<()> {
+        self.apply_with(manifest, |_, entry, apply| {
+            let decoder = decoders
+                .get_mut(entry.table)
+                .and_then(Option::as_mut)
+                .ok_or_else(|| invalid("An hour names a table its block does not hold"))?;
+            let applied = decoder.hour(apply.table, apply.changes, entry, apply.truncated);
+            match (applied, lost.as_deref_mut()) {
+                // Damage of the table's own block loses it; any other failure is the walk's.
+                (Err(error), Some(lost)) if error.kind() == io::ErrorKind::InvalidData => {
+                    decoders[entry.table] = None;
+                    engine_allocation::reserve(lost, 1)?;
+                    lost.push((entry.table, error));
+                    Ok(())
+                }
+                (applied, _) => applied,
+            }
+        })
+    }
+
+    /// [`Self::apply`], each present table's changes applied by `section` with the manifest's
+    /// index of its entry, the entry, and the table it changes.
+    fn apply_with(
+        &mut self,
+        manifest: &Manifest<'_>,
+        mut section: impl FnMut(usize, &crate::manifest::Section, Apply<'_>) -> io::Result<()>,
+    ) -> io::Result<()> {
         if manifest.statuses.len() != self.tables.len() {
             return Err(invalid("Manifest disagrees with the schema's tables"));
         }
@@ -974,10 +1034,6 @@ impl State {
             if self.skipped[table] {
                 continue;
             }
-            let bytes = section(index)?;
-            if bytes.len() as u64 != entry.bytes {
-                return Err(invalid("Section length differs from its manifest's"));
-            }
             let truncated = matches!(self.statuses[table], Status::Truncated { .. });
             let recorded = self.columns[table];
             if self.keeps[table] && matches!(self.last[table], Some(Last::Held(_))) {
@@ -990,13 +1046,16 @@ impl State {
                     self.charge_both(table)?;
                 }
             }
-            section::apply(
-                bytes,
-                &self.kinds[table][..recorded],
-                truncated,
-                &mut self.tables[table],
-                &mut self.scratch,
-                &mut self.changes[table],
+            section(
+                index,
+                entry,
+                Apply {
+                    kinds: &self.kinds[table][..recorded],
+                    truncated,
+                    table: &mut self.tables[table],
+                    scratch: &mut self.scratch,
+                    changes: &mut self.changes[table],
+                },
             )?;
             // The columns past the recording's hold no inserted row's cell.
             for column in recorded..self.kinds[table].len() {

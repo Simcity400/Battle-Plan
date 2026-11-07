@@ -646,23 +646,6 @@ fn a_damaged_page_refuses_only_the_walks_over_it() {
     assert!(damaged.walk(&mut state, |_, _, _| Ok(true)).is_err());
 }
 
-/// A page's manifests are one per ordinal at its run's hour, even where the chain was
-/// written over what they hold.
-#[test]
-fn a_walk_takes_one_manifest_per_ordinal_at_its_run_s_hour() {
-    let runs = [(1, 100, 30)];
-    let short = |_, ordinal: u32| (ordinal != 29).then_some(100 + ordinal as i32);
-    let skipping = |_, ordinal: u32| Some(100 + ordinal as i32 + i32::from(ordinal >= 7));
-    let hours: [&dyn Fn(u32, u32) -> Option<i32>; 2] = [&short, &skipping];
-    for hour in hours {
-        let (bytes, _) = recording(&runs, hour, 1, |_| {});
-        let mut file = opened(bytes);
-        file.verify(true);
-        let segment = file.segments()[0];
-        assert!(walk_alone(&file, &segment).is_err());
-    }
-}
-
 /// A restart restores its run's dictionary chunks in id order, and the run's last restart
 /// ends its last segment.
 #[test]
@@ -765,7 +748,7 @@ fn begin(file: &Recording, segment: &Segment, state: &mut State) -> io::Result<(
 fn a_selection_restores_only_its_tables_and_refuses_reads_of_the_rest() {
     let runs = [(1, 0, 2 * envelope::UNIT_ORDINALS)];
     let damaged = TableId::Divisions.index() as u32;
-    let (bytes, _) = recording(&runs, every(&runs), 1, |page| {
+    let (bytes, _) = recording(&runs, every(&runs), 1, move |page| {
         if let Some(restart) = &mut page.restart {
             for table in restart
                 .tables
@@ -909,11 +892,11 @@ fn an_open_recording_keeps_its_revision_while_its_file_grows() {
 #[test]
 fn selected_units_always_check_their_digest_and_range() {
     for range in [false, true] {
-        let bytes = fixtures::native_recording(1, |page| {
+        let bytes = fixtures::native_recording(1, move |page| {
             let table = page
-                .units
+                .tables
                 .iter_mut()
-                .find(|extent| extent.stream != 0)
+                .find(|extent| extent.stream == TableId::Countries.index() as u32)
                 .unwrap();
             if range {
                 table.offset = u64::MAX;
@@ -927,7 +910,7 @@ fn selected_units_always_check_their_digest_and_range() {
         let refused = selected.walk(&mut state, |_, _, _| Ok(true)).unwrap_err();
         assert!(matches!(
             Damage::of(&refused).unwrap().scope,
-            DamageScope::Extent(extent) if extent.stream == TableId::Countries.index() as u32 + 1
+            DamageScope::Extent(extent) if extent.stream == TableId::Countries.index() as u32
         ));
         let mut unrelated = opened(bytes);
         unrelated.select(&[]);
@@ -943,9 +926,9 @@ fn declared_raw_lengths_are_checked_against_their_frames_before_buffers_are_size
     let countries = TableId::Countries.index() as u32;
     // No allocation could hold either: a refusal for lack of memory names no damage.
     for raw in [1 << 40, u64::MAX] {
-        let bytes = fixtures::native_recording(1, |page| {
-            for unit in page.units.iter_mut().filter(|unit| unit.stream != 0) {
-                unit.raw = raw;
+        let bytes = fixtures::native_recording(1, move |page| {
+            for block in &mut page.tables {
+                block.raw = raw;
             }
             page.restart.as_mut().unwrap().tables[countries as usize]
                 .extent
@@ -958,7 +941,7 @@ fn declared_raw_lengths_are_checked_against_their_frames_before_buffers_are_size
             assert!(
                 matches!(
                     Damage::of(&refused).unwrap().scope,
-                    DamageScope::Extent(extent) if extent.stream == countries + 1 && extent.raw == raw
+                    DamageScope::Extent(extent) if extent.stream == countries && extent.raw == raw
                 ),
                 "{refused}"
             );

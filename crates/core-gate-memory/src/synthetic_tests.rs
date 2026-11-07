@@ -3,7 +3,8 @@ use crate::{
     memory::{Census, Layout},
 };
 use replay::{
-    columnar_file::{FileWriter, Hour, Settings},
+    columnar_blocks::BlockBuilder,
+    columnar_file::{FileWriter, Settings},
     columnar_frames::{self, Recording},
 };
 use replay_columnar::{
@@ -177,11 +178,13 @@ fn two_hand_built_hours_walk_without_inventing_missing_rows() {
     let mut writer = FileWriter::create(
         Cursor::new(Vec::new()),
         identity,
-        columns.clone(),
-        Settings::RECORDING,
+        schema.len(),
+        Settings::LOW,
     )
     .unwrap();
     writer.start_run(1, 0, 10).unwrap();
+    let mut blocks = BlockBuilder::new().unwrap();
+    blocks.start_run(1, 10).unwrap();
     for hour in [10, 11] {
         let manifest = Manifest {
             branch: 1,
@@ -197,16 +200,11 @@ fn two_hand_built_hours_walk_without_inventing_missing_rows() {
             sections: Vec::new(),
         };
         let encoded = manifest.write(&columns).unwrap();
-        writer
-            .hour(Hour {
-                hour,
-                manifest: &encoded,
-                sections: &[],
-                statuses: &manifest.statuses,
-                read: &manifest.read,
-            })
-            .unwrap();
+        assert!(blocks.hour(&encoded, &[]).unwrap().is_none());
     }
+    writer
+        .block(blocks.end_run().unwrap().unwrap().block())
+        .unwrap();
     let bytes = writer.finish(|_| Ok(())).unwrap().file.into_inner();
     let mut recording = Recording::open(bytes).unwrap();
     recording.select(&[TableId::Countries]);

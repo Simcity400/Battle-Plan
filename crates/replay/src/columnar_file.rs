@@ -1,14 +1,16 @@
 //! A columnar recording file (`H4COLUMN` version 4, [`replay_columnar::envelope`]) written run
-//! by run. Each hour's manifest and sections go to their streams' units. A full unit position
-//! closes with its index page, and every [`Settings::restart_units`] positions also with a
-//! restart: the run's strings first used since its previous restart, then each table's state.
-//! The file ends with its root and footer.
+//! by run, a block at a time ([`crate::columnar_blocks`]): each block's hour records and its
+//! tables' blocks, every [`RESTART_BLOCKS`]th with a restart of every table, each stored as a
+//! change from the run's previous restart's but every [`KEYFRAME_RESTARTS`]th. A revision
+//! publishes everything written so far under a new root; the file ends with its root and
+//! footer.
+//!
+//! [`RESTART_BLOCKS`]: replay_columnar::envelope::RESTART_BLOCKS
+//! [`KEYFRAME_RESTARTS`]: replay_columnar::envelope::KEYFRAME_RESTARTS
 
 use replay_columnar::{
-    envelope::{self, Extent, IndexPage, RestartDirectory, RestartTable, RunDirectory},
-    framing,
+    envelope::{self, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, RunDirectory},
     leaf::{Reader, Writer as Bytes},
-    manifest::Status,
     state::{Bits, Column, Table},
 };
 use std::{
@@ -25,8 +27,8 @@ mod tests;
 pub const CAPTURE_NAME_BYTES: usize = "columnar.4294967295.h4col.partial".len();
 
 /// The name in its campaign's spool directory of the session's `n`th capture's columnar
-/// recording, counting from 0: `columnar.<n>.h4col`, `.partial` appended while its collector
-/// writes it. Written into `out`, so the collector names it without allocating.
+/// recording, counting from 0: `columnar.<n>.h4col`, `.partial` appended while the recorder
+/// writes it. Written into `out`, so it is named without allocating.
 pub fn capture_name(n: u32, partial: bool, out: &mut [u8; CAPTURE_NAME_BYTES]) -> &str {
     let mut cursor = io::Cursor::new(&mut out[..]);
     let suffix = if partial { ".partial" } else { "" };
@@ -93,46 +95,76 @@ fn counted(number: &str) -> Option<u32> {
     number.parse().ok().filter(|_| valid)
 }
 
-/// Compression and restart cadence.
+/// The compression a writer stores blocks and restarts with ([`crate::compression`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub level: i32,
-    /// Restart, page, directory and root extents' zstd window log; units take theirs from
-    /// `budget`.
-    pub window_log: u32,
-    /// A walker's decode memory across the streams of one unit.
-    pub budget: usize,
-    /// Unit positions from a run's start or restart to its next restart.
-    pub restart_units: u32,
+    /// A block's extents are compressed on the thread pool at once, as an offline writer does;
+    /// the recorder's writes one after another on its own thread.
+    pub parallel: bool,
 }
 
 impl Settings {
-    /// The recorder's: a restart every three units, as preparation's segments are planned.
-    pub const RECORDING: Self = Self {
+    /// Smaller files, more of the recorder's CPU while it writes: zstd 19.
+    pub const HIGH: Self = Self {
+        level: 19,
+        parallel: false,
+    };
+    /// Larger files, less of the recorder's CPU while it writes: zstd 3.
+    pub const LOW: Self = Self {
         level: 3,
-        window_log: 24,
-        budget: 30_000_000,
-        restart_units: 3,
+        parallel: false,
     };
 }
 
-/// One hour of the run under way.
-pub struct Hour<'a> {
-    pub hour: i32,
-    pub manifest: &'a [u8],
-    /// Each written section with its table, in table order.
-    pub sections: &'a [(usize, &'a [u8])],
-    pub statuses: &'a [Status],
-    /// The read bits, one per table.
-    pub read: &'a [u64],
+/// `raw` compressed at `level`, with `base`'s raw bytes as its dictionary when given.
+fn compress(level: i32, raw: &[u8], base: Option<&[u8]>) -> io::Result<Vec<u8>> {
+    let needed = (raw.len() + base.map_or(0, <[u8]>::len)).max(2);
+    let window = (usize::BITS - (needed - 1).leading_zeros()).clamp(10, LARGEST_WINDOW_LOG);
+    let mut compressor = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
+    compressor
+        .set_parameter(CParameter::CompressionLevel(level))
+        .map_err(zstd_error)?;
+    compressor
+        .set_parameter(CParameter::WindowLog(window))
+        .map_err(zstd_error)?;
+    if let Some(base) = base {
+        compressor.ref_prefix(base).map_err(zstd_error)?;
+    }
+    let mut stored = engine_allocation::vec(zstd::zstd_safe::compress_bound(raw.len()))?;
+    compressor.compress2(&mut stored, raw).map_err(zstd_error)?;
+    Ok(stored)
 }
 
-/// What an hour left of its unit position.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Position {
-    Open,
-    /// The position is full and must close before the next hour, with a restart when due.
-    Full { restart: bool },
+/// Each of `jobs` (raw bytes and the dictionary they are compressed with) compressed at
+/// `level`, on the thread pool when `parallel`.
+fn compress_all(level: i32, parallel: bool, jobs: &[(&[u8], Option<&[u8]>)]) -> io::Result<Vec<Vec<u8>>> {
+    use rayon::prelude::*;
+    if parallel {
+        jobs.par_iter().map(|&(raw, base)| compress(level, raw, base)).collect()
+    } else {
+        jobs.iter().map(|&(raw, base)| compress(level, raw, base)).collect()
+    }
+}
+
+/// The largest window a block is compressed with: what every zstd decoder takes by default.
+const LARGEST_WINDOW_LOG: u32 = 27;
+
+/// A finished block, as [`FileWriter::block`] takes it.
+pub struct Block<'a> {
+    pub first_hour: i32,
+    pub last_hour: i32,
+    pub hours: u32,
+    /// Its hour records, raw ([`replay_columnar::records`]).
+    pub records: &'a [u8],
+    /// Each table with hours in the block and its block, raw ([`replay_columnar::block`]),
+    /// ascending by table.
+    pub tables: &'a [(u32, Vec<u8>)],
+    pub sectioned: &'a [u64],
+    pub read: &'a [u64],
+    pub status_changed: &'a [u64],
+    /// The run's strings first used since its previous restart, then every table's state.
+    pub restart: Option<(&'a [Box<[u8]>], &'a [RestartState])>,
 }
 
 /// One table's restart.
@@ -142,13 +174,20 @@ pub struct RestartState {
     pub ids: Vec<u32>,
 }
 
-/// The finished file, and what its writing measured.
+/// The finished file, and what its writing stored.
 pub struct Finished<W> {
     pub file: W,
-    /// Per closed position, the decode memory its unit windows need.
-    pub walker_memory: Vec<usize>,
-    /// Raw bytes of every page, directory and the root.
-    pub index_bytes: u64,
+    pub written: Written,
+}
+
+/// Stored bytes a writer wrote, by what they hold.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Written {
+    pub records: u64,
+    pub tables: u64,
+    pub restarts: u64,
+    /// Pages, run directories, control records and roots.
+    pub index: u64,
 }
 
 /// The capture a file's runs belong to, which the root's control records hold: enough to
@@ -169,6 +208,8 @@ pub struct Capture {
     pub stop: Option<Stop>,
     /// The row recording's format version.
     pub format: u16,
+    /// The journal segments ([`crate::columnar_journal`]) the file holds all of.
+    pub journaled: u32,
     /// The capture's branch starts, gaps and control records but its clock witnesses, in
     /// recording order, each as the row recording encodes it (`spool::encode_record`).
     pub controls: Vec<Vec<u8>>,
@@ -185,14 +226,14 @@ pub struct Stop {
 }
 
 impl Capture {
-    const VERSION: u64 = 2;
+    const VERSION: u64 = 3;
 
     pub fn write(&self) -> io::Result<Vec<u8>> {
         self.write_with(&self.controls)
     }
 
     /// The record holding `controls` in place of the capture's own.
-    fn write_with(&self, controls: &[Vec<u8>]) -> io::Result<Vec<u8>> {
+    pub(crate) fn write_with(&self, controls: &[Vec<u8>]) -> io::Result<Vec<u8>> {
         let mut out = Bytes::new();
         out.varint(Self::VERSION)?;
         for bytes in [&self.campaign_id, &self.content] {
@@ -220,6 +261,7 @@ impl Capture {
             }
         }
         out.varint(u64::from(self.format))?;
+        out.varint(u64::from(self.journaled))?;
         write_controls(&mut out, controls)?;
         Ok(out.into_bytes())
     }
@@ -284,6 +326,8 @@ impl Capture {
         };
         let format = u16::try_from(reader.varint()?)
             .map_err(|_| invalid("A capture's format passes 2^16"))?;
+        let journaled = u32::try_from(reader.varint()?)
+            .map_err(|_| invalid("A capture's journal passes 2^32 segments"))?;
         let mut controls = Vec::new();
         read_controls(&mut reader, bytes.len(), &mut controls)?;
         reader.finish()?;
@@ -295,6 +339,7 @@ impl Capture {
             run_sessions,
             stop,
             format,
+            journaled,
             controls,
         })
     }
@@ -342,237 +387,57 @@ pub fn read_capture(
     Ok(Some(capture))
 }
 
-/// A file whose writer stopped after publishing a revision, read back to that revision.
-pub struct Unfinished {
-    /// The file's length through the revision's footer.
-    length: u64,
-    root: envelope::Root,
-    /// The capture the revision's control records hold.
-    pub capture: Option<Capture>,
-    /// The branch and last hour of its last run that holds an hour.
-    pub last: Option<(u64, i32)>,
-}
-
-impl Unfinished {
-    /// The last published revision of `file`: its last footer whose root verifies, read a
-    /// block at a time from the end, then the root's control records and run directories.
-    pub fn read<F: Read + Seek>(file: &mut F) -> io::Result<Self> {
-        const BLOCK: usize = 1 << 20;
-        let length = file.seek(SeekFrom::End(0))?;
-        let (header, footer) = (envelope::HEADER_BYTES as u64, envelope::FOOTER_BYTES as u64);
-        let mut start = [0; envelope::HEADER_BYTES];
-        if length < header + footer
-            || read_at(file, 0, &mut start).is_err()
-            || &start[..8] != envelope::MAGIC
-            || start[8..] != envelope::VERSION.to_le_bytes()
-        {
-            return Err(invalid("Not a version 4 H4COLUMN recording"));
-        }
-        let magic = envelope::FOOTER_MAGIC.len();
-        let mut block = engine_allocation::filled(BLOCK, 0_u8)?;
-        let (mut work, mut stop) = (0_u64, length);
-        while stop > header {
-            let first = stop.saturating_sub(BLOCK as u64).max(header);
-            let count = (stop - first) as usize;
-            read_at(file, first, &mut block[..count])?;
-            for at in (0..(count + 1).saturating_sub(magic)).rev() {
-                if block[at..at + magic] != *envelope::FOOTER_MAGIC {
-                    continue;
-                }
-                let end = first + (at + magic) as u64;
-                if end < header + footer {
-                    continue;
-                }
-                let mut bytes = [0; envelope::FOOTER_BYTES];
-                read_at(file, end - footer, &mut bytes)?;
-                let root = Extent {
-                    kind: envelope::Kind::Root,
-                    run: 0,
-                    stream: 0,
-                    first: 0,
-                    hours: 0,
-                    offset: u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes")),
-                    stored: u64::from_le_bytes(bytes[8..16].try_into().expect("eight bytes")),
-                    raw: 0,
-                    digest: bytes[16..32].try_into().expect("sixteen bytes"),
-                };
-                // A root sits right before its footer; candidates' roots together read at most
-                // twice the file's length.
-                if root.offset < header
-                    || root.offset.checked_add(root.stored) != Some(end - footer)
-                {
-                    continue;
-                }
-                work += root.stored;
-                if work > 2 * length {
-                    return Err(invalid("No root of the file verifies"));
-                }
-                if let Some(root) = extent_bytes(file, &root)
-                    .ok()
-                    .and_then(|raw| envelope::Root::read(&raw).ok())
-                {
-                    return Self::from_root(file, root, end);
-                }
-            }
-            if first == header {
-                break;
-            }
-            // A footer magic may straddle the block start.
-            stop = first + magic as u64 - 1;
-        }
-        Err(invalid("No root of the file verifies"))
-    }
-
-    fn from_root<F: Read + Seek>(file: &mut F, root: envelope::Root, length: u64) -> io::Result<Self> {
-        let capture = read_capture(&root.controls, |extent| extent_bytes(file, extent))?;
-        let mut last = None;
-        for (index, run) in root.runs.iter().enumerate().rev() {
-            let index = u32::try_from(index).map_err(|_| invalid("Runs pass 2^32"))?;
-            let directory = RunDirectory::read(&extent_bytes(file, run)?, run, index)?;
-            if directory.ordinals > 0 {
-                let hours = i32::try_from(directory.ordinals - 1)
-                    .map_err(|_| invalid("A run's hours pass 2^31"))?;
-                let hour = directory
-                    .first_hour
-                    .checked_add(hours)
-                    .ok_or_else(|| invalid("A run's last hour passes 2^31"))?;
-                last = Some((directory.branch, hour));
-                break;
-            }
-        }
-        Ok(Self {
-            length,
-            root,
-            capture,
-            last,
-        })
-    }
-
-    /// Cuts `file` back to the revision and appends the next, whose control records hold
-    /// `capture`, which names a session for every run. `sync` makes what is written durable
-    /// before what names it.
-    pub fn finish<F: Write + Seek>(
-        self,
-        file: &mut F,
-        truncate: impl FnOnce(&mut F, u64) -> io::Result<()>,
-        mut sync: impl FnMut(&mut F) -> io::Result<()>,
-        capture: &Capture,
-        settings: Settings,
-    ) -> io::Result<()> {
-        if capture.run_sessions.len() != self.root.runs.len() {
-            return Err(invalid("A capture names a session for every run"));
-        }
-        truncate(file, self.length)?;
-        file.seek(SeekFrom::Start(self.length))?;
-        let mut compressor = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
-        compressor
-            .set_parameter(CParameter::CompressionLevel(settings.level))
-            .map_err(zstd_error)?;
-        let window_log = settings.window_log;
-        let controls = append_extent(
-            file,
-            &mut compressor,
-            envelope::Kind::Controls,
-            &capture.write()?,
-            window_log,
-        )?;
-        sync(file)?;
-        let mut all = Vec::new();
-        engine_allocation::reserve(&mut all, 1)?;
-        all.push(controls);
-        let root = envelope::Root {
-            identity: self.root.identity,
-            revision: self.root.revision + 1,
-            runs: self.root.runs,
-            controls: all,
-        }
-        .write()?;
-        let root = append_extent(file, &mut compressor, envelope::Kind::Root, &root, window_log)?;
-        sync(file)?;
-        file.write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
-        file.flush()?;
-        sync(file)
-    }
-}
-
-/// `extent`'s raw bytes in `file`, once its digest is checked.
-fn extent_bytes<F: Read + Seek>(file: &mut F, extent: &Extent) -> io::Result<Vec<u8>> {
-    let stored = usize::try_from(extent.stored).map_err(|_| engine_allocation::oom())?;
-    let mut bytes = engine_allocation::filled(stored, 0_u8)?;
-    read_at(file, extent.offset, &mut bytes)?;
-    if envelope::digest(&bytes) != extent.digest {
-        return Err(invalid("An extent's bytes do not match its digest"));
-    }
-    zstd::stream::decode_all(bytes.as_slice())
-}
-
 fn read_at<F: Read + Seek>(file: &mut F, offset: u64, bytes: &mut [u8]) -> io::Result<()> {
     file.seek(SeekFrom::Start(offset))?;
     file.read_exact(bytes)
 }
 
-/// Compresses `raw` at the end of `file` as an extent of `kind`.
-fn append_extent<F: Write + Seek>(
-    file: &mut F,
-    compressor: &mut CCtx<'static>,
-    kind: envelope::Kind,
-    raw: &[u8],
-    window_log: u32,
-) -> io::Result<Extent> {
-    compressor
-        .set_parameter(CParameter::WindowLog(window_log))
-        .map_err(zstd_error)?;
-    let mut stored = engine_allocation::vec(zstd::zstd_safe::compress_bound(raw.len()))?;
-    compressor.compress2(&mut stored, raw).map_err(zstd_error)?;
-    let offset = file.stream_position()?;
-    file.write_all(&stored)?;
-    Ok(Extent {
-        kind,
-        run: 0,
-        stream: 0,
-        first: 0,
-        hours: 0,
-        offset,
-        stored: stored.len() as u64,
-        raw: raw.len() as u64,
-        digest: envelope::digest(&stored),
-    })
-}
-
-/// What a closed position wrote.
-#[derive(Default)]
-pub struct Closed {
-    /// Every nonempty stream's unit: the manifests' first, then the tables' in stream order.
-    pub units: Vec<Extent>,
-    pub restart: Option<RestartDirectory>,
-    /// The index page's raw bytes.
-    pub page_raw: u64,
-}
-
-/// The run being written: its ordinals so far, the chain after the last, and the unit
-/// position under way.
+/// The run being written.
 struct Run {
     run: u32,
     branch: u64,
     epoch: u8,
     first_hour: i32,
-    last_hour: i32,
     ordinal: u32,
     chain: [u8; 32],
-    /// The position's first and last hour; none before its first ordinal.
-    position: Option<(i32, i32)>,
-    sectioned: Vec<u64>,
-    read: Vec<u64>,
-    status_changed: Vec<u64>,
-    /// Each table's status at the run's last ordinal; none before its first.
-    statuses: Option<Vec<Status>>,
+    pages: Vec<Extent>,
     /// Each restart's dictionary chunk's first id, by restart ordinal.
     chunks: Vec<u32>,
     /// The run's dictionary ids the restarts so far hold.
     ids: u32,
-    pages: Vec<Extent>,
-    /// The full position's restart is due.
-    full: Option<bool>,
+    /// The run's previous restart's raw bytes of every table, which the next restart's are a
+    /// change from; none before its first.
+    previous: Vec<Vec<u8>>,
+    /// Each table's block of the last page, raw, which its next block is a change from; none
+    /// past a restart or before the run's first page.
+    blocks: Vec<Option<Vec<u8>>>,
+}
+
+/// Where a writer takes up a file it wrote before ([`FileWriter::resume`]): the file's runs, the
+/// last published revision, and, when its last run may go on, that run.
+pub struct Resumed {
+    pub length: u64,
+    /// The branch and hour of the last hour the file holds.
+    pub last: Option<(u64, i32)>,
+    pub identity: envelope::Identity,
+    pub revision: u64,
+    pub runs: Vec<Extent>,
+    pub controls: Vec<Extent>,
+    /// The control records the file's capture holds.
+    pub controls_written: usize,
+    pub open: Option<OpenRun>,
+}
+
+/// A run a writer takes up: its directory and restarts, and every table's raw bytes at its last
+/// restart.
+pub struct OpenRun {
+    pub run: u32,
+    pub directory: RunDirectory,
+    pub chunks: Vec<u32>,
+    pub ids: u32,
+    pub previous: Vec<Vec<u8>>,
+    /// Each table's block of the run's last page, raw, when that page carries no restart.
+    pub blocks: Vec<Option<Vec<u8>>>,
 }
 
 pub struct FileWriter<W: Write + Seek> {
@@ -581,71 +446,101 @@ pub struct FileWriter<W: Write + Seek> {
     compressor: CCtx<'static>,
     /// Taken by the root.
     identity: Option<envelope::Identity>,
-    identity_bytes: Vec<u8>,
-    /// Each table's column count, as manifests are written with.
-    columns: Vec<usize>,
+    tables: usize,
     run: Option<Run>,
     runs: Vec<Extent>,
-    manifests: Bytes,
-    units: Vec<Bytes>,
-    /// Per closed position, the decode memory its unit windows need.
-    walker_memory: Vec<usize>,
-    /// Raw bytes of every page, directory and the root.
-    index_bytes: u64,
-    /// A write failed partway: what the file holds no longer matches what was given.
-    poisoned: bool,
     /// The last root revision published; zero before the first.
     revision: u64,
-    /// The open position's unit pieces earlier revisions published.
-    pieces: Vec<Extent>,
-    /// The ordinal the open position's unpublished bytes start at, once a revision cut them.
-    pending_from: Option<u32>,
     /// Earlier revisions' extents of the control records they added, and how many those hold.
     control_chunks: Vec<Extent>,
     controls_written: usize,
+    /// A write failed partway: what the file holds no longer matches what was given.
+    poisoned: bool,
+    written: Written,
+    /// The branch and hour of the last hour written.
+    last: Option<(u64, i32)>,
+    /// Changes each page before it is written, for tests of damage.
+    #[cfg(any(test, feature = "test-support"))]
+    tamper: Option<Box<dyn Fn(&mut IndexPage) + Send>>,
 }
 
 impl<W: Write + Seek> FileWriter<W> {
     /// Starts the file at its header.
-    pub fn create(
-        mut file: W,
-        identity: envelope::Identity,
-        columns: Vec<usize>,
-        settings: Settings,
-    ) -> io::Result<Self> {
-        if settings.restart_units == 0 {
-            return Err(invalid("Restarts need at least one unit"));
-        }
+    pub fn create(mut file: W, identity: envelope::Identity, tables: usize, settings: Settings) -> io::Result<Self> {
+        file.write_all(envelope::MAGIC)?;
+        file.write_all(&envelope::VERSION.to_le_bytes())?;
+        Self::with(file, identity, tables, settings)
+    }
+
+    fn with(file: W, identity: envelope::Identity, tables: usize, settings: Settings) -> io::Result<Self> {
         let mut compressor = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
         compressor
             .set_parameter(CParameter::CompressionLevel(settings.level))
             .map_err(zstd_error)?;
-        file.write_all(envelope::MAGIC)?;
-        file.write_all(&envelope::VERSION.to_le_bytes())?;
-        let identity_bytes = identity.chain_bytes()?;
-        let mut units = Vec::new();
-        engine_allocation::reserve(&mut units, columns.len())?;
-        units.resize_with(columns.len(), Bytes::new);
         Ok(Self {
             file,
             settings,
             compressor,
             identity: Some(identity),
-            identity_bytes,
-            columns,
+            tables,
             run: None,
             runs: Vec::new(),
-            manifests: Bytes::new(),
-            units,
-            walker_memory: Vec::new(),
-            index_bytes: 0,
-            poisoned: false,
             revision: 0,
-            pieces: Vec::new(),
-            pending_from: None,
             control_chunks: Vec::new(),
             controls_written: 0,
+            poisoned: false,
+            written: Written::default(),
+            last: None,
+            #[cfg(any(test, feature = "test-support"))]
+            tamper: None,
         })
+    }
+
+    /// A writer changing each page with `tamper` before it is written, for tests of damage.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_tamper(mut self, tamper: impl Fn(&mut IndexPage) + Send + 'static) -> Self {
+        self.tamper = Some(Box::new(tamper));
+        self
+    }
+
+    /// Takes up `file`, which `resumed` read, after its last published revision: what follows
+    /// it is cut, and its last run goes on when `resumed` holds it open.
+    pub fn resume(
+        mut file: W,
+        resumed: Resumed,
+        tables: usize,
+        settings: Settings,
+        truncate: impl FnOnce(&mut W, u64) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        truncate(&mut file, resumed.length)?;
+        file.seek(SeekFrom::Start(resumed.length))?;
+        let mut writer = Self::with(file, resumed.identity, tables, settings)?;
+        writer.revision = resumed.revision;
+        writer.last = resumed.last;
+        writer.runs = resumed.runs;
+        writer.control_chunks = resumed.controls.get(1..).unwrap_or(&[]).to_vec();
+        writer.controls_written = resumed.controls_written;
+        if let Some(open) = resumed.open {
+            if writer.runs.len() != open.run as usize + 1 {
+                return Err(invalid("A run taken up is the file's last"));
+            }
+            writer.runs.pop();
+            writer.run = Some(Run {
+                run: open.run,
+                branch: open.directory.branch,
+                epoch: open.directory.epoch,
+                first_hour: open.directory.first_hour,
+                ordinal: open.directory.ordinals,
+                chain: open.directory.chain,
+                pages: open.directory.pages,
+                chunks: open.chunks,
+                ids: open.ids,
+                previous: open.previous,
+                // A run is taken up after a restart, or at a page no later walk starts past.
+                blocks: open.blocks,
+            });
+        }
+        Ok(writer)
     }
 
     fn usable(&self) -> io::Result<()> {
@@ -662,20 +557,24 @@ impl<W: Write + Seek> FileWriter<W> {
         result
     }
 
-    /// Each table's column count, as the file's manifests are written with.
-    pub fn columns(&self) -> &[usize] {
-        &self.columns
-    }
-
     /// Whether a run is under way.
     pub fn running(&self) -> bool {
         self.run.is_some()
     }
 
-    /// The runs a revision now publishes: every finished run, and the one under way once it
-    /// holds an hour.
+    /// The runs the file holds, the one under way included once it holds an hour.
     pub fn published_runs(&self) -> usize {
         self.runs.len() + usize::from(self.run.as_ref().is_some_and(|run| run.ordinal > 0))
+    }
+
+    /// The stored bytes written so far.
+    pub fn written(&self) -> Written {
+        self.written
+    }
+
+    /// The branch and hour of the last hour written.
+    pub fn last(&self) -> Option<(u64, i32)> {
+        self.last
     }
 
     /// Starts a run of `branch` at `first_hour`, finishing the run under way first. A run
@@ -684,298 +583,231 @@ impl<W: Write + Seek> FileWriter<W> {
         self.usable()?;
         self.finish_run()?;
         let run = u32::try_from(self.runs.len()).map_err(|_| invalid("Runs pass 2^32"))?;
-        let words = self.columns.len().div_ceil(64);
         self.run = Some(Run {
             run,
             branch,
             epoch,
             first_hour,
-            last_hour: first_hour,
             ordinal: 0,
-            chain: envelope::chain_start(&self.identity_bytes, run),
-            position: None,
-            sectioned: engine_allocation::filled(words, 0_u64)?,
-            read: engine_allocation::filled(words, 0_u64)?,
-            status_changed: engine_allocation::filled(words, 0_u64)?,
-            statuses: None,
+            chain: [0; 32],
+            pages: Vec::new(),
             chunks: Vec::new(),
             ids: 0,
-            pages: Vec::new(),
-            full: None,
+            previous: Vec::new(),
+            blocks: Vec::new(),
         });
         Ok(())
     }
 
-    /// Appends the next hour of the run under way. An hour refused before anything is
-    /// written leaves the file usable.
-    pub fn hour(&mut self, hour: Hour<'_>) -> io::Result<Position> {
+    /// Writes the next block of the run under way: its records, its tables' blocks, the
+    /// restart ending it when it carries one, and its page.
+    pub fn block(&mut self, block: Block<'_>) -> io::Result<()> {
         self.usable()?;
-        let run = self
-            .run
-            .as_ref()
-            .ok_or_else(|| invalid("An hour needs a run under way"))?;
-        if run.full.is_some() {
-            return Err(invalid("A full unit position closes before the next hour"));
-        }
-        let expected = if run.ordinal == 0 {
-            Some(run.first_hour)
-        } else {
-            run.last_hour.checked_add(1)
-        };
-        if expected != Some(hour.hour) {
-            return Err(invalid("A run's hours are continuous from its first"));
-        }
-        if run.ordinal == u32::MAX {
-            return Err(invalid("A run's ordinals pass 2^32"));
-        }
-        if hour.statuses.len() != self.columns.len() || hour.read.len() != run.read.len() {
-            return Err(invalid("An hour covers every table"));
-        }
-        if !hour
-            .sections
-            .windows(2)
-            .all(|pair| pair[0].0 < pair[1].0)
-            || hour
-                .sections
-                .last()
-                .is_some_and(|&(table, _)| table >= self.columns.len())
-        {
-            return Err(invalid("An hour's sections name its tables in order"));
-        }
-        let result = self.append(hour);
+        let result = self.write_block(block);
         self.poison(result)
     }
 
-    fn append(&mut self, hour: Hour<'_>) -> io::Result<Position> {
-        let run = self.run.as_mut().expect("a run under way");
-        for &(table, section) in hour.sections {
-            framing::put_section(&mut self.units[table], section)?;
-            set(&mut run.sectioned, table);
+    fn write_block(&mut self, block: Block<'_>) -> io::Result<()> {
+        let run = self.run.as_ref().ok_or_else(|| invalid("A block needs a run under way"))?;
+        let (index, first) = (run.run, run.ordinal);
+        if first % envelope::UNIT_ORDINALS != 0 || block.hours == 0 || block.hours > envelope::UNIT_ORDINALS {
+            return Err(invalid("A block follows its run's last whole block"));
         }
-        framing::put_manifest(&mut self.manifests, hour.manifest)?;
-        for (table, status) in hour.statuses.iter().enumerate() {
-            if run
-                .statuses
-                .as_ref()
-                .is_none_or(|before| before[table] != *status)
-            {
-                set(&mut run.status_changed, table);
+        let expected = i64::from(run.first_hour) + i64::from(first);
+        if i64::from(block.first_hour) != expected
+            || i64::from(block.last_hour) != expected + i64::from(block.hours) - 1
+        {
+            return Err(invalid("A block's hours are its run's next"));
+        }
+        if block.tables.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+            || block.tables.last().is_some_and(|&(table, _)| table as usize >= self.tables)
+        {
+            return Err(invalid("A block's tables are in order"));
+        }
+        let mut chained = engine_allocation::filled(self.tables.div_ceil(64), 0_u64)?;
+        let mut held = std::mem::take(&mut self.run.as_mut().expect("a run under way").blocks);
+        if held.len() < self.tables {
+            engine_allocation::resize_default(&mut held, self.tables)?;
+        }
+        let mut jobs: Vec<(&[u8], Option<&[u8]>)> = engine_allocation::vec(1 + block.tables.len())?;
+        jobs.push((block.records, None));
+        for (table, payload) in block.tables {
+            let base = held[*table as usize].as_deref();
+            if base.is_some() {
+                chained[*table as usize / 64] |= 1 << (table % 64);
+            }
+            jobs.push((payload, base));
+        }
+        let mut stored = compress_all(self.settings.level, self.settings.parallel, &jobs)?.into_iter();
+        let records = self.append(envelope::Kind::Records, index, 0, first, block.hours, block.records.len(), &stored.next().expect("records"))?;
+        self.written.records += records.stored;
+        let mut tables = engine_allocation::vec(block.tables.len())?;
+        for ((table, payload), stored) in block.tables.iter().zip(stored) {
+            let extent = self.append(envelope::Kind::Block, index, *table, first, block.hours, payload.len(), &stored)?;
+            self.written.tables += extent.stored;
+            tables.push(extent);
+        }
+        // A walk starts past a restart with no block before it.
+        let mut next = engine_allocation::collect_vec((0..self.tables).map(|_| None))?;
+        if block.restart.is_none() {
+            for (table, payload) in block.tables {
+                next[*table as usize] = Some(engine_allocation::copy_vec(payload)?);
             }
         }
-        match &mut run.statuses {
-            Some(held) => held.copy_from_slice(hour.statuses),
-            None => run.statuses = Some(engine_allocation::copy_vec(hour.statuses)?),
+        self.run.as_mut().expect("a run under way").blocks = next;
+        let restart = match block.restart {
+            Some((strings, states)) => Some(self.restart(strings, states, block.last_hour, first + block.hours - 1)?),
+            None => None,
+        };
+        let run = self.run.as_mut().expect("a run under way");
+        run.chain = envelope::chain_block(&run.chain, &records, &tables);
+        let bits = |words: &[u64]| Bits::from_words(engine_allocation::copy_vec(words)?);
+        #[allow(unused_mut)]
+        let mut page = IndexPage {
+            run: index,
+            first,
+            hours: block.hours,
+            first_hour: block.first_hour,
+            last_hour: block.last_hour,
+            records,
+            tables,
+            chained: Bits::from_words(chained)?,
+            restart,
+            sectioned: bits(block.sectioned)?,
+            read: bits(block.read)?,
+            status_changed: bits(block.status_changed)?,
+            chain: run.chain,
+        };
+        #[cfg(any(test, feature = "test-support"))]
+        if let Some(tamper) = &self.tamper {
+            tamper(&mut page);
         }
-        for (word, bits) in run.read.iter_mut().zip(hour.read) {
-            *word |= bits;
-        }
-        run.chain = envelope::chain_hour(
-            &run.chain,
-            hour.manifest,
-            hour.sections.iter().map(|&(_, section)| section),
-        );
-        run.position = Some(
-            run.position
-                .map_or((hour.hour, hour.hour), |(first, _)| (first, hour.hour)),
-        );
-        run.last_hour = hour.hour;
-        run.ordinal += 1;
-        if run.ordinal % envelope::UNIT_ORDINALS != 0 {
-            return Ok(Position::Open);
-        }
-        let units = run.ordinal / envelope::UNIT_ORDINALS;
-        let restart = units % self.settings.restart_units == 0;
-        run.full = Some(restart);
-        Ok(Position::Full { restart })
+        let page = page.write()?;
+        let page = self.extent(envelope::Kind::IndexPage, index, 0, first, block.hours, &page, None)?;
+        self.written.index += page.stored;
+        let run = self.run.as_mut().expect("a run under way");
+        engine_allocation::reserve(&mut run.pages, 1)?;
+        run.pages.push(page);
+        run.ordinal += block.hours;
+        self.last = Some((run.branch, block.last_hour));
+        Ok(())
     }
 
-    /// Closes the full position the last hour filled, when no restart is due.
-    pub fn close_position(&mut self) -> io::Result<Closed> {
-        self.usable()?;
-        if self.due()? {
-            return Err(invalid("A due restart was not given"));
-        }
-        let result = self.close::<&[u8]>(None);
-        self.poison(result)
-    }
-
-    /// Closes the full position the last hour filled with its due restart: the run's strings
-    /// first used since its previous restart, in id order, then every table's state, in
-    /// table order.
-    pub fn close_with_restart<S: AsRef<[u8]>>(
-        &mut self,
-        strings: &[S],
-        tables: &[RestartState],
-    ) -> io::Result<Closed> {
-        self.usable()?;
-        if !self.due()? {
-            return Err(invalid("A restart is due only every restart_units positions"));
-        }
-        if tables.len() != self.columns.len() {
+    /// The restart after ordinal `after`: the run's strings first used since its previous
+    /// restart, then each table's state, a change from the previous restart's unless it is
+    /// stored whole.
+    fn restart(&mut self, strings: &[Box<[u8]>], states: &[RestartState], hour: i32, after: u32) -> io::Result<RestartDirectory> {
+        if states.len() != self.tables {
             return Err(invalid("A restart holds every table"));
         }
-        let result = self.close(Some((strings, tables)));
-        self.poison(result)
-    }
-
-    /// Whether the full position the last hour filled is due a restart.
-    fn due(&self) -> io::Result<bool> {
-        self.run
-            .as_ref()
-            .and_then(|run| run.full)
-            .ok_or_else(|| invalid("Only a full unit position closes early"))
-    }
-
-    /// Closes the run's last position, short or not, and writes the run's directory. A full
-    /// last position whose restart was due closes without one: a restart only lets a walk
-    /// start there, and the run ends anyway.
-    pub fn finish_run(&mut self) -> io::Result<Closed> {
-        self.usable()?;
-        if self.run.is_none() {
-            return Ok(Closed::default());
+        let run = self.run.as_ref().expect("a run under way");
+        let index = run.run;
+        let first_id = run.ids;
+        let count = u32::try_from(strings.len()).map_err(|_| invalid("A run's dictionary passes 2^32 ids"))?;
+        let ids = first_id
+            .checked_add(count)
+            .ok_or_else(|| invalid("A run's dictionary passes 2^32 ids"))?;
+        let mut chunk = Bytes::new();
+        chunk.varint(u64::from(count))?;
+        for string in strings {
+            chunk.varint(string.len() as u64)?;
+            chunk.raw(string)?;
         }
-        let result = self.end_run();
+        let chunk = self.extent(envelope::Kind::DictionaryChunk, index, 0, after, 0, chunk.bytes(), None)?;
+        self.written.restarts += chunk.stored;
+        let run = self.run.as_mut().expect("a run under way");
+        let ordinal = u32::try_from(run.chunks.len()).map_err(|_| invalid("Restarts pass 2^32"))?;
+        engine_allocation::reserve(&mut run.chunks, 1)?;
+        run.chunks.push(first_id);
+        run.ids = ids;
+        let starts = engine_allocation::copy_vec(&run.chunks)?;
+        let whole = ordinal % KEYFRAME_RESTARTS == 0;
+        let previous = std::mem::take(&mut run.previous);
+        let mut jobs: Vec<(&[u8], Option<&[u8]>)> = engine_allocation::vec(states.len())?;
+        for (table, state) in states.iter().enumerate() {
+            if state.ids.iter().any(|&id| id >= ids) {
+                return Err(invalid("A table's restart references a dictionary id past the run's"));
+            }
+            let base = (!whole).then(|| previous.get(table).map(Vec::as_slice)).flatten();
+            jobs.push((&state.bytes, base));
+        }
+        let stored = compress_all(self.settings.level, self.settings.parallel, &jobs)?;
+        let mut tables = engine_allocation::vec(states.len())?;
+        for (table, (state, stored)) in states.iter().zip(stored).enumerate() {
+            let stream = u32::try_from(table).map_err(|_| invalid("Tables pass 2^32"))?;
+            let extent = self.append(envelope::Kind::RestartTable, index, stream, after, 0, state.bytes.len(), &stored)?;
+            self.written.restarts += extent.stored;
+            tables.push(RestartTable {
+                table: stream,
+                extent,
+                base: jobs[table].1.is_some(),
+                chunks: chunks_holding(&starts, &state.ids)?,
+            });
+        }
+        let run = self.run.as_mut().expect("a run under way");
+        run.previous = engine_allocation::collect_vec(states.iter().map(|state| state.bytes.clone()))?;
+        Ok(RestartDirectory {
+            after,
+            hour,
+            ordinal,
+            chunk,
+            ids: (first_id, count),
+            tables,
+        })
+    }
+
+    /// Ends the run under way with its directory.
+    pub fn finish_run(&mut self) -> io::Result<()> {
+        self.usable()?;
+        // A run that took no hour wrote nothing and is none.
+        let Some(run) = self.run.take().filter(|run| run.ordinal > 0) else {
+            return Ok(());
+        };
+        let result = self.directory(&run).map(|directory| self.runs.push(directory));
         self.poison(result)
     }
 
-    fn end_run(&mut self) -> io::Result<Closed> {
-        let closed = self.close::<&[u8]>(None)?;
-        let run = self.run.take().expect("a run under way");
+    fn directory(&mut self, run: &Run) -> io::Result<Extent> {
         let directory = RunDirectory {
             branch: run.branch,
             epoch: run.epoch,
             first_hour: run.first_hour,
             ordinals: run.ordinal,
             chain: run.chain,
-            pages: run.pages,
+            pages: engine_allocation::copy_vec(&run.pages)?,
         }
         .write(run.run)?;
-        self.index_bytes += directory.len() as u64;
-        let directory = self.extent(
-            envelope::Kind::RunDirectory,
-            run.run,
-            0,
-            0,
-            0,
-            &directory,
-            self.settings.window_log,
-        )?;
+        let extent = self.extent(envelope::Kind::RunDirectory, run.run, 0, 0, 0, &directory, None)?;
+        self.written.index += extent.stored;
         engine_allocation::reserve(&mut self.runs, 1)?;
-        self.runs.push(directory);
-        Ok(closed)
+        Ok(extent)
     }
 
-    /// Finishes the run under way, then appends the root and the footer naming it. `sync`
-    /// makes what is written durable before what names it, as [`Self::revise`]'s does.
-    pub fn finish(
-        self,
-        mut sync: impl FnMut(&mut W) -> io::Result<()>,
-    ) -> io::Result<Finished<W>> {
-        self.finish_with(None, &mut sync)
-    }
-
-    /// [`Self::finish`], the root's control records holding `capture`, which names a session
-    /// for every run.
-    pub fn finish_with_capture(
-        self,
-        capture: &Capture,
-        mut sync: impl FnMut(&mut W) -> io::Result<()>,
-    ) -> io::Result<Finished<W>> {
-        self.finish_with(Some(capture), &mut sync)
-    }
-
-    /// Publishes everything appended so far as the next root revision: the open position's
-    /// unpublished bytes as each stream's next unit piece, its page, the active run's directory
-    /// and a root whose control records hold `capture`. `sync` makes what is written durable
-    /// before what names it. A failure leaves the file at its last published revision.
-    pub fn revise(
-        &mut self,
-        capture: Option<&Capture>,
-        mut sync: impl FnMut(&mut W) -> io::Result<()>,
-    ) -> io::Result<()> {
+    /// Publishes everything written so far as the next root revision: the run under way's
+    /// directory and a root whose control records hold `capture`. `sync` makes what is written
+    /// durable before what names it. A failure leaves the file at its last published revision.
+    pub fn revise(&mut self, capture: Option<&Capture>, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<()> {
         self.usable()?;
         let result = self.publish(capture, &mut sync);
         self.poison(result)
     }
 
-    fn publish(
-        &mut self,
-        capture: Option<&Capture>,
-        sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let mut runs = Vec::new();
-        engine_allocation::reserve(&mut runs, self.runs.len() + 1)?;
-        runs.extend_from_slice(&self.runs);
-        if let Some(run) = self.run.as_ref().filter(|run| run.ordinal > 0) {
-            let (index, ordinal, position) = (run.run, run.ordinal, run.position);
-            let mut pages = engine_allocation::copy_vec(&run.pages)?;
-            if let Some((first_hour, last_hour)) = position {
-                let first = (ordinal - 1) / envelope::UNIT_ORDINALS * envelope::UNIT_ORDINALS;
-                let from = self.pending_from.unwrap_or(first);
-                if ordinal > from {
-                    let written = self.write_pending(index, from, ordinal - from, true)?;
-                    engine_allocation::reserve(&mut self.pieces, written.len())?;
-                    self.pieces.extend(written);
-                    self.pieces.sort_unstable_by_key(|piece| (piece.stream, piece.first));
-                }
-                self.pending_from = Some(ordinal);
-                let run = self.run.as_ref().expect("a run under way");
-                let bits = |words: &[u64]| Bits::from_words(engine_allocation::copy_vec(words)?);
-                let page = IndexPage {
-                    run: index,
-                    first,
-                    hours: ordinal - first,
-                    first_hour,
-                    last_hour,
-                    units: engine_allocation::copy_vec(&self.pieces)?,
-                    restart: None,
-                    sectioned: bits(&run.sectioned)?,
-                    read: bits(&run.read)?,
-                    status_changed: bits(&run.status_changed)?,
-                    chain: run.chain,
-                }
-                .write()?;
-                self.index_bytes += page.len() as u64;
-                let page = self.extent(
-                    envelope::Kind::IndexPage,
-                    index,
-                    0,
-                    first,
-                    ordinal - first,
-                    &page,
-                    self.settings.window_log,
-                )?;
-                engine_allocation::reserve(&mut pages, 1)?;
-                pages.push(page);
+    fn publish(&mut self, capture: Option<&Capture>, sync: &mut dyn FnMut(&mut W) -> io::Result<()>) -> io::Result<()> {
+        let mut runs = engine_allocation::copy_vec(&self.runs)?;
+        if let Some(run) = self.run.take() {
+            let directory = self.directory(&run);
+            self.run = Some(run);
+            if self.run.as_ref().is_some_and(|run| run.ordinal > 0) {
+                runs.push(directory?);
             }
-            let run = self.run.as_ref().expect("a run under way");
-            let directory = RunDirectory {
-                branch: run.branch,
-                epoch: run.epoch,
-                first_hour: run.first_hour,
-                ordinals: run.ordinal,
-                chain: run.chain,
-                pages,
-            }
-            .write(index)?;
-            self.index_bytes += directory.len() as u64;
-            let directory = self.extent(
-                envelope::Kind::RunDirectory,
-                index,
-                0,
-                0,
-                0,
-                &directory,
-                self.settings.window_log,
-            )?;
-            runs.push(directory);
         }
+        self.root(runs, capture, sync)
+    }
+
+    fn root(&mut self, runs: Vec<Extent>, capture: Option<&Capture>, sync: &mut dyn FnMut(&mut W) -> io::Result<()>) -> io::Result<()> {
         let controls = self.controls(capture, runs.len())?;
         sync(&mut self.file)?;
-        let identity = self
-            .identity
-            .take()
-            .ok_or_else(|| invalid("A finished file takes no revision"))?;
+        let identity = self.identity.take().ok_or_else(|| invalid("A finished file takes no revision"))?;
         let root = envelope::Root {
             identity,
             revision: self.revision + 1,
@@ -984,12 +816,11 @@ impl<W: Write + Seek> FileWriter<W> {
         };
         let written = root.write();
         self.identity = Some(root.identity);
-        let root = written?;
-        self.index_bytes += root.len() as u64;
-        let root = self.extent(envelope::Kind::Root, 0, 0, 0, 0, &root, self.settings.window_log)?;
+        let root = self.extent(envelope::Kind::Root, 0, 0, 0, 0, &written?, None)?;
+        self.written.index += root.stored;
         sync(&mut self.file)?;
-        self.file
-            .write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
+        self.file.write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
+        self.file.flush()?;
         sync(&mut self.file)?;
         self.revision += 1;
         Ok(())
@@ -1008,272 +839,50 @@ impl<W: Write + Seek> FileWriter<W> {
                 .controls
                 .get(self.controls_written..)
                 .ok_or_else(|| invalid("A capture's control records only grow"))?;
-            let window_log = self.settings.window_log;
             if !added.is_empty() {
                 let mut bytes = Bytes::new();
                 write_controls(&mut bytes, added)?;
-                let bytes = bytes.into_bytes();
-                self.index_bytes += bytes.len() as u64;
-                let chunk = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, window_log)?;
+                let chunk = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, bytes.bytes(), None)?;
+                self.written.index += chunk.stored;
                 engine_allocation::reserve(&mut self.control_chunks, 1)?;
                 self.control_chunks.push(chunk);
                 self.controls_written = capture.controls.len();
             }
             let bytes = capture.write_with(&[])?;
-            self.index_bytes += bytes.len() as u64;
+            let record = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, None)?;
+            self.written.index += record.stored;
             engine_allocation::reserve(&mut controls, 1 + self.control_chunks.len())?;
-            controls.push(self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, window_log)?);
+            controls.push(record);
             controls.extend_from_slice(&self.control_chunks);
         }
         Ok(controls)
     }
 
-    fn finish_with(
-        mut self,
-        capture: Option<&Capture>,
-        sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
-    ) -> io::Result<Finished<W>> {
+    /// Finishes the run under way, then appends the root and the footer naming it. `sync`
+    /// makes what is written durable before what names it.
+    pub fn finish(self, sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Finished<W>> {
+        self.finish_with(None, sync)
+    }
+
+    /// [`Self::finish`], the root's control records holding `capture`, which names a session
+    /// for every run.
+    pub fn finish_with_capture(self, capture: &Capture, sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Finished<W>> {
+        self.finish_with(Some(capture), sync)
+    }
+
+    fn finish_with(mut self, capture: Option<&Capture>, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Finished<W>> {
+        self.usable()?;
         self.finish_run()?;
-        let controls = self.controls(capture, self.runs.len())?;
-        sync(&mut self.file)?;
-        let identity = self
-            .identity
-            .take()
-            .ok_or_else(|| invalid("A file has one root"))?;
-        let root = envelope::Root {
-            identity,
-            revision: self.revision + 1,
-            runs: std::mem::take(&mut self.runs),
-            controls,
-        }
-        .write()?;
-        self.index_bytes += root.len() as u64;
-        let root = self.extent(
-            envelope::Kind::Root,
-            0,
-            0,
-            0,
-            0,
-            &root,
-            self.settings.window_log,
-        )?;
-        sync(&mut self.file)?;
-        self.file
-            .write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
-        self.file.flush()?;
-        sync(&mut self.file)?;
+        let runs = std::mem::take(&mut self.runs);
+        self.root(runs, capture, &mut sync)?;
         Ok(Finished {
             file: self.file,
-            walker_memory: self.walker_memory,
-            index_bytes: self.index_bytes,
+            written: self.written,
         })
     }
 
-    /// Closes the position under way: every stream's unit, the restart ending it, and its
-    /// page. Nothing happens before the position's first hour.
-    fn close<S: AsRef<[u8]>>(
-        &mut self,
-        restart: Option<(&[S], &[RestartState])>,
-    ) -> io::Result<Closed> {
-        let run = self
-            .run
-            .as_mut()
-            .ok_or_else(|| invalid("A position needs a run under way"))?;
-        run.full = None;
-        let Some((first_hour, last_hour)) = run.position.take() else {
-            return Ok(Closed::default());
-        };
-        let (index, ordinal) = (run.run, run.ordinal);
-        let first = (ordinal - 1) / envelope::UNIT_ORDINALS * envelope::UNIT_ORDINALS;
-        let hours = ordinal - first;
-        let units = self.units(index, first, hours)?;
-        let restart = match restart {
-            Some((strings, tables)) => Some(self.restart(strings, tables, last_hour)?),
-            None => None,
-        };
-        let run = self.run.as_mut().expect("a run under way");
-        let take = |bits: &mut Vec<u64>| -> io::Result<Bits> {
-            let zeroed = engine_allocation::filled(bits.len(), 0_u64)?;
-            Bits::from_words(std::mem::replace(bits, zeroed))
-        };
-        let page = IndexPage {
-            run: index,
-            first,
-            hours,
-            first_hour,
-            last_hour,
-            units,
-            restart,
-            sectioned: take(&mut run.sectioned)?,
-            read: take(&mut run.read)?,
-            status_changed: take(&mut run.status_changed)?,
-            chain: run.chain,
-        };
-        let written = page.write();
-        let IndexPage { units, restart, .. } = page;
-        let page = written?;
-        let page_raw = page.len() as u64;
-        self.index_bytes += page_raw;
-        let page = self.extent(
-            envelope::Kind::IndexPage,
-            index,
-            0,
-            first,
-            hours,
-            &page,
-            self.settings.window_log,
-        )?;
-        let run = self.run.as_mut().expect("a run under way");
-        engine_allocation::reserve(&mut run.pages, 1)?;
-        run.pages.push(page);
-        Ok(Closed {
-            units,
-            restart,
-            page_raw,
-        })
-    }
-
-    /// Every nonempty stream's unit of the position, ascending by stream: the pieces revisions
-    /// published, then the rest.
-    fn units(&mut self, run: u32, first: u32, hours: u32) -> io::Result<Vec<Extent>> {
-        let from = self.pending_from.take().unwrap_or(first);
-        let mut units = std::mem::take(&mut self.pieces);
-        let rest = self.write_pending(run, from, first + hours - from, false)?;
-        engine_allocation::reserve(&mut units, rest.len())?;
-        units.extend(rest);
-        units.sort_unstable_by_key(|unit| (unit.stream, unit.first));
-        // A walker decodes each stream's whole unit, its pieces in turn.
-        let mut raws: Vec<usize> = Vec::new();
-        engine_allocation::reserve(&mut raws, units.len())?;
-        for (at, unit) in units.iter().enumerate() {
-            let raw = usize::try_from(unit.raw).map_err(|_| engine_allocation::oom())?;
-            if at > 0 && units[at - 1].stream == unit.stream {
-                *raws.last_mut().expect("the stream's first piece") += raw;
-            } else {
-                raws.push(raw);
-            }
-        }
-        let logs = unit_windows(&raws, self.settings.budget)?;
-        engine_allocation::reserve(&mut self.walker_memory, 1)?;
-        self.walker_memory.push(
-            raws.iter()
-                .zip(&logs)
-                .map(|(&raw, &log)| raw.min(1 << log))
-                .sum(),
-        );
-        Ok(units)
-    }
-
-    /// Each nonempty stream's bytes not yet written, for `hours` ordinals from `from`, as a
-    /// unit piece, the manifests' first; `pad` aligns table pieces so a later piece continues
-    /// them.
-    fn write_pending(
-        &mut self,
-        run: u32,
-        from: u32,
-        hours: u32,
-        pad: bool,
-    ) -> io::Result<Vec<Extent>> {
-        let mut written = Vec::new();
-        engine_allocation::reserve(&mut written, self.units.len() + 1)?;
-        let manifests = std::mem::take(&mut self.manifests).into_bytes();
-        if !manifests.is_empty() {
-            written.push((framing::MANIFESTS, manifests));
-        }
-        for (table, unit) in self.units.iter_mut().enumerate() {
-            if pad {
-                unit.align(8)?;
-            }
-            let raw = std::mem::take(unit).into_bytes();
-            if !raw.is_empty() {
-                written.push((framing::table_stream(table), raw));
-            }
-        }
-        let raws = engine_allocation::collect_vec(written.iter().map(|(_, raw)| raw.len()))?;
-        let logs = unit_windows(&raws, self.settings.budget)?;
-        let mut pieces = Vec::new();
-        engine_allocation::reserve(&mut pieces, written.len())?;
-        for ((stream, raw), log) in written.into_iter().zip(logs) {
-            pieces.push(self.extent(envelope::Kind::Unit, run, stream, from, hours, &raw, log)?);
-        }
-        Ok(pieces)
-    }
-
-    /// The restart ending the position after its last ordinal.
-    fn restart<S: AsRef<[u8]>>(
-        &mut self,
-        strings: &[S],
-        states: &[RestartState],
-        hour: i32,
-    ) -> io::Result<RestartDirectory> {
-        if states.len() != self.columns.len() {
-            return Err(invalid("A restart holds every table"));
-        }
-        let run = self.run.as_ref().expect("a run under way");
-        let (index, after) = (run.run, run.ordinal - 1);
-        let first_id = run.ids;
-        let count = u32::try_from(strings.len())
-            .map_err(|_| invalid("A run's dictionary passes 2^32 ids"))?;
-        let ids = first_id
-            .checked_add(count)
-            .ok_or_else(|| invalid("A run's dictionary passes 2^32 ids"))?;
-        let mut chunk = Bytes::new();
-        chunk.varint(u64::from(count))?;
-        for string in strings {
-            let string = string.as_ref();
-            chunk.varint(string.len() as u64)?;
-            chunk.raw(string)?;
-        }
-        let window_log = self.settings.window_log;
-        let chunk = self.extent(
-            envelope::Kind::DictionaryChunk,
-            index,
-            0,
-            after,
-            0,
-            chunk.bytes(),
-            window_log,
-        )?;
-        let run = self.run.as_mut().expect("a run under way");
-        let ordinal = u32::try_from(run.chunks.len()).map_err(|_| invalid("Restarts pass 2^32"))?;
-        engine_allocation::reserve(&mut run.chunks, 1)?;
-        run.chunks.push(first_id);
-        run.ids = ids;
-        let starts = engine_allocation::copy_vec(&run.chunks)?;
-        let mut tables = Vec::new();
-        engine_allocation::reserve(&mut tables, states.len())?;
-        for (table, state) in states.iter().enumerate() {
-            if let Some(&id) = state.ids.iter().find(|&&id| id >= ids) {
-                let _ = (table, id);
-                return Err(invalid("A table's restart references a dictionary id past the run's"));
-            }
-            let stream = u32::try_from(table).map_err(|_| invalid("Tables pass 2^32"))?;
-            let extent = self.extent(
-                envelope::Kind::RestartTable,
-                index,
-                stream,
-                after,
-                0,
-                &state.bytes,
-                window_log,
-            )?;
-            tables.push(RestartTable {
-                table: stream,
-                extent,
-                chunks: chunks_holding(&starts, &state.ids)?,
-            });
-        }
-        Ok(RestartDirectory {
-            after,
-            hour,
-            ordinal,
-            chunk,
-            ids: (first_id, count),
-            tables,
-        })
-    }
-
-    /// One compressed extent with a `window_log` window, described by its envelope.
+    /// One compressed extent, described by its envelope; with `base`, compressed with those raw
+    /// bytes as its dictionary.
     #[allow(clippy::too_many_arguments)]
     fn extent(
         &mut self,
@@ -1283,17 +892,38 @@ impl<W: Write + Seek> FileWriter<W> {
         first: u32,
         hours: u32,
         raw: &[u8],
-        window_log: u32,
+        base: Option<&[u8]>,
     ) -> io::Result<Extent> {
-        self.compressor
-            .set_parameter(CParameter::WindowLog(window_log))
-            .map_err(zstd_error)?;
-        let mut stored = engine_allocation::vec(zstd::zstd_safe::compress_bound(raw.len()))?;
-        self.compressor
-            .compress2(&mut stored, raw)
-            .map_err(zstd_error)?;
+        let stored = match base {
+            Some(_) => compress(self.settings.level, raw, base)?,
+            None => {
+                let needed = raw.len().max(2);
+                let window = (usize::BITS - (needed - 1).leading_zeros()).clamp(10, LARGEST_WINDOW_LOG);
+                self.compressor
+                    .set_parameter(CParameter::WindowLog(window))
+                    .map_err(zstd_error)?;
+                let mut stored = engine_allocation::vec(zstd::zstd_safe::compress_bound(raw.len()))?;
+                self.compressor.compress2(&mut stored, raw).map_err(zstd_error)?;
+                stored
+            }
+        };
+        self.append(kind, run, stream, first, hours, raw.len(), &stored)
+    }
+
+    /// `stored`, compressed from `raw` bytes, appended as an extent described by its envelope.
+    #[allow(clippy::too_many_arguments)]
+    fn append(
+        &mut self,
+        kind: envelope::Kind,
+        run: u32,
+        stream: u32,
+        first: u32,
+        hours: u32,
+        raw: usize,
+        stored: &[u8],
+    ) -> io::Result<Extent> {
         let offset = self.file.stream_position()?;
-        self.file.write_all(&stored)?;
+        self.file.write_all(stored)?;
         Ok(Extent {
             kind,
             run,
@@ -1302,8 +932,8 @@ impl<W: Write + Seek> FileWriter<W> {
             hours,
             offset,
             stored: stored.len() as u64,
-            raw: raw.len() as u64,
-            digest: envelope::digest(&stored),
+            raw: raw as u64,
+            digest: envelope::digest(stored),
         })
     }
 }
@@ -1331,14 +961,12 @@ pub fn referenced_ids(table: &Table, refusal: Option<u32>) -> io::Result<Vec<u32
     Ok(ids)
 }
 
-/// `recording` with only the runs of the branches `keep` keeps, written to `out` at `settings`
-/// as its writer wrote them: each kept run's hours and restarts byte for byte, in their order,
-/// its chain started again from its place in the new file. The capture names only the kept runs
-/// and their sessions, and holds no branch start, gap or event loss of a branch left out; `sync`
-/// makes what is written durable before what names it
-/// ([`FileWriter::finish`]). None, with nothing written, when it keeps no run. A recording that
-/// cannot be read whole, or whose pages its writer at `settings` would not have closed so, is
-/// refused.
+/// `recording` with only the runs of the branches `keep` keeps, written to `out`: each kept
+/// run's extents as they are, its pages and directory written again for its place in the new
+/// file. The capture names only the kept runs and their sessions, and holds no branch start,
+/// gap or event loss of a branch left out; `sync` makes what is written durable before what
+/// names it ([`FileWriter::finish`]). None, with nothing written, when it keeps no run. A
+/// recording that cannot be read whole is refused.
 pub fn keep_branches<W: Write + Seek>(
     recording: &crate::columnar_frames::Recording,
     keep: impl Fn(u64) -> bool,
@@ -1347,9 +975,7 @@ pub fn keep_branches<W: Write + Seek>(
     sync: impl FnMut(&mut W) -> io::Result<()>,
 ) -> io::Result<Option<Finished<W>>> {
     if !recording.damage().is_empty() {
-        return Err(invalid(
-            "A columnar recording that cannot be read whole is not rewritten",
-        ));
+        return Err(invalid("A columnar recording that cannot be read whole is not rewritten"));
     }
     let mut capture = recording
         .capture()?
@@ -1366,10 +992,8 @@ pub fn keep_branches<W: Write + Seek>(
     }
     let mut commands = false;
     for bytes in &capture.controls {
-        if let crate::spool::Record::Control(crate::spool::ControlRecord::PlayerCommands {
-            packet,
-            ..
-        }) = crate::spool::decode_record(bytes)?
+        if let crate::spool::Record::Control(crate::spool::ControlRecord::PlayerCommands { packet, .. }) =
+            crate::spool::decode_record(bytes)?
         {
             commands |= keep(packet.branch);
         }
@@ -1377,76 +1001,54 @@ pub fn keep_branches<W: Write + Seek>(
     if kept.is_empty() && !commands {
         return Ok(None);
     }
-    // Its manifests are copied as written: of the columns its schema holds.
-    let columns = engine_allocation::copy_vec(recording.columns())?;
-    let mut writer = FileWriter::create(out, recording.root_identity().clone(), columns, settings)?;
-    for &run in &kept {
+    let tables = crate::columnar_frames::schema()?.len();
+    let mut writer = FileWriter::create(out, recording.root_identity().clone(), tables, settings)?;
+    for (to, &run) in (0_u32..).zip(&kept) {
         let held = recording.run(run)?;
-        writer.start_run(held.branch, held.epoch, held.first_hour)?;
-        // Each restart's chunk's first id, by its restart ordinal.
-        let mut starts = Vec::new();
+        let mut pages = engine_allocation::vec(held.pages())?;
+        let mut chain = [0; 32];
         for at in 0..held.pages() {
-            let page = recording.page(run, at)?;
-            let mut position = Position::Open;
-            recording.page_hours(run, at, u32::MAX, |_, bytes, manifest, written| {
-                let mut sections = engine_allocation::vec(written.len())?;
-                sections.extend(
-                    manifest
-                        .sections
-                        .iter()
-                        .map(|section| section.table)
-                        .zip(written.iter().copied()),
-                );
-                position = writer.hour(Hour {
-                    hour: manifest.hour,
-                    manifest: bytes,
-                    sections: &sections,
-                    statuses: &manifest.statuses,
-                    read: &manifest.read,
-                })?;
-                Ok(true)
-            })?;
-            let last = at + 1 == held.pages();
-            match (position, &page.restart) {
-                (Position::Full { restart: false }, None) => {
-                    writer.close_position()?;
-                }
-                (Position::Full { restart: true }, Some(restart)) => {
-                    if restart.ordinal as usize != starts.len() {
-                        return Err(invalid("A run's restarts are out of order"));
-                    }
-                    engine_allocation::reserve(&mut starts, 1)?;
-                    starts.push(restart.ids.0);
-                    let chunk = recording.extent_bytes(&restart.chunk)?;
-                    let strings = chunk_strings(&chunk)?;
-                    if strings.len() != restart.ids.1 as usize {
-                        return Err(invalid("A restart's chunk differs from its ids"));
-                    }
-                    let mut states = Vec::new();
-                    engine_allocation::reserve(&mut states, restart.tables.len())?;
-                    for (table, state) in restart.tables.iter().enumerate() {
-                        if state.table as usize != table {
-                            return Err(invalid("A restart holds every table in order"));
-                        }
-                        let ids = state
-                            .chunks
-                            .iter()
-                            .map(|&chunk| starts.get(chunk as usize).copied())
-                            .collect::<Option<Vec<u32>>>()
-                            .ok_or_else(|| invalid("A restart names a chunk of no restart"))?;
-                        states.push(RestartState {
-                            bytes: recording.extent_bytes(&state.extent)?,
-                            ids,
-                        });
-                    }
-                    writer.close_with_restart(&strings, &states)?;
-                }
-                // The run's last position, short or due a restart it ends without, closes with it.
-                (Position::Open | Position::Full { restart: true }, None) if last => {}
-                _ => return Err(invalid("A page closes otherwise than its writer closes it")),
+            let mut page = recording.page(run, at)?;
+            let copy = |writer: &mut FileWriter<W>, extent: &Extent| -> io::Result<Extent> {
+                let stored = recording.stored_bytes(extent)?;
+                let offset = writer.file.stream_position()?;
+                writer.file.write_all(&stored)?;
+                Ok(Extent { run: to, offset, ..*extent })
+            };
+            page.run = to;
+            page.records = copy(&mut writer, &page.records)?;
+            writer.written.records += page.records.stored;
+            for table in &mut page.tables {
+                *table = copy(&mut writer, table)?;
+                writer.written.tables += table.stored;
             }
+            if let Some(restart) = &mut page.restart {
+                restart.chunk = copy(&mut writer, &restart.chunk)?;
+                writer.written.restarts += restart.chunk.stored;
+                for table in &mut restart.tables {
+                    table.extent = copy(&mut writer, &table.extent)?;
+                    writer.written.restarts += table.extent.stored;
+                }
+            }
+            chain = envelope::chain_block(&chain, &page.records, &page.tables);
+            page.chain = chain;
+            let bytes = page.write()?;
+            let extent = writer.extent(envelope::Kind::IndexPage, to, 0, page.first, page.hours, &bytes, None)?;
+            writer.written.index += extent.stored;
+            pages.push(extent);
         }
-        writer.finish_run()?;
+        let directory = RunDirectory {
+            branch: held.branch,
+            epoch: held.epoch,
+            first_hour: held.first_hour,
+            ordinals: held.ordinals,
+            chain,
+            pages,
+        }
+        .write(to)?;
+        let extent = writer.extent(envelope::Kind::RunDirectory, to, 0, 0, 0, &directory, None)?;
+        writer.written.index += extent.stored;
+        writer.runs.push(extent);
     }
     let mut sessions = Vec::new();
     let mut run_sessions = Vec::new();
@@ -1525,25 +1127,6 @@ fn of_left_out(record: &[u8], keep: &impl Fn(u64) -> bool) -> io::Result<bool> {
     Ok(branch.is_some_and(|branch| !keep(branch)))
 }
 
-/// A restart's dictionary chunk's strings, as [`FileWriter::close_with_restart`] wrote them.
-fn chunk_strings(chunk: &[u8]) -> io::Result<Vec<&[u8]>> {
-    let mut reader = Reader::new(chunk);
-    let count = reader.count()?;
-    // Each string takes at least the byte of its length.
-    if count > chunk.len() {
-        return Err(invalid(
-            "A dictionary chunk counts more strings than it holds",
-        ));
-    }
-    let mut strings = engine_allocation::vec(count)?;
-    for _ in 0..count {
-        let length = reader.count()?;
-        strings.push(reader.raw(length)?);
-    }
-    reader.finish()?;
-    Ok(strings)
-}
-
 /// The restart ordinals whose dictionary chunks hold `ids`, ascending. `starts` holds each
 /// chunk's first id, ascending from 0; an empty chunk starts where the next does, so the
 /// last chunk starting at or before an id holds it.
@@ -1563,53 +1146,11 @@ fn chunks_holding(starts: &[u32], ids: &[u32]) -> io::Result<Vec<u32>> {
     )
 }
 
-/// Each stream's zstd window log for one unit: the largest power of two within its share
-/// of a walker's decode-memory budget by raw size, then one step larger for the largest
-/// streams while the unit stays within the budget. A window never grows past its stream.
-pub fn unit_windows(raws: &[usize], budget: usize) -> io::Result<Vec<u32>> {
-    const SMALLEST: u32 = 15;
-    const LARGEST: u32 = 24;
-    let total: usize = raws.iter().sum();
-    let mut logs = engine_allocation::collect_vec(raws.iter().map(|&raw| {
-        let share = (budget as u128 * raw as u128 / total.max(1) as u128) as usize;
-        (usize::BITS - 1 - share.max(1).leading_zeros()).clamp(SMALLEST, LARGEST)
-    }))?;
-    let held = |raw: usize, log: u32| raw.min(1 << log);
-    let mut used: usize = raws
-        .iter()
-        .zip(&logs)
-        .map(|(&raw, &log)| held(raw, log))
-        .sum();
-    let mut order = engine_allocation::collect_vec(0..raws.len())?;
-    order.sort_unstable_by_key(|&stream| std::cmp::Reverse(raws[stream]));
-    loop {
-        let mut grew = false;
-        for &stream in &order {
-            let (raw, log) = (raws[stream], logs[stream]);
-            if log < LARGEST && (1 << log) < raw {
-                let added = held(raw, log + 1) - held(raw, log);
-                if used + added <= budget {
-                    logs[stream] += 1;
-                    used += added;
-                    grew = true;
-                }
-            }
-        }
-        if !grew {
-            return Ok(logs);
-        }
-    }
-}
-
-fn set(bits: &mut [u64], table: usize) {
-    bits[table / 64] |= 1 << (table % 64);
-}
-
 fn zstd_error(code: usize) -> io::Error {
     invalid(zstd::zstd_safe::get_error_name(code))
 }
 
-/// Kind-only while a capture runs, whatever diagnostic scope encloses it: the live writer
+/// Kind-only while a capture runs, whatever diagnostic scope encloses it: a writer in a capture
 /// must not allocate to fail. Offline writers keep the message.
 fn invalid(message: &'static str) -> io::Error {
     if engine_allocation::capture_active() {

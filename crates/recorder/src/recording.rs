@@ -674,21 +674,10 @@ impl FinalizingAhead {
         let names = Arc::<Mutex<BTreeMap<String, String>>>::default();
         let (published, asked) = (Arc::clone(&names), Arc::new(AtomicBool::new(false)));
         let asking = Arc::clone(&asked);
-        let initial_settings = RecorderSettings::load().unwrap_or_default();
+        // Rows pack at Low unless the command line chose; the setting is the columnar writer's.
         let packing = replay::container::Packing::new()
             .map(|packing| {
-                packing
-                    .set_compression(compression.unwrap_or_else(|| initial_settings.compression));
-                let initial_revision = initial_settings.compression_revision;
-                packing.set_compression_source(move || {
-                    RecorderSettings::load().ok().map(|current| {
-                        if current.compression_revision == initial_revision {
-                            compression.unwrap_or(current.compression)
-                        } else {
-                            current.compression
-                        }
-                    })
-                });
+                packing.set_compression(compression.unwrap_or(Compression::Low));
                 Arc::new(packing)
             })
             .inspect_err(|error| {
@@ -1349,7 +1338,7 @@ fn finalize_cli_session(
 ) -> Result<(), String> {
     // Installed first, so the packing workers inherit the pass progress.
     let _pass_progress = progress_io::passes(session);
-    replay_io::with_compression(&RecorderSettings::path(), || {
+    replay_io::with_packing(|| {
         if !terminal.recovery_allowed {
             return Err(terminal.issues.join("; "));
         }
@@ -2910,6 +2899,25 @@ fn classify_terminal(
             if !outcome.warnings.iter().any(|previous| previous == warning) {
                 outcome.warnings.push(warning.to_owned());
             }
+        }
+        // A native capture that failed lost hours to gaps, each naming why: the recording is
+        // partial.
+        // A campaign's counters move to the finished list once its recording finishes.
+        let captures = ["columnar", "columnar_finished"]
+            .into_iter()
+            .filter_map(|list| status["spool_work"][list].as_array())
+            .flatten();
+        for capture in captures {
+            let failures = capture["failures"].as_u64().unwrap_or(0);
+            if failures == 0 {
+                continue;
+            }
+            let reason = capture["stopped"].as_str().unwrap_or("no reason recorded");
+            let lost = capture["lost_hours"].as_u64().unwrap_or(0);
+            issue(format!(
+                "native capture failed {failures} time(s), last at {reason}; its lost hours are gaps ({lost} \
+                 the rows hold), and each failure began a new capture"
+            ));
         }
         let correct_session = status["session"].as_u64() == Some(session);
         if !correct_session {
@@ -4559,7 +4567,7 @@ fn save_recording_except(
     naming: replay_io::Naming<'_>,
     current: Option<&Path>,
 ) -> Result<Option<PathBuf>, String> {
-    replay_io::with_compression(naming.settings, || {
+    replay_io::with_packing(|| {
         let mut saved = match current {
             Some(session) => replay_io::publish_checkpointed(session, target, campaign, naming)?,
             None => None,
@@ -4631,7 +4639,7 @@ fn save_continued(
 /// each campaign that could not be staged, with why: its loads are left out, since a capture of it
 /// would continue a history without those hours, and the others record.
 fn stage_waiting(root: &Path, target: &Path) -> Result<BTreeMap<String, String>, String> {
-    replay_io::with_compression(&RecorderSettings::path(), || {
+    replay_io::with_packing(|| {
         fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
         let mut refused = BTreeMap::new();
         let _lock = finalization_lock(target)?;
@@ -4953,7 +4961,7 @@ fn save_waiting_with(
     campaign: &str,
     names: &mut WaitingNames,
 ) -> Result<SavedWaiting, String> {
-    replay_io::with_compression(&RecorderSettings::path(), || {
+    replay_io::with_packing(|| {
         let target = waiting_target(session, campaign)?;
         let localisation = names.localisation(session);
         if let Err(why) = &localisation {

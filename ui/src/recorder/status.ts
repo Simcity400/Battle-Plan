@@ -46,7 +46,8 @@ export type NextLoad = 'continue' | 'newFile';
 export type CaptureMode = 'full' | 'map';
 export interface CampaignChoice { record?: boolean; next?: NextLoad; folder?: string; flag?: string }
 export interface RecorderSettings {
-  compression?: Compression;
+  /** Absent until chosen: High. */
+  blockCompression?: Compression;
   /** Auto record. */
   recordEveryCampaign: boolean;
   autoSave: boolean;

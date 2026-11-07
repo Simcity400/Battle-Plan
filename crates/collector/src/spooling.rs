@@ -3449,15 +3449,11 @@ impl Processor {
             .campaigns
             .get_mut(&id)
             .expect("prepared campaign remains admitted");
-        // The native capture holds most tables, so no later hour can be recorded, and no full
-        // refresh brings one back: each is a gap, without the write failure's recovery.
-        if campaign.columnar.halted() {
-            campaign.gap(
-                branch,
-                clock.hour,
-                clock.hour,
-                engine_allocation::string("columnar recording stopped")?,
-            )?;
+        // The native capture holds most tables: while it cannot take hours, each is a gap
+        // naming why, without the write failure's recovery.
+        if let Some(reason) = campaign.columnar.halted() {
+            let reason = engine_allocation::string(reason)?;
+            campaign.gap(branch, clock.hour, clock.hour, reason)?;
             // Older queued frames complete first, so this hour's failure is the witness kept.
             let completed = self.drain_writer();
             witness.bind(

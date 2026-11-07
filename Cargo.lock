@@ -11523,7 +11523,6 @@ dependencies = [
  "dashboard-base",
  "dashboard-text",
  "dpi",
- "engine-allocation",
  "engine-characters",
  "engine-executable",
  "engine-native",

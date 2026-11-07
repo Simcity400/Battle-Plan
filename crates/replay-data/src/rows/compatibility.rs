@@ -93,6 +93,10 @@ pub const MAP_MODE_PARITY_FORMAT: u16 = 137;
 /// DivisionEquipmentDeletions and SunkShips with its read hour (H4COLUMN version 4, which
 /// refuses earlier columnar recordings by name). Row tables and frames are unchanged.
 pub const LAST_COMPLETE_RESTARTS_FORMAT: u16 = 138;
+/// Owner-approved: a columnar recording stores each table's hours once per block, written by the
+/// recorder from the collector's journal (H4COLUMN version 5, which refuses earlier columnar
+/// recordings by name). Row tables and frames are unchanged.
+pub const BLOCK_RECORDINGS_FORMAT: u16 = 139;
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -5121,7 +5125,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, LAST_COMPLETE_RESTARTS_FORMAT);
+        assert_eq!(FORMAT_VERSION, BLOCK_RECORDINGS_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

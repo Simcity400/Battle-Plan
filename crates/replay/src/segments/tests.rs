@@ -1684,9 +1684,9 @@ fn unit_of(file: &Recording, run: u32, at: usize, table: TableId) -> Extent {
     *file
         .page(run, at)
         .unwrap()
-        .units
+        .tables
         .iter()
-        .find(|extent| extent.stream as usize == table.index() + 1)
+        .find(|extent| extent.stream as usize == table.index())
         .unwrap()
 }
 
@@ -1846,7 +1846,7 @@ fn a_damaged_manifest_unit_loses_its_segment_to_every_family() {
     let runs = [(1, 0, 3 * UNIT_ORDINALS), (2, 50_000, 2 * UNIT_ORDINALS)];
     let (bytes, _) = recording(&runs, every(&runs), 1, |page| {
         if page.run == 0 && page.first == UNIT_ORDINALS {
-            page.units[0].digest[0] ^= 1;
+            page.records.digest[0] ^= 1;
         }
     });
     let file = loaded(bytes);
@@ -1921,7 +1921,7 @@ fn a_damaged_manifest_unit_loses_its_segment_to_every_family() {
 fn a_damaged_restart_loses_no_hours() {
     let runs = [(1, 0, 3 * UNIT_ORDINALS)];
     let countries = TableId::Countries.index() as u32;
-    let (bytes, _) = recording(&runs, every(&runs), 1, |page| {
+    let (bytes, _) = recording(&runs, every(&runs), 1, move |page| {
         if page.first == UNIT_ORDINALS
             && let Some(restart) = &mut page.restart
         {
@@ -1964,7 +1964,7 @@ fn a_damaged_restart_loses_no_hours() {
 fn damaged_restarts(segments: u32, count: u32) -> (Recording, Recording) {
     let runs = [(1, 0, segments * UNIT_ORDINALS)];
     let countries = TableId::Countries.index() as u32;
-    let (bytes, _) = recording(&runs, every(&runs), 1, |page| {
+    let (bytes, _) = recording(&runs, every(&runs), 1, move |page| {
         if (1..=count).contains(&(page.first / UNIT_ORDINALS))
             && let Some(restart) = &mut page.restart
         {
@@ -2164,7 +2164,7 @@ fn a_history_is_not_healed_by_healthy_segments_after_a_loss() {
     ];
     let (bytes, _) = recording(&runs, every(&runs), 1, |page| {
         if page.run == 0 && page.first == UNIT_ORDINALS {
-            page.units[0].digest[0] ^= 1;
+            page.records.digest[0] ^= 1;
         }
     });
     let file = loaded(bytes);
@@ -2435,7 +2435,7 @@ fn a_run_s_failure_a_push_met_stops_the_run_though_its_operator_goes_on() {
     let runs = [(1, 0, 2 * UNIT_ORDINALS)];
     let (bytes, _) = recording(&runs, every(&runs), 2, |page| {
         if page.first == UNIT_ORDINALS {
-            page.units[0].digest[0] ^= 1;
+            page.records.digest[0] ^= 1;
         }
     });
     let file = loaded(bytes);

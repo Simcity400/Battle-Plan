@@ -317,11 +317,15 @@ impl WeakRestored {
     }
 }
 
-pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<Restored> {
-    let mut reader = Reader::new(bytes);
-    let status = Status::read(&mut reader)?;
-    let last_read = get_hour(&mut reader)?;
-    let available_from = get_hour(&mut reader)?;
+/// A restart's status and acquisition alone, its table unread.
+pub fn acquisition(bytes: &[u8]) -> io::Result<(Status, Acquisition)> {
+    head(&mut Reader::new(bytes))
+}
+
+fn head(reader: &mut Reader<'_>) -> io::Result<(Status, Acquisition)> {
+    let status = Status::read(reader)?;
+    let last_read = get_hour(reader)?;
+    let available_from = get_hour(reader)?;
     let refusal = match reader.varint()? {
         0 => None,
         reason => Some(
@@ -329,6 +333,20 @@ pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<R
                 .map_err(|_| crate::invalid("Restart refusal exceeds 32 bits"))?,
         ),
     };
+    Ok((
+        status,
+        Acquisition {
+            last_read,
+            available_from,
+            refusal,
+        },
+    ))
+}
+
+pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<Restored> {
+    let mut reader = Reader::new(bytes);
+    let (status, acquisition) = head(&mut reader)?;
+    let last_read = acquisition.last_read;
     let table = read_table(&mut reader, kinds, scratch)?;
     let mut view = Vec::new();
     if matches!(status, Status::Truncated { .. }) {
@@ -359,11 +377,7 @@ pub fn read(bytes: &[u8], kinds: &[Kind], scratch: &mut Scratch) -> io::Result<R
     Ok(Restored {
         table,
         status,
-        acquisition: Acquisition {
-            last_read,
-            available_from,
-            refusal,
-        },
+        acquisition,
         view,
         last,
     })

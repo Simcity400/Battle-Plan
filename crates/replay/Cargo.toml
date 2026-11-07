@@ -12,6 +12,8 @@ doctest = false
 [features]
 # Count actual grouped-table decodes for consumer tests.
 test-support = ["replay-frame/test-support"]
+# Live smoke only: the recorder keeps every journal segment it wrote, to check its file against.
+keep-journal = []
 
 [dependencies]
 rayon.workspace = true

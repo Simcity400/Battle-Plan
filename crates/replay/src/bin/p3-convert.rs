@@ -1,5 +1,6 @@
-//! Offline converter: a recording to the columnar recording the live recorder writes of the
-//! same hours, through its own [`FrameWriter`] and [`FileWriter`] at [`Settings::RECORDING`].
+//! Offline converter: a recording to the columnar recording the recorder writes of the same
+//! hours, through its own [`FrameWriter`], [`BlockBuilder`] and [`FileWriter`] at
+//! [`Settings::HIGH`].
 //! Gated by applying every section to a walker's tables and comparing them with the
 //! recording's rows: every written slot each hour; at every unit's end and every run's end,
 //! every live slot and the writer's held tables; every hour's stored metrics against its
@@ -14,13 +15,14 @@
 //! held table only at the rows the delta names.
 
 use replay::{
-    columnar_file::{Closed, FileWriter, Finished, Hour as FileHour, Position, Settings},
+    columnar_blocks::{BlockBuilder, Finished as Block},
+    columnar_file::{FileWriter, Finished, Settings},
     columnar_frames::schema,
     container::{Replay, ReplayStream},
     native_frame::{Changed, FrameWriter, Source},
 };
 use replay_columnar::{
-    envelope, framing,
+    envelope,
     manifest::{Manifest, Status},
     section::{self, Scratch},
     state::{Cell, Kind as Column, Table},
@@ -280,10 +282,10 @@ struct Totals {
     changed: u64,
     census: Census,
     truncated: u64,
-    /// This table's units: raw and stored bytes.
-    units: (u64, u64),
-    /// This table's restarts: raw bytes, and compressed alone.
-    restarts: (u64, u64),
+    /// This table's blocks' raw bytes.
+    blocks: u64,
+    /// This table's restarts' raw bytes.
+    restarts: u64,
 }
 
 impl Totals {
@@ -298,13 +300,10 @@ impl Totals {
     }
 }
 
-/// Raw and stored bytes written per kind, and dictionary entries over every run, for the
-/// report.
+/// Raw bytes written per kind, and dictionary entries over every run, for the report.
 #[derive(Default)]
 struct Written {
-    manifests: (u64, u64),
-    chunks: (u64, u64),
-    states: (u64, u64),
+    records: u64,
     entries: u64,
     restarts: u64,
 }
@@ -322,6 +321,7 @@ struct Run {
     last_hour: i32,
     ordinal: u32,
     frames: FrameWriter,
+    blocks: BlockBuilder,
     walked: Vec<Walked>,
     /// The run's strings, in id order, from its manifests' appends.
     strings: Vec<Vec<u8>>,
@@ -332,12 +332,15 @@ struct Run {
 }
 
 impl Run {
-    fn new(branch: u64, hour: i32, schema: &[Vec<Column>]) -> io::Result<Self> {
+    fn new(branch: u64, hour: i32, schema: &[Vec<Column>], restart_units: u32) -> io::Result<Self> {
+        let mut blocks = BlockBuilder::new()?.with_restart_blocks(restart_units);
+        blocks.start_run(branch, hour)?;
         Ok(Self {
             branch,
             last_hour: hour,
             ordinal: 0,
             frames: FrameWriter::new()?,
+            blocks,
             walked: schema
                 .iter()
                 .map(|kinds| Ok(Walked { table: Table::new(kinds)?, changes: section::Changes::default() }))
@@ -384,46 +387,35 @@ impl Run {
     }
 }
 
-/// Adds a closed position's units and restart to the report's totals.
-fn account(closed: &Closed, totals: &mut [Totals], written: &mut Written) {
-    for unit in &closed.units {
-        let sum = if unit.stream == framing::MANIFESTS {
-            &mut written.manifests
-        } else {
-            &mut totals[unit.stream as usize - 1].units
-        };
-        *sum = (sum.0 + unit.raw, sum.1 + unit.stored);
+/// Adds a block's raw bytes to the report's totals.
+fn account(block: &Block, totals: &mut [Totals], written: &mut Written) {
+    written.records += block.records.len() as u64;
+    for (table, payload) in &block.tables {
+        totals[*table as usize].blocks += payload.len() as u64;
     }
-    if let Some(restart) = &closed.restart {
-        written.chunks = (written.chunks.0 + restart.chunk.raw, written.chunks.1 + restart.chunk.stored);
-        for table in &restart.tables {
-            let (raw, stored) = (table.extent.raw, table.extent.stored);
-            let sum = &mut totals[table.table as usize].restarts;
-            *sum = (sum.0 + raw, sum.1 + stored);
-            written.states = (written.states.0 + raw, written.states.1 + stored);
+    if let Some((_, states)) = &block.restart {
+        for (table, state) in states.iter().enumerate() {
+            totals[table].restarts += state.bytes.len() as u64;
         }
         written.restarts += 1;
     }
 }
 
-/// Closes the run's full unit position, with the recorder's restart when due.
-fn close_position(file: &mut FileWriter<BufWriter<File>>, run: &mut Run, restart: bool, totals: &mut [Totals], written: &mut Written, fields: &mut Fields) -> io::Result<()> {
+/// Writes a block the run filled, once the walker's tables are checked against the writer's.
+fn close_block(file: &mut FileWriter<BufWriter<File>>, run: &Run, block: &Block, totals: &mut [Totals], written: &mut Written, fields: &mut Fields) -> io::Result<()> {
     run.check_all(fields)?;
-    let closed = if restart {
-        let (strings, tables) = run.frames.restart()?;
-        file.close_with_restart(&strings, &tables)?
-    } else {
-        file.close_position()?
-    };
-    account(&closed, totals, written);
-    Ok(())
+    account(block, totals, written);
+    file.block(block.block())
 }
 
-/// Closes the run's last position, short or not, and writes the run's directory.
-fn finish_run(file: &mut FileWriter<BufWriter<File>>, run: &Run, totals: &mut [Totals], written: &mut Written, fields: &mut Fields) -> io::Result<()> {
+/// Writes the run's last block, short or not, and the run's directory.
+fn finish_run(file: &mut FileWriter<BufWriter<File>>, mut run: Run, totals: &mut [Totals], written: &mut Written, fields: &mut Fields) -> io::Result<()> {
     run.check_all(fields)?;
-    let closed = file.finish_run()?;
-    account(&closed, totals, written);
+    if let Some(block) = run.blocks.end_run()? {
+        account(&block, totals, written);
+        file.block(block.block())?;
+    }
+    file.finish_run()?;
     written.entries += run.strings.len() as u64;
     Ok(())
 }
@@ -432,6 +424,7 @@ struct Options {
     input: PathBuf,
     output: PathBuf,
     settings: Settings,
+    restart_units: u32,
     /// The envelope's unit hours times the restart units, which fits a `u32`.
     restart_hours: u32,
     /// The envelope's unit hours times `--run-units`: the most a run holds; a span's later
@@ -440,11 +433,11 @@ struct Options {
 }
 
 fn options(mut args: impl Iterator<Item = OsString>) -> io::Result<Options> {
-    let usage = || invalid(format!("p3-convert <recording.battleplan> <out.h4col> [--restart-units {}] [--run-units <n>]", Settings::RECORDING.restart_units));
+    let usage = || invalid(format!("p3-convert <recording.battleplan> <out.h4col> [--restart-units {}] [--run-units <n>]", envelope::RESTART_BLOCKS));
     let (Some(input), Some(output)) = (args.next(), args.next()) else {
         return Err(usage());
     };
-    let (mut restart_units, mut run_units) = (Settings::RECORDING.restart_units, None);
+    let (mut restart_units, mut run_units) = (envelope::RESTART_BLOCKS, None);
     while let Some(flag) = args.next() {
         let value = args.next().and_then(|value| value.into_string().ok()).ok_or_else(usage)?;
         let number = || value.parse::<i64>().map_err(|_| usage());
@@ -466,7 +459,8 @@ fn options(mut args: impl Iterator<Item = OsString>) -> io::Result<Options> {
     Ok(Options {
         input: PathBuf::from(input),
         output: PathBuf::from(output),
-        settings: Settings { restart_units, ..Settings::RECORDING },
+        settings: Settings { parallel: true, ..Settings::HIGH },
+        restart_units,
         restart_hours,
         run_hours,
     })
@@ -530,7 +524,7 @@ impl Drop for Unfinished {
 }
 
 fn main() -> io::Result<()> {
-    let Options { input, output, settings, restart_hours, run_hours } = options(std::env::args_os().skip(1))?;
+    let Options { input, output, settings, restart_units, restart_hours, run_hours } = options(std::env::args_os().skip(1))?;
     let source_bytes = std::fs::metadata(&input)?.len();
     let replay = Replay::open_path(&input)?;
     let (partial, counts) = written_paths(&input, &output)?;
@@ -538,7 +532,6 @@ fn main() -> io::Result<()> {
     // Declared before `file`, so a failure closes the file before removing it.
     let mut unfinished = Unfinished(Some(partial.clone()));
     let schema = schema()?;
-    let column_counts: Vec<usize> = schema.iter().map(Vec::len).collect();
     let mut content = Vec::new();
     replay_data::identity::IdentityCodec::encode(&replay.identity, &mut content)?;
     let identity = envelope::Identity {
@@ -547,7 +540,7 @@ fn main() -> io::Result<()> {
         content,
         capture_mode: replay.capture_mode.byte(),
     };
-    let mut file = FileWriter::create(BufWriter::new(File::create(&partial)?), identity, column_counts, settings)?;
+    let mut file = FileWriter::create(BufWriter::new(File::create(&partial)?), identity, schema.len(), settings)?;
     let mut run: Option<Run> = None;
     let mut totals = vec![Totals::default(); TABLE_COUNT];
     let mut written = Written::default();
@@ -573,10 +566,10 @@ fn main() -> io::Result<()> {
                     (true, false) => envelope::epoch::GAP,
                 };
                 if let Some(ended) = run.take() {
-                    finish_run(&mut file, &ended, &mut totals, &mut written, &mut fields)?;
+                    finish_run(&mut file, ended, &mut totals, &mut written, &mut fields)?;
                 }
                 file.start_run(decoded.branch, epoch, decoded.hour)?;
-                run = Some(Run::new(decoded.branch, decoded.hour, &schema)?);
+                run = Some(Run::new(decoded.branch, decoded.hour, &schema, restart_units)?);
             }
             let state = run.as_mut().expect("a run under way");
             // The hour as the recorder's frame input, and the rows each complete table's delta names.
@@ -666,15 +659,8 @@ fn main() -> io::Result<()> {
                     total.truncated += 1;
                 }
             }
-            let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
-            let position = file.hour(FileHour {
-                hour: prepared.hour(),
-                manifest: &prepared.manifest,
-                sections: &sections,
-                statuses: prepared.statuses(),
-                read: prepared.read(),
-            })?;
-            drop(sections);
+            let sections: Vec<u8> = prepared.sections().flat_map(|(_, bytes)| bytes.iter().copied()).collect();
+            let block = state.blocks.hour(&prepared.manifest, &sections)?;
             state.frames.commit(prepared)?;
             state.check_committed(decoded.hour, &decoded.tables)?;
             state.views.clear();
@@ -682,8 +668,8 @@ fn main() -> io::Result<()> {
             state.last_hour = decoded.hour;
             state.ordinal += 1;
             hours += 1;
-            if let Position::Full { restart } = position {
-                close_position(&mut file, state, restart, &mut totals, &mut written, &mut fields)?;
+            if let Some(block) = block {
+                close_block(&mut file, state, &block, &mut totals, &mut written, &mut fields)?;
             }
             encode_seconds += begin.elapsed().as_secs_f64();
             Ok(())
@@ -691,9 +677,9 @@ fn main() -> io::Result<()> {
         || Ok(()),
     )? {}
     if let Some(ended) = run.take() {
-        finish_run(&mut file, &ended, &mut totals, &mut written, &mut fields)?;
+        finish_run(&mut file, ended, &mut totals, &mut written, &mut fields)?;
     }
-    let Finished { file, walker_memory, index_bytes } = file.finish(|file| io::Write::flush(file))?;
+    let Finished { file, written: stored } = file.finish(|file| io::Write::flush(file))?;
     let file = file.into_inner().map_err(io::Error::from)?;
     // Durable before it is published under its name.
     file.sync_all()?;
@@ -702,23 +688,16 @@ fn main() -> io::Result<()> {
     std::fs::rename(&partial, &output)?;
     unfinished.0 = None;
     let per_hour = |bytes: u64| bytes as f64 / f64::from(hours.max(1));
-    let mut memory = walker_memory;
-    memory.sort_unstable();
-    let (walker_peak, walker_median) = (memory.last().copied().unwrap_or(0), memory.get(memory.len() / 2).copied().unwrap_or(0));
     let fifty = |bytes: u64| per_hour(bytes) * 438_000.0 / 1e9;
-    let restarts = written.restarts;
-    let sections = totals.iter().fold((0, 0), |sum: (u64, u64), table| (sum.0 + table.units.0, sum.1 + table.units.1));
-    let restart_alone = totals.iter().fold((0, 0), |sum: (u64, u64), table| (sum.0 + table.restarts.0, sum.1 + table.restarts.1));
     let tables: Vec<serde_json::Value> = totals
         .iter()
         .enumerate()
-        .filter(|(_, table)| table.sections > 0 || table.restarts.0 > 0)
+        .filter(|(_, table)| table.sections > 0 || table.restarts > 0)
         .map(|(index, table)| json!({
             "table": format!("{:?}", TableId::ALL[index]),
             "sections": table.sections,
             "section_bytes": table.bytes,
-            "units_raw": table.units.0,
-            "units_stored": table.units.1,
+            "blocks_raw": table.blocks,
             "inserts": table.inserts,
             "deletes": table.deletes,
             "changed_slots": table.changed,
@@ -729,8 +708,7 @@ fn main() -> io::Result<()> {
             "fill_slots": table.census.fill_slots,
             "fill_exceptions": table.census.fill_exceptions,
             "truncated_hours": table.truncated,
-            "restart_raw": table.restarts.0,
-            "restart_stored_alone": table.restarts.1,
+            "restart_raw": table.restarts,
         }))
         .collect();
     let report = json!({
@@ -740,13 +718,6 @@ fn main() -> io::Result<()> {
         "restart_hours": restart_hours,
         "run_hours": run_hours,
         "level": settings.level,
-        "restart_window_log": settings.window_log,
-        "walker_decode_memory": {
-            "budget_mb": settings.budget as f64 / 1e6,
-            "peak_mb": walker_peak as f64 / 1e6,
-            "median_mb": walker_median as f64 / 1e6,
-            "scope": "per unit grid position, the sum over its streams of min(unit raw bytes, 2^window)",
-        },
         "source_bytes": source_bytes,
         "output_bytes": total,
         "ratio_to_source": total as f64 / source_bytes as f64,
@@ -755,16 +726,14 @@ fn main() -> io::Result<()> {
         "encode_and_gate_ms_per_hour": encode_seconds * 1000.0 / f64::from(hours.max(1)),
         "wall_seconds": started.elapsed().as_secs_f64(),
         "dictionary_entries": written.entries,
-        "manifests": {"raw": written.manifests.0, "stored": written.manifests.1},
-        "sections": {"raw": sections.0, "stored": sections.1, "stored_per_hour": per_hour(sections.1)},
-        "restarts": {
-            "count": restarts,
-            "chunks": {"raw": written.chunks.0, "stored": written.chunks.1},
-            "states": {"raw": written.states.0, "stored": written.states.1},
-            "stored_per_restart": (written.chunks.1 + written.states.1) as f64 / restarts.max(1) as f64,
-            "tables_alone": {"raw": restart_alone.0, "stored": restart_alone.1},
+        "records_raw": written.records,
+        "restarts": written.restarts,
+        "stored": {
+            "records": stored.records,
+            "tables": stored.tables,
+            "restarts": stored.restarts,
+            "index": stored.index,
         },
-        "index_bytes": index_bytes,
         "tables": tables,
     });
     std::fs::write(counts, serde_json::to_vec_pretty(&report)?)?;
@@ -807,7 +776,7 @@ mod tests {
         assert!(refused.to_string().contains("--restart-units"), "{refused}");
         let largest = options(arguments(&["in", "out", "--restart-units", &most_text])).unwrap();
         assert_eq!(largest.restart_hours, most * envelope::UNIT_ORDINALS);
-        assert_eq!(largest.settings, Settings { restart_units: most, ..Settings::RECORDING });
+        assert_eq!(largest.restart_units, most);
         assert!(options(arguments(&["in", "out", "--restart-units", "0"])).is_err());
         // Units are the envelope's grid.
         assert!(options(arguments(&["in", "out", "--unit-hours", "360"])).is_err());
@@ -816,8 +785,8 @@ mod tests {
     #[test]
     fn a_conversion_writes_at_the_recorders_settings() {
         let defaults = options(arguments(&["in", "out"])).unwrap();
-        assert_eq!(defaults.settings, Settings::RECORDING);
-        assert_eq!(defaults.restart_hours, Settings::RECORDING.restart_units * envelope::UNIT_ORDINALS);
+        assert_eq!(defaults.settings, Settings { parallel: true, ..Settings::HIGH });
+        assert_eq!(defaults.restart_hours, envelope::RESTART_BLOCKS * envelope::UNIT_ORDINALS);
         for flag in ["--level", "--window-log", "--budget-mb"] {
             assert!(options(arguments(&["in", "out", flag, "3"])).is_err(), "{flag}");
         }

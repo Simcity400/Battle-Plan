@@ -31,10 +31,12 @@ fn page(first: u32, hours: u32, restart: bool) -> IndexPage {
         hours,
         first_hour: -5 + first as i32,
         last_hour: -5 + (first + hours - 1) as i32,
-        units: vec![
-            extent(Kind::Unit, 1, 0, first, hours),
-            extent(Kind::Unit, 1, 2, first, hours),
+        records: extent(Kind::Records, 1, 0, first, hours),
+        tables: vec![
+            extent(Kind::Block, 1, 0, first, hours),
+            extent(Kind::Block, 1, 2, first, hours),
         ],
+        chained: bits(if first == 0 { &[] } else { &[2] }),
         restart: restart.then(|| RestartDirectory {
             after: first + hours - 1,
             hour: 7,
@@ -45,6 +47,7 @@ fn page(first: u32, hours: u32, restart: bool) -> IndexPage {
                 .map(|table| RestartTable {
                     table,
                     extent: extent(Kind::RestartTable, 1, table, first + hours - 1, 0),
+                    base: table != 1,
                     chunks: if table == 1 { vec![0, 2] } else { Vec::new() },
                 })
                 .collect(),
@@ -71,20 +74,32 @@ fn a_page_reads_back_what_was_written_and_belongs_to_its_envelope() {
         let elsewhere = extent(Kind::IndexPage, 1, 0, 0, UNIT_ORDINALS);
         assert!(IndexPage::read(&bytes, &elsewhere, TABLES).is_err());
         assert!(IndexPage::read(&bytes, &envelope, TABLES + 64).is_err());
+        assert_eq!(written.table(2), Some(&written.tables[1]));
+        assert_eq!(written.table(1), None);
     }
 }
 
 #[test]
-fn pages_refuse_units_and_restarts_off_their_position() {
+fn pages_refuse_blocks_and_restarts_off_their_block() {
     let mut off_grid = page(0, UNIT_ORDINALS, false);
-    off_grid.units[1].first = UNIT_ORDINALS - 1;
+    off_grid.tables[1].first = UNIT_ORDINALS - 1;
     assert!(reads(&off_grid).is_err());
     let mut unordered = page(0, UNIT_ORDINALS, false);
-    unordered.units.swap(0, 1);
+    unordered.tables.swap(0, 1);
     assert!(reads(&unordered).is_err());
-    let mut short_manifests = page(0, UNIT_ORDINALS, false);
-    short_manifests.units[0].hours -= 1;
-    assert!(reads(&short_manifests).is_err());
+    let mut short_records = page(0, UNIT_ORDINALS, false);
+    short_records.records.hours -= 1;
+    assert!(reads(&short_records).is_err());
+    let mut past_schema = page(0, UNIT_ORDINALS, false);
+    past_schema.tables[1].stream = TABLES as u32;
+    assert!(reads(&past_schema).is_err());
+    // A chained table holds a block, and a run's first page chains none.
+    let mut unheld = page(UNIT_ORDINALS, UNIT_ORDINALS, false);
+    unheld.chained = bits(&[1]);
+    assert!(reads(&unheld).is_err());
+    let mut first = page(0, UNIT_ORDINALS, false);
+    first.chained = bits(&[2]);
+    assert!(reads(&first).is_err());
     let mut missing = page(0, UNIT_ORDINALS, true);
     missing.restart.as_mut().unwrap().tables.pop();
     assert!(reads(&missing).is_err());
@@ -98,36 +113,10 @@ fn pages_refuse_units_and_restarts_off_their_position() {
     let mut unordered_chunks = page(0, UNIT_ORDINALS, true);
     unordered_chunks.restart.as_mut().unwrap().tables[1].chunks = vec![2, 0];
     assert!(reads(&unordered_chunks).is_err());
-}
-
-#[test]
-fn an_unsealed_unit_is_a_chain_of_contiguous_aligned_sub_extents() {
-    // Manifests in two halves; table 2's sections only in the second part, in two pieces.
-    let mut chained = page(0, 30, false);
-    chained.units = vec![
-        extent(Kind::Unit, 1, 0, 0, 24),
-        extent(Kind::Unit, 1, 0, 24, 6),
-        extent(Kind::Unit, 1, 2, 10, 14),
-        extent(Kind::Unit, 1, 2, 24, 6),
-    ];
-    assert_eq!(reads(&chained).unwrap(), chained);
-    assert_eq!(chained.stream(2).count(), 2);
-    // Manifests may not skip an hour, and no stream's pieces may overlap.
-    let mut skipped = chained.clone();
-    skipped.units[1].first = 25;
-    skipped.units[1].hours = 5;
-    assert!(reads(&skipped).is_err());
-    let mut overlapping = chained.clone();
-    overlapping.units[3].first = 23;
-    overlapping.units[3].hours = 7;
-    assert!(reads(&overlapping).is_err());
-    // A table piece followed by another must end its sections aligned.
-    let mut unaligned = chained.clone();
-    unaligned.units[2].raw = 21;
-    assert!(reads(&unaligned).is_err());
-    let mut last_unaligned = chained;
-    last_unaligned.units[3].raw = 21;
-    assert!(reads(&last_unaligned).is_ok());
+    // A restart stored whole holds no change from the one before.
+    let mut keyframe = page(0, UNIT_ORDINALS, true);
+    keyframe.restart.as_mut().unwrap().ordinal = KEYFRAME_RESTARTS;
+    assert!(reads(&keyframe).is_err());
 }
 
 fn directory(pages: Vec<Extent>, ordinals: u32) -> RunDirectory {
@@ -202,7 +191,7 @@ fn an_extent_is_read_only_inside_the_extents_and_with_its_digest() {
     let stored = b"stored bytes".to_vec();
     let offset = file.len() as u64;
     file.extend_from_slice(&stored);
-    let mut envelope = extent(Kind::Unit, 0, 1, 0, 1);
+    let mut envelope = extent(Kind::Block, 0, 1, 0, 1);
     envelope.offset = offset;
     envelope.stored = stored.len() as u64;
     envelope.digest = digest(&stored);
@@ -274,28 +263,20 @@ fn recovering_a_footer_hashes_at_most_twice_the_file() {
 }
 
 #[test]
-fn the_chain_follows_every_byte_and_section_boundary_of_an_hour() {
-    let start = chain_start(b"identity", 0);
-    assert_ne!(start, chain_start(b"identity", 1));
-    let hour = chain_hour(&start, b"manifest", [b"ab".as_slice(), b"c"]);
-    assert_eq!(
-        hour,
-        chain_hour(&start, b"manifest", [b"ab".as_slice(), b"c"])
+fn the_chain_follows_every_block_extent_of_a_run() {
+    let start = [0; 32];
+    let (records, tables) = (
+        extent(Kind::Records, 0, 0, 0, 1),
+        vec![extent(Kind::Block, 0, 1, 0, 1), extent(Kind::Block, 0, 2, 0, 1)],
     );
-    assert_ne!(
-        hour,
-        chain_hour(&start, b"manifest", [b"a".as_slice(), b"bc"])
-    );
-    assert_ne!(
-        hour,
-        chain_hour(&start, b"manifesu", [b"ab".as_slice(), b"c"])
-    );
-    assert_ne!(
-        hour,
-        chain_hour(
-            &chain_start(b"other", 0),
-            b"manifest",
-            [b"ab".as_slice(), b"c"]
-        )
-    );
+    let block = chain_block(&start, &records, &tables);
+    assert_eq!(block, chain_block(&start, &records, &tables));
+    assert_ne!(block, chain_block(&block, &records, &tables));
+    assert_ne!(block, chain_block(&start, &records, &tables[..1]));
+    let mut changed = tables.clone();
+    changed[1].digest[0] ^= 1;
+    assert_ne!(block, chain_block(&start, &records, &changed));
+    let mut moved = tables;
+    moved[1].stream = 3;
+    assert_ne!(block, chain_block(&start, &records, &moved));
 }

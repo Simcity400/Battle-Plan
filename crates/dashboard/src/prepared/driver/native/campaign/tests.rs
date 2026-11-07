@@ -91,11 +91,9 @@ fn a_campaign_row_naming_another_campaign_refuses_the_native_preparation() {
     assert!(published);
 }
 
-/// A columnar unit's hours: one index page each.
+/// A columnar block's hours: one index page each.
 const UNIT: u32 = 720;
 const TABLE: u32 = TableId::Campaign.index() as u32;
-/// A table's sections are the stream one past its index.
-const STREAM: u32 = TABLE + 1;
 const OTHER: &[u8] = b"another campaign";
 
 fn complete(id: &[u8]) -> TableView {
@@ -183,11 +181,11 @@ fn damaged(bytes: &[u8], (offset, stored): (u64, u64)) -> Vec<u8> {
     bytes
 }
 
-/// Page `at`'s Campaign unit.
+/// Page `at`'s Campaign block.
 fn unit(bytes: &[u8], at: usize) -> (u64, u64) {
     let page = opened(bytes).page(0, at).unwrap();
-    let unit = page.units.iter().find(|unit| unit.stream == STREAM).unwrap();
-    (unit.offset, unit.stored)
+    let block = page.tables.iter().find(|block| block.stream == TABLE).unwrap();
+    (block.offset, block.stored)
 }
 
 /// Whether walking `segment` of `bytes` meets damage.

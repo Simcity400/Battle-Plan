@@ -340,7 +340,7 @@ pub struct Scratch {
 }
 
 /// Whether every slot of ascending `slots` is in ascending `of`.
-fn within(slots: &[u32], of: &[u32]) -> bool {
+pub(crate) fn within(slots: &[u32], of: &[u32]) -> bool {
     let mut of = of.iter().peekable();
     slots.iter().all(|slot| {
         while of.next_if(|&&candidate| candidate < *slot).is_some() {}
@@ -375,7 +375,7 @@ pub struct Changes {
 }
 
 /// `column`'s bit in a change mask; none past the 64 a mask holds.
-fn column_bit(column: usize) -> u64 {
+pub(crate) fn column_bit(column: usize) -> u64 {
     u32::try_from(column)
         .ok()
         .and_then(|column| 1_u64.checked_shl(column))
@@ -491,7 +491,7 @@ fn fill_run(
 /// The ascending union of `slots` and `more`, into `slots`, with `bit` set in the mask (at
 /// `slots`' positions in `masks`) of every slot `more` names. `merged` and `merged_masks` are
 /// scratch, swapped with the union.
-fn union(
+pub(crate) fn union(
     slots: &mut Vec<u32>,
     masks: &mut Vec<u64>,
     more: &[u32],

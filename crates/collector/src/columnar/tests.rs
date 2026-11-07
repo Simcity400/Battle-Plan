@@ -1,4 +1,6 @@
 use super::*;
+use replay::columnar_capture::{CaptureWriter, Progress};
+use replay::columnar_file::Settings;
 use replay::columnar_frames::{Recording, Segment};
 use replay::native_frame::{OneThread, RowFrame};
 
@@ -17,9 +19,20 @@ use replay_data::{
 };
 use replay_frame::frame::{Metrics, TableInput, TableView};
 
-/// The first capture's file in its campaign's directory, finished and while it is written.
-const FINISHED: &str = "columnar.0.h4col";
+/// The first capture's file in its campaign's directory while the recorder writes it.
 const PARTIAL: &str = "columnar.0.h4col.partial";
+
+/// Capture `capture`'s journal in `folder` written into its file as the recorder writes it,
+/// once its collector finished it.
+fn recorded_capture(folder: &Path, capture: u32) -> Recording {
+    let mut writer = CaptureWriter::open(folder, capture, Settings::LOW).unwrap();
+    assert_eq!(writer.advance(&|| false).unwrap(), Progress::Finished);
+    Recording::open(fs::read(writer.finished_path()).unwrap()).unwrap()
+}
+
+fn recorded(folder: &Path) -> Recording {
+    recorded_capture(folder, 0)
+}
 
 /// Removes the directory even when an assertion fails.
 struct Folder(PathBuf);
@@ -109,9 +122,9 @@ fn write(columnar: &mut Columnar, branch: u64, hours: std::ops::RangeInclusive<i
     }
 }
 
-/// A branch's hours, a gap, then another branch: three runs, the first crossing a unit
-/// position and every run reading back from its start, all under the finished name in a
-/// campaign directory the first hour creates, as the row spool creates it only later.
+/// A branch's hours, a gap, then another branch: three runs, the first crossing a block and
+/// every run reading back from its start, journaled in a campaign directory the first hour
+/// creates, as the row spool creates it only later, and finished under the finished name.
 #[test]
 fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     let root = Folder::new("runs");
@@ -123,8 +136,8 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     write(&mut columnar, 2, first + 7..=first + 7);
     columnar.finish();
     assert_eq!(columnar.status().unwrap()["stopped"], Value::Null);
+    let recording = recorded(&folder.0);
     assert!(!folder.0.join(PARTIAL).exists());
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), first as u64 + 3);
     let capture = recording.capture().unwrap().expect("a capture in the root");
@@ -168,7 +181,7 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     columnar.interrupt();
     write(&mut columnar, 1, 3..=3);
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
+    let recording = recorded(&folder.0);
     assert_eq!(recording.segments().len(), 2);
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
 
@@ -182,8 +195,8 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     assert_eq!((&status["stopped"], &status["failed_hours"]), (&Value::Null, &json!(1)));
     write(&mut columnar, 1, 4..=4);
     columnar.finish();
+    let recording = recorded(&failed.0);
     assert!(!failed.0.join(PARTIAL).exists());
-    let recording = Recording::open(fs::read(failed.0.join(FINISHED)).unwrap()).unwrap();
     assert_eq!(recording.hours(), 3);
     assert_eq!(recording.run(1).unwrap().first_hour, 4);
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
@@ -229,7 +242,7 @@ fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
         columnar.complete(1, hour);
     }
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
+    let recording = recorded(&folder.0);
     assert_eq!(recording.hours(), 4);
     assert_eq!(recording.run(0).unwrap().ordinals, 2);
     assert_eq!(recording.run(1).unwrap().first_hour, 5);
@@ -270,7 +283,7 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     }
     write(&mut columnar, 1, 1..=2);
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
+    let recording = recorded(&folder.0);
     let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
     assert_eq!(
         recording.capture().unwrap().unwrap().controls,
@@ -314,7 +327,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     columnar.complete(1, 2);
     write(&mut columnar, 1, 3..=4);
     columnar.finish();
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
+    let recording = recorded(&folder.0);
     let encoded = |record: &Record| replay::spool::encode_record(record).unwrap();
     assert_eq!(
         recording.capture().unwrap().unwrap().controls,
@@ -332,9 +345,8 @@ fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
         write(&mut columnar, 1, hours);
         columnar.finish();
     }
-    for (name, hours) in [("columnar.0.h4col", 2), ("columnar.1.h4col", 3)] {
-        let recording = Recording::open(fs::read(folder.0.join(name)).unwrap()).unwrap();
-        assert_eq!(recording.hours(), hours, "{name}");
+    for (capture, hours) in [(0, 2), (1, 3)] {
+        assert_eq!(recorded_capture(&folder.0, capture).hours(), hours, "{capture}");
     }
 }
 
@@ -371,7 +383,7 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     }
     columnar.finish();
     assert_eq!(columnar.status().unwrap()["stopped"], Value::Null);
-    let recording = Recording::open(fs::read(folder.0.join(FINISHED)).unwrap()).unwrap();
+    let recording = recorded(&folder.0);
     assert_eq!(recording.hours(), 4);
     let runs: Vec<(u64, u8, i32)> = (0..2)
         .map(|run| {
@@ -383,11 +395,11 @@ fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     assert_eq!(recording.capture().unwrap().unwrap().run_sessions, [0, 0]);
 }
 
-/// Paused commands, with no hour to publish them, still reach a revision recovery can finish.
+/// Paused commands, with no hour to hold them, still reach the journal at once, so a capture
+/// its collector never finished keeps them.
 #[test]
-fn commands_without_an_hour_publish_a_recoverable_revision() {
+fn commands_without_an_hour_reach_the_journal_at_once() {
     use replay::{
-        columnar_file::Unfinished,
         commands::{Batch, Packet},
         spool::{ControlRecord, Record, encode_record},
     };
@@ -396,9 +408,13 @@ fn commands_without_an_hour_publish_a_recoverable_revision() {
     let packet = Packet::pack(4, 1, 1, 0, 10, 20, 0, &Batch::default()).unwrap();
     let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
     columnar.note(std::slice::from_ref(&record));
-    let mut file = fs::File::open(folder.0.join(PARTIAL)).unwrap();
-    let unfinished = Unfinished::read(&mut file).unwrap();
-    assert_eq!(unfinished.last, None);
-    let capture = unfinished.capture.expect("a capture in the revision");
+    let mut writer = CaptureWriter::open(&folder.0, 0, Settings::LOW).unwrap();
+    assert_eq!(writer.advance(&|| false).unwrap(), Progress::Waiting);
+    let path = writer.finish_stopped("stopped in this test").unwrap().expect("a file of the commands");
+    let recording = Recording::open(fs::read(path).unwrap()).unwrap();
+    assert_eq!(recording.hours(), 0);
+    let capture = recording.capture().unwrap().expect("a capture in the root");
     assert_eq!(capture.controls, [encode_record(&record).unwrap()]);
+    assert_eq!(capture.stop.expect("a stop").reason, "stopped in this test");
+    drop(columnar);
 }

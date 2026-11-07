@@ -218,8 +218,8 @@ fn main() -> io::Result<()> {
     for run in 0..file.run_count() {
         for at in 0..file.run(run)?.pages() {
             let page = file.page(run, at)?;
-            units += page.units.len();
-            peak_raw = peak_raw.max(page.units.iter().map(|unit| unit.raw).sum());
+            units += 1 + page.tables.len();
+            peak_raw = peak_raw.max(page.records.raw + page.tables.iter().map(|block| block.raw).sum::<u64>());
             if page.restart.is_some() {
                 restarts.push((run, at));
             }

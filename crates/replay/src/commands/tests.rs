@@ -270,6 +270,7 @@ fn columnar_capture_metadata_has_the_same_player_report_as_rows() {
         run_sessions: Vec::new(),
         stop: None,
         format: replay_data::FORMAT_VERSION,
+        journaled: 0,
         controls: vec![
             encode_record(&Record::BranchStart(BranchStart {
                 id: 4,
@@ -314,8 +315,8 @@ fn columnar_capture_metadata_has_the_same_player_report_as_rows() {
     let writer = crate::columnar_file::FileWriter::create(
         std::io::Cursor::new(Vec::new()),
         identity,
-        schema.iter().map(Vec::len).collect(),
-        crate::columnar_file::Settings::RECORDING,
+        schema.len(),
+        crate::columnar_file::Settings::HIGH,
     )
     .unwrap();
     let columnar = writer
@@ -547,6 +548,7 @@ fn branches_share_capture_metadata_without_importing_future_updates_or_other_lif
         run_sessions: Vec::new(),
         stop: None,
         format: replay_data::FORMAT_VERSION,
+        journaled: 0,
         controls: metadata,
     };
     let columns = Recording::from_columnar(

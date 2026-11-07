@@ -25,11 +25,10 @@ use crate::{
     rows::{DeltaRow, RowChanges, TABLE_COUNT, TableId, TableRows, full_mask},
     scope::CaptureMode,
 };
+#[cfg(test)]
+use replay_columnar::envelope::{Extent, Kind, Root};
 #[cfg(any(test, feature = "test-support"))]
-use replay_columnar::{
-    envelope::{self, Extent, IndexPage, Kind, Root, RunDirectory},
-    framing,
-};
+use replay_columnar::envelope::{self, IndexPage};
 use replay_columnar::{
     manifest::{Manifest, Status},
     section::Changes,

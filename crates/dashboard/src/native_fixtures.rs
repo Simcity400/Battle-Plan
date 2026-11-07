@@ -133,6 +133,7 @@ impl Recorded {
             run_sessions: vec![0; runs.len()],
             stop: None,
             format: replay.format.version(),
+            journaled: 0,
             controls: Vec::new(),
         };
         let (native, seen) = fixtures::written_captured(

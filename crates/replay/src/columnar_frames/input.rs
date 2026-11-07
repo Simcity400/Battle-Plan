@@ -89,13 +89,11 @@ fn last_root(held: &Held) -> io::Result<(Extent, u64)> {
     let length = held.len()?;
     let header = envelope::HEADER_BYTES as u64;
     let footer = envelope::FOOTER_BYTES as u64;
-    if length < header + footer {
-        return Err(invalid("Not a version 4 H4COLUMN recording"));
-    }
     let mut start = [0; envelope::HEADER_BYTES];
-    held.read(0, &mut start)?;
-    if &start[..8] != envelope::MAGIC || start[8..] != envelope::VERSION.to_le_bytes() {
-        return Err(invalid("Not a version 4 H4COLUMN recording"));
+    held.read(0, &mut start[..length.min(header) as usize])?;
+    envelope::check_header(&start[..length.min(header) as usize])?;
+    if length < header + footer {
+        return Err(invalid("An H4COLUMN recording holds no footer"));
     }
     let magic = envelope::FOOTER_MAGIC.len();
     let mut block = engine_allocation::filled(BLOCK, 0_u8)?;
@@ -198,22 +196,12 @@ impl Source {
         frame_length(extent, header)
     }
 
-    /// `extent`'s raw length and the window its frame's decoder holds, as [`Self::raw_length`]
-    /// reads them.
-    pub(super) fn frame(&self, extent: &Extent) -> io::Result<Frame> {
-        let mut header = [0; FRAME_HEADER];
-        let header = &mut header[..self.place(extent)?.min(FRAME_HEADER)];
-        self.held.read(extent.offset, header)?;
-        Frame::of(extent, header)
-    }
-
-    /// The bytes a recording held in memory holds, which its extents' offsets index; none for
-    /// one read from a file.
-    pub(super) fn memory(&self) -> Option<&[u8]> {
-        match &self.held {
-            Held::Memory(bytes) => Some(bytes),
-            Held::File(_) => None,
-        }
+    /// `extent`'s stored bytes once their place and digest are checked; a file's are read into
+    /// `buffer`.
+    pub(super) fn stored_checked<'a>(&'a self, extent: &Extent, buffer: &'a mut Vec<u8>) -> io::Result<&'a [u8]> {
+        let stored = self.stored(extent, buffer)?;
+        check(extent, stored)?;
+        Ok(stored)
     }
 
     /// `extent`'s stored bytes once their place is checked; a file's are read into `buffer`.
@@ -246,37 +234,8 @@ fn frame_length(extent: &Extent, frame: &[u8]) -> io::Result<usize> {
 /// Why an extent whose stored bytes go on past its one frame is refused.
 pub(super) const TRAILING: &str = "holds bytes past its frame";
 
-/// A frame's raw length, and the window its decoder holds of it.
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Frame {
-    pub raw: usize,
-    pub window: usize,
-}
-
-impl Frame {
-    /// `frame`'s, from its header, refused as [`frame_length`] refuses it. A frame of one
-    /// segment is its own window.
-    fn of(extent: &Extent, frame: &[u8]) -> io::Result<Self> {
-        const MAGIC: u32 = 0xFD2F_B528;
-        let raw = frame_length(extent, frame)?;
-        let window = match frame {
-            [a, b, c, d, descriptor, window, ..]
-                if u32::from_le_bytes([*a, *b, *c, *d]) == MAGIC && descriptor & 0x20 == 0 =>
-            {
-                let base = 1_u64.checked_shl(10 + u32::from(window >> 3));
-                base.map_or(u64::MAX, |base| base + base / 8 * u64::from(window & 7))
-            }
-            _ => raw as u64,
-        };
-        Ok(Self {
-            raw,
-            window: usize::try_from(window).map_or(raw, |window| window.min(raw)),
-        })
-    }
-}
-
 /// Refuses `stored`, `extent`'s bytes, unless they hold its digest.
-pub(super) fn check(extent: &Extent, stored: &[u8]) -> io::Result<()> {
+fn check(extent: &Extent, stored: &[u8]) -> io::Result<()> {
     if envelope::digest(stored) != extent.digest {
         return Err(invalid("differs from its digest"));
     }
@@ -326,8 +285,20 @@ impl Decoder {
         extent: &Extent,
         out: &mut Vec<u8>,
     ) -> io::Result<()> {
+        self.append_with(source, extent, None, out)
+    }
+
+    /// [`Self::append`] of an extent compressed with `base`'s raw bytes as its prefix, when it
+    /// was.
+    pub(super) fn append_with(
+        &mut self,
+        source: &Source,
+        extent: &Extent,
+        base: Option<&[u8]>,
+        out: &mut Vec<u8>,
+    ) -> io::Result<()> {
         let stored = source.stored(extent, &mut self.stored)?;
-        decode(&mut self.context, extent, stored, out)
+        decode(&mut self.context, extent, stored, base, out)
     }
 
     /// Reads into its buffer the stored bytes of `spans`, extents placed in a recording read
@@ -362,36 +333,33 @@ impl Decoder {
         Ok(())
     }
 
-    /// The frame of `extent`, gathered from `start`: as [`Source::frame`] reads it.
-    pub(super) fn gathered_frame(&self, extent: &Extent, start: usize) -> io::Result<Frame> {
+    /// The raw length of `extent`, gathered from `start`: as [`Source::raw_length`] reads it.
+    pub(super) fn gathered_length(&self, extent: &Extent, start: usize) -> io::Result<usize> {
         let stored = extent.stored as usize;
-        Frame::of(extent, &self.stored[start..][..stored.min(FRAME_HEADER)])
+        frame_length(extent, &self.stored[start..][..stored.min(FRAME_HEADER)])
     }
 
-    /// The stored bytes it gathered last ([`Self::gather`]).
-    pub(super) fn gathered(&self) -> &[u8] {
-        &self.stored
-    }
-
-    /// Appends the raw bytes of `extent`, gathered from `start`, to `out`: as [`Self::append`]
-    /// decodes it.
+    /// Appends the raw bytes of `extent`, gathered from `start`, to `out`: as
+    /// [`Self::append_with`] decodes it.
     pub(super) fn append_gathered(
         &mut self,
         extent: &Extent,
         start: usize,
+        base: Option<&[u8]>,
         out: &mut Vec<u8>,
     ) -> io::Result<()> {
         let stored = &self.stored[start..][..extent.stored as usize];
-        decode(&mut self.context, extent, stored, out)
+        decode(&mut self.context, extent, stored, base, out)
     }
 }
 
-/// Appends `stored`, `extent`'s bytes, decoded to `out`, its digest and frame's length checked
-/// first.
+/// Appends `stored`, `extent`'s bytes, decoded to `out` with `base` as its prefix when it was
+/// compressed with one, its digest and frame's length checked first.
 fn decode(
     context: &mut DCtx<'static>,
     extent: &Extent,
     stored: &[u8],
+    base: Option<&[u8]>,
     out: &mut Vec<u8>,
 ) -> io::Result<()> {
     check(extent, stored)?;
@@ -403,9 +371,17 @@ fn decode(
     let start = out.len();
     let mut into = std::io::Cursor::new(&mut *out);
     into.set_position(start as u64);
-    let written = context
-        .decompress(&mut into, stored)
-        .map_err(|code| invalid(zstd_safe::get_error_name(code)))?;
+    let written = match base {
+        None => context.decompress(&mut into, stored),
+        // A prefix serves the one frame it is given for, on a context of its own.
+        Some(base) => {
+            let mut context = DCtx::try_create().ok_or_else(engine_allocation::oom)?;
+            context
+                .ref_prefix(base)
+                .and_then(|_| context.decompress(&mut into, stored))
+        }
+    }
+    .map_err(|code| invalid(zstd_safe::get_error_name(code)))?;
     if written != raw {
         return Err(invalid("decompresses to another length"));
     }

@@ -22,6 +22,38 @@ mod tests;
 pub use paged::{Bools, Lists, PAGE, Paged, PagedBits};
 use paged::{WeakLists, WeakPaged};
 
+/// An item of a list or opaque column's cells.
+pub(crate) trait ListItem: Copy + Default {
+    fn lists(column: &mut Column) -> Option<&mut Lists<Self>>;
+}
+
+impl ListItem for u8 {
+    fn lists(column: &mut Column) -> Option<&mut Lists<Self>> {
+        match column {
+            Column::Opaque(lists) => Some(lists),
+            _ => None,
+        }
+    }
+}
+
+impl ListItem for u32 {
+    fn lists(column: &mut Column) -> Option<&mut Lists<Self>> {
+        match column {
+            Column::U32List(lists) => Some(lists),
+            _ => None,
+        }
+    }
+}
+
+impl ListItem for u64 {
+    fn lists(column: &mut Column) -> Option<&mut Lists<Self>> {
+        match column {
+            Column::U64List(lists) => Some(lists),
+            _ => None,
+        }
+    }
+}
+
 /// A field's cell type, as the recording's schema names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -1693,6 +1725,24 @@ impl Table {
     pub fn patch(&mut self, column: usize, slots: &[u32], patches: Patches<'_>) -> io::Result<()> {
         self.live_slots(slots)?;
         self.column_mut(column)?.patch(slots, patches)?;
+        self.recorded_again(column, slots);
+        Ok(())
+    }
+
+    /// Each of `slots`' (ascending) cells in list or opaque `column` rebuilt in place: `cell`
+    /// puts slot `slots[index]`'s new items, given its held ones, at the end of its output.
+    pub(crate) fn rewrite<T: ListItem>(
+        &mut self,
+        column: usize,
+        slots: &[u32],
+        cell: impl FnMut(usize, &[T], &mut Vec<T>) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.live_slots(slots)?;
+        let held = self.column_mut(column)?;
+        let kind = held.kind();
+        T::lists(held)
+            .ok_or_else(|| invalid(format!("A {kind:?} column holds no list cells")))?
+            .rewrite(slots, past, cell)?;
         self.recorded_again(column, slots);
         Ok(())
     }

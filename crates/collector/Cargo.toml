@@ -19,6 +19,9 @@ advisor_profile = ["advisor_changes"]
 callback_profile = ["collector-fuel-awards/callback_profile"]
 # Diagnostic in-process CPU instruction sampling; off by default.
 worker_sampler = []
+# Live smoke only: a `columnar.fail` file in a campaign's directory fails its next journal
+# append once.
+columnar-fault-injection = []
 # A/B, off by default: try-only help, four attempts and half the first predicted
 # remainder in cumulative decaying-maximum costs; awaited prediction uses its mean.
 executor_join_help = []

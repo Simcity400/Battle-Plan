@@ -171,13 +171,13 @@ fn json_temporary(path: &Path) -> Result<(PathBuf, fs::File)> {
 
 type Result<T> = std::result::Result<T, String>;
 
-/// Run `work` packing at the persisted compression, unless a packing job already chose it.
-pub fn with_compression<T>(settings: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+/// Run `work` packing rows at Low, unless a packing job already chose their compression.
+pub fn with_packing<T>(work: impl FnOnce() -> Result<T>) -> Result<T> {
     if replay::container::Packing::active() {
         return work();
     }
-    let packing = replay::container::Packing::from_settings(settings)
-        .map_err(|error| failure(settings, error))?;
+    let packing = replay::container::Packing::new()
+        .map_err(|error| format!("Packing could not start: {error}"))?;
     packing.promote();
     packing.run(work)
 }
@@ -282,6 +282,8 @@ struct CampaignAhead {
     naming: std::sync::Mutex<CampaignNaming>,
     /// A checkpoint waits for the segments through this one: later ones are left unread.
     through: Option<u32>,
+    /// Each capture's columnar recording, written from its journal as it grows.
+    columnar: BTreeMap<u32, replay::columnar_capture::CaptureWriter>,
 }
 
 #[derive(Default)]
@@ -588,9 +590,10 @@ impl Ahead {
         replay_dir: &Path,
         stop: &(dyn Fn() -> bool + Sync),
     ) -> Result<()> {
-        with_compression(&RecorderSettings::path(), || {
+        with_packing(|| {
             let admissions = session_admissions(session_dir)?;
             for (campaign_dir, campaign) in &mut self.campaigns {
+                advance_columnar(campaign_dir, &mut campaign.columnar, stop);
                 let Some(name) = campaign_dir.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
@@ -2125,7 +2128,7 @@ pub fn finalize_session_ahead(
     naming: Naming<'_>,
     destination: &dyn Fn(&str) -> Destination,
 ) -> Result<Finalized> {
-    with_compression(naming.settings, || {
+    with_packing(|| {
         progress().map_err(|error| failure(session_dir, error))?;
         reconcile_session_checkpoints(session_dir, replay_dir)?;
         let admissions = session_admissions(session_dir)?;
@@ -2348,7 +2351,7 @@ pub fn save_campaign(
     ahead: &mut Ahead,
     naming: Naming<'_>,
 ) -> Result<(Option<PathBuf>, Vec<Omission>)> {
-    with_compression(naming.settings, || {
+    with_packing(|| {
         reconcile_session_checkpoints(session_dir, replay_dir)?;
         let admissions = session_admissions(session_dir)?;
         let witness = session_witness(session_dir)?;
@@ -2863,7 +2866,7 @@ pub fn checkpoint_campaign(
     naming: Naming<'_>,
     progress: &dyn Fn() -> std::io::Result<()>,
 ) -> Result<Option<Checkpoint>> {
-    with_compression(naming.settings, || {
+    with_packing(|| {
         reconcile_session_checkpoints(session_dir, replay_dir)?;
         if session_witness(session_dir)?.is_some() {
             return Err(failure(
@@ -3200,8 +3203,13 @@ fn finalize_campaign(
     committed: &mut Option<Box<Committed<'static>>>,
 ) -> Result<CampaignOutcome> {
     // Before the recording that records their sessions' ends, so a reader finds them with it.
+    let mut ahead = ahead;
     if !unsaved {
-        publish_columnar(campaign_dir, replay_dir, admitted, ended)?;
+        let mut writers = ahead
+            .as_mut()
+            .map(|ahead| std::mem::take(&mut ahead.columnar))
+            .unwrap_or_default();
+        publish_columnar(campaign_dir, replay_dir, admitted, ended, &mut writers)?;
     }
     let mut hand = |recording: &Path, replay: &Replay, blocks: &[BlockIndex]| {
         if let Some(committed) = committed {
@@ -3266,14 +3274,59 @@ fn finalize_campaign(
     Ok(outcome)
 }
 
+/// The columnar writers' settings: the recorder's compression, which rows do not follow.
+fn block_settings() -> replay::columnar_file::Settings {
+    RecorderSettings::load()
+        .map(|settings| settings.compression)
+        .unwrap_or_default()
+        .block_settings()
+}
+
+/// Writes each capture's columnar recording in `campaign_dir` from what its journal added, a
+/// writer per capture kept in `writers`, until `stop`. A capture whose writer fails is left to
+/// finalization.
+fn advance_columnar(
+    campaign_dir: &Path,
+    writers: &mut BTreeMap<u32, replay::columnar_capture::CaptureWriter>,
+    stop: &(dyn Fn() -> bool + Sync),
+) {
+    let Ok(segments) = replay::columnar_journal::segments(campaign_dir) else {
+        return;
+    };
+    let captures: BTreeSet<u32> = segments.iter().map(|&(capture, _, _)| capture).collect();
+    let settings = block_settings();
+    for capture in captures {
+        if stop() {
+            return;
+        }
+        if !writers.contains_key(&capture) {
+            match replay::columnar_capture::CaptureWriter::open(campaign_dir, capture, settings) {
+                Ok(writer) => {
+                    writers.insert(capture, writer);
+                }
+                Err(error) => {
+                    eprintln!("Columnar capture {capture} waits for finalization: {error}");
+                    continue;
+                }
+            }
+        }
+        let writer = writers.get_mut(&capture).expect("held");
+        if let Err(error) = writer.advance(stop) {
+            eprintln!("Columnar capture {capture} waits for finalization: {error}");
+            writers.remove(&capture);
+        }
+    }
+}
+
 /// Publishes the campaign's finished columnar recordings, one per capture, in capture order:
 /// each as its session's next in the campaign's folder of `replay_dir` ([`campaign_folder`]).
-/// A partial one no writer holds is finished from its last revision first; one with none is
-/// reported and left, and one its collector still writes holds back the rest. With `admitted`,
-/// the loads a Battle Plan Recorder session admitted, each holds only the branches of loads it did not
-/// refuse, as the save holds them ([`keep_admitted`]); one holding none is left unpublished. Any
-/// other failure stops there, so a session's captures publish in order, and fails the save: its
-/// recording would end sessions whose captures a reader cannot find. A retry resumes. With
+/// A capture whose journal remains is written to its end first, by its writer in `writers` when
+/// one wrote it ahead; one whose collector ended without finishing it records that its hours
+/// stop there, and one its collector still writes holds back the rest. With `admitted`, the
+/// loads a Battle Plan Recorder session admitted, each holds only the branches of loads it did not
+/// refuse, as the save holds them ([`keep_admitted`]); one holding none is left unpublished.
+/// Any other failure stops there, so a session's captures publish in order, and fails the save:
+/// its recording would end sessions whose captures a reader cannot find. A retry resumes. With
 /// `ended`, no collector of the session writes any more, so one held open fails the save too.
 ///
 /// [`campaign_folder`]: replay::columnar_file::campaign_folder
@@ -3282,8 +3335,9 @@ fn publish_columnar(
     replay_dir: &Path,
     admitted: Option<&BTreeSet<i64>>,
     ended: bool,
+    writers: &mut BTreeMap<u32, replay::columnar_capture::CaptureWriter>,
 ) -> Result<()> {
-    let held = publish_captures(campaign_dir, replay_dir, admitted).map_err(|error| {
+    let held = publish_captures(campaign_dir, replay_dir, admitted, writers).map_err(|error| {
         failure(
             campaign_dir,
             format!("columnar recordings not published: {error}; spool retained"),
@@ -3298,7 +3352,8 @@ fn publish_columnar(
     }
 }
 
-/// Whether a campaign's spool still holds native captures its recording has not published.
+/// Whether a campaign's spool still holds native captures, or their journals, its recording
+/// has not published.
 pub fn unpublished_captures(campaign_dir: &Path) -> Result<bool> {
     let entries = match fs::read_dir(campaign_dir) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -3306,17 +3361,43 @@ pub fn unpublished_captures(campaign_dir: &Path) -> Result<bool> {
     };
     for entry in entries {
         let entry = entry.map_err(|error| failure(campaign_dir, error))?;
-        if replay::columnar_file::capture_of(&entry.file_name()).is_some() {
+        let name = entry.file_name();
+        if replay::columnar_file::capture_of(&name).is_some()
+            || replay::columnar_journal::segment_of(&name).is_some()
+        {
             return Ok(true);
         }
     }
     Ok(false)
 }
 
+/// Capture `n`'s newest journal segment when its collector still holds it open. A segment found
+/// free is held while the journal is listed again: the collector opens its next segment before
+/// letting go of one, so a rotation meanwhile shows as a newer segment.
+fn held_segment(campaign_dir: &Path, n: u32) -> std::io::Result<Option<PathBuf>> {
+    let newest = || -> std::io::Result<Option<PathBuf>> {
+        Ok(replay::columnar_journal::segments(campaign_dir)?
+            .into_iter()
+            .filter(|(capture, _, _)| *capture == n)
+            .max_by_key(|(_, segment, _)| *segment)
+            .map(|(_, _, path)| path))
+    };
+    let mut found = newest()?;
+    while let Some(segment) = found {
+        let Some(free) = open_unwritten(&segment)? else {
+            return Ok(Some(segment));
+        };
+        found = newest()?.filter(|now| *now != segment);
+        drop(free);
+    }
+    Ok(None)
+}
+
 fn publish_captures(
     campaign_dir: &Path,
     replay_dir: &Path,
     admitted: Option<&BTreeSet<i64>>,
+    writers: &mut BTreeMap<u32, replay::columnar_capture::CaptureWriter>,
 ) -> std::io::Result<Option<PathBuf>> {
     use replay::columnar_file::{
         CAPTURE_NAME_BYTES, campaign_folder, capture_name, capture_of, published_name,
@@ -3333,16 +3414,18 @@ fn publish_captures(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         entries => entries?,
     };
-    let mut captures = Vec::new();
+    let mut captures = BTreeSet::new();
     for entry in entries {
-        if let Some(capture) = capture_of(&entry?.file_name()) {
-            captures.push(capture);
+        let name = entry?.file_name();
+        if let Some((capture, _)) = capture_of(&name) {
+            captures.insert(capture);
+        } else if let Some((capture, _)) = replay::columnar_journal::segment_of(&name) {
+            captures.insert(capture);
         }
     }
     if captures.is_empty() {
         return Ok(None);
     }
-    captures.sort_unstable();
     let spooled = admitted
         .map(|_| read_branch_loads(campaign_dir))
         .transpose()
@@ -3350,23 +3433,63 @@ fn publish_captures(
     let folder = campaign_folder(replay_dir, campaign.as_encoded_bytes());
     let (published, mut next) = published_captures(&folder, session)?;
     let mut name = [0; CAPTURE_NAME_BYTES];
-    'captures: for (n, partial) in captures {
+    let settings = block_settings();
+    'captures: for n in captures {
         let finished = campaign_dir.join(capture_name(n, false, &mut name));
-        if partial {
-            let partial = campaign_dir.join(capture_name(n, true, &mut name));
-            match finish_unfinished_columnar(&partial, &finished) {
-                Ok(true) => {}
-                Ok(false) => return Ok(Some(partial)),
+        if !finished.exists() {
+            // A capture this recorder writes takes what its journal holds first, by the writer
+            // that wrote it ahead when there is one.
+            let drained = match writers.remove(&n) {
+                Some(writer) => Ok(writer),
+                None => replay::columnar_capture::CaptureWriter::open(campaign_dir, n, settings),
+            }
+            .and_then(|mut writer| writer.advance(&|| false).map(|progress| (writer, progress)));
+            let written = match drained {
+                Ok((writer, replay::columnar_capture::Progress::Finished)) => {
+                    Ok(Some(writer.finished_path().to_path_buf()))
+                }
+                Ok((mut writer, _)) => {
+                    // Its own reader lets go first: the probe opens the newest segment alone.
+                    writer.release();
+                    match held_segment(campaign_dir, n)? {
+                        // Its collector still writes it: the capture is still being recorded.
+                        Some(newest) => {
+                            println!(
+                                "Columnar capture {n} waits: its collector still writes {}",
+                                newest.display()
+                            );
+                            writers.insert(n, writer);
+                            return Ok(Some(newest));
+                        }
+                        // The collector let go of it: what it wrote after the drain is read first.
+                        None => match writer.advance(&|| false) {
+                            Ok(replay::columnar_capture::Progress::Finished) => {
+                                Ok(Some(writer.finished_path().to_path_buf()))
+                            }
+                            Ok(_) => {
+                                writer.finish_stopped("the collector ended before finishing this file")
+                            }
+                            Err(error) => Err(error),
+                        },
+                    }
+                }
+                Err(error) => Err(error),
+            };
+            match written {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    eprintln!("Columnar capture {n} holds no hours or commands");
+                    continue;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-                    eprintln!(
-                        "Columnar recording {} not recovered: {error}",
-                        partial.display()
-                    );
+                    eprintln!("Columnar capture {n} not recovered: {error}");
                     continue;
                 }
                 Err(error) => return Err(error),
             }
         }
+        // A finished file holds its whole journal, though a stop may have left segments of it.
+        replay::columnar_capture::retire_journal(campaign_dir, n)?;
         if let (Some(admitted), Some(spooled)) = (admitted, spooled.as_ref()) {
             match keep_admitted(&finished, campaign_dir, replay_dir, spooled, admitted) {
                 Ok(true) => {}
@@ -3442,61 +3565,6 @@ fn move_published(source: &Path, target: &Path) -> std::io::Result<()> {
     })
 }
 
-/// Finishes the columnar recording at `partial` an ended collector left, at the last revision
-/// it published, the capture recording that its hours stop there, and names it `finished`; not
-/// while its collector still writes it. One with no revision holding a capture and an hour or
-/// command is refused as invalid data.
-fn finish_unfinished_columnar(partial: &Path, finished: &Path) -> std::io::Result<bool> {
-    use replay::columnar_file::{Settings, Stop, Unfinished};
-    let Some(mut file) = open_unwritten(partial)? else {
-        return Ok(false);
-    };
-    let unfinished = Unfinished::read(&mut file)?;
-    let Some(mut capture) = unfinished.capture.clone() else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "its last revision holds no capture",
-        ));
-    };
-    let mut branch = unfinished.last.map(|(branch, _)| branch);
-    if branch.is_none() {
-        for bytes in &capture.controls {
-            if let Record::Control(ControlRecord::PlayerCommands { packet, .. }) =
-                replay::spool::decode_record(bytes)?
-            {
-                branch = Some(packet.branch);
-            }
-        }
-    }
-    let branch = branch.ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "its last revision holds no hours or commands",
-        )
-    })?;
-    let last_hour = unfinished.last.map(|(_, hour)| hour);
-    capture.stop = Some(Stop {
-        branch,
-        last_hour,
-        reason: "the collector ended before finishing this file".into(),
-    });
-    unfinished.finish(
-        &mut file,
-        |file, length| file.set_len(length),
-        |file| file.sync_data(),
-        &capture,
-        Settings::RECORDING,
-    )?;
-    drop(file);
-    fs::rename(partial, finished)?;
-    if let Some(hour) = last_hour {
-        println!("Columnar recording recovered through hour {hour}");
-    } else {
-        println!("Columnar command recording recovered");
-    }
-    Ok(true)
-}
-
 /// Checkpointed phase and saved-recording evidence still establish a capture's admitted loads.
 fn keep_admitted(
     finished: &Path,
@@ -3521,7 +3589,7 @@ fn keep_admitted(
         &native,
         |branch| !refused.contains(&branch),
         file,
-        replay::columnar_file::Settings::RECORDING,
+        block_settings(),
         |file| file.sync_data(),
     );
     drop(native);
@@ -8198,7 +8266,8 @@ mod tests {
 
     fn native_recording_with_controls(runs: &[(u64, i32, i32)], controls: &[Record]) -> Vec<u8> {
         use replay::{
-            columnar_file::{Capture, FileWriter, Hour, Settings},
+            columnar_blocks::BlockBuilder,
+            columnar_file::{Capture, FileWriter, Settings},
             columnar_frames::schema,
             native_frame::FrameWriter,
         };
@@ -8223,14 +8292,16 @@ mod tests {
                 content: content.clone(),
                 capture_mode: CaptureMode::Full.byte(),
             },
-            schema.iter().map(Vec::len).collect(),
-            Settings::RECORDING,
+            schema.len(),
+            Settings::LOW,
         )
         .unwrap();
         for &(branch, first, hours) in runs {
             let mut writer = FrameWriter::new().unwrap();
+            let mut blocks = BlockBuilder::new().unwrap();
             file.start_run(branch, replay_columnar::envelope::epoch::LOAD, first)
                 .unwrap();
+            blocks.start_run(branch, first).unwrap();
             for hour in first..first + hours {
                 let input = FrameInput {
                     branch,
@@ -8256,17 +8327,17 @@ mod tests {
                     },
                 };
                 let prepared = writer.hour(&input).unwrap();
-                let sections: Vec<(usize, &[u8])> = prepared.sections().collect();
-                file.hour(Hour {
-                    hour,
-                    manifest: &prepared.manifest,
-                    sections: &sections,
-                    statuses: prepared.statuses(),
-                    read: prepared.read(),
-                })
-                .unwrap();
-                drop(sections);
+                let sections: Vec<u8> = prepared
+                    .sections()
+                    .flat_map(|(_, bytes)| bytes.iter().copied())
+                    .collect();
+                if let Some(block) = blocks.hour(&prepared.manifest, &sections).unwrap() {
+                    file.block(block.block()).unwrap();
+                }
                 writer.commit(prepared).unwrap();
+            }
+            if let Some(block) = blocks.end_run().unwrap() {
+                file.block(block.block()).unwrap();
             }
         }
         file.finish_with_capture(
@@ -8278,6 +8349,7 @@ mod tests {
                 run_sessions: vec![0; runs.len()],
                 stop: None,
                 format: replay_data::format::FormatVersion::CURRENT.version(),
+                journaled: 0,
                 controls: controls
                     .iter()
                     .map(|record| replay::spool::encode_record(record).unwrap())
@@ -8329,9 +8401,9 @@ mod tests {
     }
 
     /// A campaign's finished captures publish in capture order, each as its session's next in
-    /// the campaign's folder. A partial one its collector still holds holds back the later ones,
-    /// one released with no revision to finish it from is left, and one whose move landed its
-    /// copy but kept its source is not published again.
+    /// the campaign's folder. One whose journal its collector still holds holds back the later
+    /// ones, one released with a journal that cannot be read is left, and one whose move landed
+    /// its copy but kept its source is not published again.
     #[test]
     fn captures_publish_in_order_as_their_sessions_next() {
         let root =
@@ -8344,19 +8416,21 @@ mod tests {
         fs::write(folder.join("session-1.0.h4col"), b"published before").unwrap();
         fs::write(folder.join("session-2.4.h4col"), b"another session's").unwrap();
         fs::write(campaign.join("columnar.0.h4col"), b"first").unwrap();
-        let partial = campaign.join("columnar.1.h4col.partial");
-        fs::write(&partial, b"still written").unwrap();
+        let mut name = [0; replay::columnar_journal::SEGMENT_NAME_BYTES];
+        let journal = campaign.join(replay::columnar_journal::segment_name(1, 0, &mut name));
+        fs::write(&journal, b"still written").unwrap();
         fs::write(campaign.join("columnar.2.h4col"), b"third").unwrap();
-        let written = fs::OpenOptions::new().write(true).open(&partial).unwrap();
-        publish_columnar(&campaign, &replays, None, false).unwrap();
+        let written = fs::OpenOptions::new().write(true).open(&journal).unwrap();
+        let mut writers = BTreeMap::new();
+        publish_columnar(&campaign, &replays, None, false, &mut writers).unwrap();
         assert_eq!(fs::read(folder.join("session-1.1.h4col")).unwrap(), b"first");
         assert!(campaign.join("columnar.2.h4col").exists());
         drop(written);
-        publish_columnar(&campaign, &replays, None, false).unwrap();
-        assert!(partial.exists());
+        publish_columnar(&campaign, &replays, None, false, &mut writers).unwrap();
+        assert!(journal.exists());
         assert_eq!(fs::read(folder.join("session-1.2.h4col")).unwrap(), b"third");
         fs::write(campaign.join("columnar.3.h4col"), b"third").unwrap();
-        publish_columnar(&campaign, &replays, None, false).unwrap();
+        publish_columnar(&campaign, &replays, None, false, &mut writers).unwrap();
         assert_eq!(fs::read_dir(&campaign).unwrap().count(), 1);
         assert_eq!(fs::read_dir(&folder).unwrap().count(), 4);
         fs::remove_dir_all(root).unwrap();
@@ -8374,7 +8448,8 @@ mod tests {
         // A file where the campaign's capture folder belongs.
         fs::write(replay::columnar_file::campaign_folder(&replays, b"campaign-a"), b"").unwrap();
         fs::write(campaign.join("columnar.0.h4col"), b"first").unwrap();
-        let error = publish_columnar(&campaign, &replays, None, false).unwrap_err();
+        let error =
+            publish_columnar(&campaign, &replays, None, false, &mut BTreeMap::new()).unwrap_err();
         assert!(error.contains("columnar recordings not published"), "{error}");
         assert_eq!(fs::read(campaign.join("columnar.0.h4col")).unwrap(), b"first");
         fs::remove_dir_all(root).unwrap();
@@ -8387,14 +8462,16 @@ mod tests {
         let campaign = root.join("spool").join("session-1").join("Campaign-A");
         let replays = root.join("replays");
         fs::create_dir_all(&campaign).unwrap();
-        let partial = campaign.join("columnar.0.h4col.partial");
-        fs::write(&partial, b"still held").unwrap();
-        let held = fs::OpenOptions::new().write(true).open(&partial).unwrap();
-        publish_columnar(&campaign, &replays, None, false).unwrap();
-        let error = publish_columnar(&campaign, &replays, None, true).unwrap_err();
+        let mut name = [0; replay::columnar_journal::SEGMENT_NAME_BYTES];
+        let journal = campaign.join(replay::columnar_journal::segment_name(0, 0, &mut name));
+        fs::write(&journal, b"still held").unwrap();
+        let held = fs::OpenOptions::new().write(true).open(&journal).unwrap();
+        let mut writers = BTreeMap::new();
+        publish_columnar(&campaign, &replays, None, false, &mut writers).unwrap();
+        let error = publish_columnar(&campaign, &replays, None, true, &mut writers).unwrap_err();
         assert!(error.contains("held open"), "{error}");
         drop(held);
-        assert_eq!(fs::read(&partial).unwrap(), b"still held");
+        assert_eq!(fs::read(&journal).unwrap(), b"still held");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -8736,6 +8813,7 @@ mod tests {
                 run_sessions: Vec::new(),
                 stop: None,
                 format: replay_data::FORMAT_VERSION,
+                journaled: 0,
                 controls: controls
                     .iter()
                     .map(|control| {
@@ -8751,8 +8829,8 @@ mod tests {
                     content,
                     capture_mode: session.capture_mode.byte(),
                 },
-                schema.iter().map(Vec::len).collect(),
-                Settings::RECORDING,
+                schema.len(),
+                Settings::LOW,
             )
             .unwrap();
             let finished = writer

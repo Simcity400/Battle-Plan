@@ -104,12 +104,12 @@ test('the panel draws each state, and the Stop prompt replaces everything under 
     const panelSettings = text(render({ view: 'settings' }));
     assert.match(panelSettings, /Settings Recording Auto record Records each campaign when it loads\. Auto save Saves when you load another campaign or close the game\./);
     // Every group is named; What to record stands with the other recording settings.
-    assert.match(panelSettings, /close the game\. What to record Full Compression Low High High makes smaller files/);
+    assert.match(panelSettings, /close the game\. What to record Full Compression Low High High makes the smallest files with more recorder CPU; Low makes larger files with less\. Never in the game\./);
     assert.match(panelSettings, /Folders Save to C:\\Recordings Paradox user folder Automatic/);
     assert.doesNotMatch(panelSettings, /File size|Fast|Small/);
     assert.match(panelSettings, /Start automatically With Windows With Battle Plan Open Battle Plan $/);
-    assert.match(render({ view: 'settings' }), /role="group" aria-label="Compression"><button type="button" aria-pressed="true">Low/);
-    assert.match(render({ view: 'settings', settings: { ...settings, compression: 'high' } }), /aria-pressed="false">Low<\/button><button type="button" aria-pressed="true">High/);
+    assert.match(render({ view: 'settings' }), /role="group" aria-label="Compression"><button type="button" aria-pressed="false">Low<\/button><button type="button" aria-pressed="true">High/);
+    assert.match(render({ view: 'settings', settings: { ...settings, blockCompression: 'low' } }), /aria-pressed="true">Low<\/button><button type="button" aria-pressed="false">High/);
     assert.match(text(render({ view: 'settings', settings: { ...settings, captureMode: 'map' } })), /What to record Map/,
       'the summary names the mode');
     assert.match(render({ view: 'settings' }), /role="switch" checked=""[^>]*\/>[\s\S]*role="switch" checked=""/, 'both are on by default');

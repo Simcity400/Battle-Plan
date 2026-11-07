@@ -218,9 +218,9 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
         <button type="button" className="recorder-row recorder-link" onClick={() => actions.view('record')}><span>What to record</span>
           <span className="recorder-value">{whatToRecord(settings)}<Icon name="chevron-right" /></span></button>
         <div className="recorder-row"><span>Compression</span>
-          <Segmented<Compression> label="Compression" value={settings.compression ?? 'low'}
+          <Segmented<Compression> label="Compression" value={settings.blockCompression ?? 'high'}
             options={[{ value: 'low', label: 'Low' }, { value: 'high', label: 'High' }]} onChange={compression => actions.settings({ compression })} /></div>
-        <p className="recorder-note">High makes smaller files but uses more background CPU and saves more slowly after Stop, especially with few cores.</p>
+        <p className="recorder-note">High makes the smallest files with more recorder CPU; Low makes larger files with less. Never in the game.</p>
       </section>
       <section className="recorder-section">
         <div className="recorder-label">Folders</div>

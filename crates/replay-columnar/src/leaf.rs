@@ -296,6 +296,16 @@ impl<'a> Reader<'a> {
         self.at
     }
 
+    /// Bytes not read yet.
+    pub fn left(&self) -> usize {
+        self.bytes.len() - self.at
+    }
+
+    /// The bytes not read yet.
+    pub fn rest(&self) -> &'a [u8] {
+        &self.bytes[self.at..]
+    }
+
     /// Refuses bytes left over after the last value.
     pub fn finish(&self) -> io::Result<()> {
         if self.at != self.bytes.len() {
@@ -394,6 +404,12 @@ impl<'a> Reader<'a> {
     }
 
     pub fn varint(&mut self) -> io::Result<u64> {
+        if let Some(&byte) = self.bytes.get(self.at)
+            && byte < 0x80
+        {
+            self.at += 1;
+            return Ok(u64::from(byte));
+        }
         let mut value = 0u64;
         for shift in (0..64).step_by(7) {
             let byte = self.u8()?;
