@@ -11,7 +11,8 @@ use crate::{
     frame::DecodedFrame,
     rows::{
         CoreSupplyAccessRow, CountryCounterInputRow, CountryLinkRow, CountryRow,
-        CountryUnitSpeedEntryRow, DivisionMovementRow, DivisionRow, DivisionStatusRow,
+        CountryUnitSpeedEntryRow, DivisionMovementRow, DivisionPanelStatsRow, DivisionRow,
+        DivisionStatusRow,
         DivisionTemplateIconRow, LexicalTokenRow, ModifierDefinitionRow,
         MovementDefines as RecordedDefines, MovementStateTermRow, OrdersGroupCounterInputRow,
         OwnerTransportSpeedRow, ProvinceRow, RaidAirScoreRow, RailCooldownRow, RailEdgeRow,
@@ -92,6 +93,7 @@ pub struct FrameTerms<'a> {
     provinces: Result<&'a [ProvinceRow], String>,
     states: Result<&'a [StateRow], String>,
     status: Result<&'a [DivisionStatusRow], String>,
+    panels: Result<&'a [DivisionPanelStatsRow], String>,
     links: Result<&'a [CountryLinkRow], String>,
     countries: Result<&'a [CountryRow], String>,
     counters: Result<&'a [CountryCounterInputRow], String>,
@@ -147,6 +149,7 @@ impl<'a> FrameTerms<'a> {
             provinces: complete::<tables::Provinces>(frame),
             states: complete::<tables::States>(frame),
             status: complete::<tables::DivisionStatus>(frame),
+            panels: complete::<tables::DivisionPanelStats>(frame),
             links: complete::<tables::CountryLinks>(frame),
             countries: complete::<tables::Countries>(frame),
             counters: complete::<tables::CountryCounterInputs>(frame),
@@ -169,6 +172,16 @@ impl<'a> FrameTerms<'a> {
             country_ids: std::cell::OnceCell::new(),
             layout: std::cell::OnceCell::new(),
         }
+    }
+
+    /// The moving division's base speed: its own, else its panel's word.
+    fn base_speed(&self, movement: &DivisionMovementRow) -> Option<i64> {
+        let panel = self.panels.as_ref().ok().and_then(|rows| {
+            rows.binary_search_by_key(&movement.division, |row| row.division)
+                .ok()
+                .map(|at| &rows[at])
+        });
+        movement.base_speed(panel)
     }
 
     fn province(&self, id: u32) -> Result<&'a ProvinceRow, String> {
@@ -868,8 +881,12 @@ impl<'a> FrameTerms<'a> {
             if supply_days == 0 {
                 return Err(SUPPLY_DAYS_ZERO.into());
             }
+            // Without days out of supply the exact pair is not kept: the stored values are the
+            // shown ones.
             [
-                status.supply_ratio,
+                status
+                    .supply_ratio
+                    .ok_or("the division's supply ratio is held exact without days out of supply")?,
                 *status
                     .supply_grace_remaining
                     .require("DivisionStatus.supply_grace_remaining")?,
@@ -1173,6 +1190,7 @@ impl<'a> FrameTerms<'a> {
                 edge: &edge,
                 organisation: None,
                 fuel: None,
+                base_speed: self.base_speed(movement),
             });
         }
         // Past a landing (neither land nor lake at the actual location, first
@@ -1230,6 +1248,7 @@ impl<'a> FrameTerms<'a> {
                 edge: &edge,
                 organisation: None,
                 fuel: None,
+                base_speed: self.base_speed(movement),
             });
         }
         // A strategic redeployment that no disable-redeployment modifier blocks moves at
@@ -1257,6 +1276,7 @@ impl<'a> FrameTerms<'a> {
                         edge: &edge,
                         organisation: None,
                         fuel: None,
+                        base_speed: self.base_speed(movement),
                     });
                 }
                 StrategicAction::Available(_) => {}
@@ -1501,6 +1521,7 @@ impl<'a> FrameTerms<'a> {
             edge: &edge,
             organisation,
             fuel,
+            base_speed: self.base_speed(movement),
         })
     }
 }

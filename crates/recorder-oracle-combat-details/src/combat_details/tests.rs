@@ -438,7 +438,7 @@ fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
             },
         );
     }
-    let run = |frame: &mut DecodedFrame, shares: [Recorded<Option<i64>>; 2]| {
+    let run = |frame: &mut DecodedFrame, shares: [Option<i64>; 2]| {
         let [first, second] = shares;
         *frame.tables[TableId::LandCombatDivisions.index()] =
             TableView::Complete(TableRows::LandCombatDivisions(vec![
@@ -474,33 +474,18 @@ fn reserve_speed_shares_sit_exactly_on_the_saved_reserves() {
             .filter(|difference| difference.contains("reserve speed share"))
             .count()
     };
-    let report = run(
-        &mut frame,
-        [Recorded::Value(None), Recorded::Value(Some(150_000))],
-    );
+    let report = run(&mut frame, [None, Some(150_000)]);
     assert_eq!(shares(&report), 0, "{:?}", report.differences);
-    let report = run(
-        &mut frame,
-        [Recorded::Value(Some(0)), Recorded::Value(Some(0))],
-    );
+    let report = run(&mut frame, [Some(0), Some(0)]);
     assert_eq!(shares(&report), 1, "{:?}", report.differences);
     // A reserve whose share capture refused is a named limitation.
-    let report = run(&mut frame, [Recorded::Value(None), Recorded::Value(None)]);
+    let report = run(&mut frame, [None, None]);
     assert_eq!(shares(&report), 0, "{:?}", report.differences);
     assert!(
         report
             .limitations
             .keys()
             .any(|reason| reason.starts_with("A reserve's speed share was refused at capture"))
-    );
-    // An older recording holds no share: a limitation, not a difference.
-    let report = run(&mut frame, [Recorded::NotRecorded, Recorded::NotRecorded]);
-    assert_eq!(shares(&report), 0, "{:?}", report.differences);
-    assert!(
-        report
-            .limitations
-            .keys()
-            .any(|reason| reason.contains("LandCombatDivisions.reinforcement_speed"))
     );
 }
 
@@ -1020,10 +1005,10 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
         },
     };
     // An ordered historical member: every conditional key is omitted.
-    let row = replay_data::rows::LandCombatDivisionRow {
-        name_order: 0,
-        name_ordered: 1,
-        name_group: b"SOV_INF_01".to_vec(),
+    let row = replay_data::rows::NameOperands {
+        order: 0,
+        ordered: 1,
+        group: b"SOV_INF_01".to_vec(),
         ..Default::default()
     };
     let mut report = Report::default();
@@ -1046,9 +1031,9 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     );
     assert_eq!(report.differences.len(), 1);
     // A player's name, an unordered member and a nonzero order word.
-    let custom = replay_data::rows::LandCombatDivisionRow {
-        name_order: -1,
-        name_custom: b"Guards".to_vec(),
+    let custom = replay_data::rows::NameOperands {
+        order: -1,
+        custom: b"Guards".to_vec(),
         ..Default::default()
     };
     let named = save::DivisionName {
@@ -1068,10 +1053,10 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     // A programmatic override with a set group is not shown
     // and not recorded: the group is compared instead.
-    let programmatic = replay_data::rows::LandCombatDivisionRow {
-        name_programmatic: 1,
-        name_custom: Vec::new(),
-        name_group: b"SOV_INF_01".to_vec(),
+    let programmatic = replay_data::rows::NameOperands {
+        programmatic: 1,
+        custom: Vec::new(),
+        group: b"SOV_INF_01".to_vec(),
         ..custom.clone()
     };
     let generated = save::DivisionName {
@@ -1090,9 +1075,9 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     assert!(report.limitations.is_empty());
     // With a null group (the fake-intel template saves none) the game
     // shows it, and it is compared.
-    let shown = replay_data::rows::LandCombatDivisionRow {
-        name_custom: b"1. Strelkovaya".to_vec(),
-        name_group: Vec::new(),
+    let shown = replay_data::rows::NameOperands {
+        custom: b"1. Strelkovaya".to_vec(),
+        group: Vec::new(),
         ..programmatic.clone()
     };
     naming(
@@ -1105,10 +1090,10 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     assert!(report.differences.is_empty(), "{:?}", report.differences);
     // Whole-roster operands share the flat rows' displayed override rule.
     let operands = replay_data::rows::NameOperands {
-        order: custom.name_order,
-        ordered: custom.name_ordered,
+        order: custom.order,
+        ordered: custom.ordered,
         programmatic: 1,
-        custom: shown.name_custom.clone(),
+        custom: shown.custom.clone(),
         ..Default::default()
     };
     let mut operand_report = Report::default();
@@ -1149,8 +1134,8 @@ fn division_naming_follows_the_division_name_writer_and_member_template() {
     naming(
         &mut report,
         "ship",
-        &replay_data::rows::LandCombatDivisionRow {
-            name_type: 1,
+        &replay_data::rows::NameOperands {
+            kind: 1,
             ..programmatic.clone()
         },
         &unit(
@@ -1405,10 +1390,15 @@ fn combat_members_take_their_witnessed_template_from_the_division_status() {
                     template: standard,
                     ..Default::default()
                 },
-                name_ordered: 1,
-                name_programmatic: 1,
-                name_custom: b"1. Strelkovaya".to_vec(),
-                reinforcement_speed: Recorded::Value(None),
+                own: Some(replay_data::rows::LandCombatMemberValues {
+                    naming: replay_data::rows::NameOperands {
+                        ordered: 1,
+                        programmatic: 1,
+                        custom: b"1. Strelkovaya".to_vec(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         ]));

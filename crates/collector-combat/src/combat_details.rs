@@ -28,7 +28,7 @@ use engine_native::{
 use replay_data::{
     rows::CombatModifierValue, rows::LandCombatCommanderTimedTrait, rows::LandCombatCommanderTrait,
     rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
-    rows::LandCombatExileInputs, rows::LandCombatLearningProgress, rows::LandCombatModifierRow,
+    rows::LandCombatExileInputs, rows::LandCombatMemberValues, rows::NameOperands, rows::LandCombatLearningProgress, rows::LandCombatModifierRow,
     rows::LandCombatSideDetails, rows::LandCombatSideInputs, rows::LandCombatSideRow,
     rows::LandDivisionContext, rows::LandDivisionModifier, rows::LandDivisionWidthTerm,
     rows::Recorded, rows::ReserveModifierTreeRow, rows::Retired, rows::RetiredKept,
@@ -198,6 +198,9 @@ struct Division {
     /// committed division, whose entry has no reinforcement hover.
     reserve_speed: Option<Result<i64, &'static str>>,
     reserve_observation: Option<usize>,
+    /// The hour's division rows publish exactly this member's division values
+    /// ([`Captured::join_members`]), so its row stores no copy of them.
+    joined: bool,
 }
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct ModifierSide {
@@ -499,6 +502,7 @@ impl Destination<'_> {
             width_start: start,
             reserve_speed,
             reserve_observation,
+            joined: false,
         };
         self.progress[1].len += 1;
     }
@@ -914,6 +918,15 @@ impl Destination<'_> {
         }
         self.progress[2].len = retained;
     }
+}
+
+/// A combat member's division values as its own reads hold them.
+pub struct MemberReads<'a> {
+    pub naming: engine_native::cname_group_member::Inputs,
+    pub custom: &'a [u8],
+    pub group: &'a [u8],
+    pub stats: &'a carmy_combat_inputs::Row,
+    pub base_speed: i64,
 }
 
 pub struct Captured {
@@ -1448,6 +1461,36 @@ impl Captured {
 
     /// Reserve arithmetic and diagnostics use only captured operands. Keep
     /// `pending_owned` until completion so a reset forgets an unfinished store.
+    /// Each admitted member's division, in member order.
+    pub fn member_divisions(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
+        let len = self.divisions.outcome.len().min(self.divisions.rows.len());
+        self.divisions.rows[..len].iter().map(|row| row.stats.division)
+    }
+    /// Marks each member whose division values `published` finds in the hour's division rows,
+    /// exactly as the member read them; the others keep their own copy.
+    pub fn join_members(&mut self, mut published: impl FnMut(&MemberReads<'_>) -> bool) {
+        let names = &self.division_names.first;
+        let span = |(start, len): (usize, usize)| names.get(start..start.checked_add(len)?);
+        for row in &mut self.divisions.rows {
+            row.joined = false;
+        }
+        let len = self.divisions.outcome.len().min(self.divisions.rows.len());
+        for row in &mut self.divisions.rows[..len] {
+            let Some(naming) = row.stats.naming else {
+                continue;
+            };
+            let (Some(custom), Some(group)) = (span(naming.custom), span(naming.group)) else {
+                continue;
+            };
+            row.joined = published(&MemberReads {
+                naming,
+                custom,
+                group,
+                stats: &row.stats,
+                base_speed: row.context.base_speed,
+            });
+        }
+    }
     pub fn settle_owned(&mut self) {
         if !self.pending_owned {
             return;
@@ -1807,6 +1850,21 @@ impl Captured {
     }
     pub fn tables(&self) -> [TableView; N] {
         let outcomes = self.outcomes();
+        // The published member rows, where they are in key order.
+        let member_key = |row: &Division| (row.combat, row.side, row.ordinal);
+        let members = match outcomes[1] {
+            Outcome::Rows { len } => self.divisions.rows.get(..len).filter(|rows| {
+                rows.windows(2)
+                    .all(|pair| member_key(&pair[0]) < member_key(&pair[1]))
+            }),
+            _ => None,
+        };
+        let published = |combat: u64, side: u8, ordinal: u32, division: u64| {
+            members.is_some_and(|rows| {
+                rows.binary_search_by_key(&(combat, side, ordinal), member_key)
+                    .is_ok_and(|at| rows[at].stats.division == division)
+            })
+        };
         [
             table::<tables::LandCombatDetails, _>(outcomes[0], &self.details.rows, |captured| {
                 let r = &captured.row;
@@ -1920,25 +1978,27 @@ impl Captured {
                     side: r.side,
                     ordinal: r.ordinal,
                     division: s.division,
-                    name_type: naming.kind,
-                    name_order: naming.order,
-                    name_ordered: naming.ordered,
-                    name_programmatic: naming.programmatic,
-                    name_custom: name(naming.custom),
-                    name_group: name(naming.group),
                     role: r.role,
                     province: r.province,
-                    strength_combat_factor: s.strength_combat_factor,
-                    // A field each; the packets are tombstones.
-                    stat_values: s.stat_values.map(Recorded::Value),
-                    stat_packet: RetiredKept::default(),
-                    armour: s.armour,
-                    piercing: s.piercing,
-                    air_attack: s.air_attack,
-                    reconnaissance: s.reconnaissance,
-                    // The stat block's initiative, which the reinforcement chance scales by the
-                    // country's and leader's 0x250 keys.
-                    initiative: s.initiative,
+                    own: (!r.joined).then(|| LandCombatMemberValues {
+                        naming: NameOperands {
+                            kind: naming.kind,
+                            order: naming.order,
+                            ordered: naming.ordered,
+                            programmatic: naming.programmatic,
+                            custom: name(naming.custom),
+                            group: name(naming.group),
+                        },
+                        strength_combat_factor: s.strength_combat_factor,
+                        fuel_inputs: s.fuel_inputs,
+                        stat_values: s.stat_values,
+                        armour: s.armour,
+                        piercing: s.piercing,
+                        air_attack: s.air_attack,
+                        reconnaissance: s.reconnaissance,
+                        initiative: s.initiative,
+                        base_speed: r.context.base_speed,
+                    }),
                     commander: s.commander,
                     direction_group: s.direction_group,
                     categories: s.categories,
@@ -1956,17 +2016,8 @@ impl Captured {
                             occupiers: tags(exile.occupiers),
                         }
                     }),
-                    commander_inputs: Retired,
-                    scales: s.scales.map(Recorded::Value),
-                    scale_packet: RetiredKept::default(),
-                    fuel_inputs: s.fuel_inputs.map(Recorded::Value),
-                    fuel_packet: RetiredKept::default(),
-                    reinforcement: Retired,
-                    reinforcement_modifiers: Retired,
-                    reinforcement_supply: Retired,
-                    reinforcement_acclimatization: Retired,
-                    reinforcement_transport: Retired,
-                    reinforcement_speed: Recorded::Value(r.reserve_speed.and_then(Result::ok)),
+                    scales: s.scales,
+                    reinforcement_speed: r.reserve_speed.and_then(Result::ok),
                     context: LandDivisionContext {
                         template: r.context.template,
                         country_modifiers: r.context.country_modifiers.map(|m| {
@@ -1985,7 +2036,6 @@ impl Captured {
                         leader_modifier_kind: r.context.leader_modifier_kind,
                         feature_flags: r.context.feature_flags,
                         eligibility_callback: r.context.eligibility_callback,
-                        base_speed: r.context.base_speed,
                     },
                     width_terms: allocation::owned_vec(allocation::collect_vec(
                         self.width_terms.first
@@ -2028,6 +2078,7 @@ impl Captured {
             }),
             // Members in key order: sides are read in combat order, each
             // side's members in ordinal order (the projection sorts anyway).
+            // A member keeps its division unless a published member row names it.
             match (outcomes[4], self.read_sides()) {
                 (Outcome::Unavailable { reason }, _) => unavailable(reason),
                 (outcome, Some(sides)) => table_iter::<tables::LandCombatDivisionModifiers, _>(
@@ -2041,7 +2092,8 @@ impl Captured {
                         combat: side.combat,
                         side: side.side,
                         ordinal: member.ordinal,
-                        division: member.division,
+                        division: (!published(side.combat, side.side, member.ordinal, member.division))
+                            .then_some(member.division),
                         entries: allocation::owned_vec(allocation::collect_vec(
                             self.modifiers.first[member.start..member.start + member.len]
                                 .iter()

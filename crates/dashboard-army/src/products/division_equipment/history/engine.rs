@@ -7,7 +7,7 @@
 //! the reads made before it: until its own reads stand ([`Supplies::own`]) it keeps its rows
 //! and answers nothing, and the engine of the segment before answers those hours.
 
-use super::super::{Placed, UNLINKED_DIVISION, find};
+use super::super::{Placed, UNLINKED_DIVISION};
 use super::{CADENCE, KeptReason, NamingOperands};
 use crate::products::{
     army_content::{self, DefinitionsOf, Holder, TemplateArtwork},
@@ -55,7 +55,7 @@ pub(crate) const DEFINITIONS: usize = 6;
 /// The tables [`Input::complete`] answers for, in its order.
 pub(crate) const COMPLETE: [TableId; 7] = [
     TableId::Divisions,
-    TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
     TableId::DivisionLandInputs,
     TableId::NewDivisionEquipment,
     TableId::DivisionEquipment,

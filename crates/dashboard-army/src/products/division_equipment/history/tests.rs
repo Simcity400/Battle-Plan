@@ -25,7 +25,7 @@ use replay_data::{
     rows::{
         CampaignRow, CountryAppearanceRow, CountryLinkRow, CountryLocalSubunitRow, CountryRow,
         DivisionEquipmentRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow,
-        DivisionStatusRow, DivisionTemplateIconRow, DivisionTemplateRow, LexicalTokenRow, Recorded,
+        DivisionTemplateIconRow, DivisionTemplateRow, LexicalTokenRow, Recorded,
         RowCodec, StockpileRow, TableId, TemplateSettings, TemplateSubunit, VariantDefinitionRow,
     },
     scope::CaptureMode,
@@ -296,13 +296,16 @@ impl Model {
             })
             .collect();
         let divisions: Vec<DivisionRow> = self.divisions.values().cloned().collect();
-        let status: Vec<DivisionStatusRow> = self
+        let status: Vec<replay_data::rows::DivisionPanelStatsRow> = self
             .maxima
             .iter()
-            .map(|(&division, &maximum_hit_points)| DivisionStatusRow {
-                division,
-                maximum_hit_points,
-                ..Default::default()
+            .map(|(&division, &maximum_hit_points)| {
+                let mut row = replay_data::rows::DivisionPanelStatsRow {
+                    division,
+                    ..Default::default()
+                };
+                row.panel_stats[0] = Some(maximum_hit_points);
+                row
             })
             .collect();
         let land: Vec<DivisionLandInputsRow> = self
@@ -357,7 +360,7 @@ impl Model {
         put(walk, hour, TableId::DivisionTemplateIcons, Some(&icons[..]));
         put(walk, hour, TableId::VariantDefinitions, Some(&variants[..]));
         put(walk, hour, TableId::Divisions, Some(&divisions[..]));
-        put(walk, hour, TableId::DivisionStatus, Some(&status[..]));
+        put(walk, hour, TableId::DivisionPanelStats, Some(&status[..]));
         put(walk, hour, TableId::DivisionLandInputs, Some(&land[..]));
         put::<DivisionEquipmentRow>(walk, hour, TableId::NewDivisionEquipment, Some(&[][..]));
         put(

@@ -193,7 +193,7 @@ fn bulk_merge_keeps_apply_before_final_validation_and_absent_delete_precedence()
     .unwrap();
     let semantic = DeltaRow {
         key: key(4),
-        mask: 1 << 30,
+        mask: 1 << 13,
         format: crate::FORMAT_VERSION,
         recorded_fields: TableId::LandCombatDivisions.field_count(),
         values: bad_value,

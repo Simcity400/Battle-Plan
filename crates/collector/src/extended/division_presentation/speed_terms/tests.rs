@@ -680,6 +680,7 @@ fn mixed_itinerary_captures_combat_for_a_later_land_edge() {
         edge: &edge,
         organisation: None,
         fuel: None,
+        base_speed: None,
     };
     let defines = Defines {
         outer_scale: 100_000,

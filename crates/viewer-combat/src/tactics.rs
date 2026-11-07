@@ -505,6 +505,8 @@ struct Context<'a> {
     country_unlocks: BTreeMap<u32, &'a [u32]>,
     country_tags: BTreeMap<&'a [u8], u32>,
     divisions: BTreeMap<(u8, u64), &'a LandCombatDivisionRow>,
+    /// Each member's division values, where recorded ([`LandCombatDivisionRow::values`]).
+    values: BTreeMap<(u8, u64), replay_data::rows::LandCombatMemberValues>,
     movement_sources: BTreeMap<u64, u32>,
     participants: &'a [u64],
     tokens: BTreeMap<u32, &'a [u8]>,
@@ -834,11 +836,14 @@ impl Context<'_> {
                 let greater = comparison == Operator::Greater;
                 let mut actual = if greater { 100_000 } else { 0 };
                 for unit in self.participants {
+                    self.division(*unit).map_err(|why| fail(&why))?;
                     let hardness = self
-                        .division(*unit)
-                        .map_err(|why| fail(&why))?
-                        .stat_values()
-                        .ok_or_else(|| fail("a participant's stats are not recorded"))?[2];
+                        .values
+                        .get(&(self.side as u8, *unit))
+                        .ok_or_else(|| {
+                            fail("a participant's stats are in neither its LandCombatDivisions row nor its division's rows")
+                        })?
+                        .stat_values[2];
                     actual = if greater {
                         actual.min(hardness)
                     } else {
@@ -1255,6 +1260,9 @@ pub(super) fn bind(
             Some(widths) => Ok(*widths),
         },
     };
+    let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
+    let combat_members = viewer_foundation::land_combat_math::combat_rows(division_rows.rows(), id);
+    let member_values = viewer_foundation::land_combat_math::member_values(frame, combat_members)?;
     let context = Context {
         detail,
         marker_flags,
@@ -1290,11 +1298,14 @@ pub(super) fn bind(
             .iter()
             .map(|row| (row.tag.as_slice(), row.canonical_slot))
             .collect(),
-        divisions: rows::<tables::LandCombatDivisions>(frame)?
-            .rows()
+        divisions: combat_members
             .iter()
-            .filter(|row| row.combat == id)
             .map(|row| ((row.side, row.division), row))
+            .collect(),
+        values: combat_members
+            .iter()
+            .zip(member_values)
+            .filter_map(|(row, values)| Some(((row.side, row.division), values?)))
             .collect(),
         movement_sources: rows::<tables::DivisionMovement>(frame)?
             .rows()
@@ -2308,6 +2319,7 @@ mod tests {
             side: 0,
             country_tags: BTreeMap::new(),
             divisions: BTreeMap::new(),
+            values: BTreeMap::new(),
             movement_sources: BTreeMap::new(),
             participants: &[],
             tokens: BTreeMap::new(),
@@ -3183,6 +3195,9 @@ mod tests {
                     width: 0,
                 },
             ],
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let aliases = BTreeMap::new();
@@ -4743,6 +4758,9 @@ mod tests {
             |(division, categories)| LandCombatDivisionRow {
                 division,
                 categories,
+                own: Some(replay_data::rows::LandCombatMemberValues {
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
         );

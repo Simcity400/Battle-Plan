@@ -487,12 +487,16 @@ fn routes_mark_which_stack_kinds_are_native() {
                 combat_province: 2,
                 ..Default::default()
             },
-            DivisionMovementRow {
-                base_speed: Some(100_000).into(),
-                ..attacking(3, vec![9])
-            },
+            attacking(3, vec![9]),
             attacking(4, Vec::new()),
         ]));
+    let mut panel = replay_data::rows::DivisionPanelStatsRow {
+        division: 3,
+        ..Default::default()
+    };
+    panel.panel_stats[replay_data::rows::DivisionPanelStatsRow::MAXIMUM_SPEED] = Some(100_000);
+    *frame.tables[TableId::DivisionPanelStats.index()] =
+        TableView::Complete(TableRows::DivisionPanelStats(vec![panel]));
     let map = MovementMap::from_parts(&[(1, LAND, land(&[2])), (2, LAND, land(&[1]))]);
     let anchor = |id: u32| Some([id as f32, 0.0, 0.0]);
     // Timing content knows provinces 1 and 9 without an edge between them,

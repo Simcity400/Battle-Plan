@@ -396,7 +396,8 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
             presentation: Default::default(),
         },
     );
-    let mut run = |base_speed, moving: bool| {
+    // The row keeps its own base speed, as without the division's panel row.
+    let mut run = |base_speed: Option<i64>, moving: bool| {
         let mut current_save = saved.clone();
         let path = if moving { vec![2] } else { Vec::new() };
         current_save
@@ -413,8 +414,7 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
                 path,
                 withdrawal: Some(0).into(),
                 movement_priority: Some(1).into(),
-                fresh: Recorded::NotRecorded,
-                base_speed,
+                own_base_speed: Some(base_speed),
                 // Fuel compares in its own test.
                 fuel: Recorded::NotRecorded,
                 ..Default::default()
@@ -427,13 +427,18 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
     for moving in [false, true] {
         // Any raw word, including the signed extremes, is counted unchanged.
         for speed in [i64::MIN, 0, 400_000, i64::MAX] {
-            let report = run(Recorded::Value(Some(speed)), moving);
+            let report = run(Some(speed), moving);
             assert!(report.differences.is_empty(), "{:?}", report.differences);
             assert_eq!(report.compared_tables["DivisionMovement"], 1);
+            // Only a division with a route is in the base speed's demand.
+            let counted = format!(
+                "DivisionMovement.base_speed: {} rows recorded, not compared",
+                usize::from(moving)
+            );
             assert!(report.limitations.iter().any(|(reason, subjects)| {
                 reason.contains("the stat block's maximum-speed field")
                     && reason.contains("the save has no counterpart")
-                    && subjects == &["DivisionMovement.base_speed: 1 rows recorded, not compared"]
+                    && subjects == &[counted.clone()]
             }));
             assert!(
                 !report
@@ -444,21 +449,12 @@ fn division_base_speed_is_required_for_a_route_and_never_compared() {
                 "{report:?}"
             );
         }
-        let refused = run(Recorded::Value(None), moving);
+        let refused = run(None, moving);
         assert_eq!(refused.differences.len(), usize::from(moving));
         if moving {
             assert!(refused.differences[0].contains("base_speed"));
             assert!(refused.differences[0].contains("required stat-block speed"));
         }
-        // An older recording has no base speed: a counted field gap, never a
-        // difference.
-        let historical = run(Recorded::NotRecorded, moving);
-        assert!(historical.differences.is_empty());
-        assert!(
-            historical
-                .limitations
-                .contains_key("DivisionMovement.base_speed not recorded")
-        );
     }
 }
 

@@ -29,6 +29,7 @@ const TABLES: &[TableId] = &[
     TableId::CountryLinks,
     TableId::Divisions,
     TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
     TableId::DivisionLandInputs,
     TableId::DivisionTemplates,
     TableId::DivisionTemplateIcons,
@@ -857,7 +858,13 @@ fn division<'a>(
     if required.is_none() {
         refusals.note("Template required manpower was not recorded");
     }
-    let hp_max = status.map(|status| i128::from(status.maximum_hit_points));
+    let hp_max = find(
+        frame.complete::<tables::DivisionPanelStats>().ok(),
+        row.id,
+        |row| row.division,
+    )
+    .and_then(|panel| panel.maximum_hit_points())
+    .map(i128::from);
     if hp_max.is_none() {
         refusals.note("Division maximum hit points were not recorded");
     }

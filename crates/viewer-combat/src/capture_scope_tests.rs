@@ -10,8 +10,9 @@ use viewer_foundation::map::test_support::{
 use viewer_foundation::map::{lazy_icons::flag_set, memo::Keyed, perspective::Vision};
 
 /// Bars and division names are withheld without DivisionStatus; fog is off without its inputs.
-const PRESENTED_ABSENT: [TableId; 3] = [
+const PRESENTED_ABSENT: [TableId; 4] = [
     TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
     TableId::UnitIntel,
     TableId::CountryVisibility,
 ];
@@ -131,7 +132,7 @@ fn map_battle_windows_read_only_recorded_tables() {
             );
             assert!(
                 bindings.warnings.iter().any(|warning| warning
-                    .contains("has no DivisionStatus row, which holds its maximum")),
+                    .contains("has no maximum HP in DivisionPanelStats")),
                 "{:?}",
                 bindings.warnings
             );

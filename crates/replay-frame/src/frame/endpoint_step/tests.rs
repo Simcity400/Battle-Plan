@@ -79,7 +79,7 @@ fn source(tick: i32) -> DecodedFrame {
     frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![DivisionStatusRow {
             division: u64::MAX,
-            maximum_hit_points: i64::MAX,
+            strength_factor: i64::MAX,
             name: Recorded::Value(Some(vec![0, 255, tick as u8])),
             supply: Recorded::Value(None),
             ..Default::default()

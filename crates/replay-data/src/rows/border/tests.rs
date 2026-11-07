@@ -80,7 +80,7 @@ fn division_status_mask_recording_cost() {
         let fixture: Vec<_> = (1..=count)
             .map(|id| DivisionStatusRow {
                 division: (id as u64) << 32 | 51,
-                maximum_organisation: 3_000_000,
+                entrenchment: 3_000_000,
                 ..Default::default()
             })
             .collect();
@@ -93,7 +93,7 @@ fn division_status_mask_recording_cost() {
                 let mut next = previous.clone();
                 if let Some(stride) = stride {
                     for row in next.iter_mut().skip(hour % stride).step_by(stride) {
-                        row.maximum_organisation += 10_000;
+                        row.entrenchment += 10_000;
                     }
                 }
                 let mut encoded = Vec::new();

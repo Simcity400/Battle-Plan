@@ -419,7 +419,7 @@ impl Bindings {
             .iter()
             .map(|r| (r.id, r))
             .collect();
-        let status: BTreeMap<_, _> = rows::<tables::DivisionStatus>(frame)?
+        let panels: BTreeMap<_, _> = rows::<tables::DivisionPanelStats>(frame)?
             .rows()
             .iter()
             .map(|r| (r.division, r))
@@ -487,17 +487,22 @@ impl Bindings {
                     )),
                 };
                 self.bind_in(&mut row, "unit_icon", SPRITE, icon);
-                match status.get(id) {
-                    Some(status) => {
+                match panels.get(id) {
+                    Some(panel) => {
                         for (bar, value, maximum) in [
-                            ("str_bar", division.hit_points, status.maximum_hit_points),
-                            ("org_bar", division.organisation, status.maximum_organisation),
+                            ("str_bar", division.hit_points, panel.maximum_hit_points()),
+                            ("org_bar", division.organisation, panel.maximum_organisation()),
                         ] {
-                            let value = ratio(value, maximum).ok_or_else(|| {
-                                format!(
-                                    "Land combat division {id}: its recorded {bar} maximum {maximum} is not positive; the bar is hidden."
-                                )
-                            });
+                            let value = match maximum {
+                                Some(maximum) => ratio(value, maximum).ok_or_else(|| {
+                                    format!(
+                                        "Land combat division {id}: its recorded {bar} maximum {maximum} is not positive; the bar is hidden."
+                                    )
+                                }),
+                                None => Err(format!(
+                                    "Land combat division {id}: its {bar} maximum was refused when recorded; the bar is hidden."
+                                )),
+                            };
                             self.bind_in(&mut row, bar, FILL, value);
                         }
                     }
@@ -505,7 +510,7 @@ impl Bindings {
                         &mut row,
                         &["str_bar", "org_bar"],
                         format!(
-                            "Land combat division {id}: its DivisionStatus row is missing; its bars are hidden."
+                            "Land combat division {id}: its DivisionPanelStats row is missing; its bars are hidden."
                         ),
                     ),
                 }

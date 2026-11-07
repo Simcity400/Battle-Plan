@@ -591,7 +591,6 @@ pub struct LandDivisionContext {
     pub modifier_metadata: [[u32; 2]; 3],
     pub feature_flags: u32,
     pub eligibility_callback: u8,
-    pub base_speed: i64,
 }
 value_struct!(LandDivisionContext {
     template: u64,
@@ -600,8 +599,7 @@ value_struct!(LandDivisionContext {
     leader_modifiers: [LandDivisionModifier; 3],
     modifier_metadata: [[u32; 2]; 3],
     feature_flags: u32,
-    eligibility_callback: u8,
-    base_speed: i64
+    eligibility_callback: u8
 });
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -983,6 +981,96 @@ impl LandCombatDetailsRow {
     }
 }
 
+/// A land combat member's division values: what its DivisionStatus, DivisionPanelStats and
+/// DivisionMovement rows of the same hour record for the division, read from the same native
+/// words at the same moment.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(replay_spool::Spooled)]
+pub struct LandCombatMemberValues {
+    /// DivisionStatus' naming operands. The viewer renders the name from content.
+    pub naming: NameOperands,
+    /// DivisionStatus' strength factor.
+    pub strength_combat_factor: i64,
+    /// DivisionMovement's fuel, and the stat block's fuel capacity (DivisionStatus' movement
+    /// fuel rate).
+    pub fuel_inputs: [i64; 2],
+    /// Defence, breakthrough, hardness, soft and hard attack: the panel's selectors 1 to 5.
+    pub stat_values: [i64; 5],
+    /// The panel's selectors 0x3f and 0x40.
+    pub armour: i64,
+    pub piercing: i64,
+    /// The stat block's anti-air word (DivisionStatus' movement air defense).
+    pub air_attack: i64,
+    /// The panel's selector 6.
+    pub reconnaissance: i64,
+    /// The stat block's initiative (the panel's selector 8), which reinforcement chance scales by
+    /// the country's and the contextual leader's 0x250 keys and `ARMY_INITIATIVE_REINFORCE_FACTOR`.
+    /// Exact: those products truncate at every step.
+    pub initiative: i64,
+    /// The stat block's maximum speed (the panel's selector 0x3e).
+    pub base_speed: i64,
+}
+value_struct!(LandCombatMemberValues {
+    naming: NameOperands,
+    strength_combat_factor: i64,
+    fuel_inputs: [i64; 2],
+    stat_values: [i64; 5],
+    armour: i64,
+    piercing: i64,
+    air_attack: i64,
+    reconnaissance: i64,
+    initiative: i64,
+    base_speed: i64
+});
+opaque_value!(Option<LandCombatMemberValues>);
+
+impl LandCombatMemberValues {
+    /// Where [`DivisionPanelStatsRow::panel_stats`] holds selectors 1 to 5, 0x3f, 0x40, 6 and 8.
+    pub const STATS: [usize; 5] = [11, 12, 20, 9, 10];
+    pub const ARMOUR: usize = 13;
+    pub const PIERCING: usize = 14;
+    pub const RECONNAISSANCE: usize = 3;
+    pub const INITIATIVE: usize = 15;
+
+    /// The division's values from its rows of the hour; None when one of them lacks a value.
+    pub fn joined(
+        panel: &DivisionPanelStatsRow,
+        status: &DivisionStatusRow,
+        movement: &DivisionMovementRow,
+    ) -> Option<Self> {
+        let word = |at: usize| panel.panel_stats[at];
+        let Recorded::Value(Some(naming)) = &status.naming else {
+            return None;
+        };
+        let Recorded::Value(Some(stats)) = &status.movement_stats else {
+            return None;
+        };
+        let Recorded::Value(Some(fuel)) = movement.fuel else {
+            return None;
+        };
+        let mut stat_values = [0; 5];
+        for (value, at) in stat_values.iter_mut().zip(Self::STATS) {
+            *value = word(at)?;
+        }
+        Some(Self {
+            naming: naming.clone(),
+            strength_combat_factor: status.strength_factor,
+            fuel_inputs: [fuel, stats.fuel_rate],
+            stat_values,
+            armour: word(Self::ARMOUR)?,
+            piercing: word(Self::PIERCING)?,
+            air_attack: stats.air_defense,
+            reconnaissance: word(Self::RECONNAISSANCE)?,
+            initiative: word(Self::INITIATIVE)?,
+            base_speed: word(DivisionPanelStatsRow::MAXIMUM_SPEED)?,
+        })
+    }
+}
+
+/// LandCombatDivisions: one combat member, keyed (combat, side, ordinal in the side's native
+/// participant walk). Its division's values are the division's rows of the same hour
+/// ([`Self::values`]); a member stores its own copy only where those rows do not hold them, as
+/// for a division no roster lists.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct LandCombatDivisionRow {
@@ -992,57 +1080,13 @@ pub struct LandCombatDivisionRow {
     pub role: u8,
     pub province: u32,
     pub division: u64,
-    /// Naming operands: type, order, ordered and programmatic flags, the stored
-    /// name shown when the programmatic flag is clear or the group is null,
-    /// and the selected historical group key, empty for a null group. The
-    /// viewer renders the name from content.
-    pub name_type: i32,
-    pub name_order: i32,
-    pub name_ordered: u8,
-    pub name_programmatic: u8,
-    pub name_custom: Vec<u8>,
-    pub name_group: Vec<u8>,
-    pub strength_combat_factor: i64,
-    /// Fuel and fuel capacity, a field each (31 and 32); read them through
-    /// [`Self::fuel_inputs`], which answers older recordings from
-    /// `fuel_packet`.
-    pub fuel_inputs: [Recorded<i64>; 2],
-    /// Defence, breakthrough, hardness, soft and hard attack, a field each
-    /// (33 to 37); read them through [`Self::stat_values`].
-    pub stat_values: [Recorded<i64>; 5],
-    /// Field 10's tombstone: recordings older than
-    /// [`crate::rows::compatibility::LAND_DIVISION_NUMBERS_FORMAT`] hold
-    /// `fuel_inputs` there as one packet, which this keeps for them.
-    pub fuel_packet: RetiredKept<[i64; 2]>,
-    /// Field 11's tombstone, `stat_values` as one packet in older recordings.
-    pub stat_packet: RetiredKept<[i64; 5]>,
-    pub armour: i64,
-    pub piercing: i64,
-    pub air_attack: i64,
-    pub reconnaissance: i64,
-    /// The stat block's initiative (the unit's stat block), which reinforcement chance scales by
-    /// the country's and the contextual leader's 0x250 keys and `ARMY_INITIATIVE_REINFORCE_FACTOR`.
-    /// Exact: those products truncate at every step.
-    pub initiative: i64,
     /// The division's commander handle; its name, skill and traits are the
     /// UnitLeaders and UnitLeaderTraits rows of the same hour.
     pub commander: u64,
-    /// The attack and defence accumulators and the invasion attack and defence scales, a field each
-    /// (38 to 41); read them through [`Self::scales`].
-    pub scales: [Recorded<i64>; 4],
-    /// Field 18's tombstone, `scales` as one packet in older recordings.
-    pub scale_packet: RetiredKept<[i64; 4]>,
+    /// The attack and defence accumulators and the invasion attack and defence scales.
+    pub scales: [i64; 4],
     pub context: LandDivisionContext,
     pub width_terms: Vec<LandDivisionWidthTerm>,
-    /// The commander hover's name, skill and traits, as UnitLeaders and
-    /// UnitLeaderTraits record them.
-    pub commander_inputs: Retired,
-    /// The reserve reinforcement hover's speed operands.
-    pub reinforcement: Retired,
-    pub reinforcement_modifiers: Retired,
-    pub reinforcement_supply: Retired,
-    pub reinforcement_acclimatization: Retired,
-    pub reinforcement_transport: Retired,
     /// Raw unit latch word of the direction count.
     pub direction_group: i32,
     pub exile: Option<LandCombatExileInputs>,
@@ -1059,61 +1103,84 @@ pub struct LandCombatDivisionRow {
     /// and for a reserve whose operands could not be read or take a form the port does not follow
     /// (counted in collector status). Exact: the arm's truncating product and the chance's sum read
     /// every digit.
-    pub reinforcement_speed: Recorded<Option<i64>>,
+    pub reinforcement_speed: Option<i64>,
+    /// The member's own copy of its division's values, where its division's rows of the hour do
+    /// not hold the values it read ([`Self::values`]).
+    pub own: Option<LandCombatMemberValues>,
 }
-// Display steps ([`crate::display`]). The strength combat factor (only inside the
-// strength share), fuel (the fuel icon's threshold), hardness (`stat_values[2]`, the
-// tactic triggers' `hardness > 0.5`), armour and piercing (the trimmed fixed5 formatter
-// prints every decimal, and the piercing icons compare them), air attack (the air icon's
-// `> 1000`), reconnaissance (the initiative glow compares the sides' maxima), the
-// invasion scales `scales[2..4]` (their section shows only while a scale differs from 1),
-// width terms and context stay exact.
-//
-// Fuel, the stats and the scales are a numeric field each
-// ([`crate::rows::compatibility::LAND_DIVISION_NUMBERS_FORMAT`]), so the
-// grouped layout predicts each from its own last changes; a changing scale
-// no longer rewrites its packet.
 impl LandCombatDivisionRow {
-    /// Fuel and fuel capacity, or, in a recording older than
-    /// [`crate::rows::compatibility::LAND_DIVISION_NUMBERS_FORMAT`], its
-    /// packet's; `None` when the row holds neither.
-    pub fn fuel_inputs(&self) -> Option<[i64; 2]> {
-        recorded_or_packet(&self.fuel_inputs, &self.fuel_packet)
-    }
-    /// Defence, breakthrough, hardness, soft and hard attack, or an older
-    /// recording's packet; `None` when the row holds neither.
-    pub fn stat_values(&self) -> Option<[i64; 5]> {
-        recorded_or_packet(&self.stat_values, &self.stat_packet)
-    }
-    /// The attack and defence accumulators and the invasion attack and
-    /// defence scales, or an older recording's packet; `None` when the row
-    /// holds neither.
-    pub fn scales(&self) -> Option<[i64; 4]> {
-        recorded_or_packet(&self.scales, &self.scale_packet)
+    /// The member's division values: its own copy, or else its division's rows of the same hour.
+    pub fn values(
+        &self,
+        panel: Option<&DivisionPanelStatsRow>,
+        status: Option<&DivisionStatusRow>,
+        movement: Option<&DivisionMovementRow>,
+    ) -> Option<LandCombatMemberValues> {
+        if let Some(own) = &self.own {
+            return Some(own.clone());
+        }
+        LandCombatMemberValues::joined(panel?, status?, movement?)
     }
     /// The reinforcement calculation clamps the reserve speed share to [0, 0x30D40].
     pub const SPEED_SHARE_MAXIMUM: i64 = 200_000;
 }
 
-/// Each value of a field a value, or, where any is not recorded (a recording
-/// older than the fields), the value packet that recording held.
-fn recorded_or_packet<const N: usize>(
-    values: &[Recorded<i64>; N],
-    packet: &RetiredKept<[i64; N]>,
-) -> Option<[i64; N]> {
-    let mut out = [0; N];
-    for (out, value) in out.iter_mut().zip(values) {
-        match value {
-            Recorded::Value(value) => *out = *value,
-            Recorded::NotRecorded => return packet.older().copied(),
-        }
+/// A land combat member row with its division values ([`LandCombatDivisionRow::values`]); it
+/// reads as its row.
+#[derive(Debug, Clone, Copy)]
+pub struct LandCombatMember<'a> {
+    pub row: &'a LandCombatDivisionRow,
+    pub values: Option<&'a LandCombatMemberValues>,
+}
+impl std::ops::Deref for LandCombatMember<'_> {
+    type Target = LandCombatDivisionRow;
+    fn deref(&self) -> &LandCombatDivisionRow {
+        self.row
     }
-    Some(out)
+}
+
+/// Each member's division values, in row order: its own copy, or its division's rows among the
+/// hour's DivisionPanelStats, DivisionStatus and DivisionMovement rows, each in division order.
+pub fn land_combat_member_values(
+    members: &[LandCombatDivisionRow],
+    panels: &[DivisionPanelStatsRow],
+    statuses: &[DivisionStatusRow],
+    movements: &[DivisionMovementRow],
+) -> Vec<Option<LandCombatMemberValues>> {
+    fn find<T>(rows: &[T], division: u64, key: impl Fn(&T) -> u64) -> Option<&T> {
+        rows.binary_search_by_key(&division, key)
+            .ok()
+            .map(|at| &rows[at])
+    }
+    members
+        .iter()
+        .map(|member| {
+            member.values(
+                find(panels, member.division, |row| row.division),
+                find(statuses, member.division, |row| row.division),
+                find(movements, member.division, |row| row.division),
+            )
+        })
+        .collect()
+}
+
+/// The members, each with its values from [`land_combat_member_values`].
+pub fn land_combat_members<'a>(
+    members: &'a [LandCombatDivisionRow],
+    values: &'a [Option<LandCombatMemberValues>],
+) -> impl Iterator<Item = LandCombatMember<'a>> + Clone {
+    members
+        .iter()
+        .zip(values)
+        .map(|(row, values)| LandCombatMember {
+            row,
+            values: values.as_ref(),
+        })
 }
 typed_codec!(LandCombatDivisionRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.ordinal as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32, ..Default::default() },
- { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (name_type): I32, 4 => (name_order): I32, 5 => (name_ordered): U8, 6 => (name_programmatic): U8, 7 => (name_custom): Bytes, 8 => (name_group): Bytes, 9 => (strength_combat_factor): I64, 10 => (fuel_packet): Opaque, 11 => (stat_packet): Opaque, 12 => (armour): I64, 13 => (piercing): I64, 14 => (air_attack): I64, 15 => (reconnaissance): I64, 16 => (initiative): I64, 17 => (commander): U64, 18 => (scale_packet): Opaque, 19 => (context): Opaque, 20 => (width_terms): Opaque, 21 => (commander_inputs): Opaque, 22 => (reinforcement): Opaque, 23 => (reinforcement_modifiers): Opaque, 24 => (reinforcement_supply): Opaque, 25 => (reinforcement_acclimatization): Opaque, 26 => (reinforcement_transport): Opaque, 27 => (direction_group): I32, 28 => (exile): Opaque, 29 => (categories): U64, 30 => (reinforcement_speed): OptionalI64, 31 => (fuel_inputs[0]): I64, 32 => (fuel_inputs[1]): I64, 33 => (stat_values[0]): I64, 34 => (stat_values[1]): I64, 35 => (stat_values[2]): I64, 36 => (stat_values[3]): I64, 37 => (stat_values[4]): I64, 38 => (scales[0]): I64, 39 => (scales[1]): I64, 40 => (scales[2]): I64, 41 => (scales[3]): I64 }, |row| { let _ = row; if row.side > 1 { return Err(invalid("invalid combat side")); }
-    if matches!(row.reinforcement_speed, Recorded::Value(Some(share)) if !(0..=LandCombatDivisionRow::SPEED_SHARE_MAXIMUM).contains(&share)) { return Err(invalid("reserve speed share outside reinforcement bounds")); } Ok(()) });
+ { 0 => (role): U8, 1 => (province): U32, 2 => (division): U64, 3 => (commander): U64, 4 => (scales[0]): I64, 5 => (scales[1]): I64, 6 => (scales[2]): I64, 7 => (scales[3]): I64, 8 => (context): Opaque, 9 => (width_terms): Opaque, 10 => (direction_group): I32, 11 => (exile): Opaque, 12 => (categories): U64, 13 => (reinforcement_speed): OptionalI64, 14 => (own): Opaque }, |row| { if row.side > 1 { return Err(invalid("invalid combat side")); }
+    if matches!(row.reinforcement_speed, Some(share) if !(0..=LandCombatDivisionRow::SPEED_SHARE_MAXIMUM).contains(&share)) { return Err(invalid("reserve speed share outside reinforcement bounds")); } Ok(()) });
 
 /// LandCombatModifiers: one row a side of each combat whose modifier context
 /// (`cland_combat::read_modifiers_context`) was read, published with that
@@ -1137,22 +1204,34 @@ typed_codec!(LandCombatModifierRow, 65, |row| (row.combat as u128) << 1 | row.si
 
 /// LandCombatDivisionModifiers: one combat member's ordered combat modifier
 /// entries (id, A, B), keyed as its LandCombatDivisions row (combat, side,
-/// ordinal in the side's native participant walk). Every participant the walk
-/// visits has a row, an empty entry list included. One row a member, so an
-/// hour that changes one division's entries stores only that row
-/// ([`crate::rows::compatibility::LAND_MODIFIER_ROWS_FORMAT`]).
+/// ordinal in the side's native participant walk), which names the division
+/// ([`Self::division_in`]). Every participant the walk visits has a row, an empty
+/// entry list included. One row a member, so an hour that changes one
+/// division's entries stores only that row.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct LandCombatDivisionModifierRow {
     pub combat: u64,
     pub side: u8,
     pub ordinal: u32,
-    pub division: u64,
     pub entries: Vec<CombatModifierValue>,
+    /// The member's division, where no LandCombatDivisions row of the hour names it.
+    pub division: Option<u64>,
+}
+impl LandCombatDivisionModifierRow {
+    /// The member's division: its own, or else its member row's among `members` (in key order).
+    pub fn division_in(&self, members: &[LandCombatDivisionRow]) -> Option<u64> {
+        self.division.or_else(|| {
+            members
+                .binary_search_by_key(&self.key(), RowCodec::key)
+                .ok()
+                .map(|at| members[at].division)
+        })
+    }
 }
 typed_codec!(LandCombatDivisionModifierRow, 97, |row| (row.combat as u128) << 33 | (row.side as u128) << 32 | row.ordinal as u128,
  |key| Self { combat: (key >> 33) as u64, side: ((key >> 32) & 1) as u8, ordinal: key as u32, ..Default::default() },
- { 0 => (division): U64, 1 => (entries): Opaque }, |row| { if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
+ { 0 => (entries): Opaque, 1 => (division): OptionalU64 }, |row| { if row.side > 1 { return Err(invalid("invalid combat side")); } Ok(()) });
 
 /// Hourly side operands of one land combat, for its map marker and window. The country
 /// sets keep raw references in native order; the viewer applies the visibility and side

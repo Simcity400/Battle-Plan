@@ -638,34 +638,45 @@ pub struct DivisionMovementRow {
     /// fields preserve partial availability. No unit selection or derived
     /// demand/capacity/readiness is stored.
     pub order_transport: Recorded<Option<DivisionOrderTransportInputs>>,
-    /// Retired current-hour speed graph of the fresh counter route.
-    pub fresh: Recorded<Retired>,
     /// Complete ordered unit combat references from this callback hour. Repeats and runtime-minted
     /// full handles are retained. None is an independent acquisition refusal; historical absence is
     /// NotRecorded. Entry count equals combat_count; no selection or derived query is stored.
     pub combat_references: Recorded<Option<UnitCombatReferences>>,
-    /// Retired selected-route commander, retreat and exile operands.
-    pub selected: Recorded<Retired>,
-    /// Retired selected transport weight, transfer and template operands.
-    pub transport: Recorded<Retired>,
-    /// Raw signed fixed5 maximum speed of the division's stat block (its `stat block`'s
-    /// maximum-speed field), read for a division with a nonempty route. Movement-speed calculation
-    /// starts from this value, scales it by the edge modifier, organisation and fuel, floors it at
-    /// 1 km/h and multiplies by the movement scale; the hourly step (through the unit's
-    /// movement-speed virtual) adds that product to `numerator`, and no field caches it. Playback
-    /// estimates arrival from this speed alone. None is outside demand or a counted guarded
-    /// refusal; older formats use NotRecorded.
-    pub base_speed: Recorded<Option<i64>>,
     /// The division's fuel, which the movement speed's fuel ratio divides by the stat block's
     /// capacity; the save's `fuel`. The existing census supplies stationary units too,
     /// for their panel speed. None is a field refusal.
     pub fuel: Recorded<Option<i64>>,
     /// Logical owner's regional transport speed for a nonzero naval-transfer membership.
     pub transport_speed: Recorded<Option<i64>>,
+    /// The movement pass's base speed (inner None: its read refused), only where the hour's
+    /// DivisionPanelStats does not give the same ([`Self::base_speed`]).
+    pub own_base_speed: Option<Option<i64>>,
+}
+impl DivisionMovementRow {
+    /// The raw signed fixed5 maximum speed of the division's stat block, which the movement speed
+    /// starts from: it scales it by the edge modifier, organisation and fuel, floors it at 1 km/h
+    /// and multiplies by the movement scale, and the hourly step adds that product to `numerator`.
+    /// Only a division with an ordinary route (a positive signed `path_total`) moves, so it has one
+    /// only then. The word is the panel's selector 0x3e ([`DivisionPanelStatsRow::MAXIMUM_SPEED`]);
+    /// None without a route, without the division's panel row, or when the panel refused the word.
+    pub fn base_speed(&self, panel: Option<&DivisionPanelStatsRow>) -> Option<i64> {
+        match self.own_base_speed {
+            Some(own) => own,
+            None => Self::panel_speed(self.path_total, panel?.panel_stats),
+        }
+    }
+
+    /// The base speed a division with `path_total` takes from its panel's words.
+    pub fn panel_speed(path_total: u32, words: [Option<i64>; 22]) -> Option<i64> {
+        if (path_total as i32) <= 0 {
+            return None;
+        }
+        words[DivisionPanelStatsRow::MAXIMUM_SPEED]
+    }
 }
 typed_codec!(DivisionMovementRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (fresh): Opaque, 19 => (combat_references): Opaque, 20 => (selected): Opaque, 21 => (transport): Opaque, 22 => (base_speed): OptionalI64, 23 => (fuel): OptionalI64, 24 => (transport_speed): OptionalI64 }, |row| {
+ { 0 => (source): U32, 1 => (target): U32, 2 => (numerator): I64, 3 => (retreat): U8, 4 => (strategic_redeployment): U8, 5 => (naval_transfer): U8, 6 => (combat_count): U32, 7 => (path_total): U32, 8 => (path): U32List, 9 => (alternate_total): U32, 10 => (alternate_path): U32List, 11 => (combat_role): U8, 12 => (combat_province): U32, 13 => (map_entity): U8, 14 => (strategic_action): Opaque, 15 => (withdrawal): Opaque, 16 => (movement_priority): OptionalI32, 17 => (order_transport): Opaque, 18 => (combat_references): Opaque, 19 => (fuel): OptionalI64, 20 => (transport_speed): OptionalI64, 21 => (own_base_speed): Opaque }, |row| {
  check_unit_combat_references(&row.combat_references, row.combat_count)?;
  let reached = (row.path_total as i32) > 0 && row.target == 0
      && row.retreat == 0 && row.strategic_redeployment != 0;
@@ -1150,16 +1161,14 @@ impl From<DivisionSupplyFooter> for UnitSupplyInputs {
 #[derive(replay_spool::Spooled)]
 pub struct DivisionStatusRow {
     pub division: u64,
-    pub maximum_hit_points: i64,
-    pub maximum_organisation: i64,
     pub entrenchment: i64,
     pub entrenchment_cap: i64,
-    pub supply_ratio: i64,
+    /// The received supply ratio at the game's display precision ([`Self::SUPPLY_RATIO_STEP`]);
+    /// None while [`Self::supply_ratio_exact`] holds it, whose step it is then
+    /// ([`Self::displayed_supply_ratio`]).
+    pub supply_ratio: Option<i64>,
     pub attrition_value: i64,
     pub attrition_threshold: i64,
-    /// Retired glyph byte: stored attrition exceeds its threshold, which playback
-    /// computes from this row ([`DivisionStatusRow::has_attrition`]).
-    pub attrition: RetiredU8,
     pub exercising: u8,
     /// Whether an order of the unit's group or its parent holds it; false for
     /// an ungrouped unit.
@@ -1196,6 +1205,8 @@ pub struct DivisionStatusRow {
     /// zero is a recorded value. With `supply_ratio` (the division's), the division's only record
     /// of these supply operands: DivisionLandInputs no longer copies them.
     pub supply_grace_maximum: Recorded<i64>,
+    /// As [`Self::displayed_grace`] stores it. Kept beside [`Self::supply_grace_exact`]: its
+    /// display takes the live `NMilitary.SUPPLY_GRACE`, which SimulationFeatures reads apart.
     pub supply_grace_remaining: Recorded<i64>,
     /// Stored division roster position. None is a counted capture refusal;
     /// roster swap-removal changes this.
@@ -1211,9 +1222,6 @@ pub struct DivisionStatusRow {
     /// Formats before 99 use NotRecorded, as do format-102 recordings written while the
     /// field was a provisional tombstone, whose empty payload decodes as not recorded.
     pub supply: Recorded<Option<DivisionSupplyFooter>>,
-    /// Retired fresh attrition operands of the per-modifier breakdown; the
-    /// counter keeps `attrition_value`, `attrition_threshold` and `attrition`.
-    pub attrition_inputs: Recorded<Retired>,
     /// Fresh commander entrenchment factor: ONE plus the selected commander's
     /// combat_entrenchment modifier, with wrapping addition. None is an independent read
     /// refusal; this is not a derived duration.
@@ -1263,14 +1271,12 @@ pub struct DivisionStatusRow {
     /// decides), `None` for an absent entry and all absent without a commander. The
     /// outer None is a refusal; older formats use NotRecorded.
     pub commander_modifiers: Recorded<Option<[Option<i64>; 5]>>,
-    /// The exact received supply ratio ([`Self::supply_ratio`] before its display step)
-    /// of a division with nonzero days out of supply, the only one whose movement speed
-    /// and attrition take their out-of-supply severity from it ([`Self::exact_supply`]);
-    /// None otherwise. Older formats use NotRecorded.
+    /// The exact received supply ratio of a division with nonzero days out of supply, the only one
+    /// whose movement speed and attrition take their out-of-supply severity from it
+    /// ([`Self::supply_exact`]); None otherwise.
     pub supply_ratio_exact: Recorded<Option<i64>>,
-    /// The exact remaining grace ([`Self::supply_grace_remaining`] before its display
-    /// step), kept with [`Self::supply_ratio_exact`]. A numeric column, so an hourly
-    /// countdown stores its small difference.
+    /// The exact remaining grace, kept with [`Self::supply_ratio_exact`]. A numeric column, so an
+    /// hourly countdown stores its small difference.
     pub supply_grace_exact: Recorded<Option<i64>>,
     /// Stored signed fixed5 XP, sampled at slot 12, first appearance or full
     /// refresh. Held off-slot, independently of the hourly exercise predicate.
@@ -1349,21 +1355,33 @@ impl DivisionStatusRow {
         })
     }
 
-    /// [`Self::supply_ratio_exact`] and [`Self::supply_grace_exact`] from the exact
-    /// ratio and remaining grace: kept only with nonzero days out of supply, where the
-    /// out-of-supply severity reads them; with zero days (or unread days) that severity
-    /// is zero whatever they hold.
+    /// The exact supply ratio and remaining grace of a division with `days` out of supply: kept only
+    /// with nonzero days, where the out-of-supply severity reads them; with zero days (or unread
+    /// days) that severity is zero whatever they hold.
     pub fn exact_supply(days: Option<i32>, ratio: i64, grace_remaining: i64) -> Option<[i64; 2]> {
-        days.filter(|&days| days != 0)
-            .map(|_| [ratio, grace_remaining])
+        Self::keeps_exact_supply(days).then_some([ratio, grace_remaining])
+    }
+
+    /// Whether [`Self::exact_supply`] keeps a division's exact pair.
+    pub fn keeps_exact_supply(days: Option<i32>) -> bool {
+        days.is_some_and(|days| days != 0)
     }
 
     /// The exact supply operands of a division with days out of supply:
-    /// `[ratio, grace]`, None for one without or for a field not recorded.
+    /// `[ratio, grace]`, None for one without.
     pub fn supply_exact(&self) -> Option<[i64; 2]> {
         match (&self.supply_ratio_exact, &self.supply_grace_exact) {
             (Recorded::Value(Some(ratio)), Recorded::Value(Some(grace))) => Some([*ratio, *grace]),
             _ => None,
+        }
+    }
+
+    /// The supply ratio the game shows ([`Self::SUPPLY_RATIO_STEP`]).
+    pub fn displayed_supply_ratio(&self) -> Option<i64> {
+        match (self.supply_ratio, &self.supply_ratio_exact) {
+            (Some(ratio), _) => Some(ratio),
+            (None, Recorded::Value(Some(exact))) => Some(Self::SUPPLY_RATIO_STEP.round(*exact)),
+            (None, _) => None,
         }
     }
 
@@ -1456,6 +1474,10 @@ pub struct DivisionPanelStatsRow {
     pub division: u64,
     pub panel_stats: [Option<i64>; 22],
     pub suppression: Recorded<Option<i64>>,
+    /// The status pass's maximum strength and organisation at
+    /// [`DivisionStatusRow::MAXIMUM_STEP`], each only where the panel's word does not give that
+    /// value ([`Self::maximum_hit_points`]): refused, or read apart.
+    pub status_maxima: [Option<i64>; 2],
 }
 impl DivisionPanelStatsRow {
     /// Native panel stat selectors, resolved through executable stat metadata, in the panel's
@@ -1466,6 +1488,26 @@ impl DivisionPanelStatsRow {
     ];
     /// The suppression word's stat selector.
     pub const SUPPRESSION_SELECTOR: usize = 0xc;
+    /// Where [`Self::panel_stats`] holds selector 0x3e, the stat block's maximum speed.
+    pub const MAXIMUM_SPEED: usize = 21;
+
+    /// The division's maximum strength at the game's display precision
+    /// ([`DivisionStatusRow::MAXIMUM_STEP`]), from the panel's own word: the getter keeps it at
+    /// least 100 raw. None when the panel read refused the word.
+    pub fn maximum_hit_points(&self) -> Option<i64> {
+        self.status_maxima[0].or_else(|| Self::maximum(self.panel_stats[0]))
+    }
+
+    /// A panel maximum word as the game shows it.
+    pub fn maximum(word: Option<i64>) -> Option<i64> {
+        word.map(|raw| DivisionStatusRow::MAXIMUM_STEP.round(raw.max(100)))
+    }
+
+    /// The division's maximum organisation at the game's display precision, as
+    /// [`Self::maximum_hit_points`].
+    pub fn maximum_organisation(&self) -> Option<i64> {
+        self.status_maxima[1].or_else(|| Self::maximum(self.panel_stats[1]))
+    }
 
     /// The stored word with stat selector `selector`, if the row holds one.
     pub fn word(&self, selector: usize) -> Option<Recorded<Option<i64>>> {
@@ -1480,11 +1522,11 @@ impl DivisionPanelStatsRow {
 }
 typed_codec!(DivisionPanelStatsRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (panel_stats[0]): OptionalI64, 1 => (panel_stats[1]): OptionalI64, 2 => (panel_stats[2]): OptionalI64, 3 => (panel_stats[3]): OptionalI64, 4 => (panel_stats[4]): OptionalI64, 5 => (panel_stats[5]): OptionalI64, 6 => (panel_stats[6]): OptionalI64, 7 => (panel_stats[7]): OptionalI64, 8 => (panel_stats[8]): OptionalI64, 9 => (panel_stats[9]): OptionalI64, 10 => (panel_stats[10]): OptionalI64, 11 => (panel_stats[11]): OptionalI64, 12 => (panel_stats[12]): OptionalI64, 13 => (panel_stats[13]): OptionalI64, 14 => (panel_stats[14]): OptionalI64, 15 => (panel_stats[15]): OptionalI64, 16 => (panel_stats[16]): OptionalI64, 17 => (panel_stats[17]): OptionalI64, 18 => (panel_stats[18]): OptionalI64, 19 => (panel_stats[19]): OptionalI64, 20 => (panel_stats[20]): OptionalI64, 21 => (panel_stats[21]): OptionalI64, 22 => (suppression): OptionalI64 }, |_row| Ok(()));
+ { 0 => (panel_stats[0]): OptionalI64, 1 => (panel_stats[1]): OptionalI64, 2 => (panel_stats[2]): OptionalI64, 3 => (panel_stats[3]): OptionalI64, 4 => (panel_stats[4]): OptionalI64, 5 => (panel_stats[5]): OptionalI64, 6 => (panel_stats[6]): OptionalI64, 7 => (panel_stats[7]): OptionalI64, 8 => (panel_stats[8]): OptionalI64, 9 => (panel_stats[9]): OptionalI64, 10 => (panel_stats[10]): OptionalI64, 11 => (panel_stats[11]): OptionalI64, 12 => (panel_stats[12]): OptionalI64, 13 => (panel_stats[13]): OptionalI64, 14 => (panel_stats[14]): OptionalI64, 15 => (panel_stats[15]): OptionalI64, 16 => (panel_stats[16]): OptionalI64, 17 => (panel_stats[17]): OptionalI64, 18 => (panel_stats[18]): OptionalI64, 19 => (panel_stats[19]): OptionalI64, 20 => (panel_stats[20]): OptionalI64, 21 => (panel_stats[21]): OptionalI64, 22 => (suppression): OptionalI64, 23 => (status_maxima[0]): OptionalI64 @ DivisionStatusRow::MAXIMUM_STEP, 24 => (status_maxima[1]): OptionalI64 @ DivisionStatusRow::MAXIMUM_STEP }, |_row| Ok(()));
 
 typed_codec!(DivisionStatusRow, 64, |row| row.division as u128,
  |key| Self { division: key as u64, ..Default::default() },
- { 0 => (maximum_hit_points): I64 @ Self::MAXIMUM_STEP, 1 => (maximum_organisation): I64 @ Self::MAXIMUM_STEP, 2 => (entrenchment): I64, 3 => (entrenchment_cap): I64, 4 => (supply_ratio): I64 @ Self::SUPPLY_RATIO_STEP, 5 => (attrition_value): I64, 6 => (attrition_threshold): I64, 7 => (attrition): U8, 8 => (exercising): U8, 9 => (has_order): U8, 10 => (invalid_orders): U8, 11 => (strength_factor): I64, 12 => (model_number): I32, 13 => (acclimatization_maximum): OptionalI64, 14 => (acclimatization): Opaque, 15 => (move_flags): U8, 16 => (border_combat_stats): Opaque, 17 => (naming): Opaque, 18 => (supply_grace_maximum): I64, 19 => (supply_grace_remaining): I64 @ Self::SUPPLY_GRACE_STEP, 20 => (country_ordinal): OptionalU32, 21 => (invalid_orders_reason): OptionalI32, 22 => (supply): Opaque, 23 => (attrition_inputs): Opaque, 24 => (dig_in_factor): OptionalI64, 25 => (name): Opaque, 26 => (attack): Opaque, 27 => (camouflage): Opaque, 28 => (attack_stats): Opaque, 29 => (weather_factor): OptionalI64, 30 => (name_template): Opaque, 31 => (movement_stats): Opaque, 32 => (out_of_supply_days): OptionalI32, 33 => (commander_modifiers): Opaque, 34 => (supply_ratio_exact): OptionalI64, 35 => (supply_grace_exact): OptionalI64, 36 => (experience): OptionalI64, 37 => (pending_template): OptionalU64, 38 => (officer_experience): OptionalI64, 39 => (career_counter): OptionalI32, 40 => (panel_source): Opaque, 41 => (combat_movement): Opaque, 42 => (organisation_exact): OptionalI64, 43 => (maximum_organisation_exact): OptionalI64, 44 => (commander_width_factor): OptionalI64 }, |_row| Ok(()));
+ { 0 => (entrenchment): I64, 1 => (entrenchment_cap): I64, 2 => (supply_ratio): OptionalI64 @ Self::SUPPLY_RATIO_STEP, 3 => (attrition_value): I64, 4 => (attrition_threshold): I64, 5 => (exercising): U8, 6 => (has_order): U8, 7 => (invalid_orders): U8, 8 => (strength_factor): I64, 9 => (model_number): I32, 10 => (acclimatization_maximum): OptionalI64, 11 => (acclimatization): Opaque, 12 => (move_flags): U8, 13 => (border_combat_stats): Opaque, 14 => (naming): Opaque, 15 => (supply_grace_maximum): I64, 16 => (supply_grace_remaining): I64 @ Self::SUPPLY_GRACE_STEP, 17 => (country_ordinal): OptionalU32, 18 => (invalid_orders_reason): OptionalI32, 19 => (supply): Opaque, 20 => (dig_in_factor): OptionalI64, 21 => (name): Opaque, 22 => (attack): Opaque, 23 => (camouflage): Opaque, 24 => (attack_stats): Opaque, 25 => (weather_factor): OptionalI64, 26 => (name_template): Opaque, 27 => (movement_stats): Opaque, 28 => (out_of_supply_days): OptionalI32, 29 => (commander_modifiers): Opaque, 30 => (supply_ratio_exact): OptionalI64, 31 => (supply_grace_exact): OptionalI64, 32 => (experience): OptionalI64, 33 => (pending_template): OptionalU64, 34 => (officer_experience): OptionalI64, 35 => (career_counter): OptionalI32, 36 => (panel_source): Opaque, 37 => (combat_movement): Opaque, 38 => (organisation_exact): OptionalI64, 39 => (maximum_organisation_exact): OptionalI64, 40 => (commander_width_factor): OptionalI64 }, |_row| Ok(()));
 
 /// Hourly in Map recordings, which leave DivisionStatus out: the three DivisionStatus
 /// columns a land model reads, read as DivisionStatus reads them, keyed by the full

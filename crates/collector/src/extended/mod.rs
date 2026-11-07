@@ -2424,6 +2424,10 @@ impl Captured {
         settle!(2, resource_map, settle_owned);
         settle!(3, production, settle_variants_owned);
         settle!(4, combat_details, settle_owned);
+        let start = crate::sampling::qpc();
+        self.division_presentation
+            .join_combat_members(&mut self.combat_details);
+        ticks[4] += crate::sampling::qpc().saturating_sub(start).max(0) as u64;
         ticks
     }
 

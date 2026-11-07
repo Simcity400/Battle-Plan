@@ -48,8 +48,6 @@ fn division_movement_style_compares_writer_truth_priority_and_local_refusals() {
         division: id,
         withdrawal: Recorded::Value(Some(255)),
         movement_priority: Recorded::Value(Some(1)),
-        // An older recording without the retired fresh-route field.
-        fresh: Recorded::NotRecorded,
         ..Default::default()
     };
     for (raw, expected) in [
@@ -1869,6 +1867,7 @@ fn division_panel_stats_checks_its_own_roster_and_every_operand() {
         division: id,
         panel_stats: [Some(i64::MIN); 22],
         suppression: Some(i64::MIN).into(),
+        status_maxima: [None; 2],
     };
     set(
         &mut frame,
@@ -1999,12 +1998,21 @@ fn division_status_exact_movement_organisation_compares_saved_subdisplay_words()
         (Some(None), 0),
         (None, 1),
     ] {
+        let mut panel = replay_data::rows::DivisionPanelStatsRow {
+            division: id,
+            ..Default::default()
+        };
+        panel.panel_stats[1] = Some(3_640_000);
+        set(
+            &mut frame,
+            TableId::DivisionPanelStats,
+            TableRows::DivisionPanelStats(vec![panel]),
+        );
         set(
             &mut frame,
             TableId::DivisionStatus,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
                 division: id,
-                maximum_organisation: 3_640_000,
                 organisation_exact: Recorded::Value(value.flatten().map(|pair| pair[0])),
                 maximum_organisation_exact: Recorded::Value(value.flatten().map(|pair| pair[1])),
                 move_flags: match value {

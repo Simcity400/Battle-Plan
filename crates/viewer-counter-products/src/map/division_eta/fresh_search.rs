@@ -402,30 +402,29 @@ mod tests {
                 viewer_foundation::movement_timing::test_support::neutral_status(7, 2),
             ]),
         );
-        let idle = |base_speed| DivisionMovementRow {
+        let idle = DivisionMovementRow {
             division: 7,
             source: 3,
             target: 3,
-            base_speed,
             withdrawal: Recorded::Value(Some(0)),
             fuel: Recorded::Value(Some(0)),
             ..Default::default()
         };
         for (base_speed, expected) in [
             (
-                Recorded::NotRecorded,
-                Err("DivisionMovement.base_speed is not recorded in this format".to_owned()),
-            ),
-            (
-                Recorded::Value(None),
-                Err("the division's base speed was refused".to_owned()),
+                None,
+                Err("the division's base speed is not recorded".to_owned()),
             ),
             // 50000 over 200000 per hour is a quarter hour.
-            (Recorded::Value(Some(200_000)), Ok(25_000)),
+            (Some(200_000), Ok(25_000)),
         ] {
+            // An idle division's panel gives no speed; this one's own read is kept.
             put(
                 &mut frame,
-                TableRows::DivisionMovement(vec![idle(base_speed)]),
+                TableRows::DivisionMovement(vec![DivisionMovementRow {
+                    own_base_speed: Some(base_speed),
+                    ..idle.clone()
+                }]),
             );
             let inputs = Inputs::new(&frame, &content);
             let world = World::read(&frame, assets.trigger_content.facts());

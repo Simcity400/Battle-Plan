@@ -57,6 +57,9 @@ fn exiled(origin_type: i32, country: i32) -> LandCombatDivisionRow {
             location_cores: vec![7],
             occupiers: vec![8],
         }),
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     }
 }
@@ -74,6 +77,9 @@ fn a_host_or_subject_template_has_no_badges_and_flies_the_owner_flag() {
     let inputs = Inputs::read(&frame).unwrap();
     let row = LandCombatDivisionRow {
         division: 2,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     };
     assert_eq!(
@@ -84,6 +90,9 @@ fn a_host_or_subject_template_has_no_badges_and_flies_the_owner_flag() {
     assert_eq!(inputs.entry_owner(&row), Ok(8));
     let reserve = LandCombatDivisionRow {
         division: 3,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     };
     assert_eq!(inputs.entry_owner(&reserve), Ok(8));

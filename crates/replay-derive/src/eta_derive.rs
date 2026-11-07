@@ -16,7 +16,7 @@
 //! times the movement scale, and land edges past a landing at the invasion speed
 //! ([`EdgeTerm`]).
 
-use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow, Recorded};
+use crate::rows::{DivisionMovementRow, RailwayGunCounterInputRow};
 use engine_native::{carmy::NormalEdgeOperands, carmy::PreparedNormalSpeed};
 use engine_native::{cunit::EtaInputs, cunit::EtaLeg, cunit::EtaSpeed, cunit::eta_remaining};
 
@@ -136,6 +136,9 @@ pub struct SpeedTerms<'a> {
     pub organisation: Option<i64>,
     /// The division's fuel factor ([`fuel_factor`]), None where the game applies none.
     pub fuel: Option<i64>,
+    /// The moving division's base speed ([`DivisionMovementRow::base_speed`]), None when the
+    /// frame cannot tell it.
+    pub base_speed: Option<i64>,
 }
 
 /// How the game moves a division over one edge: the normal speed with the edge's
@@ -702,15 +705,11 @@ pub fn estimate_route(
     .map(|(_, destination)| destination)
 }
 
-/// The division's recorded base speed; refused by name when not recorded or refused.
-pub fn base_speed(movement: &DivisionMovementRow) -> Result<i64, String> {
-    match movement.base_speed {
-        Recorded::NotRecorded => {
-            Err("DivisionMovement.base_speed is not recorded in this format".into())
-        }
-        Recorded::Value(None) => Err("the division's base speed was refused".into()),
-        Recorded::Value(Some(speed)) => Ok(speed),
-    }
+/// The division's base speed; refused by name when its panel row does not tell it.
+pub fn base_speed(terms: &SpeedTerms<'_>) -> Result<i64, String> {
+    terms
+        .base_speed
+        .ok_or_else(|| "the division's base speed is not recorded".into())
 }
 
 /// [`eta_remaining`] over `route` from `location` with each edge at its
@@ -729,7 +728,7 @@ fn walk(
     let path_total =
         u32::try_from(route.len()).map_err(|_| "the route exceeds the native count".to_owned())?;
     let speed =
-        |from: u32, to: u32| edge_speed_with(|| base_speed(movement), from, to, terms, defines);
+        |from: u32, to: u32| edge_speed_with(|| base_speed(terms), from, to, terms, defines);
     let mut legs = Vec::with_capacity(route.len());
     let mut next_leg_count = 0;
     let mut from = location;

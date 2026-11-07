@@ -1173,16 +1173,14 @@ fn family_walk_publishes_the_reference_tables() {
     else {
         unreachable!()
     };
-    // Commanded divisions keep their commander handle; the retired
-    // commander hover inputs and reinforcement operands are tombstones, and
-    // only a reserve carries a speed share, composed or refused.
+    // Commanded divisions keep their commander handle, and only a reserve carries a speed share,
+    // composed or refused. Unjoined members keep their own values.
     let commanded = divisions.iter().filter(|row| row.commander != 0).count();
-    assert!(divisions.iter().all(|row| {
-        row.commander_inputs == Retired
-            && row.reinforcement == Retired
-            && (row.role == 2 || row.reinforcement_speed == Recorded::Value(None))
-            && matches!(row.reinforcement_speed, Recorded::Value(_))
-    }));
+    assert!(
+        divisions
+            .iter()
+            .all(|row| (row.role == 2 || row.reinforcement_speed.is_none()) && row.own.is_some())
+    );
     assert_eq!(
         commanded,
         (0..shape.combats * shape.divisions)
@@ -1226,9 +1224,12 @@ fn family_walk_publishes_the_reference_tables() {
     assert!(divisions.iter().any(|row| row.exile.is_some()));
     assert!(divisions.iter().any(|row| row.exile.is_none()));
     // Group, custom and generated names all occur.
-    assert!(divisions.iter().any(|row| !row.name_group.is_empty()));
-    assert!(divisions.iter().any(|row| !row.name_custom.is_empty()));
-    assert!(divisions.iter().any(|row| row.name_programmatic != 0));
+    fn naming(row: &replay_data::rows::LandCombatDivisionRow) -> &replay_data::rows::NameOperands {
+        &row.own.as_ref().unwrap().naming
+    }
+    assert!(divisions.iter().any(|row| !naming(row).group.is_empty()));
+    assert!(divisions.iter().any(|row| !naming(row).custom.is_empty()));
+    assert!(divisions.iter().any(|row| naming(row).programmatic != 0));
     let TableView::Complete(replay_data::rows::TableRows::LandCombatDetails(details)) =
         &one.tables[0]
     else {
@@ -1255,11 +1256,11 @@ fn family_walk_publishes_the_reference_tables() {
     assert_eq!(
         members
             .iter()
-            .map(|member| (member.combat, member.side, member.ordinal, member.division))
+            .map(|member| (member.combat, member.side, member.ordinal))
             .collect::<Vec<_>>(),
         divisions
             .iter()
-            .map(|row| (row.combat, row.side, row.ordinal, row.division))
+            .map(|row| (row.combat, row.side, row.ordinal))
             .collect::<Vec<_>>()
     );
 }

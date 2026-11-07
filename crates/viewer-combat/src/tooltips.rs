@@ -798,11 +798,11 @@ pub(super) fn bind(
     };
     set_hover(&mut out.values, "combat_width", width, None);
     let links = rows::<tables::CountryLinks>(frame)?;
-    let divisions = rows::<tables::LandCombatDivisions>(frame)?;
-    let divisions: BTreeMap<_, _> = divisions
-        .rows()
+    let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
+    let combat_members = viewer_foundation::land_combat_math::combat_rows(division_rows.rows(), id);
+    let member_values = viewer_foundation::land_combat_math::member_values(frame, combat_members)?;
+    let divisions: BTreeMap<_, _> = combat_members
         .iter()
-        .filter(|row| row.combat == id)
         .map(|row| (row.division, row))
         .collect();
     let conditions = conditions(frame)?;
@@ -828,7 +828,7 @@ pub(super) fn bind(
         let member = super::land_marker_tooltips::membership(sides, vision.ours(), &aliases)?;
         let scores = side_scores(
             detail,
-            divisions.values().copied(),
+            replay_data::rows::land_combat_members(combat_members, &member_values),
             &conditions,
             [&combat.attackers, &combat.defenders],
             static_content.scores,

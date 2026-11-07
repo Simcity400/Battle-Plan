@@ -5,7 +5,8 @@ use installed_content_core::map::ProvinceKind;
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
 use replay_data::{
     rows::LandCombatDetailsRow, rows::LandCombatDivisionModifierRow, rows::LandCombatDivisionRow,
-    rows::LandCombatSideRow, rows::Recorded, rows::tables,
+    rows::LandCombatMember, rows::LandCombatMemberValues, rows::land_combat_members,
+    rows::LandCombatSideRow, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
 use std::{
@@ -29,6 +30,8 @@ use {
     super::tooltips::hover_text, super::tooltips::organisation_effects,
     super::tooltips::refuse_hovers, super::tooltips::set_hover,
     viewer_foundation::land_combat_math::Condition, viewer_foundation::land_combat_math::Divisions,
+    viewer_foundation::land_combat_math::combat_rows,
+    viewer_foundation::land_combat_math::member_values,
     viewer_foundation::land_combat_math::condition_gap,
     viewer_foundation::land_combat_math::conditions, viewer_foundation::land_combat_math::modifier,
     viewer_foundation::tooltip_text::TextIcons, viewer_foundation::tooltip_text::builtin,
@@ -283,14 +286,23 @@ fn base_stat(
 /// `name` is the division's standard template display name.
 /// `invasion` is the first-edge progress of a division making an
 /// amphibious invasion move, whose section follows the name.
+/// A member's division values, or why the hover that reads them is omitted.
+fn recorded<'a>(row: &LandCombatMember<'a>) -> Result<&'a LandCombatMemberValues, String> {
+    row.values.ok_or_else(|| {
+        "the division's values are in neither its LandCombatDivisions row nor its division's rows"
+            .to_owned()
+    })
+}
+
 fn division_summary(
     icons: &dyn TextIcons,
     loc: &Localisation,
     name: &str,
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     invasion: Option<i64>,
     defines: Option<&LandDefines>,
 ) -> Result<String, String> {
+    let values = recorded(row)?;
     let mut text = builtin(
         icons,
         loc,
@@ -302,16 +314,11 @@ fn division_summary(
         &[("NAME", Argument::Text(name))],
     )?;
     if let Some(progress) = invasion {
-        let scales = row
-            .scales()
-            .ok_or("the division's scales are not recorded")?;
-        text.push_str(&invasion_section(icons, loc, progress, scales)?);
+        text.push_str(&invasion_section(icons, loc, progress, row.scales)?);
     }
-    text.push_str(&base_stat(icons, loc, STAT_COMMON_ARMOR, row.armour)?);
+    text.push_str(&base_stat(icons, loc, STAT_COMMON_ARMOR, values.armour)?);
     text.push_str("\n\n");
-    let hardness = row
-        .stat_values()
-        .ok_or("the division's stats are not recorded")?[2];
+    let hardness = values.stat_values[2];
     text.push_str(&builtin(
         icons,
         loc,
@@ -327,7 +334,7 @@ fn division_summary(
     text.push('\n');
     text.push_str(&builtin(icons, loc, COMBAT_TOOLTIP_SEPARATOR, &[])?);
     text.push('\n');
-    text.push_str(&base_stat(icons, loc, STAT_COMMON_PIERCING, row.piercing)?);
+    text.push_str(&base_stat(icons, loc, STAT_COMMON_PIERCING, values.piercing)?);
     text.push('\n');
     text.push_str(&builtin(icons, loc, PIERCING_COMBAT_DESC, &[])?);
     if let Some(defines) = defines {
@@ -576,10 +583,10 @@ struct ModifierIconContext<'context, 'frame> {
     icons: &'context dyn TextIcons,
     loc: &'context Localisation,
     side: u8,
-    unit: &'frame LandCombatDivisionRow,
+    unit: LandCombatMember<'frame>,
     modifiers: Option<&'frame LandCombatDivisionModifierRow>,
     /// The opposing committed rows, or which one is missing.
-    opponents: Result<Vec<&'frame LandCombatDivisionRow>, String>,
+    opponents: Result<Vec<LandCombatMember<'frame>>, String>,
     /// The land combat defines, or why they are unavailable.
     defines: Result<&'context LandDefines, &'context str>,
     viewing_tag: Result<&'frame str, &'static str>,
@@ -754,7 +761,7 @@ fn modifier_icon_tooltip(
     if frame == 13 {
         let defines = defines?;
         let amount = engine_native::csub_unit_definition::movement_air_defense_value(
-            unit.air_attack,
+            recorded(&unit)?.air_attack,
             defines.air_superiority[0],
             defines.air_superiority[1],
         )
@@ -781,7 +788,7 @@ fn modifier_icon_tooltip(
     if frame == 14 {
         let bonuses = defines?.exile_against_occupier;
         let amount = template_inputs
-            .occupiers(unit, detail, &bonuses)
+            .occupiers(&unit, detail, &bonuses)
             .map_err(|refused| format!("the occupier count is unknown: {refused}"))?;
         let total = detail.sides[1 - side as usize].committed.len();
         return Ok((
@@ -833,9 +840,7 @@ fn modifier_icon_tooltip(
         ));
     }
     if frame == 16 {
-        let [fuel, capacity] = unit
-            .fuel_inputs()
-            .ok_or("the division's fuel and capacity are not recorded")?;
+        let [fuel, capacity] = recorded(&unit)?.fuel_inputs;
         let ratio =
             super::division_icons::fuel_ratio([fuel, capacity, defines?.fuel_penalty_start_ratio]);
         return Ok((
@@ -853,8 +858,10 @@ fn modifier_icon_tooltip(
     }
     let opponents = opponents.map_err(str::to_owned)?;
     let defines = defines?;
+    let unit = recorded(&unit)?;
     let mut counts = vec![0_i32; defines.piercing_thresholds.len()];
     for opponent in opponents {
+        let opponent = recorded(opponent)?;
         let bucket = if frame <= 9 {
             super::division_icons::pierce_bucket(
                 &defines.piercing_thresholds,
@@ -928,8 +935,6 @@ enum Reinforcement {
     Unrecorded(&'static str),
 }
 
-/// The chance arm's refusal in recordings before the reserve speed share.
-const RESERVE_SPEED_UNRECORDED: &str = "the reserve reinforcement speed share, which the chance adds, is not recorded in this recording";
 /// The chance arm's refusal where capture refused the share.
 const RESERVE_SPEED_REFUSED: &str = "the reserve reinforcement speed share was refused at capture: an operand was unreadable or took a form the port does not follow (collector status land_reserve_speed)";
 /// A chance arm whose 0xFB fragments were not looked up.
@@ -1051,7 +1056,7 @@ const ADVANCE_ORGANISATION: i64 = 100_000;
 /// Reinforcement arms in original order: not fighting (the advancement test), then too much width
 /// (COMBAT_OVER_WIDTH_PENALTY against its maximum), otherwise the chance.
 fn reinforcement(
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     condition: &Condition,
     widths: Result<(i64, i64), &str>,
     content: Result<&LandDefines, &str>,
@@ -1072,7 +1077,7 @@ fn reinforcement(
             row.context.eligibility_callback
         )
     };
-    let excess = division_width(row)
+    let excess = division_width(row.row)
         .ok_or_else(|| callback("width"))?
         .wrapping_sub(available);
     if excess > 0 {
@@ -1084,10 +1089,8 @@ fn reinforcement(
     }
     // The speed share, which the collector composes with the live
     // SLOWEST_SPEED (replay_data::rows::LandCombatDivisionRow::reinforcement_speed).
-    let share = match row.reinforcement_speed {
-        Recorded::NotRecorded => return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_UNRECORDED)),
-        Recorded::Value(None) => return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_REFUSED)),
-        Recorded::Value(Some(share)) => share,
+    let Some(share) = row.reinforcement_speed else {
+        return Ok(Reinforcement::Unrecorded(RESERVE_SPEED_REFUSED));
     };
     // The country is the positive expeditionary owner, else the roster
     // owner; the context holds that country's and the contextual leader's
@@ -1099,7 +1102,7 @@ fn reinforcement(
     let initiative = mul(
         100_000_i64
             .wrapping_add(modifier(&row.context, 2, false).ok_or_else(|| callback("initiative"))?),
-        row.initiative,
+        recorded(row)?.initiative,
     );
     let initiative = if row.context.leader_modifier_kind == 0 {
         initiative
@@ -1279,14 +1282,13 @@ pub(super) fn bind(
     let sides = engagement_progress_sides(frame)?;
     let sides = sides.get(&id).copied();
     let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
-    let divisions: Divisions<'_> = division_rows
-        .rows()
-        .iter()
-        .filter(|row| row.combat == id)
+    let combat_members = combat_rows(division_rows.rows(), id);
+    let member_values = member_values(frame, combat_members)?;
+    let divisions: Divisions<'_> = land_combat_members(combat_members, &member_values)
         .map(|row| ((row.side, row.division), row))
         .collect();
     let member_rows = rows::<tables::LandCombatDivisionModifiers>(frame)?;
-    let members = super::details::division_modifiers(member_rows.rows(), id);
+    let members = super::details::division_modifiers(member_rows.rows(), combat_members, id);
     let movements = rows::<tables::DivisionMovement>(frame)?;
     let all_divisions = rows::<tables::Divisions>(frame)?;
     let provinces = rows::<tables::Provinces>(frame)?;
@@ -1367,7 +1369,7 @@ pub(super) fn bind(
                 let row = divisions.get(&(side, *unit)).ok_or_else(|| {
                     format!("committed division {unit} has no LandCombatDivisions row")
                 })?;
-                let width = division_width(row).ok_or_else(|| {
+                let width = division_width(row.row).ok_or_else(|| {
                     format!("committed division {unit}'s width modifiers have an eligibility callback the port does not evaluate")
                 })?;
                 Ok::<_, String>(sum.wrapping_add(width))
@@ -1416,7 +1418,7 @@ pub(super) fn bind(
                             Reinforcement::Chance { leader, .. } => Some(reserve_sources(
                                 frame,
                                 &static_content.recorded_labels,
-                                row,
+                                row.row,
                                 &all_divisions,
                                 icons,
                                 loc,
@@ -1449,15 +1451,16 @@ pub(super) fn bind(
                 }
                 continue;
             }
-            // DivisionStatus holds both maximum strength and organisation.
+            // DivisionPanelStats holds both maximum strength and organisation.
             let missing = |what: &str| {
-                format!("division {unit} has no DivisionStatus row, which holds its maximum {what}")
+                format!("division {unit} has no maximum {what} in DivisionPanelStats")
             };
             let strength = condition
                 .max_strength
                 .ok_or_else(|| missing("HP"))
                 .and_then(|maximum| {
-                    combat_strength(condition.strength, maximum, row.strength_combat_factor)
+                    let factor = recorded(row)?.strength_combat_factor;
+                    combat_strength(condition.strength, maximum, factor)
                         .ok_or_else(|| {
                             format!(
                                 "division {unit}'s strength fraction is undefined for its recorded maximum"
@@ -1535,7 +1538,7 @@ pub(super) fn bind(
                 set_hover(values, key, summary.clone(), None);
             }
             let unit_modifiers = members.get(&(side, *unit)).copied();
-            let numbers = row.scales().zip(row.stat_values());
+            let numbers = row.values.map(|values| (row.scales, values.stat_values));
             if let (Some(modifiers), Some((scales, stats))) = (unit_modifiers, numbers) {
                 let attack = mul(
                     mul(scales[2], scales[0]),
@@ -1590,7 +1593,7 @@ pub(super) fn bind(
                 }
             } else if unit_modifiers.is_some() {
                 out.warnings.push(format!(
-                    "Land combat {id} division {unit}: its stats and scales are not recorded, so its combat-stat hovers are omitted."
+                    "Land combat {id} division {unit}: its stats are in neither its LandCombatDivisions row nor its division's rows, so its combat-stat hovers are omitted."
                 ));
                 refuse_hovers(values, STAT_HOVERS);
             } else {
@@ -1614,7 +1617,7 @@ pub(super) fn bind(
                 icons,
                 loc,
                 side,
-                unit: row,
+                unit: *row,
                 modifiers: unit_modifiers,
                 opponents,
                 defines: land_defines,

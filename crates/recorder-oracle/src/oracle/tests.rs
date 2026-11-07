@@ -362,9 +362,8 @@ fn division_presentation_oracle_checks_prefix_census_exact_values_and_omissions(
         strategic_redeployment: 255,
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
-        base_speed: Recorded::Value(Some(400_000)),
+        own_base_speed: Some(Some(400_000)),
         fuel: Recorded::Value(Some(60_480_000)),
-        selected: Recorded::NotRecorded,
         ..Default::default()
     };
     // A recording before `camouflage` compares its entries.
@@ -5546,7 +5545,7 @@ fn strategic_action_oracle_names_unsaved_operands_and_keeps_saved_differences() 
         ),
         withdrawal: Recorded::Value(Some(0)),
         movement_priority: Recorded::Value(Some(1)),
-        base_speed: Recorded::Value(Some(400_000)),
+        own_base_speed: Some(Some(400_000)),
         // A nonempty route records its fuel; the save's absent fuel is zero.
         fuel: Recorded::Value(Some(0)),
         ..Default::default()

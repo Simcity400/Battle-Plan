@@ -10,8 +10,8 @@ fn member(ordinal: u32, entries: Vec<CombatModifierValue>) -> LandCombatDivision
         combat: u64::MAX,
         side: 1,
         ordinal,
-        division: (0x35 << 32) | 0x33,
         entries,
+        division: None,
     }
 }
 
@@ -43,12 +43,11 @@ fn opaque(value: &impl Value, output: &mut Vec<u8>) {
 
 #[test]
 fn land_combat_division_modifiers_hold_a_row_a_member_keyed_as_its_combat_row() {
-    // Keyed (combat, side, ordinal) as LandCombatDivisions, with the
-    // division handle and its ordered entries.
+    // Keyed (combat, side, ordinal) as LandCombatDivisions, which names the
+    // division, with its ordered entries; the row's own division only where no member row does.
     let table = TableId::LandCombatDivisionModifiers;
-    assert_eq!(table.field_name(0), Some("division"));
-    assert_eq!(table.field_name(1), Some("entries"));
-    assert_eq!(table.field_name(2), None);
+    assert_eq!(table.field_name(0), Some("entries"));
+    assert_eq!(table.field_name(1), Some("division"));
     assert_eq!(table.field_count(), 2);
     let row = member(u32::MAX, vec![entry(7, 11, -29), entry(8, 1, -1)]);
     assert_eq!(
@@ -95,7 +94,7 @@ fn one_division_whose_entries_change_stores_only_its_row() {
     after[1].entries[1].value_a = 60;
     assert!(before[0].delta(Some(&before[0])).unwrap().is_none());
     let delta = after[1].delta(Some(&before[1])).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 1);
+    assert_eq!(delta.mask, 1);
     assert_eq!(delta.apply(Some(before[1].clone())).unwrap(), after[1]);
     let mut drifted = after[1].clone();
     drifted.entries[1].value_a = 69;
@@ -103,7 +102,7 @@ fn one_division_whose_entries_change_stores_only_its_row() {
     drifted.round_to_display();
     assert_eq!(drifted.entries[1], entry(2, 69, -1));
     let delta = drifted.delta(Some(&after[1])).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 1);
+    assert_eq!(delta.mask, 1);
     assert_eq!(delta.apply(Some(after[1].clone())).unwrap(), drifted);
 }
 

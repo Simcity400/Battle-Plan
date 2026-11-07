@@ -138,7 +138,6 @@ fn widget_format_keeps_transport_fields_and_native_null_launch_not_recorded() {
     for (table, fields) in [
         (TableId::RelationLinks, 1),
         (TableId::CountryAppearance, 21),
-        (TableId::DivisionMovement, 15),
         (TableId::RailwayGunCounterInputs, 26),
         (TableId::AirBases, 5),
         (TableId::AirBaseRegistrations, 2),
@@ -154,11 +153,6 @@ fn widget_format_keeps_transport_fields_and_native_null_launch_not_recorded() {
         WIDGET_CAPTURE_FORMAT,
         TableId::CountryAppearance,
         CountryAppearanceRow::default(),
-    );
-    check_version(
-        WIDGET_CAPTURE_FORMAT,
-        TableId::DivisionMovement,
-        DivisionMovementRow::default(),
     );
     check_version(
         WIDGET_CAPTURE_FORMAT,
@@ -376,7 +370,6 @@ fn format99_new_tables_have_independent_lifetimes_and_native_cadences() {
     assert_eq!(old.fields(TableId::AirWings), 15);
     assert_eq!(old.fields(TableId::AdvisorRoles), 5);
     assert_eq!(old.fields(TableId::CountryCounterInputs), 9);
-    assert_eq!(old.fields(TableId::DivisionStatus), 20);
     assert_eq!(old.fields(TableId::OrdersGroupCounterInputs), 1);
     assert_eq!(old.fields(TableId::UnitLeaders), 22);
     assert_eq!(old.fields(TableId::DivisionTemplateIcons), 13);
@@ -478,7 +471,7 @@ fn invalid_order_reason_preserves_signed_bits_in_current_rows_and_deltas() {
         assert_eq!(decode_row::<DivisionStatusRow>(0, &mut input).unwrap(), row);
         input.finish().unwrap();
         let delta = row.delta(Some(&old)).unwrap().unwrap();
-        assert_eq!(delta.mask, 1 << 21);
+        assert_eq!(delta.mask, 1 << 18);
         assert_eq!(delta.apply(Some(old.clone())).unwrap(), row);
     }
 }

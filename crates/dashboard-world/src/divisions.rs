@@ -1,5 +1,5 @@
 //! The divisions of the hour: each division's countries, template, hit points and reveal byte
-//! (Divisions), its maximum hit points (DivisionStatus) and its manpower (DivisionLandInputs),
+//! (Divisions), its maximum hit points (DivisionPanelStats) and its manpower (DivisionLandInputs),
 //! kept from the rows each hour wrote in those fields. A table is held while it holds every
 //! row; it is read whole at the walk's first hour, when it is held again, and when its
 //! changes name a row it does not hold.
@@ -9,7 +9,7 @@ use replay::{columns, segments::State};
 use replay_data::{
     display::stepped_format,
     format::FormatVersion,
-    rows::{DivisionLandInputsRow, DivisionRow, DivisionStatusRow, TableId},
+    rows::{DivisionLandInputsRow, DivisionPanelStatsRow, DivisionRow, TableId},
 };
 use std::{collections::HashMap, io};
 
@@ -228,7 +228,7 @@ fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what.into())
 }
 
-/// The columns a part reads: Divisions', DivisionStatus' maximum and DivisionLandInputs'
+/// The columns a part reads: Divisions', DivisionPanelStats' maximum and DivisionLandInputs'
 /// manpower list.
 struct Fields {
     roster: usize,
@@ -237,7 +237,8 @@ struct Fields {
     template: usize,
     hit_points: usize,
     reveal: usize,
-    maximum: usize,
+    /// DivisionPanelStats' maximum strength word and its status-pass maximum.
+    maximum: [usize; 2],
     manpower: usize,
 }
 
@@ -246,7 +247,7 @@ pub struct Divisions {
     format: FormatVersion,
     fields: Fields,
     divisions: Kept<Division>,
-    maxima: Kept<i64>,
+    maxima: Kept<Option<i64>>,
     manpower: Kept<i32>,
 }
 
@@ -270,7 +271,10 @@ impl Divisions {
                 template: field(TableId::Divisions, "template")?,
                 hit_points: field(TableId::Divisions, "hit_points")?,
                 reveal: field(TableId::Divisions, "reveal_skip")?,
-                maximum: field(TableId::DivisionStatus, "maximum_hit_points")?,
+                maximum: [
+                    field(TableId::DivisionPanelStats, "panel_stats[0]")?,
+                    field(TableId::DivisionPanelStats, "status_maxima[0]")?,
+                ],
                 manpower: field(TableId::DivisionLandInputs, "manpower")?,
             },
             divisions: Kept::new(),
@@ -284,8 +288,9 @@ impl Divisions {
         &self.divisions
     }
 
-    /// Each division's maximum hit points, native fixed5.
-    pub fn maxima(&self) -> &Kept<i64> {
+    /// Each division's maximum hit points as the game shows them
+    /// ([`DivisionPanelStatsRow::maximum_hit_points`]); None where the panel refused the word.
+    pub fn maxima(&self) -> &Kept<Option<i64>> {
         &self.maxima
     }
 
@@ -358,22 +363,19 @@ impl Divisions {
                         .ok_or_else(missing)?,
                 })
             })?;
-        let maximum = fields.maximum;
+        // The maximum is the panel's (DivisionPanelStatsRow::maximum_hit_points); an unknown one is
+        // not zero.
         self.maxima.step(
             state,
-            (TableId::DivisionStatus, 1 << maximum),
+            (
+                TableId::DivisionPanelStats,
+                (1 << fields.maximum[0]) | (1 << fields.maximum[1]),
+            ),
             first,
             |slot, _| {
-                let held = columns::table(state, TableId::DivisionStatus)?;
-                if !held.recorded(maximum, slot) {
-                    let row: DivisionStatusRow =
-                        columns::row(state, TableId::DivisionStatus, slot, version)?;
-                    return Ok(row.maximum_hit_points);
-                }
-                let units = *columns::plain::<i64>(held, maximum)?
-                    .get(slot as usize)
-                    .ok_or_else(|| invalid(format!("DivisionStatus slot {slot} holds no cell")))?;
-                native(TableId::DivisionStatus, maximum, format, units)
+                let row: DivisionPanelStatsRow =
+                    columns::row(state, TableId::DivisionPanelStats, slot, version)?;
+                Ok(row.maximum_hit_points())
             },
         )?;
         // The contributors are a list: decoded for the rows whose list the hour wrote.
@@ -395,7 +397,7 @@ impl Divisions {
     /// The bytes it holds.
     pub fn held_bytes(&self) -> usize {
         self.divisions.values.capacity() * (size_of::<(u64, Division)>() + 1)
-            + self.maxima.values.capacity() * (size_of::<(u64, i64)>() + 1)
+            + self.maxima.values.capacity() * (size_of::<(u64, Option<i64>)>() + 1)
             + self.manpower.values.capacity() * (size_of::<(u64, i32)>() + 1)
     }
 }

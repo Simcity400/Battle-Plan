@@ -78,7 +78,7 @@ pub fn frame(hour: i32, count: u32) -> DecodedFrame {
             (0..count)
                 .map(|index| DivisionStatusRow {
                     division: u64::from(index) + 1,
-                    supply_ratio: if hour % 2 == 0 { 0 } else { 100_000 },
+                    supply_ratio: Some(if hour % 2 == 0 { 0 } else { 100_000 }),
                     supply_grace_maximum: Recorded::Value(1_000_000),
                     supply_grace_remaining: Recorded::Value(0),
                     ..Default::default()

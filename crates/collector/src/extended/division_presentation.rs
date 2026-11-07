@@ -21,7 +21,7 @@ use engine_native::{
 use engine_naval_history::cnaval_unit_transfer::SpeedInputs as TransportInputs;
 use replay_data::rows::{
     DivisionCamouflage, DivisionMovementRow, DivisionPanelStatsRow, DivisionRetreatBanRow,
-    DivisionStatusRow, NameOperands, Recorded, Retired, TableId, Witnessed, tables,
+    DivisionStatusRow, NameOperands, Recorded, TableId, Witnessed, tables,
 };
 use replay_frame::frame::TableInput;
 use std::sync::{
@@ -189,13 +189,12 @@ macro_rules! status_fields {
     ($row:ident, $apply:ident, [$($args:expr),* $(,)?] $(,)?) => {
         $apply!([$($args),*], {
             division: $row.division,
-            maximum_hit_points: DivisionStatusRow::MAXIMUM_STEP.round($row.maximum_hit_points),
-            maximum_organisation: DivisionStatusRow::MAXIMUM_STEP.round($row.maximum_organisation),
             organisation_exact: Recorded::Value($row.movement_organisation.flatten().map(|pair| pair[0])),
             maximum_organisation_exact: Recorded::Value($row.movement_organisation.flatten().map(|pair| pair[1])),
             entrenchment: $row.entrenchment,
             entrenchment_cap: $row.entrenchment_cap,
-            supply_ratio: DivisionStatusRow::SUPPLY_RATIO_STEP.round($row.supply_ratio),
+            // The exact pair, when kept, carries the shown values: their steps.
+            supply_ratio: (!DivisionStatusRow::keeps_exact_supply($row.out_of_supply_days)).then(|| DivisionStatusRow::SUPPLY_RATIO_STEP.round($row.supply_ratio)),
             attrition_value: $row.attrition_value,
             attrition_threshold: $row.attrition_threshold,
             exercising: $row.exercising,
@@ -220,18 +219,12 @@ macro_rules! project_status_fields {
             camouflage: Recorded::Value(camouflage($row.camouflage)),
             border_combat_stats: Recorded::Value($row.border_combat_stats),
             supply_grace_maximum: Recorded::Value($row.supply_grace_maximum),
-            supply_grace_remaining: Recorded::Value(DivisionStatusRow::displayed_grace(
-                $row.supply_grace_remaining,
-                $supply_grace,
-            )),
+            supply_grace_remaining: Recorded::Value(DivisionStatusRow::displayed_grace($row.supply_grace_remaining, $supply_grace)),
             name_template: Recorded::Value(name_template($row.naming)),
             naming: Recorded::Value($naming),
             country_ordinal: Recorded::Value($row.country_ordinal),
             invalid_orders_reason: Recorded::Value($row.invalid_orders_reason),
-            // Playback computes the glyph byte from the value and threshold.
-            attrition: replay_data::rows::RetiredU8::default(),
             supply: Recorded::Value($supply),
-            attrition_inputs: Recorded::Value(Retired),
             dig_in_factor: Recorded::Value($dig_in),
             name: Recorded::Value($name),
             attack: Recorded::Value(Witnessed($witness)),
@@ -287,6 +280,17 @@ struct StatusInputs {
 }
 
 /// Where `row`, an element of `rows`, sits in it.
+/// Whether no division appears twice among `divisions`, sorted into `keys`.
+fn unique(keys: &mut Vec<u64>, divisions: impl ExactSizeIterator<Item = u64>) -> bool {
+    keys.clear();
+    if engine_allocation::reserve(keys, divisions.len()).is_err() {
+        return false;
+    }
+    keys.extend(divisions);
+    keys.sort_unstable();
+    keys.windows(2).all(|pair| pair[0] != pair[1])
+}
+
 fn position<T>(rows: &[T], row: &T) -> usize {
     (row as *const T as usize - rows.as_ptr() as usize) / std::mem::size_of::<T>().max(1)
 }
@@ -838,6 +842,11 @@ pub struct Captured {
     /// Sparse execution output from the same held pass, installed only after
     /// both Presentation and Late have joined. Never reads native memory.
     order_transport: engine_native::order_execution::UnitPacket,
+    /// The combat members' divisions, sorted, with their status and movement rows
+    /// ([`Self::join_combat_members`]).
+    member_index: Vec<(u64, u32, u32)>,
+    /// Scratch for [`unique`].
+    member_keys: Vec<u64>,
     geometry: cprovince::GeometryPacket,
     status_packet: carmy::StatusPacket,
     daily_status: daily_status::DailyStatus,
@@ -921,6 +930,8 @@ impl Captured {
             transport: Default::default(),
             transport_inputs: Vec::new(),
             order_transport: engine_native::order_execution::UnitPacket::vacant(),
+            member_index: Vec::new(),
+            member_keys: Vec::new(),
             geometry: cprovince::GeometryPacket::vacant(),
             status_packet: carmy::StatusPacket::vacant(),
             daily_status: Default::default(),
@@ -983,6 +994,8 @@ impl Captured {
             transport: Default::default(),
             transport_inputs: Vec::new(),
             order_transport: engine_native::order_execution::UnitPacket::vacant(),
+            member_index: Vec::new(),
+            member_keys: Vec::new(),
             geometry: cprovince::GeometryPacket::try_with_capacities(c.geometry)
                 .unwrap_or_default(),
             status_packet: status_packet(c),
@@ -1077,6 +1090,8 @@ impl Captured {
             + self.transport_inputs.capacity() * size_of::<(usize, Option<TransportInputs>)>()
             + self.movement_packet.allocated_bytes()
             + self.order_transport.allocated_bytes()
+            + self.member_index.capacity() * size_of::<(u64, u32, u32)>()
+            + self.member_keys.capacity() * size_of::<u64>()
             + self.geometry.allocated_bytes()
             + self.status_packet.allocated_bytes()
             + self.daily_status.allocated_bytes()
@@ -1251,6 +1266,159 @@ impl Captured {
             self.order_transport.allocated_bytes(),
             self.order_transport.outcome(),
         )
+    }
+
+    /// The words the hour's DivisionPanelStats row of `division` holds, found through the status
+    /// index; None where it is not found there.
+    fn published_panel(&self, division: u64) -> Option<[Option<i64>; 23]> {
+        let at = self.status_packet.status_index(division)?;
+        (self.status.rows.get(at)?.division == division)
+            .then(|| self.attack.view_at(at, division).panel())
+    }
+
+    /// Whether the first `len` status rows' naming spans lie in the name arena; DivisionStatus
+    /// is refused otherwise.
+    fn names_valid(&self, len: usize) -> bool {
+        let Some(names) = self.names.first.get(..self.names.len) else {
+            return false;
+        };
+        let span = |(start, len): cname_group_member::Span| {
+            start.checked_add(len).and_then(|end| names.get(start..end))
+        };
+        self.status.rows.get(..len).is_some_and(|rows| {
+            rows.iter().all(|r| {
+                r.naming
+                    .is_none_or(|n| span(n.custom).is_some() && span(n.group).is_some())
+            })
+        })
+    }
+
+    /// Whether the first `len` movement rows' paths lie in the path arena; DivisionMovement is
+    /// refused otherwise.
+    fn paths_valid(&self, len: usize) -> bool {
+        let Some(paths) = self.paths.first.get(..self.paths.len) else {
+            return false;
+        };
+        let span =
+            |start: usize, len: usize| start.checked_add(len).and_then(|end| paths.get(start..end));
+        self.movement.rows.get(..len).is_some_and(|rows| {
+            rows.iter().all(|r| {
+                span(r.path_start, r.path_len).is_some()
+                    && span(r.alternate_start, r.alternate_len).is_some()
+            })
+        })
+    }
+
+    /// Marks each combat member whose division values this hour's DivisionStatus,
+    /// DivisionPanelStats and DivisionMovement rows publish exactly as the member read them, so
+    /// its row stores no copy. Any doubt, a refused table or a failed allocation keeps the copy.
+    pub(crate) fn join_combat_members(
+        &mut self,
+        combat: &mut super::combat_details::Captured,
+    ) {
+        let mut index = std::mem::take(&mut self.member_index);
+        let mut keys = std::mem::take(&mut self.member_keys);
+        let indexed = self.index_members(&mut index, &mut keys, combat);
+        self.member_keys = keys;
+        combat.join_members(|reads| {
+            indexed
+                && index
+                    .binary_search_by_key(&reads.stats.division, |entry| entry.0)
+                    .is_ok_and(|at| self.publishes(index[at].1, index[at].2, reads))
+        });
+        self.member_index = index;
+    }
+
+    /// The members' divisions, each with its status and movement row positions (`u32::MAX` for
+    /// none). False when the tables may be refused: a division listed twice anywhere refuses them.
+    fn index_members(
+        &self,
+        index: &mut Vec<(u64, u32, u32)>,
+        keys: &mut Vec<u64>,
+        combat: &super::combat_details::Captured,
+    ) -> bool {
+        const NONE: u32 = u32::MAX;
+        index.clear();
+        let [movement, status, ..] = self.outcomes();
+        if self.decode_pending
+            || !matches!(status, Outcome::Rows { .. })
+            || !matches!(movement, Outcome::Rows { .. })
+            || !self.names_valid(status.len())
+            || !self.paths_valid(movement.len())
+            || !unique(keys, self.status.rows[..status.len()].iter().map(|row| row.division))
+            || !unique(keys, self.movement.rows[..movement.len()].iter().map(|row| row.division))
+        {
+            return false;
+        }
+        let members = combat.member_divisions();
+        if engine_allocation::reserve(index, members.len()).is_err() {
+            return false;
+        }
+        index.extend(members.map(|division| (division, NONE, NONE)));
+        index.sort_unstable_by_key(|entry| entry.0);
+        index.dedup_by_key(|entry| entry.0);
+        let mut place = |division: u64, at: usize, slot: fn(&mut (u64, u32, u32)) -> &mut u32| {
+            if let Ok(found) = index.binary_search_by_key(&division, |entry| entry.0) {
+                *slot(&mut index[found]) = at as u32;
+            }
+        };
+        for (at, row) in self.status.rows[..status.len()].iter().enumerate() {
+            place(row.division, at, |entry| &mut entry.1);
+        }
+        for (at, row) in self.movement.rows[..movement.len()].iter().enumerate() {
+            place(row.division, at, |entry| &mut entry.2);
+        }
+        true
+    }
+
+    /// Whether the status row at `status` and the movement row at `movement` publish the values
+    /// a combat member read, as [`replay_data::rows::LandCombatMemberValues::joined`] reads them.
+    fn publishes(
+        &self,
+        status: u32,
+        movement: u32,
+        reads: &super::combat_details::MemberReads<'_>,
+    ) -> bool {
+        use replay_data::rows::LandCombatMemberValues as Values;
+        let (Some(r), Some(m)) = (
+            self.status.rows.get(status as usize),
+            self.movement.rows.get(movement as usize),
+        ) else {
+            return false;
+        };
+        let Some(naming) = r.naming else {
+            return false;
+        };
+        let names = &self.names.first[..self.names.len];
+        let span = |(start, len): cname_group_member::Span| {
+            start.checked_add(len).and_then(|end| names.get(start..end))
+        };
+        let view = self.attack.view_at(status as usize, r.division);
+        let Some(stats) = view.movement() else {
+            return false;
+        };
+        let words = view.panel();
+        let read = reads.stats;
+        let word = |at: usize, value: i64| words[at] == Some(value);
+        naming.kind == reads.naming.kind
+            && naming.order == reads.naming.order
+            && naming.ordered == reads.naming.ordered
+            && naming.programmatic == reads.naming.programmatic
+            && span(naming.custom) == Some(reads.custom)
+            && span(naming.group) == Some(reads.group)
+            && r.strength_factor == read.strength_combat_factor
+            && m.fuel == Some(read.fuel_inputs[0])
+            && stats.fuel_rate == read.fuel_inputs[1]
+            && stats.air_defense == read.air_attack
+            && Values::STATS
+                .iter()
+                .zip(read.stat_values)
+                .all(|(&at, value)| word(at, value))
+            && word(Values::ARMOUR, read.armour)
+            && word(Values::PIERCING, read.piercing)
+            && word(Values::RECONNAISSANCE, read.reconnaissance)
+            && word(Values::INITIATIVE, read.initiative)
+            && word(DivisionPanelStatsRow::MAXIMUM_SPEED, reads.base_speed)
     }
 
     fn order_transport(
@@ -2634,12 +2802,7 @@ impl Captured {
                 .get(..self.cached_names.len)?
                 .get(start..start.checked_add(len)?)
         };
-        if self.status.rows.get(..status.len()).is_none_or(|rows| {
-            rows.iter().any(|r| {
-                r.naming
-                    .is_some_and(|n| name_span(n.custom).is_none() || name_span(n.group).is_none())
-            })
-        }) {
+        if !self.names_valid(status.len()) {
             status = Outcome::Unavailable {
                 reason: "division naming spans invalid",
             };
@@ -2680,9 +2843,9 @@ impl Captured {
                     ..naming
                 });
                 row.supply_origins_start = 0;
-                row.maximum_hit_points = DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_hit_points);
-                row.maximum_organisation =
-                    DivisionStatusRow::MAXIMUM_STEP.round(r.maximum_organisation);
+                // The maxima are DivisionPanelStats' words; this row does not publish them.
+                row.maximum_hit_points = 0;
+                row.maximum_organisation = 0;
                 row.supply_ratio = DivisionStatusRow::SUPPLY_RATIO_STEP.round(r.supply_ratio);
                 row.supply_grace_remaining = DivisionStatusRow::displayed_grace(
                     r.supply_grace_remaining,
@@ -2746,12 +2909,23 @@ impl Captured {
                 )
             },
         );
+        // The status pass's maxima, kept where the panel's words do not give them.
+        let status_maxima = |r: &carmy::StatusRow, words: &[Option<i64>; 23]| {
+            let raw = [r.maximum_hit_points, r.maximum_organisation];
+            std::array::from_fn::<_, 2, _>(|at| {
+                let stored = DivisionStatusRow::MAXIMUM_STEP.round(raw[at]);
+                (DivisionPanelStatsRow::maximum(words[at]) != Some(stored)).then_some(stored)
+            })
+        };
         let panel = ledger_table::<tables::DivisionPanelStats, _, _>(
             projection.as_deref_mut(),
             status_outcome,
             &self.status.rows,
             |r| u128::from(r.division),
-            |at, r, _| Some(self.attack.view_at(at, r.division).panel()),
+            |at, r, _| {
+                let words = self.attack.view_at(at, r.division).panel();
+                Some((words, status_maxima(r, &words)))
+            },
             |r| {
                 let at = position(&self.status.rows, r);
                 let words = self.attack.view_at(at, r.division).panel();
@@ -2759,9 +2933,26 @@ impl Captured {
                     division: r.division,
                     panel_stats: std::array::from_fn(|at| words[at]),
                     suppression: words[22].into(),
+                    status_maxima: status_maxima(r, &words),
                 }
             },
         );
+        // Whether the hour publishes DivisionPanelStats, whose words a movement row's base speed
+        // is read from; a division listed twice refuses it.
+        let panels = matches!(status_outcome, Outcome::Rows { .. })
+            && self.status.rows.get(..status_outcome.len()).is_some_and(|rows| {
+                let mut keys = Vec::new();
+                unique(&mut keys, rows.iter().map(|row| row.division))
+            });
+        // The native read, refusal included, unless the published panel gives the same.
+        let own_base_speed = |r: &carmy::MovementRow| {
+            let words = panels
+                .then(|| self.published_panel(r.division))
+                .flatten()
+                .map_or([None; 22], |words| std::array::from_fn(|at| words[at]));
+            (DivisionMovementRow::panel_speed(r.path_total, words) != r.base_speed)
+                .then_some(r.base_speed)
+        };
         let history = self.history_input(projection.as_deref());
         let sources = match &self.attack.sources {
             Some(Ok(rows)) => rows
@@ -2794,12 +2985,7 @@ impl Captured {
         };
         let span =
             |start: usize, len: usize| start.checked_add(len).and_then(|end| paths.get(start..end));
-        if self.movement.rows.get(..movement.len()).is_none_or(|rows| {
-            rows.iter().any(|r| {
-                span(r.path_start, r.path_len).is_none()
-                    || span(r.alternate_start, r.alternate_len).is_none()
-            })
-        }) {
+        if !self.paths_valid(movement.len()) {
             return [
                 unavailable("movement path spans invalid").into(),
                 status,
@@ -2840,10 +3026,14 @@ impl Captured {
                         combat_references: r.combat_references.map(|(_, count)| (0, count)),
                         ..*r
                     };
-                    Some((row, self.order_transport(r.division), request.is_some()))
+                    Some((
+                        row,
+                        self.order_transport(r.division),
+                        request.is_some(),
+                        own_base_speed(r),
+                    ))
                 },
                 |r| DivisionMovementRow {
-                    selected: Recorded::Value(Retired),
                     combat_references: Recorded::Value(
                         super::unit_combat_references::project(
                             request,
@@ -2852,7 +3042,6 @@ impl Captured {
                         ),
                     ),
                     division: r.division,
-                    fresh: Recorded::Value(Retired),
                     source: r.source,
                     target: r.target,
                     numerator: r.numerator,
@@ -2862,7 +3051,6 @@ impl Captured {
                     withdrawal: Recorded::Value(r.withdrawal),
                     movement_priority: Recorded::Value(r.movement_priority),
                     order_transport: Recorded::Value(self.order_transport(r.division)),
-                    transport: Recorded::Value(Retired),
                     naval_transfer: r.naval_transfer,
                     combat_count: r.combat_count,
                     path_total: r.path_total,
@@ -2874,9 +3062,9 @@ impl Captured {
                     alternate_path: owned_vec(copy_vec(
                         span(r.alternate_start, r.alternate_len).unwrap(),
                     )),
-                    base_speed: Recorded::Value(r.base_speed),
                     fuel: Recorded::Value(r.fuel),
                     transport_speed: Recorded::Value(r.transport_speed),
+                    own_base_speed: own_base_speed(r),
                 },
             ),
             status,
@@ -5587,13 +5775,8 @@ mod tests {
             (&[7, 3, 7][..], 300, &[u32::MAX][..])
         );
         assert_eq!(
-            (
-                s[0].entrenchment,
-                s[0].maximum_hit_points,
-                s[0].has_order,
-                s[0].strength_factor
-            ),
-            (i64::MIN, i64::MAX, 0, 57_038)
+            (s[0].entrenchment, s[0].has_order, s[0].strength_factor),
+            (i64::MIN, 0, 57_038)
         );
         assert_eq!(s[0].supply_grace_maximum, Recorded::Value(i64::MAX));
         assert_eq!(s[0].supply_grace_remaining, Recorded::Value(i64::MIN));
@@ -5826,10 +6009,6 @@ mod tests {
             unreachable!();
         };
         assert_eq!(rows[0].order_transport, Recorded::Value(None));
-        // The retired selected transport and selection operands store their
-        // tombstones.
-        assert_eq!(rows[0].transport, Recorded::Value(Retired));
-        assert_eq!(rows[0].selected, Recorded::Value(Retired));
         assert_eq!(
             (
                 rows[0].division,
@@ -5839,79 +6018,6 @@ mod tests {
             ),
             (u64::MAX, 7, 7, i64::MIN)
         );
-    }
-
-    /// The base speed is published with its row and joins the unchanged-row
-    /// comparison; the retired fresh ETA field is the empty marker.
-    #[test]
-    fn movement_projection_records_base_speed_and_retires_fresh_eta() {
-        let mut capture = Captured::with_capacities(&Capacities {
-            movement: 2,
-            status: 0,
-            bans: 0,
-            paths: 0,
-            ..Capacities::default()
-        });
-        capture.movement.rows[0] = carmy::MovementRow {
-            division: 7,
-            source: 17,
-            target: 23,
-            base_speed: Some(-4_000_000),
-            ..Default::default()
-        };
-        capture.movement.rows[1] = carmy::MovementRow {
-            division: 9,
-            source: 17,
-            target: 17,
-            ..Default::default()
-        };
-        capture.movement.outcome = Outcome::Rows { len: 2 };
-        let [
-            TableInput::Sampled(TableView::Complete(TableRows::DivisionMovement(rows))),
-            ..,
-            _,
-        ] = capture.table_inputs(None, Some(12))
-        else {
-            panic!("movement rows unavailable");
-        };
-        assert_eq!(rows[0].base_speed, Recorded::Value(Some(-4_000_000)));
-        assert_eq!(rows[1].base_speed, Recorded::Value(None));
-        assert!(rows.iter().all(|row| row.fresh == Recorded::Value(Retired)));
-        let mut baseline = std::array::from_fn(|_| unavailable("outside movement fixture"));
-        baseline[TableId::DivisionMovement.index()] =
-            TableView::Complete(TableRows::DivisionMovement(rows));
-        let mut encoder = replay_frame::frame::FrameEncoder::new();
-        encoder
-            .encode(
-                replay_frame::frame::DecodedFrame {
-                    branch: 1,
-                    hour: 12,
-                    tables: baseline.map(Into::into),
-                    metrics: replay_frame::frame::Metrics::default(),
-                },
-                false,
-            )
-            .unwrap();
-        let scratch = crate::projection::ProjectionScratch::default();
-        let mut projection = Projection::new(&encoder, 1, 13, false, &scratch);
-        let [movement, ..] = capture.table_inputs(Some(&mut projection), Some(13));
-        assert!(
-            matches!(movement, TableInput::ComparedEqual(_)),
-            "an equal base speed reuses the unchanged rows"
-        );
-        capture.movement.rows[0].base_speed = Some(-3_000_000);
-        let mut projection = Projection::new(&encoder, 1, 13, false, &scratch);
-        let [movement, ..] = capture.table_inputs(Some(&mut projection), Some(13));
-        let TableInput::ComparedChanges {
-            indices,
-            rows: TableRows::DivisionMovement(rows),
-            ..
-        } = movement
-        else {
-            panic!("a changed base speed is a changed row");
-        };
-        assert_eq!(indices, [0]);
-        assert_eq!(rows[0].base_speed, Recorded::Value(Some(-3_000_000)));
     }
 }
 

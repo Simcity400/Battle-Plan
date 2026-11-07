@@ -303,6 +303,7 @@ fn combat_speed(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use replay_data::rows::Recorded;
     #[test]
     fn every_deployed_cache_column_joins_the_panel_table_and_preserves_refusal() {
         let status = DivisionStatusRow::default();

@@ -20,7 +20,7 @@ pub fn neutral_status(division: u64, terrains: usize) -> DivisionStatusRow {
         organisation_exact: Recorded::Value(None),
         maximum_organisation_exact: Recorded::Value(None),
         division,
-        supply_ratio: 100_000,
+        supply_ratio: Some(100_000),
         supply_grace_maximum: Recorded::Value(100_000),
         supply_grace_remaining: Recorded::Value(0),
         out_of_supply_days: Recorded::Value(Some(0)),

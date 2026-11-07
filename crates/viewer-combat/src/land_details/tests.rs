@@ -108,6 +108,9 @@ fn width_replays_direction_grouping_and_totals() {
             division,
             province,
             direction_group: group,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
@@ -117,7 +120,8 @@ fn width_replays_direction_grouping_and_totals() {
         committed: &[u64],
         movement: &BTreeMap<u64, u32>,
     ) -> Option<usize> {
-        let divisions: Divisions<'_> = rows.iter().map(|row| ((0, row.division), row)).collect();
+        let divisions: BTreeMap<(u8, u64), _> =
+            rows.iter().map(|row| ((0, row.division), row)).collect();
         direction_count(committed, &divisions, COMBAT, movement).ok()
     }
     // Distinct provinces without latched grouping count twice.

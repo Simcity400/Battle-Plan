@@ -156,7 +156,7 @@ fn daily_status_owned_ranges_carry_footer_and_xp_but_keep_ratio_hourly() {
             assert_eq!(footer.asked, i64::from(sample) * 100_000);
             assert_eq!(
                 row.supply_ratio,
-                DivisionStatusRow::SUPPLY_RATIO_STEP.round(i64::from(hour) * 10_000)
+                Some(DivisionStatusRow::SUPPLY_RATIO_STEP.round(i64::from(hour) * 10_000))
             );
         }
         drop(capture.take_settled_store().unwrap());

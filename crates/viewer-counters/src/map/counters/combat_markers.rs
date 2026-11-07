@@ -199,15 +199,17 @@ impl LandMarkers {
                 (row.division, (kind, row.map_entity != 0))
             })
             .collect();
-        let status = rows::<tables::DivisionStatus>(frame)?;
+        let panels = rows::<tables::DivisionPanelStats>(frame)?;
         let progresses = progress::Progresses::read(frame)?;
         let sides_table = rows::<tables::LandCombatSides>(frame)?;
         let sides = progress::sides(frame)?;
         let details_table = rows::<tables::LandCombatDetails>(frame)?;
         let details: BTreeMap<_, _> = details_table.rows().iter().map(|r| (r.combat, r)).collect();
         let members = rows::<tables::LandCombatDivisions>(frame)?;
+        let member_values =
+            viewer_foundation::land_combat_math::member_values(frame, members.rows())?;
         let mut members_by_combat: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        for row in members.rows() {
+        for row in replay_data::rows::land_combat_members(members.rows(), &member_values) {
             members_by_combat.entry(row.combat).or_default().push(row);
         }
         let resolve = |raw: u32| links.get(&raw).copied();
@@ -298,8 +300,8 @@ impl LandMarkers {
                         Err(ScoreGap::MaximumStrength(id)) => (
                             None,
                             Some(missing(
-                                &status,
-                                "DivisionStatus",
+                                &panels,
+                                "DivisionPanelStats",
                                 format!(
                                     "committed division {id}, whose maximum hit points the early damage estimate reads"
                                 ),
@@ -640,6 +642,22 @@ mod tests {
                     })
                     .collect(),
             ));
+        // The maxima the early damage estimate reads are the panel's.
+        *frame.tables[TableId::DivisionPanelStats.index()] =
+            TableView::Complete(TableRows::DivisionPanelStats(
+                divisions
+                    .iter()
+                    .map(|&division| {
+                        let mut row = replay_data::rows::DivisionPanelStatsRow {
+                            division,
+                            ..Default::default()
+                        };
+                        row.panel_stats[0] = Some(1_000_000);
+                        row.panel_stats[1] = Some(1_000_000);
+                        row
+                    })
+                    .collect(),
+            ));
         *frame.tables[TableId::DivisionMovement.index()] =
             TableView::Complete(TableRows::DivisionMovement(
                 [1, 2]
@@ -779,27 +797,30 @@ mod tests {
                     combat: 62,
                     side: 0,
                     division: 1,
+                    own: Some(replay_data::rows::LandCombatMemberValues {
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 },
             ]));
-        let TableView::Complete(TableRows::DivisionStatus(status)) =
-            &mut *frame.tables[TableId::DivisionStatus.index()]
+        let TableView::Complete(TableRows::DivisionPanelStats(panels)) =
+            &mut *frame.tables[TableId::DivisionPanelStats.index()]
         else {
             unreachable!()
         };
         // Participant 2 is not committed: its maxima are never read.
-        status.retain(|row| row.division != 2);
+        panels.retain(|row| row.division != 2);
         assert_eq!(causes(&land_gaps(&frame)), []);
-        let TableView::Complete(TableRows::DivisionStatus(status)) =
-            &mut *frame.tables[TableId::DivisionStatus.index()]
+        let TableView::Complete(TableRows::DivisionPanelStats(panels)) =
+            &mut *frame.tables[TableId::DivisionPanelStats.index()]
         else {
             unreachable!()
         };
-        status.retain(|row| row.division != 1);
+        panels.retain(|row| row.division != 1);
         assert_eq!(
             causes(&land_gaps(&frame)),
             [(
-                "plate and wedge omitted (survival estimate): the DivisionStatus table has no row for committed division 1, whose maximum hit points the early damage estimate reads",
+                "plate and wedge omitted (survival estimate): the DivisionPanelStats table has no row for committed division 1, whose maximum hit points the early damage estimate reads",
                 vec![62]
             )]
         );

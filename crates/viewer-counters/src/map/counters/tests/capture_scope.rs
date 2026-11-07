@@ -6,9 +6,10 @@ use viewer_foundation::map::test_support::{
     assert_reads_recorded, complete_frame, map_scoped, put_sample_campaign,
 };
 
-/// Bars are withheld without DivisionStatus; fog is off without its inputs.
-const PRESENTED_ABSENT: [TableId; 3] = [
+/// Bars are withheld without DivisionStatus or DivisionPanelStats; fog is off without its inputs.
+const PRESENTED_ABSENT: [TableId; 4] = [
     TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
     TableId::UnitIntel,
     TableId::CountryVisibility,
 ];

@@ -2295,10 +2295,9 @@ fn divisions_owned_success_supplies_both_live_companions_before_decode_without_e
         movement.iter().map(|r| r.division).collect::<Vec<_>>(),
         [101, 102, 103]
     );
-    assert!(
-        status
-            .iter()
-            .all(|r| r.maximum_hit_points == 500_000 && r.maximum_organisation == 700_000)
+    assert_eq!(
+        status.iter().map(|r| r.division).collect::<Vec<_>>(),
+        [101, 102, 103]
     );
     // The actual worker installation preserves acquired live tables and
     // installs the independently captured native detail rows.

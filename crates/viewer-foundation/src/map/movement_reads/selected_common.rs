@@ -878,11 +878,13 @@ impl CommonMoveWorld for Moves<'_, '_> {
             .ok_or_else(|| "selected move_organisation_threshold capture refused".into())
     }
     fn maximum_organisation(&self, unit: &CommonUnit<'_>) -> Fact<i64> {
-        let rows = self.table::<tables::DivisionStatus>()?;
+        let rows = self.table::<tables::DivisionPanelStats>()?;
         let at = rows
             .binary_search_by_key(&unit.handle, |row| row.division)
             .map_err(|_| "selected army maximum organisation is missing")?;
-        Ok(rows[at].maximum_organisation)
+        rows[at]
+            .maximum_organisation()
+            .ok_or_else(|| "selected army maximum organisation was refused when recorded".into())
     }
     fn unit_exiled(&self, unit: &CommonUnit<'_>) -> Fact<bool> {
         Ok(self.unit_exiled_raw(unit)? != 0)

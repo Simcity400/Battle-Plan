@@ -2332,7 +2332,18 @@ sample_struct!(LandDivisionContext {
     leader_modifiers: [LandDivisionModifier; 3],
     modifier_metadata: [[u32; 2]; 3],
     feature_flags: u32,
-    eligibility_callback: u8,
+    eligibility_callback: u8
+});
+sample_struct!(LandCombatMemberValues {
+    naming: NameOperands,
+    strength_combat_factor: i64,
+    fuel_inputs: [i64; 2],
+    stat_values: [i64; 5],
+    armour: i64,
+    piercing: i64,
+    air_attack: i64,
+    reconnaissance: i64,
+    initiative: i64,
     base_speed: i64
 });
 sample_struct!(NavalCombatSummaryModifier {
@@ -2411,41 +2422,17 @@ impl Fixture for LandCombatDivisionRow {
             role: u8::sample(tick),
             province: u32::sample(tick),
             division: u64::sample(tick),
-            name_type: i32::sample(tick),
-            name_order: i32::sample(tick),
-            name_ordered: u8::sample(tick),
-            name_programmatic: u8::sample(tick),
-            name_custom: Vec::<u8>::sample(tick),
-            name_group: Vec::<u8>::sample(tick),
-            strength_combat_factor: i64::sample(tick),
-            fuel_inputs: <[i64; 2]>::sample(tick).map(Recorded::Value),
-            stat_values: <[i64; 5]>::sample(tick).map(Recorded::Value),
-            fuel_packet: RetiredKept::default(),
-            stat_packet: RetiredKept::default(),
-            armour: i64::sample(tick),
-            piercing: i64::sample(tick),
-            air_attack: i64::sample(tick),
-            reconnaissance: i64::sample(tick),
-            initiative: i64::sample(tick),
             commander: u64::sample(tick),
-            scales: <[i64; 4]>::sample(tick).map(Recorded::Value),
-            scale_packet: RetiredKept::default(),
+            scales: <[i64; 4]>::sample(tick),
             context: LandDivisionContext::sample(tick),
             width_terms: Vec::<LandDivisionWidthTerm>::sample(tick),
-            commander_inputs: Retired,
-            reinforcement: Retired,
-            reinforcement_modifiers: Retired,
-            reinforcement_supply: Retired,
-            reinforcement_acclimatization: Retired,
-            reinforcement_transport: Retired,
             direction_group: i32::sample(tick),
             exile: Option::<LandCombatExileInputs>::sample(tick),
             categories: u64::sample(tick),
             // Within the reserve speed-share bounds, which the codec enforces.
-            reinforcement_speed: Recorded::Value(
-                Option::<i64>::sample(tick)
-                    .map(|share| share.clamp(0, LandCombatDivisionRow::SPEED_SHARE_MAXIMUM)),
-            ),
+            reinforcement_speed: Option::<i64>::sample(tick)
+                .map(|share| share.clamp(0, LandCombatDivisionRow::SPEED_SHARE_MAXIMUM)),
+            own: Option::<LandCombatMemberValues>::sample(tick),
         };
         RowCodec::round_to_display(&mut row);
         row
@@ -2458,8 +2445,8 @@ impl Fixture for LandCombatDivisionModifierRow {
             combat: (key >> 33) as u64,
             side: ((key >> 32) & 1) as u8,
             ordinal: key as u32,
-            division: u64::sample(tick),
             entries: Vec::<CombatModifierValue>::sample(tick),
+            division: Option::<u64>::sample(tick),
         };
         RowCodec::round_to_display(&mut row);
         row
@@ -3116,12 +3103,9 @@ impl Fixture for DivisionMovementRow {
             withdrawal: Recorded::sample(tick),
             movement_priority: Recorded::sample(tick),
             order_transport: Recorded::sample(tick),
-            fresh: Recorded::Value(Retired),
             combat_references: unit_combat_references_fixture(tick, u32::sample(tick)),
-            transport: Recorded::Value(Retired),
-            selected: Recorded::Value(Retired),
-            base_speed: Recorded::<Option<i64>>::sample(tick),
             fuel: Recorded::<Option<i64>>::sample(tick + 1),
+            own_base_speed: Option::<Option<i64>>::sample(tick),
             strategic_action: if reached {
                 crate::rows::Recorded::Value(StrategicAction::Available(strategic_action_fixture(
                     tick,
@@ -3154,8 +3138,8 @@ sample_struct!(DivisionSupplyFooter { asked: i64, received: i64, from_state: i64
     air_drops: i64, disruption: i64, division_demand: UnitSupplyDemand,
     airplane_demand: UnitSupplyDemand, ship_demand: UnitSupplyDemand,
     origins: Option<Vec<UnitSupplyOrigin>> });
-fixture!(DivisionPanelStatsRow, |key| {division: key as u64}, {panel_stats: [Option<i64>; 22], suppression: Recorded<Option<i64>>});
-fixture!(DivisionStatusRow, |key| {division: key as u64}, {maximum_hit_points: i64, maximum_organisation: i64, entrenchment: i64, entrenchment_cap: i64, supply_ratio: i64, attrition_value: i64, attrition_threshold: i64, attrition: RetiredU8, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<DivisionSupplyFooter>>, attrition_inputs: Recorded<Retired>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<Witnessed<DivisionAttackInputs>>, camouflage: Recorded<Option<DivisionCamouflage>>, attack_stats: Recorded<Option<DivisionAttackStats>>, weather_factor: Recorded<Option<i64>>, name_template: Recorded<Witnessed<u64>>, movement_stats: Recorded<Option<DivisionMovementStats>>, out_of_supply_days: Recorded<Option<i32>>, commander_modifiers: Recorded<Option<[Option<i64>; 5]>>, supply_ratio_exact: Recorded<Option<i64>>, supply_grace_exact: Recorded<Option<i64>>, experience: Recorded<Option<i64>>, pending_template: Recorded<Option<u64>>, officer_experience: Recorded<Option<i64>>, career_counter: Recorded<Option<i32>>, panel_source:Recorded<Option<[u64;3]>>, combat_movement: Recorded<Option<Option<i64>>>, organisation_exact: Recorded<Option<i64>>, maximum_organisation_exact: Recorded<Option<i64>>, commander_width_factor: Recorded<Option<i64>>});
+fixture!(DivisionPanelStatsRow, |key| {division: key as u64}, {panel_stats: [Option<i64>; 22], suppression: Recorded<Option<i64>>, status_maxima: [Option<i64>; 2]});
+fixture!(DivisionStatusRow, |key| {division: key as u64}, {entrenchment: i64, entrenchment_cap: i64, supply_ratio: Option<i64>, attrition_value: i64, attrition_threshold: i64, exercising: u8, has_order: u8, invalid_orders: u8, strength_factor: i64, model_number: i32, acclimatization_maximum: Option<i64>, acclimatization: Vec<DivisionAcclimatization>, move_flags: u8, border_combat_stats: Recorded<Option<[i64; 3]>>, naming: Recorded<Option<NameOperands>>, supply_grace_maximum: Recorded<i64>, supply_grace_remaining: Recorded<i64>, country_ordinal: Recorded<Option<u32>>, invalid_orders_reason: Recorded<Option<i32>>, supply: Recorded<Option<DivisionSupplyFooter>>, dig_in_factor: Recorded<Option<i64>>, name: Recorded<Option<Vec<u8>>>, attack: Recorded<Witnessed<DivisionAttackInputs>>, camouflage: Recorded<Option<DivisionCamouflage>>, attack_stats: Recorded<Option<DivisionAttackStats>>, weather_factor: Recorded<Option<i64>>, name_template: Recorded<Witnessed<u64>>, movement_stats: Recorded<Option<DivisionMovementStats>>, out_of_supply_days: Recorded<Option<i32>>, commander_modifiers: Recorded<Option<[Option<i64>; 5]>>, supply_ratio_exact: Recorded<Option<i64>>, supply_grace_exact: Recorded<Option<i64>>, experience: Recorded<Option<i64>>, pending_template: Recorded<Option<u64>>, officer_experience: Recorded<Option<i64>>, career_counter: Recorded<Option<i32>>, panel_source:Recorded<Option<[u64;3]>>, combat_movement: Recorded<Option<Option<i64>>>, organisation_exact: Recorded<Option<i64>>, maximum_organisation_exact: Recorded<Option<i64>>, commander_width_factor: Recorded<Option<i64>>});
 fixture!(DivisionModelInputRow, |key| {division: key as u64}, {model_number: Option<i32>, camouflage: Option<DivisionCamouflage>, exercising: Option<u8>});
 impl Fixture for DivisionEtaInputsRow {
     fn fixture(key: u128, tick: usize) -> Self {
@@ -5498,10 +5482,9 @@ fn combat_window_operands_round_trip() {
         decode_row::<LandCombatDivisionRow>(0, &mut Decoder::new(&bytes)).unwrap(),
         division
     );
-    // Fuel, the stats and the scales are a field each after the packets'
-    // tombstones (fields 31 to 41).
-    assert_eq!(TableId::LandCombatDivisions.full_mask(), (1 << 42) - 1);
-    assert_eq!(TableId::LandCombatDivisions.mask_width(), 6);
+    // The scales are a field each; the division values are one copy, stored only unjoined.
+    assert_eq!(TableId::LandCombatDivisions.full_mask(), (1 << 15) - 1);
+    assert_eq!(TableId::LandCombatDivisions.mask_width(), 2);
 }
 
 #[test]
@@ -5941,7 +5924,7 @@ fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() 
     round_trip(&row);
     let mut changed = row.clone();
     changed.officer_experience = Some(-17).into();
-    assert_eq!(changed.delta(Some(&row)).unwrap().unwrap().mask, 1 << 38);
+    assert_eq!(changed.delta(Some(&row)).unwrap().unwrap().mask, 1 << 34);
     round_trip(&changed);
     // Reserve the movement lane's three independent status operands as well.
     assert!(TableId::DivisionStatus.field_count() + 3 <= u64::BITS as usize);
@@ -5954,7 +5937,7 @@ fn division_status_and_panel_stats_keep_separate_masks_with_movement_headroom() 
     }
     row.suppression = Recorded::Value(Some(i64::MIN + 22));
     round_trip(&row);
-    assert_eq!(TableId::DivisionPanelStats.field_count(), 23);
+    assert_eq!(TableId::DivisionPanelStats.field_count(), 25);
     // The panel's own words, then the suppression witness; anti-air lives in movement_stats.
     assert_eq!(row.word(0x3d), Some(Recorded::Value(Some(i64::MIN))));
     assert_eq!(row.word(0x3e), Some(Recorded::Value(Some(i64::MIN + 21))));
@@ -6088,125 +6071,80 @@ fn land_side_inputs_append_at_display_precision_and_older_recordings_lack_them()
 }
 
 #[test]
-fn land_division_numbers_are_a_field_each_and_older_packets_still_answer() {
-    use crate::rows::compatibility::LAND_DIVISION_NUMBERS_FORMAT;
+fn land_combat_members_store_their_division_values_once() {
     let table = TableId::LandCombatDivisions;
-    let fuel = [500_000, 1_000_000];
-    let stats = [3_000_009, 1_000_001, 50_001, 7_009_999, 2_001_234];
-    let scales = [99_001, 101_239, 100_001, 100_009];
-    let row = LandCombatDivisionRow {
-        combat: 9,
-        side: 1,
-        ordinal: 2,
-        fuel_inputs: fuel.map(Recorded::Value),
-        stat_values: stats.map(Recorded::Value),
-        scales: scales.map(Recorded::Value),
-        ..LandCombatDivisionRow::default()
+    assert_eq!(table.field_count(), 15);
+    assert_eq!(table.field_name(14).as_deref(), Some("own"));
+    let mut panel = DivisionPanelStatsRow {
+        division: 7,
+        ..Default::default()
     };
-    assert_eq!(row.fuel_inputs(), Some(fuel));
-    assert_eq!(row.stat_values(), Some(stats));
-    assert_eq!(row.scales(), Some(scales));
-    // Each number is its own field after the packets' tombstones, which
-    // current writers leave empty: a drifting scale changes its field alone.
-    assert_eq!(table.field_count(), 42);
-    for (index, name) in [
-        (10, "fuel_packet"),
-        (11, "stat_packet"),
-        (18, "scale_packet"),
-        (31, "fuel_inputs[0]"),
-        (38, "scales[0]"),
-        (41, "scales[3]"),
-    ] {
-        assert_eq!(
-            table.field_name(index).map(|name| name.replace(' ', "")),
-            Some(name.to_owned())
-        );
+    for (at, word) in panel.panel_stats.iter_mut().enumerate() {
+        *word = Some(at as i64 * 1_000);
     }
-    let mut next = row.clone();
-    next.scales[0] = Recorded::Value(99_010);
-    let delta = next.delta(Some(&row)).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 38);
-    next.stat_values[2] = Recorded::Value(50_002);
-    next.fuel_inputs[1] = Recorded::Value(999_999);
-    let delta = next.delta(Some(&row)).unwrap().unwrap();
-    assert_eq!(delta.mask, (1 << 32) | (1 << 35) | (1 << 38));
-    assert_eq!(delta.apply(Some(row.clone())).unwrap(), next);
-    let mut bytes = Vec::new();
-    encode_row(&row, 0, &mut bytes).unwrap();
-    let mut input = Decoder::new(&bytes);
-    assert_eq!(
-        decode_row::<LandCombatDivisionRow>(0, &mut input).unwrap(),
-        row
-    );
-    input.finish().unwrap();
-    let mut drifted = row.clone();
-    let drifted_stats = stats.map(|value| value + 1);
-    let drifted_scales = scales.map(|value| value - 1);
-    drifted.stat_values = drifted_stats.map(Recorded::Value);
-    drifted.scales = drifted_scales.map(Recorded::Value);
-    RowCodec::round_to_display(&mut drifted);
-    assert_eq!(drifted.stat_values(), Some(drifted_stats));
-    assert_eq!(drifted.scales(), Some(drifted_scales));
-    let delta = drifted.delta(Some(&row)).unwrap().unwrap();
-    assert_eq!(delta.mask, ((1_u64 << 9) - 1) << 33);
-    assert_eq!(delta.apply(Some(row.clone())).unwrap(), drifted);
-
-    // Format 101's table is refused; its standalone retained packets still answer.
-    let previous = crate::format::FormatVersion::read(LAND_DIVISION_NUMBERS_FORMAT - 1).unwrap();
-    assert_eq!(
-        previous.table_refusal(table).unwrap(),
-        format!(
-            "{table:?} layout or meaning changed at format {}; this recording is format {}",
-            crate::rows::compatibility::EXACT_COMBAT_FORMAT,
-            previous.version()
-        )
-    );
-    assert_eq!(previous.fields(table), 30);
-    let older = LandCombatDivisionRow {
+    let status = DivisionStatusRow {
+        division: 7,
+        strength_factor: 90_000,
+        naming: Recorded::Value(Some(NameOperands {
+            order: 3,
+            ordered: 1,
+            group: b"G".to_vec(),
+            ..Default::default()
+        })),
+        movement_stats: Recorded::Value(Some(DivisionMovementStats {
+            fuel_rate: 2_000,
+            air_defense: 3_000,
+            ..Default::default()
+        })),
+        ..Default::default()
+    };
+    let movement = DivisionMovementRow {
+        division: 7,
+        fuel: Recorded::Value(Some(500)),
+        ..Default::default()
+    };
+    let member = LandCombatDivisionRow {
         combat: 9,
         side: 1,
         ordinal: 2,
-        fuel_packet: RetiredKept::older_value(fuel),
-        stat_packet: RetiredKept::older_value(stats),
-        scale_packet: RetiredKept::older_value(scales),
-        ..LandCombatDivisionRow::default()
+        division: 7,
+        ..Default::default()
     };
-    let old_bytes = crate::rows::with_historical_stamp(0, || {
-        TableRows::LandCombatDivisions(vec![older.clone()]).fixture_prefix(previous.fields(table))
-    });
-    let mut input = Decoder::new(&old_bytes);
-    input.format = previous.version();
-    input.recorded_fields = previous.fields(table);
-    let decoded = decode_row::<LandCombatDivisionRow>(0, &mut input).unwrap();
-    input.finish().unwrap();
-    assert_eq!(decoded.fuel_inputs, [Recorded::NotRecorded; 2]);
-    assert_eq!(decoded.scales, [Recorded::NotRecorded; 4]);
-    assert_eq!(decoded.fuel_inputs(), Some(fuel));
-    assert_eq!(decoded.stat_values(), Some(stats));
-    assert_eq!(decoded.scales(), Some(scales));
-    // Neither numbers nor packets: no values.
-    let neither = LandCombatDivisionRow {
-        scales: [Recorded::NotRecorded; 4],
-        ..LandCombatDivisionRow::default()
+    let values = member
+        .values(Some(&panel), Some(&status), Some(&movement))
+        .unwrap();
+    assert_eq!(values.stat_values, [11_000, 12_000, 20_000, 9_000, 10_000]);
+    assert_eq!(
+        (
+            values.armour,
+            values.piercing,
+            values.reconnaissance,
+            values.initiative,
+            values.base_speed
+        ),
+        (13_000, 14_000, 3_000, 15_000, 21_000)
+    );
+    assert_eq!(
+        (values.fuel_inputs, values.air_attack, values.strength_combat_factor),
+        ([500, 2_000], 3_000, 90_000)
+    );
+    // A member's own copy stands alone; without a division row an unjoined member has no values.
+    let own = LandCombatMemberValues {
+        armour: 1,
+        ..values.clone()
     };
-    assert_eq!(neither.scales(), None);
-
-    // A format-102 capture written before the numbers became fields held
-    // the packets and 31 fields: read as this format, it is malformed, never
-    // a row of zeros.
-    let provisional = crate::rows::with_historical_stamp(0, || {
-        TableRows::LandCombatDivisions(vec![older]).fixture_prefix(31)
-    });
-    for fields in [31, 42] {
-        let mut input = Decoder::new(&provisional);
-        input.format = crate::FORMAT_VERSION;
-        input.recorded_fields = fields;
-        assert!(
-            decode_row::<LandCombatDivisionRow>(0, &mut input)
-                .and_then(|_| input.finish())
-                .is_err(),
-            "{fields} fields"
-        );
+    let orphan = LandCombatDivisionRow {
+        own: Some(own.clone()),
+        ..member.clone()
+    };
+    assert_eq!(orphan.values(None, None, None), Some(own));
+    assert_eq!(member.values(Some(&panel), None, Some(&movement)), None);
+    for row in [member, orphan] {
+        let mut bytes = Vec::new();
+        encode_row(&row, 0, &mut bytes).unwrap();
+        let mut input = Decoder::new(&bytes);
+        assert_eq!(decode_row::<LandCombatDivisionRow>(0, &mut input).unwrap(), row);
+        input.finish().unwrap();
     }
 }
 
@@ -6704,7 +6642,7 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         dig_in_factor: Recorded::Value(Some(i64::MIN)),
         ..old.clone()
     };
-    selected_route_suffix(TableId::DivisionStatus, 24, &old, &next);
+    selected_route_suffix(TableId::DivisionStatus, 20, &old, &next);
     let next = DivisionStatusRow {
         attack_stats: Recorded::Value(Some(DivisionAttackStats {
             terrain: vec![i64::MIN, 0, -15_000],
@@ -6715,17 +6653,17 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         })),
         ..old.clone()
     };
-    selected_route_suffix(TableId::DivisionStatus, 28, &old, &next);
+    selected_route_suffix(TableId::DivisionStatus, 24, &old, &next);
     let next = DivisionStatusRow {
         weather_factor: Recorded::Value(Some(i64::MIN)),
         ..old.clone()
     };
-    selected_route_suffix(TableId::DivisionStatus, 29, &old, &next);
+    selected_route_suffix(TableId::DivisionStatus, 25, &old, &next);
     let next = DivisionStatusRow {
         name_template: Recorded::Value(Witnessed(Some(3005 << 32 | 52))),
         ..old.clone()
     };
-    selected_route_suffix(TableId::DivisionStatus, 30, &old, &next);
+    selected_route_suffix(TableId::DivisionStatus, 26, &old, &next);
     // The combat movement base: a naval or out-of-combat division's absent operand
     // and a land combat's word differ from each other and from the refusal.
     for combat_movement in [Some(None), Some(Some(i64::MIN)), None] {
@@ -6733,25 +6671,25 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
             combat_movement: Recorded::Value(combat_movement),
             ..old.clone()
         };
-        selected_route_suffix(TableId::DivisionStatus, 41, &old, &next);
+        selected_route_suffix(TableId::DivisionStatus, 37, &old, &next);
     }
     for value in [None, Some(924_554)] {
         let next = DivisionStatusRow {
             organisation_exact: Recorded::Value(value),
             ..old.clone()
         };
-        selected_route_suffix(TableId::DivisionStatus, 42, &old, &next);
+        selected_route_suffix(TableId::DivisionStatus, 38, &old, &next);
         let next = DivisionStatusRow {
             maximum_organisation_exact: Recorded::Value(value),
             ..old.clone()
         };
-        selected_route_suffix(TableId::DivisionStatus, 43, &old, &next);
+        selected_route_suffix(TableId::DivisionStatus, 39, &old, &next);
     }
     let next = DivisionStatusRow {
         move_flags: old.move_flags ^ DivisionStatusRow::MOVE_NONCORE_AIR,
         ..old.clone()
     };
-    selected_route_suffix(TableId::DivisionStatus, 15, &old, &next);
+    selected_route_suffix(TableId::DivisionStatus, 12, &old, &next);
 
     let old = DivisionMovementRow::fixture(u64::MAX as u128, 1);
     let mut next = old.clone();
@@ -6762,12 +6700,7 @@ fn political_runtime_fixture_suffix_deltas_leave_prefixes_unchanged() {
         .unwrap()
         .entries[0]
         .kind = 2;
-    selected_route_suffix(TableId::DivisionMovement, 19, &old, &next);
-    let next = DivisionMovementRow {
-        base_speed: Recorded::Value(Some(i64::MIN)),
-        ..old.clone()
-    };
-    selected_route_suffix(TableId::DivisionMovement, 22, &old, &next);
+    selected_route_suffix(TableId::DivisionMovement, 18, &old, &next);
     let old = RailwayGunCounterInputRow::fixture(u64::MAX as u128, 1);
     let mut next = old.clone();
     next.combat_references
@@ -8021,19 +7954,7 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
         use crate::{codec::Decoder, format::FormatVersion};
         for version in [91, 97, 99, 102, 103] {
             let format = FormatVersion::read(version).unwrap();
-            // Daily display samples refuse the old table meaning, independently
-            // of its unchanged prefix codec and historical NotRecorded suffixes.
-            if table == TableId::DivisionStatus {
-                assert_eq!(
-                    format.table_refusal(table).unwrap(),
-                    format!(
-                        "{table:?} layout or meaning changed at format {}; this recording is format {version}",
-                        crate::rows::compatibility::DAILY_PROGRESS_FORMAT
-                    )
-                );
-            } else {
-                assert!(format.table_refusal(table).is_none());
-            }
+            assert!(format.table_refusal(table).is_none());
             let fields = format.fields(table);
             let mut encoded = Vec::new();
             row.encode_fields(&mut encoded).unwrap();
@@ -8075,17 +7996,17 @@ fn experience_suffixes_keep_retired_bearing_prefixes_readable() {
             assert!(decoded.encode_fields(&mut Vec::new()).is_err());
         }
     }
-    check(
-        TableId::DivisionStatus,
-        DivisionStatusRow {
-            division: 7,
-            commander_modifiers: Recorded::Value(Some([Some(-5), None, Some(7), None, Some(11)])),
-            experience: Some(19).into(),
-            officer_experience: Some(23).into(),
-            commander_width_factor: Some(-17).into(),
-            ..Default::default()
-        },
-    );
+    // DivisionStatus was relaid since: those recordings refuse it by name.
+    for version in [91, 97, 99, 102, 103] {
+        let format = crate::format::FormatVersion::read(version).unwrap();
+        assert_eq!(
+            format.table_refusal(TableId::DivisionStatus).unwrap(),
+            format!(
+                "DivisionStatus layout or meaning changed at format {}; this recording is format {version}",
+                crate::rows::compatibility::STORED_ONCE_FORMAT
+            )
+        );
+    }
     check(
         TableId::CountryCounterInputs,
         CountryCounterInputRow {
@@ -8134,22 +8055,6 @@ fn appended_operands_read_as_not_recorded_in_older_recordings() {
         );
         decoded
     }
-    let panel = older(
-        TableId::DivisionPanelStats,
-        DivisionPanelStatsRow {
-            division: 7,
-            panel_stats: [Some(-3); 22],
-            suppression: Some(5).into(),
-        },
-        crate::rows::compatibility::PANEL_SUPPRESSION_FORMAT - 1,
-    );
-    assert_eq!(panel.panel_stats, [Some(-3); 22]);
-    assert_eq!(panel.suppression, Recorded::NotRecorded);
-    assert_eq!(
-        panel.word(DivisionPanelStatsRow::SUPPRESSION_SELECTOR),
-        Some(Recorded::NotRecorded)
-    );
-    assert_eq!(panel.not_recorded_fields(), 1 << 22);
     let policies = older(
         TableId::IndustrialOrganisationPolicies,
         IndustrialOrganisationPoliciesRow {

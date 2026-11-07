@@ -178,32 +178,12 @@ fn nonempty_published_prefix_does_not_invent_execution_or_transport() {
     input.finish().unwrap();
     assert!(old.delta(None).is_err());
 
-    let row = DivisionMovementRow {
-        division: u64::MAX,
-        numerator: i64::MIN,
-        order_transport: Recorded::Value(Some(DivisionOrderTransportInputs {
-            naval_weight: Some(i64::MAX),
-            ..Default::default()
-        })),
-        ..Default::default()
-    };
-    bytes.clear();
-    row.encode_fields(&mut bytes).unwrap();
-    let mut input = Decoder::new(&bytes);
-    input.format = version;
-    input.recorded_fields = format.fields(TableId::DivisionMovement);
-    let old = DivisionMovementRow::decode_fields(row.key(), &mut input).unwrap();
-    assert_eq!(old.numerator, i64::MIN);
-    assert_eq!(old.order_transport, Recorded::NotRecorded);
-    let consumed = bytes.len() - input.remaining();
-    let mut input = Decoder::new(&bytes[..consumed]);
-    input.format = version;
-    input.recorded_fields = format.fields(TableId::DivisionMovement);
+    // DivisionMovement was relaid since: that recording refuses it by name.
     assert_eq!(
-        DivisionMovementRow::decode_fields(row.key(), &mut input).unwrap(),
-        old
+        format.table_refusal(TableId::DivisionMovement).unwrap(),
+        format!(
+            "DivisionMovement layout or meaning changed at format {}; this recording is format {version}",
+            crate::rows::compatibility::STORED_ONCE_FORMAT
+        )
     );
-    input.finish().unwrap();
-    assert!(old.encode_fields(&mut Vec::new()).is_err());
-    assert_ne!(old.order_transport, Recorded::Value(None));
 }

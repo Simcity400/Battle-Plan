@@ -1,10 +1,15 @@
 //! Derived land-window operands from recorded combat state.
 use installed_content_localisation::localisation::Argument;
-use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::tables};
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::land_combat_members,
+    rows::tables,
+};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::engagement_progress::Progresses;
-use viewer_foundation::land_combat_math::{Divisions, conditions, modifier, side_scores};
+use viewer_foundation::land_combat_math::{
+    Divisions, combat_rows, conditions, member_values, modifier, side_scores,
+};
 use {
     super::binding::{Bindings, TEXT, hide},
     viewer_foundation::tooltip_text::builtin,
@@ -52,9 +57,9 @@ pub(super) fn direction_key(
 /// direction-group units after the first, which fold into its direction.
 /// A missing row leaves the count unknown rather than guessed; the error
 /// names the attacker and the table that lacks its row.
-pub(super) fn direction_count(
+pub(super) fn direction_count<D: std::ops::Deref<Target = LandCombatDivisionRow>>(
     committed: &[u64],
-    divisions: &Divisions<'_>,
+    divisions: &BTreeMap<(u8, u64), D>,
     province: u32,
     movement: &BTreeMap<u64, u32>,
 ) -> Result<usize, String> {
@@ -168,10 +173,9 @@ pub(super) fn bind(
         return Ok(());
     };
     let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
-    let divisions: Divisions<'_> = division_rows
-        .rows()
-        .iter()
-        .filter(|row| row.combat == id)
+    let members = combat_rows(division_rows.rows(), id);
+    let values = member_values(frame, members)?;
+    let divisions: Divisions<'_> = land_combat_members(members, &values)
         .map(|row| ((row.side, row.division), row))
         .collect();
     for (side, prefix) in ["attacker", "defender"].iter().enumerate() {
@@ -253,7 +257,7 @@ pub(super) fn bind(
     let participants = [&combat.attackers[..], &combat.defenders[..]];
     let scores = match side_scores(
         detail,
-        division_rows.rows(),
+        land_combat_members(members, &values),
         &conditions,
         participants,
         static_content.scores,
@@ -306,7 +310,7 @@ fn army_width(committed: &[u64], side: u8, divisions: &Divisions<'_>) -> Result<
         let row = divisions
             .get(&(side, *unit))
             .ok_or_else(|| format!("committed division {unit} has no LandCombatDivisions row"))?;
-        let width = division_width(row).ok_or_else(|| {
+        let width = division_width(row.row).ok_or_else(|| {
             format!(
                 "division {unit}'s width modifier names eligibility callback kind {}, which the viewer does not support",
                 row.context.eligibility_callback

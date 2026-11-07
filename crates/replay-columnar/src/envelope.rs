@@ -1,4 +1,4 @@
-//! A recording's saved-file envelope (`H4COLUMN` version 6): one campaign, every session in it.
+//! A recording's saved-file envelope (`H4COLUMN` version 7): one campaign, every session in it.
 //!
 //! The file is append-only: zstd extents in any order, then a [`Root`] extent, then a
 //! fixed [`FOOTER_BYTES`] footer naming the root. A writer appends extents, syncs, appends
@@ -34,9 +34,10 @@ use std::io;
 mod tests;
 
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
-/// 6: a whole campaign in one file, its records and game facts in the root; 5: each table's
-/// hours stored once per block of [`UNIT_ORDINALS`].
-pub const VERSION: u32 = 6;
+/// 7: a whole restart every 16th ([`KEYFRAME_RESTARTS`]); 6: a whole campaign in one file, its
+/// records and game facts in the root; 5: each table's hours stored once per block of
+/// [`UNIT_ORDINALS`].
+pub const VERSION: u32 = 7;
 pub const HEADER_BYTES: usize = 12;
 pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
@@ -46,8 +47,9 @@ pub const UNIT_ORDINALS: u32 = 720;
 /// Blocks from a run's start or restart to its next restart.
 pub const RESTART_BLOCKS: u32 = 3;
 /// Every how many of a run's restarts one is stored whole; the others are changes from the
-/// restart before them.
-pub const KEYFRAME_RESTARTS: u32 = 8;
+/// restart before them. Opening a walk at a restart decodes up to this many restarts, and a
+/// damaged restart costs the walks of the restarts after it up to the next whole one.
+pub const KEYFRAME_RESTARTS: u32 = 16;
 /// The fewest bytes an [`Extent`] envelope encodes in: its kind, seven varints, its digest.
 const EXTENT_BYTES: usize = 1 + 7 + 16;
 

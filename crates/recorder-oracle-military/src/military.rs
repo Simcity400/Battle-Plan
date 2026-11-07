@@ -166,6 +166,7 @@ pub fn compare_division_movement(
     report: &mut Report,
 ) -> io::Result<()> {
     let rows = complete::<tables::DivisionMovement>(frame)?;
+    let panels = frame.complete::<tables::DivisionPanelStats>().ok();
     let mut seen = BTreeSet::new();
     let mut base_speeds = 0;
     for row in rows {
@@ -182,16 +183,22 @@ pub fn compare_division_movement(
         };
         let saved = &saved.presentation;
         let label = format!("division movement {}", row.division);
-        // The stat-block speed is read for every division with a route; a
-        // division without one is outside its demand.
-        match report.recorded(&row.base_speed, "DivisionMovement.base_speed", &label) {
-            Some(Some(_)) => base_speeds += 1,
-            Some(None) if row.path_total != 0 => report.difference(
-                format!("{label}.base_speed"),
-                "unavailable",
-                "required stat-block speed for a nonempty route",
-            ),
-            _ => {}
+        // A division with a route moves from its stat-block speed, the panel's word; a division
+        // without one is outside its demand.
+        if (row.path_total as i32) > 0 {
+            let panel = panels.and_then(|rows| {
+                rows.binary_search_by_key(&row.division, |panel| panel.division)
+                    .ok()
+                    .map(|at| &rows[at])
+            });
+            match row.base_speed(panel) {
+                Some(_) => base_speeds += 1,
+                None => report.difference(
+                    format!("{label}.base_speed"),
+                    "unavailable",
+                    "required stat-block speed for a nonempty route",
+                ),
+            }
         }
         // A mover's fuel is the saved `fuel`, omitted at zero; a division without a
         // route is outside its demand.
@@ -326,7 +333,7 @@ pub fn compare_division_movement(
         report.difference(format!("division movement {id}"), "absent", "present");
     }
     report.compared("DivisionMovement", rows.len());
-    report.limitation("base_speed is the raw signed fixed5 maximum speed of the division's stat block (the stat block's maximum-speed field), from which movement-speed calculation starts. The division writer does not save the stat block, so the save has no counterpart; saved template, equipment and traits do not certify the composed cache. Rows without a route are outside its demand; a nonempty route without it is a difference. Matched native observations remain necessary", format!("DivisionMovement.base_speed: {base_speeds} rows recorded, not compared"));
+    report.limitation("base_speed is the raw signed fixed5 maximum speed of the division's stat block (the stat block's maximum-speed field, DivisionPanelStats' selector 0x3e), from which movement-speed calculation starts. The division writer does not save the stat block, so the save has no counterpart; saved template, equipment and traits do not certify the composed cache. Rows without a route are outside its demand; a nonempty route without it is a difference. Matched native observations remain necessary", format!("DivisionMovement.base_speed: {base_speeds} rows recorded, not compared"));
     report.limitation("the unit save writer saves withdraw only as zero/nonzero truth, not the raw nonzero byte identity", "DivisionMovement.withdrawal raw byte");
     report.limitation("effective strategic-action modifiers and per-row query failures have no text-save counterpart; the save omits the queried runtime accumulators. Saved route, target and strategic truth remain compared. Native evidence is in the engine README's strategic-action contract", "DivisionMovement.strategic_action");
     report.limitation("remaining hours are estimated at playback, not stored: the recorded route, progress numerator and base_speed with matching-content distances and the recorded speed terms (the stat block's and commander's movement words, country and commander block modifier entries, location weather entries, supply, days out of supply, enemy air superiority, retreat, organisation and fuel), with the combat movement base of a division in combat, the location state's speed modifiers and controller relation, the priority sub-unit's and its categories' terms, the noncore-supply term, a relation's river crossing factor and the transport speed of a naval transfer or a move to or from the sea. A strategic redeployment's road and rail speed, the armour term and the special-forces share derive from recorded rows and content; the save has no arrival time to compare", "DivisionMovement arrival estimates");
@@ -426,6 +433,7 @@ pub fn compare_division_status(
                 .map(|row| (row.division, row))
                 .collect::<BTreeMap<_, _>>()
         });
+    let panels = frame.complete::<tables::DivisionPanelStats>().ok();
     let mut seen = BTreeSet::new();
     for row in rows {
         if row.division == 0 || !seen.insert(row.division) {
@@ -553,8 +561,11 @@ pub fn compare_division_status(
                     report.scalar(&label, "movement_organisation.current", Some(*current), Some(&saved.organisation));
                     report.scalar_checks += 1;
                     let displayed = DivisionStatusRow::MAXIMUM_STEP.round(*maximum);
-                    if displayed != row.maximum_organisation {
-                        report.difference(format!("{label}.movement_organisation.maximum displayed"), displayed, row.maximum_organisation);
+                    let shown = panels
+                        .and_then(|rows| rows.binary_search_by_key(&row.division, |panel| panel.division).ok().map(|at| &rows[at]))
+                        .and_then(|panel| panel.maximum_organisation());
+                    if Some(displayed) != shown {
+                        report.difference(format!("{label}.movement_organisation.maximum displayed"), displayed, format!("{shown:?}"));
                     }
                     report.compared("DivisionStatus.organisation_exact saved current", 1);
                 }
@@ -621,46 +632,36 @@ pub fn compare_division_status(
         // The remaining grace is stored at the whole percent of its share
         // (DivisionStatusRow::displayed_grace); the save's exact value is
         // rounded the same way with the content's SUPPLY_GRACE.
-        for (name, value, saved, displayed) in [
-            (
-                "supply_grace_maximum",
-                &row.supply_grace_maximum,
-                saved.presentation.max_supply.as_ref(),
-                false,
-            ),
-            (
+        if let Some(value) = report.recorded(
+            &row.supply_grace_maximum,
+            "DivisionStatus.supply_grace_maximum",
+            format!("division status {}.supply_grace_maximum", row.division),
+        ) {
+            let label = format!("division status {}", row.division);
+            report.scalar(&label, "supply_grace_maximum", Some(*value), saved.presentation.max_supply.as_ref());
+        }
+        // The shown remaining grace.
+        if let Some(value) = report.recorded(
+            &row.supply_grace_remaining,
+            "DivisionStatus.supply_grace_remaining",
+            format!("division status {}.supply_grace_remaining", row.division),
+        ) {
+            let label = format!("division status {}", row.division);
+            let precision = match supply_grace {
+                Ok(hours) => format!(
+                    "whole percent of the share over NMilitary.SUPPLY_GRACE ({hours} hours), toward zero"
+                ),
+                Err(reason) => format!("0.01 (fixed5, toward zero): {reason}"),
+            };
+            report.scalar_displayed_by(
+                &label,
                 "supply_grace_remaining",
-                &row.supply_grace_remaining,
+                Some(*value),
                 saved.presentation.army_current_supply_ratio.as_ref(),
-                true,
-            ),
-        ] {
-            if let Some(value) = report.recorded(
-                value,
-                &format!("DivisionStatus.{name}"),
-                format!("division status {}.{name}", row.division),
-            ) {
-                let label = format!("division status {}", row.division);
-                if displayed {
-                    let precision = match supply_grace {
-                        Ok(hours) => format!(
-                            "whole percent of the share over NMilitary.SUPPLY_GRACE ({hours} hours), toward zero"
-                        ),
-                        Err(reason) => format!("0.01 (fixed5, toward zero): {reason}"),
-                    };
-                    report.scalar_displayed_by(
-                        &label,
-                        name,
-                        Some(*value),
-                        saved,
-                        &format!("DivisionStatus.{name}"),
-                        &precision,
-                        |raw| DivisionStatusRow::displayed_grace(raw, supply_grace.clone().ok()),
-                    );
-                } else {
-                    report.scalar(&label, name, Some(*value), saved);
-                }
-            }
+                "DivisionStatus.supply_grace_remaining",
+                &precision,
+                |raw| DivisionStatusRow::displayed_grace(raw, supply_grace.clone().ok()),
+            );
         }
         // Days out of supply are saved only when nonzero.
         if let Some(days) = report.recorded(
@@ -708,15 +709,15 @@ pub fn compare_division_status(
                         Some(grace),
                         saved.presentation.army_current_supply_ratio.as_ref(),
                     );
-                    // The save holds no received ratio: the exact one must at least be
-                    // the value the same row's stepped ratio was rounded from.
+                    // The save holds no received ratio. The exact pair holds the shown ratio, so
+                    // the row stores no stepped one beside it.
+                    let _ = ratio;
                     report.scalar_checks += 1;
-                    let stepped = DivisionStatusRow::SUPPLY_RATIO_STEP.round(ratio);
-                    if stepped != row.supply_ratio {
+                    if row.supply_ratio.is_some() {
                         report.difference(
-                            format!("{label}.supply_exact.ratio stepped"),
-                            stepped,
-                            row.supply_ratio,
+                            format!("{label}.supply_exact shown"),
+                            format!("{:?}", row.supply_ratio),
+                            "derived from the exact ratio",
                         );
                     }
                 }

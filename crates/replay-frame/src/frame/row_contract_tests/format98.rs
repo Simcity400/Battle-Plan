@@ -190,7 +190,7 @@ fn format98_operands_preserve_bytes_order_and_independent_changed_fields() {
         ..old.clone()
     };
     let delta = row.delta(Some(&old)).unwrap().unwrap();
-    assert_eq!(delta.mask, 7 << 17);
+    assert_eq!(delta.mask, 7 << 14);
     assert_eq!(delta.apply(Some(old)).unwrap(), row);
     let mut bytes = Vec::new();
     encode_row(&row, 0, &mut bytes).unwrap();

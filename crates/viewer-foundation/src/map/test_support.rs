@@ -458,6 +458,9 @@ pub fn put_sample_campaign(frame: &mut replay_frame::frame::DecodedFrame) {
         side,
         province: 2,
         division,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     };
     test_put(

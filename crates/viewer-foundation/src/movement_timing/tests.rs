@@ -2,7 +2,8 @@ use super::*;
 use installed_content_core::{movement::Neighbour, movement::ProvinceTerrain};
 use replay_data::{
     rows::CountryCounterInputRow, rows::CountryLinkRow, rows::CountryMovementModifiers,
-    rows::DivisionMovementRow, rows::DivisionMovementStats, rows::DivisionRow,
+    rows::DivisionMovementRow, rows::DivisionMovementStats, rows::DivisionPanelStatsRow,
+    rows::DivisionRow,
     rows::DivisionStatusRow, rows::MovementDefines as RecordedDefines, rows::ProvinceRow,
     rows::Recorded, rows::SimulationFeatureRow, rows::StateRow, rows::TableRows,
     rows::WarRelationRow,
@@ -15,7 +16,7 @@ const DIVISION: u64 = 7;
 /// A base speed whose expected pair is arithmetic at movement scale 1.0.
 const SPEED: i64 = 700_000;
 const LAND: ProvinceTerrain = ProvinceTerrain { flags: 1, index: 1 };
-const UNRECORDED: &str = "DivisionMovement.base_speed is not recorded in this format";
+const UNRECORDED: &str = "the division's base speed is not recorded";
 
 fn content(map: MovementMap) -> MovementContent {
     MovementContent {
@@ -50,6 +51,7 @@ fn plain_speed(base: i64, organisation: Option<i64>, defines: &Defines) -> i64 {
             edge: &edge,
             organisation,
             fuel: None,
+            base_speed: Some(base),
         },
         defines,
     )
@@ -98,17 +100,28 @@ fn put(frame: &mut DecodedFrame, rows: TableRows) {
     *frame.tables[id.index()] = TableView::Complete(rows);
 }
 
-fn moving(base_speed: Recorded<Option<i64>>) -> DivisionMovementRow {
+fn moving() -> DivisionMovementRow {
     DivisionMovementRow {
         division: DIVISION,
         path: vec![2, 3],
         path_total: 2,
         numerator: 175_000,
-        base_speed,
         withdrawal: Recorded::Value(Some(0)),
         fuel: Recorded::Value(Some(0)),
         ..Default::default()
     }
+}
+
+/// `division`'s panel row: `speed` its stat block's maximum speed, and a maximum organisation
+/// of 10.
+fn panel(division: u64, speed: Option<i64>) -> DivisionPanelStatsRow {
+    let mut panel = DivisionPanelStatsRow {
+        division,
+        ..Default::default()
+    };
+    panel.panel_stats[DivisionPanelStatsRow::MAXIMUM_SPEED] = speed;
+    panel.panel_stats[1] = Some(1_000_000);
+    panel
 }
 
 /// Stateless, uncontrolled provinces `ids`: no infrastructure term, no hostile move.
@@ -124,7 +137,7 @@ fn provinces(ids: impl IntoIterator<Item = u32>) -> TableRows {
 }
 
 /// One division at province 1 on the two-leg route 2, 3 with `base_speed`.
-fn hour(base_speed: Recorded<Option<i64>>) -> DecodedFrame {
+fn hour(base_speed: Option<i64>) -> DecodedFrame {
     let mut frame = frame();
     put(&mut frame, provinces(1..=3));
     put(
@@ -137,9 +150,10 @@ fn hour(base_speed: Recorded<Option<i64>>) -> DecodedFrame {
             ..Default::default()
         }]),
     );
+    put(&mut frame, TableRows::DivisionMovement(vec![moving()]));
     put(
         &mut frame,
-        TableRows::DivisionMovement(vec![moving(base_speed)]),
+        TableRows::DivisionPanelStats(vec![panel(DIVISION, base_speed)]),
     );
     put(
         &mut frame,
@@ -175,6 +189,10 @@ fn busy_hour(count: u32, divisions: u64, legs: usize) -> (DecodedFrame, Movement
         &mut frame,
         TableRows::DivisionStatus((0..divisions).map(status_row).collect()),
     );
+    put(
+        &mut frame,
+        TableRows::DivisionPanelStats((0..divisions).map(|id| panel(id, Some(SPEED))).collect()),
+    );
     world(&mut frame);
     put(
         &mut frame,
@@ -184,7 +202,6 @@ fn busy_hour(count: u32, divisions: u64, legs: usize) -> (DecodedFrame, Movement
                     division: id,
                     path: (1..=legs).map(|leg| hop(id, leg)).collect(),
                     path_total: legs as u32,
-                    base_speed: Some(SPEED).into(),
                     withdrawal: Recorded::Value(Some(0)),
                     fuel: Recorded::Value(Some(0)),
                     ..Default::default()
@@ -244,7 +261,7 @@ fn an_estimate_is_the_remaining_route_distance_over_the_edge_speed() {
             }
         );
     }
-    let etas = Etas::read(&hour(Some(SPEED).into()), Some(&map)).unwrap();
+    let etas = Etas::read(&hour(Some(SPEED)), Some(&map)).unwrap();
     assert_eq!(etas.get(DIVISION), Some((25_000, 125_000)));
     assert_eq!(super::arrival(&etas, DIVISION, true), Ok(125_000));
     assert_eq!(super::arrival(&etas, DIVISION, false), Ok(25_000));
@@ -255,13 +272,7 @@ fn an_estimate_is_the_remaining_route_distance_over_the_edge_speed() {
 #[test]
 fn older_recordings_refuse_estimates_by_name_but_keep_progress() {
     let map = content(two_leg_map());
-    for (base_speed, reason) in [
-        (Recorded::NotRecorded, UNRECORDED),
-        (
-            Recorded::Value(None),
-            "the division's base speed was refused",
-        ),
-    ] {
+    for (base_speed, reason) in [(None, UNRECORDED)] {
         let etas = Etas::read(&hour(base_speed), Some(&map)).unwrap();
         assert_eq!(etas.get(DIVISION), None);
         assert_eq!(etas.estimate(DIVISION), Err(reason));
@@ -283,7 +294,7 @@ fn older_recordings_refuse_estimates_by_name_but_keep_progress() {
 fn missing_location_content_or_geometry_refuse_by_name() {
     // No census row: neither progress nor estimate.
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(&mut frame, TableRows::Divisions(vec![]));
     let etas = Etas::read(&frame, Some(&map)).unwrap();
     assert_eq!(etas.estimate(DIVISION), Err(NO_LOCATION));
@@ -293,7 +304,7 @@ fn missing_location_content_or_geometry_refuse_by_name() {
     // A province absent from the content map is missing geometry, never the
     // null terrain or an ordinary land province.
     let partial = content(MovementMap::from_parts(&[(1, LAND, Vec::new())]));
-    let etas = Etas::read(&hour(Some(SPEED).into()), Some(&partial)).unwrap();
+    let etas = Etas::read(&hour(Some(SPEED)), Some(&partial)).unwrap();
     assert_eq!(
         etas.estimate(DIVISION),
         Err("province 2 has no content terrain")
@@ -305,11 +316,11 @@ fn missing_location_content_or_geometry_refuse_by_name() {
 
     // Content that failed to load refuses every moving division, but a
     // division without a route still stands at progress zero.
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::DivisionMovement(vec![
-            moving(Some(SPEED).into()),
+            moving(),
             DivisionMovementRow {
                 division: DIVISION + 1,
                 ..Default::default()
@@ -376,7 +387,7 @@ fn a_busy_hour_estimates_every_route() {
 #[test]
 fn each_leg_takes_the_recorded_infrastructure_of_its_destination_state() {
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::Provinces(
@@ -422,7 +433,7 @@ fn a_low_organisation_hostile_move_slows_by_the_native_factor() {
         threshold: 30_000,
         penalty: -80_000,
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::Divisions(vec![DivisionRow {
@@ -462,7 +473,6 @@ fn a_low_organisation_hostile_move_slows_by_the_native_factor() {
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
-            maximum_organisation: 1_000_000,
             organisation_exact: Recorded::Value(Some(100_000)),
             maximum_organisation_exact: Recorded::Value(Some(1_000_000)),
             move_flags: DivisionStatusRow::MOVE_LOW_ORGANISATION,
@@ -503,7 +513,7 @@ fn movement_timing_uses_conditional_exact_organisation_and_names_refusals() {
         threshold: 30_000,
         penalty: -80_000,
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::Divisions(vec![DivisionRow {
@@ -553,7 +563,6 @@ fn movement_timing_uses_conditional_exact_organisation_and_names_refusals() {
         put(
             &mut frame,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
-                maximum_organisation: 1_000_000,
                 organisation_exact: Recorded::Value(Some(current)),
                 maximum_organisation_exact: Recorded::Value(Some(1_009_999)),
                 move_flags: DivisionStatusRow::MOVE_LOW_ORGANISATION,
@@ -572,7 +581,6 @@ fn movement_timing_uses_conditional_exact_organisation_and_names_refusals() {
         put(
             &mut frame,
             TableRows::DivisionStatus(vec![DivisionStatusRow {
-                maximum_organisation: 1_000_000,
                 organisation_exact,
                 maximum_organisation_exact: Recorded::Value(Some(1_000_000)),
                 move_flags: DivisionStatusRow::MOVE_LOW_ORGANISATION,
@@ -651,7 +659,7 @@ fn recorded_speed_terms_move_each_edge() {
         regions: BTreeMap::new(),
         ..Default::default()
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
@@ -675,7 +683,7 @@ fn recorded_speed_terms_move_each_edge() {
             ..Default::default()
         }]),
     );
-    let mut row = moving(Some(SPEED).into());
+    let mut row = moving();
     // A full tank: capacity 10 * 96.
     row.fuel = Recorded::Value(Some(96_000_000));
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
@@ -726,7 +734,7 @@ fn enemy_air_superiority_slows_an_owner_at_war() {
         regions: BTreeMap::from([(1, 70), (2, 70), (3, 70)]),
         ..Default::default()
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::CountryLinks(vec![
@@ -859,7 +867,7 @@ fn attack_speed_applies_only_to_a_hostile_route() {
         threshold: 30_000,
         penalty: -80_000,
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     // Full organisation: the low-organisation hostile slowdown does not apply.
     put(
         &mut frame,
@@ -875,7 +883,6 @@ fn attack_speed_applies_only_to_a_hostile_route() {
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
-            maximum_organisation: 1_000_000,
             ..status_row(DIVISION)
         }]),
     );
@@ -904,7 +911,7 @@ fn attack_speed_applies_only_to_a_hostile_route() {
 #[test]
 fn location_weather_is_scaled_by_acclimatization() {
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::WeatherProvinces(vec![replay_data::rows::WeatherProvinceRow {
@@ -1017,7 +1024,7 @@ fn river_map() -> MovementMap {
 fn the_commander_river_factor_scales_a_crossing() {
     let mut map = content(river_map());
     map.defines.river_crossing_two = -30_000;
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     commanded(&mut frame, vec![0, 0], [None; 5]);
     let plain = Etas::read(&frame, Some(&map)).unwrap();
     assert_eq!(
@@ -1041,7 +1048,7 @@ fn the_commander_river_factor_scales_a_crossing() {
 #[test]
 fn commander_terrain_falls_back_to_the_first_entry() {
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     // Terrain index 1 is in range: its own entry, -0.2.
     commanded(&mut frame, vec![0, -20_000], [None; 5]);
     let in_range = Etas::read(&frame, Some(&map)).unwrap();
@@ -1061,11 +1068,11 @@ fn commander_terrain_falls_back_to_the_first_entry() {
 #[test]
 fn a_zero_supply_days_define_refuses_by_name() {
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
-            supply_ratio: 50_000,
+            supply_ratio: Some(50_000),
             ..status_row(DIVISION)
         }]),
     );
@@ -1113,7 +1120,7 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
         speed: [500_000, 1_000_000, 1_000_000, 2_500_000],
         maximum_level: 5,
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     // Province 3 lies in state 9, whose railway infrastructure is half its maximum.
     put(
         &mut frame,
@@ -1159,7 +1166,7 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
             level: 5,
         }]),
     );
-    let mut row = moving(Some(SPEED).into());
+    let mut row = moving();
     row.strategic_redeployment = 1;
     row.strategic_action = Recorded::Value(StrategicAction::Available(
         StrategicRedeploymentInputs::default(),
@@ -1175,18 +1182,13 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
     );
     // The road and rail speeds never read the stat block's base speed.
     let unspeeded = |frame: &mut DecodedFrame, row: &DivisionMovementRow| {
-        put(
-            frame,
-            TableRows::DivisionMovement(vec![DivisionMovementRow {
-                base_speed: Recorded::Value(None),
-                ..row.clone()
-            }]),
-        );
+        put(frame, TableRows::DivisionMovement(vec![row.clone()]));
+        put(frame, TableRows::DivisionPanelStats(vec![panel(DIVISION, None)]));
         let estimate = Etas::read(frame, Some(&map))
             .unwrap()
             .estimate(DIVISION)
             .map_err(str::to_owned);
-        put(frame, TableRows::DivisionMovement(vec![row.clone()]));
+        put(frame, TableRows::DivisionPanelStats(vec![panel(DIVISION, Some(SPEED))]));
         estimate
     };
     assert_eq!(
@@ -1202,10 +1204,7 @@ fn a_strategic_redeployment_moves_at_the_road_or_rail_speed() {
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     let blocked = Etas::read(&frame, Some(&map)).unwrap();
     assert_eq!(blocked.estimate(DIVISION), two_legs(SPEED, SPEED));
-    assert_eq!(
-        unspeeded(&mut frame, &row),
-        Err("the division's base speed was refused".to_owned())
-    );
+    assert_eq!(unspeeded(&mut frame, &row), Err(UNRECORDED.to_owned()));
     row.strategic_action = Recorded::Value(StrategicAction::Withheld(
         StrategicActionFailure::CountryModifier,
     ));
@@ -1306,7 +1305,7 @@ fn template(frame: &mut DecodedFrame, priority: &[u8], units: &[(u32, i32)]) {
 #[test]
 fn the_special_forces_factor_applies_at_the_template_share() {
     let mut map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     map.land = Ok(LandSpeedContent {
         terrain_movement: vec![0],
         regions: BTreeMap::new(),
@@ -1327,7 +1326,7 @@ fn the_special_forces_factor_applies_at_the_template_share() {
     put(
         &mut frame,
         TableRows::DivisionStatus(vec![DivisionStatusRow {
-            supply_ratio: 50_000,
+            supply_ratio: None,
             out_of_supply_days: Recorded::Value(Some(10)),
             supply_ratio_exact: Recorded::Value(Some(50_000)),
             supply_grace_exact: Recorded::Value(Some(0)),
@@ -1407,7 +1406,7 @@ fn the_special_forces_factor_applies_at_the_template_share() {
 #[test]
 fn an_armoured_priority_sub_unit_with_a_commander_takes_the_armour_speed() {
     let mut map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     map.land = Ok(LandSpeedContent {
         terrain_movement: vec![0, 0],
         regions: BTreeMap::new(),
@@ -1459,11 +1458,11 @@ fn an_armoured_priority_sub_unit_with_a_commander_takes_the_armour_speed() {
 
 #[test]
 fn deployed_panel_speed_uses_stationary_cache_fuel_and_native_scale_round_trip() {
-    let mut frame = hour(Recorded::Value(None));
+    let mut frame = hour(None);
     let mut map = content(two_leg_map());
     map.defines.outer_scale = 7_777;
     let status = status_row(DIVISION);
-    let mut panel = replay_data::rows::DivisionPanelStatsRow {
+    let mut panel = DivisionPanelStatsRow {
         division: DIVISION,
         ..Default::default()
     };
@@ -1513,7 +1512,7 @@ fn deployed_panel_speed_uses_stationary_cache_fuel_and_native_scale_round_trip()
 
 #[test]
 fn deployed_panel_width_uses_effective_template_and_both_context_factors() {
-    let mut frame = hour(Recorded::Value(None));
+    let mut frame = hour(None);
     let mut unit = frame.complete::<tables::Divisions>().unwrap()[0].clone();
     unit.template = 91;
     put(
@@ -1596,7 +1595,7 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
         regions: BTreeMap::from([(1, 70), (2, 71), (3, 71)]),
         ..Default::default()
     });
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     // The logical owner 4 is not the roster owner 1.
     put(
         &mut frame,
@@ -1642,7 +1641,7 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
         );
     };
     speeds(&mut frame, Some(400_000));
-    let mut row = moving(Some(SPEED).into());
+    let mut row = moving();
     row.naval_transfer = 1;
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     // From region 70: 8 * 0.5 = 4 km/h; from region 71: 4 * 0.5 = 2 km/h.
@@ -1671,14 +1670,11 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
         Ok(two_legs(400_000, 200_000).unwrap())
     );
     // Nor do they read the stat block's base speed.
-    for base_speed in [Recorded::Value(None), Recorded::NotRecorded] {
+    {
         let mut unspeeded = frame.clone();
         put(
             &mut unspeeded,
-            TableRows::DivisionMovement(vec![DivisionMovementRow {
-                base_speed,
-                ..row.clone()
-            }]),
+            TableRows::DivisionPanelStats(vec![panel(DIVISION, None)]),
         );
         assert_eq!(
             restricted_estimate(&unspeeded, &map),
@@ -1717,7 +1713,7 @@ fn a_move_by_sea_takes_the_logical_owners_transport_speed() {
 fn a_division_in_combat_starts_at_the_combat_movement_base() {
     let mut map = content(two_leg_map());
     map.defines.combat_movement = Some(33_000);
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     let combat = |frame: &mut DecodedFrame, entry: Option<Option<i64>>| {
         put(
             frame,
@@ -1727,7 +1723,7 @@ fn a_division_in_combat_starts_at_the_combat_movement_base() {
             }]),
         );
     };
-    let mut row = moving(Some(SPEED).into());
+    let mut row = moving();
     row.combat_count = 1;
     put(&mut frame, TableRows::DivisionMovement(vec![row.clone()]));
     combat(&mut frame, Some(Some(-13_000)));
@@ -1764,7 +1760,7 @@ fn a_division_in_combat_starts_at_the_combat_movement_base() {
 fn the_location_state_adds_its_speed_entries() {
     use replay_data::{rows::MovementStateTermRow, rows::StateMovementTerms};
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     // The location, province 1, lies in state 9.
     put(
         &mut frame,
@@ -1830,7 +1826,7 @@ fn the_priority_sub_unit_and_category_entries_add_with_repeats() {
         engine_executable::modifier_keys::ARMY_ATTACK_SPEED_FACTOR,
     );
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::DivisionTemplateIcons(vec![DivisionTemplateIconRow {
@@ -1878,7 +1874,7 @@ fn an_owner_without_core_supply_access_adds_the_noncore_supply_speed() {
     use replay_data::rows::CoreSupplyAccessRow;
     let mut map = content(two_leg_map());
     map.defines.noncore_supply = [Some(-50_000), Some(-25_000)];
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     let access = |frame: &mut DecodedFrame, access: Option<bool>| {
         put(
             frame,
@@ -1944,7 +1940,7 @@ fn a_relations_river_crossing_factor_scales_a_crossing() {
     use replay_data::rows::RiverRelationRow;
     let mut map = content(river_map());
     map.defines.river_crossing_two = -30_000;
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::Provinces(
@@ -2004,7 +2000,7 @@ fn failed_air_supply_refuses_only_reached_noncore_movement() {
     use replay_data::rows::CoreSupplyAccessRow;
     let mut map = content(two_leg_map());
     map.defines.noncore_supply = [Some(-50_000), Some(-25_000)];
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     let access = |frame: &mut DecodedFrame, value| {
         put(
             frame,
@@ -2053,7 +2049,7 @@ fn failed_air_supply_refuses_only_reached_noncore_movement() {
 fn a_failed_shared_state_attack_entry_only_refuses_hostile_movement() {
     use replay_data::{rows::MovementStateTermRow, rows::StateMovementTerms};
     let map = content(two_leg_map());
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     let provinces = |frame: &mut DecodedFrame, war| {
         hostile_destination(frame, war);
         let mut rows = frame
@@ -2108,7 +2104,7 @@ fn lake_departure_keeps_later_ordinary_land_speed_and_exact_organisation() {
         penalty: -80_000,
     });
     map.land.as_mut().unwrap().regions.insert(1, 70);
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     hostile_destination(&mut frame, true);
     // The later ordinary edge reads air at the actual lake location. Its
     // owner is at war and that location has region 70, so supply the neutral
@@ -2124,7 +2120,7 @@ fn lake_departure_keeps_later_ordinary_land_speed_and_exact_organisation() {
             ..Default::default()
         }]),
     );
-    let mut movement = moving(Some(SPEED).into());
+    let mut movement = moving();
     movement.numerator = 0;
     put(&mut frame, TableRows::DivisionMovement(vec![movement]));
     put(
@@ -2165,7 +2161,7 @@ fn actual_first_self_speed_is_kept_when_the_itinerary_omits_its_distance() {
     let mut map = content(two_leg_map_to(ProvinceTerrain { flags: 0, index: 1 }));
     map.defines.transport_scale = 100_000;
     map.land.as_mut().unwrap().regions.insert(1, 70);
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     // Region 70 is needed for the sea leg, so ordinary first-speed air
     // admission also needs the owner's war state. Peace skips air scores.
     put(&mut frame, TableRows::WarRelations(vec![]));
@@ -2174,7 +2170,7 @@ fn actual_first_self_speed_is_kept_when_the_itinerary_omits_its_distance() {
             .complete::<replay_data::rows::tables::RaidAirScores>()
             .is_err()
     );
-    let mut movement = moving(Some(SPEED).into());
+    let mut movement = moving();
     movement.path = vec![1, 3];
     movement.path_total = 2;
     put(
@@ -2207,7 +2203,7 @@ fn actual_first_self_speed_is_kept_when_the_itinerary_omits_its_distance() {
 #[test]
 fn noncore_supply_uses_only_the_selected_ground_or_air_define() {
     use replay_data::rows::CoreSupplyAccessRow;
-    let mut frame = hour(Some(SPEED).into());
+    let mut frame = hour(Some(SPEED));
     put(
         &mut frame,
         TableRows::CoreSupplyAccess(vec![CoreSupplyAccessRow {
@@ -2256,12 +2252,7 @@ fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals
     let map = content(two_leg_map());
     let mut scenarios = Vec::new();
     for (branch, scale) in [(1, 1), (2, 3)] {
-        for (at, speed) in [
-            Some(SPEED * scale).into(),
-            Recorded::Value(None),
-            Recorded::NotRecorded,
-            Some(SPEED * 2 * scale).into(),
-        ]
+        for (at, speed) in [Some(SPEED * scale), None, None, Some(SPEED * 2 * scale)]
         .into_iter()
         .enumerate()
         {
@@ -2290,14 +2281,14 @@ fn worker_ticket_etas_match_direct_derivation_across_hours_branches_and_refusals
     let mut missing = frame();
     missing.hour += 20;
     scenarios.push((missing, false));
-    let mut partial = hour(Some(SPEED).into());
+    let mut partial = hour(Some(SPEED));
     partial.hour += 21;
     *partial.tables[replay_data::rows::TableId::DivisionMovement.index()] = TableView::Truncated {
-        rows: TableRows::DivisionMovement(vec![moving(Some(SPEED).into())]),
+        rows: TableRows::DivisionMovement(vec![moving()]),
         missing: 1,
     };
     scenarios.push((partial, true));
-    let mut no_content = hour(Some(SPEED).into());
+    let mut no_content = hour(Some(SPEED));
     no_content.hour += 22;
     scenarios.push((no_content, false));
     let mut malformed = frame();

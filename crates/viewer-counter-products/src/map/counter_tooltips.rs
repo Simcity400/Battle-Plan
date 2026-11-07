@@ -412,6 +412,27 @@ impl<'a> Context<'a> {
             .map_err(|_| format!("DivisionStatus division {id} is absent"))
     }
 
+    /// The division's maximum strength and organisation as the game shows them: the panel's words.
+    fn maxima(&self, id: u64) -> Result<[i64; 2], String> {
+        let rows = self
+            .frame
+            .complete::<tables::DivisionPanelStats>()
+            .map_err(|e| e.to_string())?;
+        let panel = rows
+            .binary_search_by_key(&id, |row| row.division)
+            .map(|i| &rows[i])
+            .map_err(|_| format!("DivisionPanelStats division {id} is absent"))?;
+        let refused = |what| format!("division {id}'s maximum {what} was refused when recorded");
+        Ok([
+            panel
+                .maximum_hit_points()
+                .ok_or_else(|| refused("strength"))?,
+            panel
+                .maximum_organisation()
+                .ok_or_else(|| refused("organisation"))?,
+        ])
+    }
+
     fn movement(&self, id: u64) -> Result<&'a DivisionMovementRow, String> {
         let rows = self
             .frame
@@ -706,13 +727,13 @@ fn counts(loc: &Localisation, known: i32, unknown: i32, coarse: bool) -> Result<
 fn statistics(
     loc: &Localisation,
     single: bool,
-    known: &[(&DivisionRow, &DivisionStatusRow)],
+    known: &[(&DivisionRow, &DivisionStatusRow, [i64; 2])],
 ) -> Result<String, String> {
     if known.is_empty() {
         return Ok(String::new());
     }
     let mut text = if single {
-        let (division, status) = known[0];
+        let (division, _, [_, maximum_organisation]) = known[0];
         // absolute CUR and native getter MAX, never a percentage.
         localise(
             loc,
@@ -721,27 +742,22 @@ fn statistics(
                 ("CUR", Arg::Fixed5(division.organisation)),
                 (
                     "MAX",
-                    Arg::Fixed5(counter_status::effective_maximum(
-                        status.maximum_organisation,
-                    )),
+                    Arg::Fixed5(counter_status::effective_maximum(maximum_organisation)),
                 ),
             ],
         )?
     } else {
         // Mean of known members' supply ratios, with wrapping and truncation.
-        let value = counter_inputs::member_mean(known.iter().map(|(division, status)| {
-            counter_status::ratio(division.organisation, status.maximum_organisation)
-        }))
-        .expect("known members are nonempty");
+        let value =
+            counter_inputs::member_mean(known.iter().map(|(division, _, maxima)| {
+                counter_status::ratio(division.organisation, maxima[1])
+            }))
+            .expect("known members are nonempty");
         localise(loc, "UNIT_AVERAGE_ORG", &[("VALUE", Arg::Fixed5(value))])?
     };
     text.push('\n');
-    let strength = counter_inputs::member_mean(known.iter().map(|(division, status)| {
-        counter_status::modified_strength(
-            division.hit_points,
-            status.maximum_hit_points,
-            status.strength_factor,
-        )
+    let strength = counter_inputs::member_mean(known.iter().map(|(division, status, maxima)| {
+        counter_status::modified_strength(division.hit_points, maxima[0], status.strength_factor)
     }))
     .expect("known members are nonempty");
     text.push_str(&localise(
@@ -806,12 +822,12 @@ fn next_location(loc: &Localisation, hours: Option<i32>) -> Result<String, Strin
 
 fn supply(
     context: &Context<'_>,
-    known: &[(&DivisionRow, &DivisionStatusRow)],
+    known: &[(&DivisionRow, &DivisionStatusRow, [i64; 2])],
 ) -> Result<String, String> {
     // Use one getter; the game averages known members with fixed5 division.
     let values = known
         .iter()
-        .map(|(_, status)| {
+        .map(|(_, status, _)| {
             let historical = || "maximum and remaining supply grace are unrecorded".to_owned();
             let maximum = *status
                 .supply_grace_maximum
@@ -824,12 +840,12 @@ fn supply(
                 .supply_grace_remaining
                 .require("DivisionStatus.supply_grace_remaining")
                 .map_err(|_| historical())?;
+            let ratio = status
+                .displayed_supply_ratio()
+                .ok_or("the division's supply ratio is not recorded")?;
             let grace = context.supply_grace.as_ref().map_err(Clone::clone)?;
             Ok(counter_status::effective_supply(
-                status.supply_ratio,
-                maximum,
-                remaining,
-                *grace,
+                ratio, maximum, remaining, *grace,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
@@ -1239,7 +1255,13 @@ fn build_divisions(
             if !known.is_empty() && (members.len() != 1 || disclosed == Some(true)) {
                 let values = known
                     .iter()
-                    .map(|&id| Ok((context.division(id)?, context.status(id)?)))
+                    .map(|&id| {
+                        Ok((
+                            context.division(id)?,
+                            context.status(id)?,
+                            context.maxima(id)?,
+                        ))
+                    })
                     .collect::<Result<Vec<_>, String>>();
                 append(
                     &mut out,
@@ -1292,8 +1314,8 @@ mod tests {
     use super::*;
     use replay_data::rows::{
         ClockRow, CountryAppearanceRow, CountryLinkRow, CountryRow, CountryTemplateStateRow,
-        DivisionTemplateIconRow, DivisionTemplateRow, LandCombatDivisionRow, LexicalTokenRow,
-        NameOperands, PacketHour, PoliticsRow, ProvinceRow, Recorded, TableRows,
+        DivisionPanelStatsRow, DivisionTemplateIconRow, DivisionTemplateRow, LandCombatDivisionRow,
+        LexicalTokenRow, NameOperands, PacketHour, PoliticsRow, ProvinceRow, Recorded, TableRows,
         TemplateDisplayName, TemplateLayout, TemplateNameValue, TemplateSettings, TemplateSubunit,
     };
     use viewer_foundation::map::test_support::{test_frame, test_put as put};
@@ -1787,8 +1809,6 @@ mod tests {
                     .into_iter()
                     .map(|division| DivisionStatusRow {
                         division,
-                        maximum_organisation: 2_000_000,
-                        maximum_hit_points: 1_000_000,
                         strength_factor: 50_000,
                         // This baseline exercises historical missing-grace refusals;
                         // a recorded zero maximum instead proves native zero supply.
@@ -1808,6 +1828,23 @@ mod tests {
                             Recorded::NotRecorded
                         },
                         ..Default::default()
+                    })
+                    .collect(),
+            ),
+        );
+        put(
+            &mut frame,
+            TableRows::DivisionPanelStats(
+                [1, 2]
+                    .into_iter()
+                    .map(|division| {
+                        let mut panel = DivisionPanelStatsRow {
+                            division,
+                            ..Default::default()
+                        };
+                        panel.panel_stats[0] = Some(1_000_000);
+                        panel.panel_stats[1] = Some(2_000_000);
+                        panel
                     })
                     .collect(),
             ),
@@ -1980,7 +2017,13 @@ mod tests {
             &mut frame,
             TableRows::LandCombatDivisions(vec![LandCombatDivisionRow {
                 division: 1,
-                name_custom: b"Stale combat name".to_vec(),
+                own: Some(replay_data::rows::LandCombatMemberValues {
+                    naming: replay_data::rows::NameOperands {
+                        custom: b"Stale combat name".to_vec(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
                 ..Default::default()
             }]),
         );
@@ -2103,11 +2146,11 @@ mod tests {
         let mut frame = frame(true);
         let mut status = frame.complete::<tables::DivisionStatus>().unwrap().to_vec();
         for row in &mut status {
-            row.supply_ratio = 20_000;
+            row.supply_ratio = Some(20_000);
             row.supply_grace_maximum = Recorded::Value(400_000);
             row.supply_grace_remaining = Recorded::Value(200_000);
         }
-        status[1].supply_ratio = 100_000;
+        status[1].supply_ratio = Some(100_000);
         put(&mut frame, TableRows::DivisionStatus(status.clone()));
         let single = tooltip(&frame, &[1], false, false, &vision);
         assert!(single.body.contains("str 50%\nsupply 50%\n"));
@@ -2648,8 +2691,6 @@ mod tests {
             ..Default::default()
         };
         let first_status = DivisionStatusRow {
-            maximum_organisation: 2_000_000,
-            maximum_hit_points: 1_000_000,
             strength_factor: 50_000,
             ..Default::default()
         };
@@ -2659,20 +2700,26 @@ mod tests {
             ..Default::default()
         };
         let second_status = DivisionStatusRow {
-            maximum_organisation: 4_000_000,
-            maximum_hit_points: 1_000_000,
             strength_factor: 100_000,
             ..Default::default()
         };
         assert_eq!(
-            statistics(&loc(), true, &[(&first, &first_status)]).unwrap(),
+            statistics(
+                &loc(),
+                true,
+                &[(&first, &first_status, [1_000_000, 2_000_000])]
+            )
+            .unwrap(),
             "org 10/20\nstr 50%\n"
         );
         assert_eq!(
             statistics(
                 &loc(),
                 false,
-                &[(&first, &first_status), (&second, &second_status)]
+                &[
+                    (&first, &first_status, [1_000_000, 2_000_000]),
+                    (&second, &second_status, [1_000_000, 4_000_000])
+                ]
             )
             .unwrap(),
             "avg org 37%\nstr 75%\n"
@@ -2987,8 +3034,6 @@ mod tests {
             .unwrap()
             .iter()
             .map(|status| DivisionStatusRow {
-                maximum_organisation: status.maximum_organisation,
-                maximum_hit_points: status.maximum_hit_points,
                 strength_factor: status.strength_factor,
                 name: status.name.clone(),
                 naming: status.naming.clone(),
@@ -3034,7 +3079,7 @@ mod tests {
             (
                 Recorded::NotRecorded,
                 true,
-                Err("counter arrival: DivisionMovement.base_speed is not recorded in this format"),
+                Err("counter arrival: the division's base speed is not recorded"),
             ),
         ] {
             put(
@@ -3044,12 +3089,22 @@ mod tests {
                     path_total: 1,
                     path: vec![4],
                     numerator: 400_000,
-                    base_speed,
                     withdrawal: Recorded::Value(Some(0)),
                     fuel: Recorded::Value(Some(0)),
                     ..Default::default()
                 }]),
             );
+            let mut panel = DivisionPanelStatsRow {
+                division: 1,
+                ..Default::default()
+            };
+            panel.panel_stats[DivisionPanelStatsRow::MAXIMUM_SPEED] = match base_speed {
+                Recorded::Value(speed) => speed,
+                Recorded::NotRecorded => None,
+            };
+            panel.panel_stats[0] = Some(1_000_000);
+            panel.panel_stats[1] = Some(2_000_000);
+            put(&mut frame, TableRows::DivisionPanelStats(vec![panel]));
             let etas = Etas::read(&frame, Some(&content)).unwrap();
             let context = context(&frame, &loc, &vision, &names, &units);
             let hover = CounterHover {

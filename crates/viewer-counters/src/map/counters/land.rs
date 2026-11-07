@@ -762,8 +762,9 @@ pub(super) struct CounterTables<'a> {
 /// A division without a status row takes [`DivisionStatuses::MISSING`]: no glyph and no bars.
 #[derive(Clone, Copy, Default)]
 pub(super) struct DivisionStatus {
-    pub(super) maximum_hit_points: i64,
-    pub(super) maximum_organisation: i64,
+    /// Maximum strength and organisation as the game shows them, from DivisionPanelStats; `None`
+    /// without its row or for a refused word, which draws no bars.
+    pub(super) maxima: Option<[i64; 2]>,
     pub(super) entrenchment: i64,
     pub(super) entrenchment_cap: i64,
     pub(super) supply_ratio: i64,
@@ -1164,8 +1165,7 @@ pub(super) struct DivisionStatuses {
 impl DivisionStatuses {
     /// What a division with no recorded row reads as; its counter draws no bars or glyphs from it.
     const MISSING: DivisionStatus = DivisionStatus {
-        maximum_hit_points: 0,
-        maximum_organisation: 0,
+        maxima: None,
         entrenchment: 0,
         entrenchment_cap: 0,
         supply_ratio: counter_status::FIXED,
@@ -1189,16 +1189,25 @@ impl DivisionStatuses {
                 witnessed,
             });
         }
+        let panels: BTreeMap<u64, _> = rows::<tables::DivisionPanelStats>(frame)?
+            .rows()
+            .iter()
+            .map(|row| (row.division, row))
+            .collect();
         let mut by_division: BTreeMap<u64, DivisionStatus> = BTreeMap::new();
         for row in rows::<tables::DivisionStatus>(frame)?.rows() {
+            // An unknown ratio draws no supply glyph, as a missing row does.
+            let supply_ratio = row.displayed_supply_ratio().unwrap_or(counter_status::FIXED);
+            let maxima = panels.get(&row.division).and_then(|panel| {
+                Some([panel.maximum_hit_points()?, panel.maximum_organisation()?])
+            });
             by_division.insert(
                 row.division,
                 DivisionStatus {
-                    maximum_hit_points: row.maximum_hit_points,
-                    maximum_organisation: row.maximum_organisation,
+                    maxima,
                     entrenchment: row.entrenchment,
                     entrenchment_cap: row.entrenchment_cap,
-                    supply_ratio: row.supply_ratio,
+                    supply_ratio,
                     attrition: row.has_attrition(),
                     exercising: Some(row.exercising != 0),
                     has_order: Some(row.has_order != 0),
@@ -1229,8 +1238,11 @@ impl DivisionStatuses {
             })
     }
 
+    /// Whether the division's status and maxima are recorded, which its bars need.
     pub(super) fn recorded(&self, division: u64) -> bool {
-        self.by_division.contains_key(&division)
+        self.by_division
+            .get(&division)
+            .is_some_and(|status| status.maxima.is_some())
     }
 }
 
@@ -1783,12 +1795,16 @@ pub(super) fn division_counters(
                 template: division.template,
                 orders_group: division.orders_group,
                 sight,
-                hp: counter_status::modified_strength(
-                    division.hit_points,
-                    status.maximum_hit_points,
-                    status.strength_factor,
-                ),
-                org: counter_status::ratio(division.organisation, status.maximum_organisation),
+                hp: status.maxima.map_or(0, |[maximum, _]| {
+                    counter_status::modified_strength(
+                        division.hit_points,
+                        maximum,
+                        status.strength_factor,
+                    )
+                }),
+                org: status.maxima.map_or(0, |[_, maximum]| {
+                    counter_status::ratio(division.organisation, maximum)
+                }),
                 bars: land.status.recorded(division.id),
                 status: counter_status::Member {
                     supply_ratio: status.supply_ratio,
@@ -3071,6 +3087,16 @@ mod tests {
                 row(3, 0, 0),
                 row(4, -2, -3),
             ]),
+        );
+        let mut panel = replay_data::rows::DivisionPanelStatsRow {
+            division: 1,
+            ..Default::default()
+        };
+        panel.panel_stats[0] = Some(1_000_000);
+        panel.panel_stats[1] = Some(2_000_000);
+        test_put(
+            &mut frame,
+            replay_data::rows::TableRows::DivisionPanelStats(vec![panel]),
         );
         let statuses = DivisionStatuses::read(&frame).unwrap();
         let attrition: Vec<_> = (1..=5)

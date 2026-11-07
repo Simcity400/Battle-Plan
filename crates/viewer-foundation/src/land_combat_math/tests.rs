@@ -1,5 +1,19 @@
 use super::*;
 
+fn stats(stat_values: [i64; 5]) -> LandCombatMemberValues {
+    LandCombatMemberValues {
+        stat_values,
+        ..Default::default()
+    }
+}
+
+fn members(rows: &[LandCombatDivisionRow]) -> impl Iterator<Item = LandCombatMember<'_>> {
+    rows.iter().map(|row| LandCombatMember {
+        row,
+        values: row.own.as_ref(),
+    })
+}
+
 #[test]
 fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
     let mut detail = LandCombatDetailsRow {
@@ -13,24 +27,23 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
             combat: 9,
             side: 0,
             division: 1,
-            stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
-                .map(replay_data::rows::Recorded::Value),
-            scales: [100_000; 4].map(replay_data::rows::Recorded::Value),
+            own: Some(stats([10_000_000, 5_000_000, 0, 10_000_000, 0])),
+            scales: [100_000; 4],
             ..Default::default()
         },
         LandCombatDivisionRow {
             combat: 9,
             side: 1,
             division: 2,
-            stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
-                .map(replay_data::rows::Recorded::Value),
-            scales: [100_000; 4].map(replay_data::rows::Recorded::Value),
+            own: Some(stats([10_000_000, 5_000_000, 0, 10_000_000, 0])),
+            scales: [100_000; 4],
             ..Default::default()
         },
         LandCombatDivisionRow {
             combat: 9,
             side: 0,
             division: 3,
+            own: Some(LandCombatMemberValues::default()),
             ..Default::default()
         },
     ];
@@ -48,7 +61,7 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
     let scores = |detail: &LandCombatDetailsRow, conditions: &Conditions, first: &[u64]| {
         side_scores(
             detail,
-            &divisions,
+            members(&divisions),
             conditions,
             [first, &[2]],
             ScoreDefines::VANILLA,
@@ -67,7 +80,7 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
         scores(&detail, &conditions, &[1]).map(|v| v[0]),
         Ok(99_999_900_000)
     );
-    // A participant without its Divisions and DivisionStatus rows is unknown.
+    // A participant without its Divisions and DivisionPanelStats rows is unknown.
     conditions.remove(&3);
     assert_eq!(
         scores(&detail, &conditions, &[1, 3]),
@@ -77,9 +90,11 @@ fn early_score_uses_opposing_committed_damage_and_all_current_organisation() {
 
 /// Conditions read from the recorded tables: `(id, hit points,
 /// organisation)` Divisions rows, and `(id, maximum hit points)`
-/// DivisionStatus rows.
+/// DivisionPanelStats rows.
 fn recorded(divisions: &[(u64, i64, i64)], status: &[(u64, i64)]) -> Conditions {
-    use replay_data::{rows::DivisionRow, rows::DivisionStatusRow, rows::TableId, rows::TableRows};
+    use replay_data::{
+        rows::DivisionPanelStatsRow, rows::DivisionRow, rows::TableId, rows::TableRows,
+    };
     use replay_frame::{frame::Metrics, frame::TableView};
     let mut frame = DecodedFrame {
         branch: 0,
@@ -103,15 +118,18 @@ fn recorded(divisions: &[(u64, i64, i64)], status: &[(u64, i64)]) -> Conditions 
             })
             .collect(),
     ));
-    *frame.tables[TableId::DivisionStatus.index()] =
-        TableView::Complete(TableRows::DivisionStatus(
+    *frame.tables[TableId::DivisionPanelStats.index()] =
+        TableView::Complete(TableRows::DivisionPanelStats(
             status
                 .iter()
-                .map(|&(division, maximum_hit_points)| DivisionStatusRow {
-                    division,
-                    maximum_hit_points,
-                    maximum_organisation: 6_000_000,
-                    ..Default::default()
+                .map(|&(division, maximum_hit_points)| {
+                    let mut panel = DivisionPanelStatsRow {
+                        division,
+                        ..Default::default()
+                    };
+                    panel.panel_stats[0] = Some(maximum_hit_points);
+                    panel.panel_stats[1] = Some(6_000_000);
+                    panel
                 })
                 .collect(),
         ));
@@ -119,7 +137,7 @@ fn recorded(divisions: &[(u64, i64, i64)], status: &[(u64, i64)]) -> Conditions 
 }
 
 /// the game sums current organisation only, so a division without its
-/// DivisionStatus row still scores; only the early damage estimate for
+/// DivisionPanelStats row still scores; only the early damage estimate for
 /// a firing committed division reads its maximum hit points.
 #[test]
 fn a_missing_status_row_blocks_only_early_firing_damage() {
@@ -133,16 +151,15 @@ fn a_missing_status_row_blocks_only_early_firing_damage() {
         combat: 9,
         side,
         division,
-        stat_values: [10_000_000, 5_000_000, 0, 10_000_000, 0]
-            .map(replay_data::rows::Recorded::Value),
-        scales: [100_000; 4].map(replay_data::rows::Recorded::Value),
+        own: Some(stats([10_000_000, 5_000_000, 0, 10_000_000, 0])),
+        scales: [100_000; 4],
         ..Default::default()
     };
     let divisions = [member(0, 1), member(1, 2), member(0, 3)];
     let scores = |detail: &LandCombatDetailsRow, conditions: &Conditions| {
         side_scores(
             detail,
-            &divisions,
+            members(&divisions),
             conditions,
             [&[1, 3], &[2]],
             ScoreDefines::VANILLA,
@@ -237,7 +254,7 @@ fn survival_uses_full_roster_and_rejects_early_or_missing_rows() {
     let scores = |detail: &LandCombatDetailsRow, first: &[u64]| {
         side_scores(
             detail,
-            &divisions,
+            members(&divisions),
             &conditions,
             [first, &[2]],
             ScoreDefines::VANILLA,
@@ -289,6 +306,7 @@ fn survival_keeps_native_wrapping_sums_products_and_special_values() {
         combat: 9,
         side: 0,
         division,
+        own: Some(LandCombatMemberValues::default()),
         ..Default::default()
     });
     // Current organisation is the Divisions row's (Conditions).
@@ -309,7 +327,7 @@ fn survival_keeps_native_wrapping_sums_products_and_special_values() {
             .collect();
         side_scores(
             detail,
-            &divisions,
+            members(&divisions),
             &conditions,
             [units, &[]],
             ScoreDefines::VANILLA,

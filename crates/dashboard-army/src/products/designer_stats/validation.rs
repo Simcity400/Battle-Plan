@@ -995,14 +995,7 @@ fn designer_stats_match_recorded_division_caches() {
                 let base_speed = movements
                     .binary_search_by_key(&division.id, |row| row.division)
                     .ok()
-                    .and_then(|at| {
-                        movements[at]
-                            .base_speed
-                            .require("base speed")
-                            .ok()
-                            .copied()
-                            .flatten()
-                    });
+                    .and_then(|at| movements[at].base_speed(Some(panel)));
                 if let Some(recorded) = base_speed {
                     let calculated = block.stats[slots.maximum_speed];
                     let deployed = calculated.map(|speed| kernel::mul(speed, kernel::ONE));

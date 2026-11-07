@@ -1,4 +1,11 @@
 use super::*;
+
+fn member(row: &LandCombatDivisionRow) -> LandCombatMember<'_> {
+    LandCombatMember {
+        row,
+        values: row.own.as_ref(),
+    }
+}
 use viewer_foundation::combat_selection::Selection;
 use viewer_foundation::map::native_text::monospace;
 use viewer_foundation::map::test_support::ui_scale as tests;
@@ -204,10 +211,13 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
     for side in 0..4 {
         let row = LandCombatDivisionRow {
             side: (side % 2) as u8,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let mut values = entry(
-            &row,
+            &member(&row),
             Some(format!("MMMMMi{}", "M".repeat(23))),
             side < 2,
             None,
@@ -358,18 +368,27 @@ const HALF: Condition = Condition {
 #[test]
 fn committed_strength_and_side_attack_use_distinct_native_operands() {
     let row = LandCombatDivisionRow {
-        strength_combat_factor: 50_000,
-        scales: [200_000, 50_000, 150_000, 100_000].map(replay_data::rows::Recorded::Value),
-        stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000]
-            .map(replay_data::rows::Recorded::Value),
+        scales: [200_000, 50_000, 150_000, 100_000],
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            strength_combat_factor: 50_000,
+            stat_values: [8_000_000, 6_000_000, 0, 10_000_000, 2_000_000],
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let entry = |committed| {
-        let mut values = entry(&row, None, committed, Some(10_000), None, Values::new());
+        let mut values = entry(
+            &member(&row),
+            None,
+            committed,
+            Some(10_000),
+            None,
+            Values::new(),
+        );
         condition_bars(
             &mut Bindings::default(),
             &mut values,
-            &row,
+            &member(&row),
             committed,
             Ok(HALF),
             "",
@@ -392,22 +411,24 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
     // The fractional stat product is truncated to 365.
     let row = LandCombatDivisionRow {
         side: 1,
-        strength_combat_factor: 100_000,
-        scales: [99_000, 99_000, 100_000, 100_000].map(replay_data::rows::Recorded::Value),
-        stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750]
-            .map(replay_data::rows::Recorded::Value),
+        scales: [99_000, 99_000, 100_000, 100_000],
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            strength_combat_factor: 100_000,
+            stat_values: [36_958_320, 7_635_582, 833, 23_127_045, 5_736_750],
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let mut out = Bindings::default();
     let mut active = entry(
-        &row,
+        &member(&row),
         Some("169th 'Madison' Division".into()),
         true,
         None,
         None,
         Values::new(),
     );
-    condition_bars(&mut out, &mut active, &row, true, Ok(HALF), "");
+    condition_bars(&mut out, &mut active, &member(&row), true, Ok(HALF), "");
     assert_eq!(
         active["name"].text.as_deref(),
         Some("169th 'Madison' Division")
@@ -420,12 +441,12 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
     // The same entry bound again without its name or condition keeps
     // neither earlier value: both are cleared and hidden, the bars'
     // refusal counted once per bind.
-    let mut stale = entry(&row, None, true, None, None, active);
+    let mut stale = entry(&member(&row), None, true, None, None, active);
     for _ in 0..2 {
         condition_bars(
             &mut out,
             &mut stale,
-            &row,
+            &member(&row),
             true,
             Err("Land combat 5 division 9: bars refused.".into()),
             "",
@@ -447,7 +468,7 @@ fn missing_parent_keeps_recorded_row_values_and_truncates_live_defence() {
 /// condition; each bar is hidden only for its own missing maximum, and
 /// the refusal names the table's state.
 #[test]
-fn a_missing_status_row_hides_each_bar_by_its_own_maximum() {
+fn a_missing_panel_row_hides_each_bar_by_its_own_maximum() {
     use replay_data::rows::DivisionRow;
     let mut frame = window_frame(None, None);
     *frame.tables[TableId::Divisions.index()] =
@@ -457,15 +478,18 @@ fn a_missing_status_row_hides_each_bar_by_its_own_maximum() {
             organisation: 30_000,
             ..Default::default()
         }]));
-    *frame.tables[TableId::DivisionStatus.index()] = TableView::Truncated {
-        rows: TableRows::DivisionStatus(Vec::new()),
+    *frame.tables[TableId::DivisionPanelStats.index()] = TableView::Truncated {
+        rows: TableRows::DivisionPanelStats(Vec::new()),
         missing: 2,
     };
     let bars = conditions(&frame).unwrap();
-    let status_gap = absence(&rows::<tables::DivisionStatus>(&frame).unwrap());
+    let panel_gap = absence(&rows::<tables::DivisionPanelStats>(&frame).unwrap());
     let row = LandCombatDivisionRow {
         combat: COMBAT,
         division: 9,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let mut out = Bindings::default();
@@ -473,21 +497,21 @@ fn a_missing_status_row_hides_each_bar_by_its_own_maximum() {
     condition_bars(
         &mut out,
         &mut values,
-        &row,
+        &member(&row),
         false,
         Ok(bars[&9]),
-        &status_gap,
+        &panel_gap,
     );
     for bar in ["str_bar", "org_bar"] {
         assert!(values[bar].hidden && values[bar].fill.is_none(), "{bar}");
     }
     assert!(refused(
         &out,
-        "Land combat 62 division 9: its DivisionStatus row is missing (the table is truncated, 2 rows unread), so its hit points maximum is unknown; its strength bar is hidden."
+        "Land combat 62 division 9: DivisionPanelStats has no hit points maximum for it (the table is truncated, 2 rows unread); its strength bar is hidden."
     ));
     assert!(refused(
         &out,
-        "so its organisation maximum is unknown; its organisation bar is hidden."
+        "has no organisation maximum for it (the table is truncated, 2 rows unread); its organisation bar is hidden."
     ));
     // A known maximum binds its own bar although the other is missing.
     let mut values = Values::new();
@@ -498,10 +522,10 @@ fn a_missing_status_row_hides_each_bar_by_its_own_maximum() {
     condition_bars(
         &mut out,
         &mut values,
-        &row,
+        &member(&row),
         false,
         Ok(strength_only),
-        &status_gap,
+        &panel_gap,
     );
     assert_eq!(values["str_bar"].fill, Some(0.5));
     assert!(!values["str_bar"].hidden);
@@ -542,61 +566,67 @@ fn names_prefer_a_custom_name_then_the_selected_group_in_the_content() {
     )
     .unwrap();
     let mut row = LandCombatDivisionRow {
-        name_group: b"SOV_INF_01".to_vec(),
-        name_order: 144,
-        name_ordered: 1,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            naming: replay_data::rows::NameOperands {
+                group: b"SOV_INF_01".to_vec(),
+                order: 144,
+                ordered: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
         ..Default::default()
     };
     assert_eq!(
-        division_name(&row, &names, &localisation, "english").as_deref(),
+        division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("144ya Strelkovaya Diviziya")
     );
-    row.name_custom = b"Guards".to_vec();
+    row.own.as_mut().unwrap().naming.custom = b"Guards".to_vec();
     assert_eq!(
-        division_name(&row, &names, &localisation, "english").as_deref(),
+        division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("Guards")
     );
     // A programmatic member with a group: the capture records no stored
     // name, and the group's entry is shown.
-    row.name_programmatic = 1;
-    row.name_custom = b"Ignored programmatic text".to_vec();
+    row.own.as_mut().unwrap().naming.programmatic = 1;
+    row.own.as_mut().unwrap().naming.custom = b"Ignored programmatic text".to_vec();
     assert_eq!(
-        division_name(&row, &names, &localisation, "english").as_deref(),
+        division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("144ya Strelkovaya Diviziya")
     );
     // With a null group the capture records the stored name, which
     // the game shows.
-    row.name_group.clear();
-    row.name_custom = b"1-ya Strelkovaya".to_vec();
+    row.own.as_mut().unwrap().naming.group.clear();
+    row.own.as_mut().unwrap().naming.custom = b"1-ya Strelkovaya".to_vec();
     assert_eq!(
-        division_name(&row, &names, &localisation, "english").as_deref(),
+        division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("1-ya Strelkovaya")
     );
     localisation.language = "french".into();
-    let refused = division_name(&row, &names, &localisation, "english").unwrap_err();
+    let refused = division_name(&member(&row), &names, &localisation, "english").unwrap_err();
     assert!(matches!(&refused, Unnamed::StoredText(_)));
     assert!(refused.to_string().contains("stored in english"));
-    let warnings = unnamed_warnings(9, std::iter::once(&row), |row| {
+    let warnings = unnamed_warnings(9, std::iter::once(member(&row)), |row| {
         shown_name(row, &names, &NoIcons, &localisation, "english")
     });
     assert_eq!(warnings.len(), 1);
     assert!(warnings[0].contains("1 division names are unavailable"));
-    assert!(shown_name(&row, &names, &NoIcons, &localisation, "english").is_err());
-    row.name_programmatic = 0;
+    assert!(shown_name(&member(&row), &names, &NoIcons, &localisation, "english").is_err());
+    row.own.as_mut().unwrap().naming.programmatic = 0;
     assert_eq!(
-        division_name(&row, &names, &localisation, "english").as_deref(),
+        division_name(&member(&row), &names, &localisation, "english").as_deref(),
         Ok("1-ya Strelkovaya")
     );
     // Without one the game builds the legacy name.
-    row.name_custom.clear();
+    row.own.as_mut().unwrap().naming.custom.clear();
     assert_eq!(
-        division_name(&row, &names, &localisation, "english"),
+        division_name(&member(&row), &names, &localisation, "english"),
         Err(Unnamed::Unresolved(Unresolved::NoGroup))
     );
-    row.name_group = b"SOV_INF_01".to_vec();
-    row.name_type = 1;
+    row.own.as_mut().unwrap().naming.group = b"SOV_INF_01".to_vec();
+    row.own.as_mut().unwrap().naming.kind = 1;
     assert_eq!(
-        division_name(&row, &names, &localisation, "english"),
+        division_name(&member(&row), &names, &localisation, "english"),
         Err(Unnamed::ForeignType(1))
     );
 }
@@ -609,7 +639,13 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
     loc.language = "english".into();
     let row = LandCombatDivisionRow {
         division: 7,
-        name_custom: b"Stale combat projection".to_vec(),
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            naming: replay_data::rows::NameOperands {
+                custom: b"Stale combat projection".to_vec(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let mut status = DivisionStatusRow {
@@ -620,7 +656,7 @@ fn combat_names_use_the_retained_getter_and_never_mask_cache_failures() {
     };
     let shown = |status: Option<&DivisionStatusRow>| {
         shown_recorded_name(
-            &row,
+            &member(&row),
             status,
             "unavailable",
             &names,
@@ -668,10 +704,20 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
     .unwrap();
     let row = |division, group: &[u8], order, ordered: u8| LandCombatDivisionRow {
         division,
-        name_group: group.to_vec(),
-        name_order: order,
-        name_ordered: ordered,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            naming: replay_data::rows::NameOperands {
+                group: group.to_vec(),
+                order,
+                ordered,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
         ..Default::default()
+    };
+    let named = |mut row: LandCombatDivisionRow, edit: fn(&mut replay_data::rows::NameOperands)| {
+        edit(&mut row.own.as_mut().unwrap().naming);
+        row
     };
     let rows = [
         row(1, b"INF", 1, 1),
@@ -680,19 +726,14 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
         row(4, b"INF", 1, 0),
         row(5, b"GER\xff", 1, 1),
         row(6, b"ABSENT", 3, 1),
-        LandCombatDivisionRow {
-            name_custom: b"\xffGuards".to_vec(),
-            ..row(7, b"INF", 1, 1)
-        },
-        LandCombatDivisionRow {
-            name_type: 2,
-            ..row(8, b"INF", 1, 1)
-        },
+        named(row(7, b"INF", 1, 1), |naming| {
+            naming.custom = b"\xffGuards".to_vec()
+        }),
+        named(row(8, b"INF", 1, 1), |naming| naming.kind = 2),
         // A player's name holding the stored flag control 0x12.
-        LandCombatDivisionRow {
-            name_custom: b"\x12GER Guards".to_vec(),
-            ..row(10, b"INF", 1, 1)
-        },
+        named(row(10, b"INF", 1, 1), |naming| {
+            naming.custom = b"\x12GER Guards".to_vec()
+        }),
     ];
     struct NoIcons;
     impl TextIcons for NoIcons {
@@ -700,7 +741,7 @@ fn unnamed_divisions_are_reported_by_cause_with_their_identities() {
             None
         }
     }
-    let warnings = unnamed_warnings(9, rows.iter(), |row| {
+    let warnings = unnamed_warnings(9, rows.iter().map(member), |row| {
         shown_name(row, &names, &NoIcons, &Localisation::default(), "")
     });
     let expected = [
@@ -759,11 +800,17 @@ fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
         LandCombatDivisionRow {
             division: 1,
             province: 9263,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
         LandCombatDivisionRow {
             division: 2,
             province: 389,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
     ];
@@ -783,11 +830,17 @@ fn several_directions_compare_locations_or_the_source_in_the_combat_province() {
         LandCombatDivisionRow {
             division: 1,
             province: 362,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
         LandCombatDivisionRow {
             division: 2,
             province: 9263,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
     ];
@@ -833,29 +886,48 @@ fn a_missing_modifier_row_leaves_the_combat_class_undecided() {
 #[test]
 fn a_division_listed_twice_on_a_side_keeps_its_first_modifier_row() {
     use replay_data::{rows::CombatModifierValue, rows::LandCombatDivisionModifierRow};
-    let row = |combat, side, ordinal, division, id| LandCombatDivisionModifierRow {
+    let row = |combat, side, ordinal, id| LandCombatDivisionModifierRow {
         combat,
         side,
         ordinal,
-        division,
         entries: vec![CombatModifierValue {
             id,
             ..Default::default()
         }],
+        division: None,
+    };
+    let member = |combat, side, ordinal, division| LandCombatDivisionRow {
+        combat,
+        side,
+        ordinal,
+        division,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
+        ..Default::default()
     };
     let rows = [
-        row(4, 0, 0, 70, 1),
-        row(5, 0, 0, 70, 2),
-        row(5, 0, 1, 71, 3),
-        row(5, 0, 2, 70, 4),
-        row(5, 1, 0, 70, 5),
+        row(4, 0, 0, 1),
+        row(5, 0, 0, 2),
+        row(5, 0, 1, 3),
+        row(5, 0, 2, 4),
+        row(5, 1, 0, 5),
+        row(5, 1, 1, 6),
     ];
-    let members = division_modifiers(&rows, 5);
+    let divisions = [
+        member(4, 0, 0, 70),
+        member(5, 0, 0, 70),
+        member(5, 0, 1, 71),
+        member(5, 0, 2, 70),
+        member(5, 1, 0, 70),
+    ];
+    let members = division_modifiers(&rows, &divisions, 5);
     let ids = |side, division| {
         members
             .get(&(side, division))
             .map(|row: &&LandCombatDivisionModifierRow| row.entries[0].id)
     };
+    // The modifier row without a member row names no division.
     assert_eq!(members.len(), 3);
     assert_eq!(ids(0, 70), Some(2));
     assert_eq!(ids(0, 71), Some(3));
@@ -870,24 +942,36 @@ fn fallback_roles_use_full_side_ordinal_without_inventing_commitment() {
             division: 90,
             role: 1,
             ordinal: 3,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
         LandCombatDivisionRow {
             division: 80,
             role: 2,
             ordinal: 0,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
         LandCombatDivisionRow {
             division: 70,
             role: 0,
             ordinal: 1,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
         LandCombatDivisionRow {
             division: 60,
             role: 1,
             ordinal: 2,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
         LandCombatDivisionRow {
@@ -895,6 +979,9 @@ fn fallback_roles_use_full_side_ordinal_without_inventing_commitment() {
             side: 1,
             role: 1,
             ordinal: 0,
+            own: Some(replay_data::rows::LandCombatMemberValues {
+                ..Default::default()
+            }),
             ..Default::default()
         },
     ];

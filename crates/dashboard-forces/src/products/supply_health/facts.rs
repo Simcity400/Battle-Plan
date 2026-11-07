@@ -16,7 +16,7 @@ use replay::{
 use replay_data::{
     display::{Step, stepped_format},
     format::FormatVersion,
-    rows::{TableId, compatibility::RECORDER_INPUTS_FORMAT},
+    rows::{DivisionStatusRow, TableId, compatibility::RECORDER_INPUTS_FORMAT},
 };
 use std::{collections::HashMap, io, sync::Arc};
 
@@ -82,7 +82,7 @@ pub struct Hour {
 struct Fields {
     owners: [usize; 2],
     transfer: usize,
-    supply: [usize; 3],
+    supply: [usize; 4],
 }
 
 #[derive(Clone)]
@@ -157,6 +157,7 @@ impl Projector {
                     columns::field(TableId::DivisionStatus, "supply_ratio")?,
                     columns::field(TableId::DivisionStatus, "supply_grace_maximum")?,
                     columns::field(TableId::DivisionStatus, "supply_grace_remaining")?,
+                    columns::field(TableId::DivisionStatus, "supply_ratio_exact")?,
                 ],
             },
             grace: format.version() >= RECORDER_INPUTS_FORMAT,
@@ -232,7 +233,7 @@ impl Projector {
         let defines = self.defines.filter(|_| usable);
         let land = columns::table(state, TableId::DivisionLandInputs)?;
         let status = columns::table(state, TableId::DivisionStatus)?;
-        let [received, maximum, remaining] = self.fields.supply;
+        let [received, maximum, remaining, exact] = self.fields.supply;
         let step = |field| {
             TableId::DivisionStatus
                 .display_step(field)
@@ -242,7 +243,9 @@ impl Projector {
         let remaining_step = step(remaining);
         let native = |units, step: Option<Step>| step.map_or(Ok(units), |step| step.value(units));
         let transfer = columns::plain::<bool>(land, self.fields.transfer)?;
-        let received = columns::plain::<i64>(status, received)?;
+        // The shown ratio is stored only while its exact value is not.
+        let (received, shown) = columns::optional::<i64>(status, received)?;
+        let (exact, held) = columns::optional::<i64>(status, exact)?;
         let maximum = columns::plain::<i64>(status, maximum)?;
         let remaining = columns::plain::<i64>(status, remaining)?;
         let land_read = columns::truncated(state, TableId::DivisionLandInputs);
@@ -264,8 +267,15 @@ impl Projector {
                 return Ok(UNKNOWN);
             };
             let at = status_slot as usize;
+            let received = if shown.get(status_slot) {
+                native(received.get(at).copied().unwrap_or_default(), received_step)?
+            } else if held.get(status_slot) {
+                DivisionStatusRow::SUPPLY_RATIO_STEP.round(exact.get(at).copied().unwrap_or_default())
+            } else {
+                return Ok(UNKNOWN);
+            };
             Ok(defines.bucket(&Supply {
-                received: native(received.get(at).copied().unwrap_or_default(), received_step)?,
+                received,
                 maximum_grace: maximum.get(at).copied().unwrap_or_default(),
                 remaining_grace: native(
                     remaining.get(at).copied().unwrap_or_default(),

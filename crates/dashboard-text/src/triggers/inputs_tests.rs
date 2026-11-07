@@ -1545,7 +1545,7 @@ fn richer_frame() -> DecodedFrame {
         &mut frame,
         vec![DivisionStatusRow {
             division: 77,
-            supply_ratio: 5,
+            supply_ratio: Some(5),
             ..Default::default()
         }],
     );

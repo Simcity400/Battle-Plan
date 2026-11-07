@@ -96,6 +96,8 @@ const PLAIN: SpeedTerms<'static> = SpeedTerms {
     edge: &no_edge_terms,
     organisation: None,
     fuel: None,
+    // 4 km/h: with outer scale 1.0 every edge runs at 400000 per hour.
+    base_speed: Some(400_000),
 };
 
 /// [`PLAIN`] with `infrastructure` as each edge's only term.
@@ -130,8 +132,6 @@ fn movement(path: Vec<u32>) -> DivisionMovementRow {
         division: 51,
         path_total: path.len() as u32,
         path,
-        // 4 km/h: with outer scale 1.0 every edge runs at 400000 per hour.
-        base_speed: Some(400_000).into(),
         ..Default::default()
     }
 }
@@ -164,8 +164,6 @@ fn division_progress_needs_only_the_route_location_and_content() {
         )
     };
     assert_eq!(progress(&path, Some(1)), Some(150_000));
-    // The base speed is not an operand of progress.
-    path.base_speed = Recorded::NotRecorded;
     assert_eq!(progress(&path, Some(1)), Some(150_000));
     path.path.truncate(1);
     assert_eq!(progress(&path, Some(1)), Some(150_000));
@@ -245,8 +243,14 @@ fn an_estimate_is_the_remaining_route_distance_over_the_base_speed() {
     // 50000/400000 = 0.125 h is already behind the division.
     assert_eq!(estimate_with(&path, 1, distance), Ok((12_500, 75_000)));
     // Twice the speed halves every term.
-    path.base_speed = Some(800_000).into();
-    assert_eq!(estimate_with(&path, 1, distance), Ok((6_250, 37_500)));
+    let fast = SpeedTerms {
+        base_speed: Some(800_000),
+        ..PLAIN
+    };
+    assert_eq!(
+        estimate(&path, 1, land, distance, &fast, &defines()),
+        Ok((6_250, 37_500))
+    );
     // The estimate is the native walk with each leg at the estimated speed.
     let speed = edge_speed(800_000, 1, 2, &PLAIN, &defines()).unwrap();
     let legs = [
@@ -301,10 +305,13 @@ fn the_edge_speed_floors_at_one_kilometre_and_applies_the_movement_scale() {
             "{base}"
         );
     }
-    let mut path = movement(vec![2]);
-    path.base_speed = Some(0).into();
+    let path = movement(vec![2]);
+    let still = SpeedTerms {
+        base_speed: Some(0),
+        ..PLAIN
+    };
     assert_eq!(
-        estimate(&path, 1, land, |_, _| Some(200_000), &PLAIN, &scaled),
+        estimate(&path, 1, land, |_, _| Some(200_000), &still, &scaled),
         Ok((100_000, 100_000))
     );
 }
@@ -468,22 +475,18 @@ fn an_estimate_refuses_by_name_instead_of_guessing() {
     let path = movement(vec![2, 3]);
     let ok = |_, _| Some(100_000);
     // A division standing still needs no speed.
-    let mut still = movement(Vec::new());
-    still.base_speed = Recorded::Value(None);
-    assert_eq!(estimate_with(&still, 1, ok), Ok((0, 0)));
-    let mut old = path.clone();
-    old.base_speed = Recorded::NotRecorded;
-    assert!(
-        estimate_with(&old, 1, ok)
-            .unwrap_err()
-            .contains("DivisionMovement.base_speed")
+    let unknown = SpeedTerms {
+        base_speed: None,
+        ..PLAIN
+    };
+    let still = movement(Vec::new());
+    assert_eq!(
+        estimate(&still, 1, land, ok, &unknown, &defines()),
+        Ok((0, 0))
     );
-    let mut refused = path.clone();
-    refused.base_speed = Recorded::Value(None);
-    assert!(
-        estimate_with(&refused, 1, ok)
-            .unwrap_err()
-            .contains("refused")
+    assert_eq!(
+        estimate(&path, 1, land, ok, &unknown, &defines()),
+        Err("the division's base speed is not recorded".into())
     );
     assert!(
         estimate_with(&path, 0, ok)
@@ -523,15 +526,17 @@ fn a_prospective_route_subtracts_progress_only_on_the_recorded_first_edge() {
         Ok(50_000)
     );
     // An empty search result needs no speed.
-    path.base_speed = Recorded::NotRecorded;
+    let unknown = SpeedTerms {
+        base_speed: None,
+        ..PLAIN
+    };
     assert_eq!(
-        estimate_route(&path, 1, &[], land, distance, &PLAIN, &defines()),
+        estimate_route(&path, 1, &[], land, distance, &unknown, &defines()),
         Ok(0)
     );
-    assert!(
-        estimate_route(&path, 1, &[2], land, distance, &PLAIN, &defines())
-            .unwrap_err()
-            .contains("base_speed")
+    assert_eq!(
+        estimate_route(&path, 1, &[2], land, distance, &unknown, &defines()),
+        Err("the division's base speed is not recorded".into())
     );
 }
 
@@ -549,13 +554,13 @@ fn only_a_normal_edge_reads_the_base_speed() {
     };
     let terms = SpeedTerms {
         edge: &special,
+        base_speed: None,
         ..PLAIN
     };
-    let mut path = movement(vec![2, 3]);
+    let path = movement(vec![2, 3]);
     let distance = |_, _| Some(350_000);
     // 1 -> 2 at 8 * 0.5 = 4 km/h, 2 -> 3 at 7 km/h, whatever the base speed.
-    for base_speed in [Recorded::Value(None), Recorded::NotRecorded] {
-        path.base_speed = base_speed;
+    {
         assert_eq!(
             estimate(&path, 1, land, distance, &terms, &defines()),
             Ok((87_500, 137_500))
@@ -575,17 +580,12 @@ fn only_a_normal_edge_reads_the_base_speed() {
     };
     let terms = SpeedTerms {
         edge: &mixed,
+        base_speed: None,
         ..PLAIN
     };
-    assert!(
-        estimate(&path, 1, land, distance, &terms, &defines())
-            .unwrap_err()
-            .contains("DivisionMovement.base_speed")
-    );
-    path.base_speed = Recorded::Value(None);
     assert_eq!(
         estimate(&path, 1, land, distance, &terms, &defines()),
-        Err("the division's base speed was refused".into())
+        Err("the division's base speed is not recorded".into())
     );
 }
 
@@ -633,6 +633,7 @@ fn the_common_modifier_adds_country_commander_weather_supply_and_retreat_terms()
         edge: &edge,
         organisation: None,
         fuel: Some(50_000),
+        base_speed: Some(400_000),
     };
     // 4 km/h * (0.9 - 0.3) = 2.4, fuel 0.5: 1.2 km/h.
     assert_eq!(edge_speed(400_000, 1, 2, &terms, &defines()), Ok(120_000));
@@ -702,6 +703,7 @@ fn a_scaled_edge_multiplies_its_speed_by_its_own_scale() {
         edge: &transport,
         organisation: Some(10_000),
         fuel: Some(10_000),
+        base_speed: Some(400_000),
     };
     // The outer scale (1.0) does not apply: 3 km/h times 0.5.
     assert_eq!(edge_speed(400_000, 1, 2, &terms, &defines()), Ok(150_000));

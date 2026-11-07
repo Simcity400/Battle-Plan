@@ -203,47 +203,29 @@ mod tests {
         ] {
             assert_eq!(table as u16, id);
         }
-        for table in [TableId::DivisionStatus, TableId::DivisionTemplateIcons] {
-            assert_eq!(
-                table.last_change().format,
-                if table == TableId::DivisionStatus {
-                    crate::rows::compatibility::DAILY_PROGRESS_FORMAT
-                } else {
-                    104
-                }
-            );
-            let fields: Vec<_> = table
-                .last_change()
-                .appended
-                .iter()
-                .filter(|field| field.introduced == 104)
-                .map(|field| field.name)
-                .collect();
-            assert_eq!(
-                fields,
-                if table == TableId::DivisionStatus {
-                    vec![
-                        "experience",
-                        "pending_template",
-                        "officer_experience",
-                        "career_counter",
-                        "panel_source",
-                        "combat_movement",
-                        "organisation_exact",
-                        "maximum_organisation_exact",
-                        "commander_width_factor",
-                    ]
-                } else {
-                    vec![
-                        "manpower_exile",
-                        "base_width",
-                        "layout",
-                        "settings",
-                        "speed_keys",
-                    ]
-                }
-            );
-        }
+        // DivisionStatus has been relaid since (STORED_ONCE_FORMAT).
+        assert_eq!(
+            TableId::DivisionStatus.last_change().format,
+            crate::rows::compatibility::STORED_ONCE_FORMAT
+        );
+        assert_eq!(TableId::DivisionTemplateIcons.last_change().format, 104);
+        let fields: Vec<_> = TableId::DivisionTemplateIcons
+            .last_change()
+            .appended
+            .iter()
+            .filter(|field| field.introduced == 104)
+            .map(|field| field.name)
+            .collect();
+        assert_eq!(
+            fields,
+            vec![
+                "manpower_exile",
+                "base_width",
+                "layout",
+                "settings",
+                "speed_keys",
+            ]
+        );
     }
 
     #[test]
@@ -279,7 +261,7 @@ mod tests {
     fn compatibility_refusal_sets_are_exact_for_every_published_format() {
         assert_eq!(
             FORMAT_VERSION,
-            crate::rows::compatibility::BLOCK_RECORDINGS_FORMAT
+            crate::rows::compatibility::STORED_ONCE_FORMAT
         );
         for version in PROVEN_FROM..=FORMAT_VERSION {
             if version == RETIRED_FORMAT {
@@ -308,10 +290,12 @@ mod tests {
             if version < crate::rows::compatibility::DAILY_PROGRESS_FORMAT {
                 expected.extend([
                     TableId::CombatLogObservers,
-                    TableId::DivisionStatus,
                     TableId::UnitLeaders,
                     TableId::UnitLeaderTraitExperience,
                 ]);
+            }
+            if version < crate::rows::compatibility::STORED_ONCE_FORMAT {
+                expected.extend(crate::rows::compatibility::STORED_ONCE_TABLES);
             }
             if version < crate::rows::compatibility::OCCUPATION_MAP_FORMAT {
                 expected.push(TableId::StateResistance);
@@ -584,6 +568,8 @@ mod tests {
                 expected.push(TableId::RaidTooltipOperands);
             }
             expected.sort_unstable_by_key(|table| table.index());
+            // A table refused for two reasons is refused once.
+            expected.dedup();
             assert_eq!(
                 TableId::ALL
                     .into_iter()

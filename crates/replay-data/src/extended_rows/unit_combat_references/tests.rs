@@ -165,8 +165,8 @@ fn movement_and_railway_suffix_deltas_keep_legacy_fields_and_clear_refusal() {
         combat_references: Some(packet()).into(),
         ..old.clone()
     };
-    suffix(TableId::DivisionMovement, 19, &old, &row);
-    suffix(TableId::DivisionMovement, 19, &row, &old);
+    suffix(TableId::DivisionMovement, 18, &old, &row);
+    suffix(TableId::DivisionMovement, 18, &row, &old);
     let old = RailwayGunCounterInputRow {
         gun: u64::MAX,
         combat_count: 3,
@@ -233,15 +233,6 @@ fn historical_prefix<T: RowCodec + Fields + std::fmt::Debug>(
 
 #[test]
 fn historical_snapshots_and_deltas_never_become_a_present_empty_vector() {
-    let row = DivisionMovementRow {
-        division: u64::MAX,
-        combat_count: 3,
-        combat_references: Some(packet()).into(),
-        ..Default::default()
-    };
-    let decoded = historical_prefix(TableId::DivisionMovement, 19, &row);
-    assert_eq!(decoded.combat_count, 3);
-    assert_eq!(decoded.combat_references, Recorded::NotRecorded);
     let row = RailwayGunCounterInputRow {
         gun: u64::MAX,
         combat_count: 3,

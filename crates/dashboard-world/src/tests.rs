@@ -5,7 +5,7 @@ use replay::{
 };
 use replay_data::rows::{
     CountryLinkRow, CountryRow, DivisionLandInputsRow, DivisionManpowerContributor, DivisionRow,
-    DivisionStatusRow, Recorded, RowCodec, StateRow, tables,
+    DivisionPanelStatsRow, Recorded, RowCodec, StateRow, tables,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -844,7 +844,7 @@ struct Army {
     divisions: BTreeMap<u64, DivisionRow>,
     status: BTreeMap<u64, i64>,
     land: BTreeMap<u64, Vec<i32>>,
-    /// Divisions, DivisionStatus and DivisionLandInputs unavailable this hour.
+    /// Divisions, DivisionPanelStats and DivisionLandInputs unavailable this hour.
     refused: [bool; 3],
     next: u64,
 }
@@ -948,13 +948,16 @@ impl Army {
             .unwrap()
         };
         let divisions: Vec<DivisionRow> = self.divisions.values().cloned().collect();
-        let status: Vec<DivisionStatusRow> = self
+        let status: Vec<DivisionPanelStatsRow> = self
             .status
             .iter()
-            .map(|(&division, &maximum_hit_points)| DivisionStatusRow {
-                division,
-                maximum_hit_points,
-                ..Default::default()
+            .map(|(&division, &maximum_hit_points)| {
+                let mut row = DivisionPanelStatsRow {
+                    division,
+                    ..Default::default()
+                };
+                row.panel_stats[0] = Some(maximum_hit_points);
+                row
             })
             .collect();
         let land: Vec<DivisionLandInputsRow> = self
@@ -975,9 +978,9 @@ impl Army {
             snapshot(walk, TableId::Divisions, &divisions);
         }
         if self.refused[1] {
-            refuse(walk, TableId::DivisionStatus);
+            refuse(walk, TableId::DivisionPanelStats);
         } else {
-            snapshot(walk, TableId::DivisionStatus, &status);
+            snapshot(walk, TableId::DivisionPanelStats, &status);
         }
         if self.refused[2] {
             refuse(walk, TableId::DivisionLandInputs);
@@ -991,7 +994,7 @@ impl Army {
 #[derive(Debug, PartialEq, Eq)]
 struct Armed {
     divisions: Option<BTreeMap<u64, Division>>,
-    maxima: Option<BTreeMap<u64, i64>>,
+    maxima: Option<BTreeMap<u64, Option<i64>>>,
     manpower: Option<BTreeMap<u64, i32>>,
 }
 
@@ -1028,9 +1031,9 @@ fn decoded(frame: &DecodedFrame) -> Armed {
                 })
                 .collect()
         }),
-        maxima: frame.complete::<tables::DivisionStatus>().ok().map(|rows| {
+        maxima: frame.complete::<tables::DivisionPanelStats>().ok().map(|rows| {
             rows.iter()
-                .map(|row| (row.division, row.maximum_hit_points))
+                .map(|row| (row.division, row.maximum_hit_points()))
                 .collect()
         }),
         manpower: frame
@@ -1083,7 +1086,7 @@ fn reported_edits<T: Copy + PartialEq>(kept: &Kept<T>) -> Changed<T> {
 fn divisions_kept_from_changes_are_the_row_decoder_s() {
     let tables = [
         TableId::Divisions,
-        TableId::DivisionStatus,
+        TableId::DivisionPanelStats,
         TableId::DivisionLandInputs,
     ];
     let needs = Needs {

@@ -64,7 +64,7 @@ pub const TABLES: &[TableId] = &[
     TableId::DivisionTemplateIcons,
     TableId::VariantDefinitions,
     TableId::Divisions,
-    TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
     TableId::DivisionLandInputs,
     TableId::NewDivisionEquipment,
     TableId::DivisionEquipment,
@@ -801,6 +801,31 @@ fn kept<T: Copy + PartialEq, R>(
     Ok(Rows::Changed(set, gone))
 }
 
+/// [`kept`] of the maxima, a refused one dropped: the engine reads a division without one as
+/// unknown.
+fn known(kept: &Kept<Option<i64>>, whole: bool) -> io::Result<Rows<(u64, i64)>> {
+    if !kept.holds() {
+        return Ok(Rows::Same);
+    }
+    if whole || kept.whole() {
+        let mut rows = engine_allocation::vec(kept.len())?;
+        rows.extend(kept.iter().filter_map(|(id, value)| value.map(|value| (id, value))));
+        return Ok(Rows::Whole(rows));
+    }
+    if kept.edits().is_empty() {
+        return Ok(Rows::Same);
+    }
+    let mut set = Vec::new();
+    let mut gone = Vec::new();
+    for &(id, _, after) in kept.edits() {
+        match after.flatten() {
+            Some(value) => set.push((id, value)),
+            None => gone.push(u128::from(id)),
+        }
+    }
+    Ok(Rows::Changed(set, gone))
+}
+
 impl Operator<World> for Projector {
     type Output = Hour;
 
@@ -896,7 +921,7 @@ impl Operator<World> for Projector {
             reads,
             complete,
             divisions: kept(walked.divisions(), whole, |_, division| division)?,
-            maxima: kept(walked.maxima(), whole, |id, value| (id, value))?,
+            maxima: known(walked.maxima(), whole)?,
             manpower: kept(walked.manpower(), whole, |id, value| (id, i64::from(value)))?,
             new: self.entries(state, NEW, again(NEW))?,
             daily: self.entries(state, DAILY, again(DAILY))?,

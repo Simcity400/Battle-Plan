@@ -1,4 +1,4 @@
-//! Converts a version 3 or 4 columnar recording to version 5 as the recorder writes it: every
+//! Converts a version 3 or 4 columnar recording to this build's version as the recorder writes it: every
 //! segment's hours made into blocks on its own worker ([`replay::columnar_blocks`]), then
 //! written in order ([`replay::columnar_file::FileWriter`]). With `--check`, the written file
 //! is then opened by the reader and every segment walked beside the source's walk, hour by

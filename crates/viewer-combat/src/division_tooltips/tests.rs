@@ -1,4 +1,12 @@
 use super::*;
+use replay_data::rows::Recorded;
+
+fn member(row: &LandCombatDivisionRow) -> LandCombatMember<'_> {
+    LandCombatMember {
+        row,
+        values: row.own.as_ref(),
+    }
+}
 /// The reinforcement chance arm from the recorded initiative, context keys and
 /// speed share: REINFORCE_CHANCE, the country's 0xFB, the initiative scaled
 /// by both 0x250 keys and the factor, the share times the bonus and the
@@ -42,8 +50,11 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
     let present = |raw| LandDivisionModifier { raw, present: 1 };
     let mut row = LandCombatDivisionRow {
         role: 2,
-        initiative: 50_000,
-        reinforcement_speed: Recorded::Value(Some(50_000)),
+        reinforcement_speed: Some(50_000),
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            initiative: 50_000,
+            ..Default::default()
+        }),
         ..Default::default()
     };
     row.context.country_modifiers[0] = present(5_000);
@@ -58,7 +69,7 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
         ..Default::default()
     };
     let chance = |row: &LandCombatDivisionRow| {
-        reinforcement(row, &condition, Ok((100_000, 0)), Ok(&defines))
+        reinforcement(&member(row), &condition, Ok((100_000, 0)), Ok(&defines))
     };
     // Initiative: 1.2 x 0.5 = 0.6, x 1.1 = 0.66, x 0.25 = 0.165; speed:
     // 0.5 x 0.01 = 0.005; 0.02 + 0.05 + 0.165 + 0.005 + 0.03 = 0.27.
@@ -121,7 +132,7 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
     // Without a contextual leader neither its 0x250 nor its 0xFB applies,
     // and a zero term prints no line.
     row.context.leader_modifier_kind = 0;
-    row.reinforcement_speed = Recorded::Value(Some(0));
+    row.reinforcement_speed = Some(0);
     assert_eq!(
         chance(&row),
         Ok(Reinforcement::Chance {
@@ -132,15 +143,8 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
             leader: 0,
         })
     );
-    // A recording without the share, or a share refused at capture,
-    // refuses the arm by name.
-    row.reinforcement_speed = Recorded::NotRecorded;
-    let result = chance(&row).unwrap();
-    assert_eq!(
-        reinforcement_text(&NoIcons, &loc, &result, None),
-        Err(RESERVE_SPEED_UNRECORDED.into())
-    );
-    row.reinforcement_speed = Recorded::Value(None);
+    // A share refused at capture refuses the arm by name.
+    row.reinforcement_speed = None;
     let result = chance(&row).unwrap();
     assert_eq!(
         reinforcement_text(&NoIcons, &loc, &result, None),
@@ -151,9 +155,9 @@ fn the_reserve_chance_arm_sums_the_recorded_operands_and_rejections_keep_their_t
         organisation: ADVANCE_ORGANISATION - 1,
         ..condition
     };
-    row.reinforcement_speed = Recorded::NotRecorded;
+    row.reinforcement_speed = None;
     assert_eq!(
-        reinforcement(&row, &tired, Ok((100_000, 0)), Ok(&defines)),
+        reinforcement(&member(&row), &tired, Ok((100_000, 0)), Ok(&defines)),
         Ok(Reinforcement::Rejected(COMREIC_NOT_FIGHT))
     );
 }
@@ -303,21 +307,31 @@ fn the_division_summary_names_its_missing_or_unrenderable_key() {
         .collect()
     };
     let row = LandCombatDivisionRow {
-        scales: [0, 0, 50_000, 100_000].map(replay_data::rows::Recorded::Value),
+        scales: [0, 0, 50_000, 100_000],
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     };
     // A missing top-level key shows its own bytes.
     assert!(
-        division_summary(&NoIcons, &entries(&[]), "1st", &row, Some(10_000), None)
-            .unwrap()
-            .contains("\nNAVAL_INVASION_ATTACK_SCALE\nNAVAL_INVASION_DEFEND_SCALE\n")
+        division_summary(
+            &NoIcons,
+            &entries(&[]),
+            "1st",
+            &member(&row),
+            Some(10_000),
+            None
+        )
+        .unwrap()
+        .contains("\nNAVAL_INVASION_ATTACK_SCALE\nNAVAL_INVASION_DEFEND_SCALE\n")
     );
     let flagged = entries(&[
         ("NAVAL_INVASION_ATTACK_SCALE", "@GER"),
         ("NAVAL_INVASION_DEFEND_SCALE", "$VALUE$"),
     ]);
     assert_eq!(
-            division_summary(&NoIcons, &flagged, "1st", &row, Some(10_000), None),
+            division_summary(&NoIcons, &flagged, "1st", &member(&row), Some(10_000), None),
             Err(
                 "localisation NAVAL_INVASION_ATTACK_SCALE holds the inline flag 0x12 \"GER\" (an authored `@`), which the viewer does not draw"
                     .into()
@@ -327,7 +341,17 @@ fn the_division_summary_names_its_missing_or_unrenderable_key() {
         ("NAVAL_INVASION_ATTACK_SCALE", "$VALUE$"),
         ("NAVAL_INVASION_DEFEND_SCALE", "$VALUE$"),
     ]);
-    assert!(division_summary(&NoIcons, &complete, "1st", &row, Some(10_000), None).is_ok());
+    assert!(
+        division_summary(
+            &NoIcons,
+            &complete,
+            "1st",
+            &member(&row),
+            Some(10_000),
+            None
+        )
+        .is_ok()
+    );
 }
 
 #[test]
@@ -472,7 +496,7 @@ fn reserve_rejection_precedes_movement_inputs() {
     let mut row = LandCombatDivisionRow::default();
     let mut condition = Condition::default();
     assert_eq!(
-        reinforcement(&row, &condition, Err("unused"), Err("unused")),
+        reinforcement(&member(&row), &condition, Err("unused"), Err("unused")),
         Ok(Reinforcement::Rejected("COMREIC_NOT_FIGHT"))
     );
     condition.strength = ADVANCE_STRENGTH;
@@ -488,16 +512,26 @@ fn reserve_rejection_precedes_movement_inputs() {
     defines.reinforce.over_width_penalty = -200_000;
     defines.reinforce.over_width_penalty_max = -100_000;
     assert_eq!(
-        reinforcement(&row, &condition, Ok((100_000, 0)), Ok(&defines)),
+        reinforcement(&member(&row), &condition, Ok((100_000, 0)), Ok(&defines)),
         Ok(Reinforcement::Rejected("COMREIC_TOO_MUCH_WIDTH"))
     );
     // Without the defines or the widths the hover names the operand.
     assert_eq!(
-        reinforcement(&row, &condition, Ok((100_000, 0)), Err("no NMilitary")),
+        reinforcement(
+            &member(&row),
+            &condition,
+            Ok((100_000, 0)),
+            Err("no NMilitary")
+        ),
         Err("the land combat defines are unavailable (no NMilitary)".into())
     );
     assert_eq!(
-        reinforcement(&row, &condition, Err("width unknown"), Ok(&defines)),
+        reinforcement(
+            &member(&row),
+            &condition,
+            Err("width unknown"),
+            Ok(&defines)
+        ),
         Err("width unknown".into())
     );
 }
@@ -691,6 +725,9 @@ fn reserve_sources_join_the_recorded_country_and_commander_trees() {
     let mut row = LandCombatDivisionRow {
         division: 11,
         commander: 77,
+        own: Some(replay_data::rows::LandCombatMemberValues {
+            ..Default::default()
+        }),
         ..Default::default()
     };
     row.context.leader_modifier_kind = 1;

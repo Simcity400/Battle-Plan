@@ -706,13 +706,14 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     assert_eq!(divisions[0].province, 362);
     assert_eq!(divisions[0].direction_group, -3);
     assert_eq!(divisions[0].categories, 0x4000_0000_0000_0001);
+    let own = divisions[0].own.as_ref().unwrap();
     assert_eq!(
         (
-            divisions[0].name_type,
-            divisions[0].name_order,
-            divisions[0].name_ordered,
-            divisions[0].name_group.as_slice(),
-            divisions[0].name_custom.as_slice()
+            own.naming.kind,
+            own.naming.order,
+            own.naming.ordered,
+            own.naming.group.as_slice(),
+            own.naming.custom.as_slice()
         ),
         (2, 14, 1, b"GER_INF_01".as_slice(), b"Guards".as_slice())
     );
@@ -728,14 +729,11 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     );
     assert_eq!(divisions[1].exile, None);
     assert_eq!(divisions[0].commander, 0x1234_0000_0021);
-    assert_eq!(divisions[0].initiative, 2_500);
+    assert_eq!(own.initiative, 2_500);
     // The committed division has no share; the reserve's is published, and a
     // refused one is known to be missing.
-    assert_eq!(divisions[0].reinforcement_speed, Recorded::Value(None));
-    assert_eq!(
-        divisions[1].reinforcement_speed,
-        Recorded::Value(Some(35_000))
-    );
+    assert_eq!(divisions[0].reinforcement_speed, None);
+    assert_eq!(divisions[1].reinforcement_speed, Some(35_000));
     captured.divisions.rows[1].reserve_speed = Some(Err("refused"));
     let [
         _,
@@ -747,18 +745,20 @@ fn naming_direction_and_exile_operands_project_onto_division_rows() {
     else {
         panic!("complete land divisions were not projected")
     };
-    assert_eq!(refused[1].reinforcement_speed, Recorded::Value(None));
-    assert_eq!(
-        (
-            divisions[0].commander_inputs,
-            divisions[0].reinforcement,
-            divisions[0].reinforcement_modifiers,
-            divisions[0].reinforcement_supply,
-            divisions[0].reinforcement_acclimatization,
-            divisions[0].reinforcement_transport,
-        ),
-        (Retired, Retired, Retired, Retired, Retired, Retired)
-    );
+    assert_eq!(refused[1].reinforcement_speed, None);
+    // A member the division rows publish stores no copy.
+    captured.divisions.rows[0].joined = true;
+    let [
+        _,
+        TableView::Complete(replay_data::rows::TableRows::LandCombatDivisions(joined)),
+        _,
+        _,
+        ..,
+    ] = captured.tables()
+    else {
+        panic!("complete land divisions were not projected")
+    };
+    assert_eq!((joined[0].own.is_none(), joined[1].own.is_some()), (true, true));
 }
 
 #[test]
@@ -958,15 +958,16 @@ fn land_combat_division_modifiers_hold_a_row_a_member_in_key_order() {
             combat: 7,
             side: 0,
             ordinal: 0,
-            division: 70,
             entries: vec![modifier_entry(4, 10), modifier_entry(4, 10)],
+            // No published member row names the division, so the row keeps it.
+            division: Some(70),
         },
         LandCombatDivisionModifierRow {
             combat: 7,
             side: 0,
             ordinal: 1,
-            division: 71,
             entries: vec![modifier_entry(6, 7_000)],
+            division: Some(71),
         },
     ];
     assert_eq!(rows, &expected);

@@ -4552,7 +4552,7 @@ mod tests {
             ..previous.clone()
         };
         let delta = next.delta(Some(&previous)).unwrap().unwrap();
-        assert_eq!(delta.mask, (1 << 27) | (1 << 28));
+        assert_eq!(delta.mask, (1 << 10) | (1 << 11));
         assert_eq!(delta.apply(Some(previous.clone())).unwrap(), next);
         let mut bytes = Vec::new();
         encode_delta(TableId::LandCombatDivisions, &delta, 0, &mut bytes).unwrap();

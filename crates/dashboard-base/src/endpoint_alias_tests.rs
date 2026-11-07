@@ -15,35 +15,21 @@ fn alias_frame(hour: i32) -> DecodedFrame {
             Some(100_001 + hour as i64 * 20_000 + at as i64 * 10_001)
         }),
         suppression: Some(320_023 + hour as i64 * 20_000).into(),
+        status_maxima: [None; 2],
     };
     let strength = 90_000 + hour as i64;
     let air = 30_000 + hour as i64;
     let fuel = 20_000 + hour as i64;
-    let mut member = LandCombatDivisionRow {
+    let member = LandCombatDivisionRow {
         combat: (47_u64 << 32) | 42,
         division,
-        strength_combat_factor: strength,
-        armour: panel.panel_stats[13].unwrap(),
-        piercing: panel.panel_stats[14].unwrap(),
-        reconnaissance: panel.panel_stats[3].unwrap(),
-        initiative: panel.panel_stats[15].unwrap(),
-        air_attack: air,
-        fuel_inputs: [fuel.into(), 99_999.into()],
         ..Default::default()
     };
-    for (at, stat) in [11, 12, 20, 9, 10].into_iter().enumerate() {
-        member.stat_values[at] = panel.panel_stats[stat].unwrap().into();
-    }
     let status = DivisionStatusRow {
         division,
-        supply_ratio: rows::DivisionStatusRow::SUPPLY_RATIO_STEP
-            .round(12_345 + i64::from(hour) * 1_000),
+        supply_ratio: None,
         supply_ratio_exact: Some(12_345 + i64::from(hour) * 1_000).into(),
-        supply_grace_remaining: rows::DivisionStatusRow::displayed_grace(
-            700_000 + i64::from(hour) * 143_000,
-            Some(143),
-        )
-        .into(),
+        supply_grace_remaining: Recorded::Value(0),
         supply_grace_exact: Some(700_000 + i64::from(hour) * 143_000).into(),
         organisation_exact: Some(123_456 + i64::from(hour) * 10_000).into(),
         strength_factor: strength,
@@ -61,7 +47,6 @@ fn alias_frame(hour: i32) -> DecodedFrame {
     };
     let modifier = LandCombatDivisionModifierRow {
         combat: member.combat,
-        division,
         ..Default::default()
     };
     let factories = vec![100_001 + hour as i64, 300_001 + hour as i64, i64::MAX];
@@ -163,14 +148,6 @@ fn alias_frame(hour: i32) -> DecodedFrame {
         frame.metrics.table_ns[table.index()] = 1;
     }
     match (hour - 300) % 12 {
-        3 => {
-            let TableView::Complete(TableRows::LandCombatDivisions(rows)) =
-                &mut *frame.tables[TableId::LandCombatDivisions.index()]
-            else {
-                panic!()
-            };
-            rows[0].armour = i64::MIN; // A literal exception to the copy alias.
-        }
         4 => {
             for table in [
                 TableId::DivisionPanelStats,
@@ -258,21 +235,6 @@ fn endpoint_accepted_stream_matches_plain_frames_across_aliases_and_keyframes() 
                 drop(bytes);
                 let restored = step.apply(previous.as_ref())?;
                 assert_eq!(canonical(&restored), expected[count]);
-                if let (
-                    TableView::Complete(TableRows::DivisionPanelStats(panel)),
-                    TableView::Complete(TableRows::LandCombatDivisions(member)),
-                ) = (
-                    &*restored.tables[TableId::DivisionPanelStats.index()],
-                    &*restored.tables[TableId::LandCombatDivisions.index()],
-                ) && let (Some(panel), Some(member)) = (panel.first(), member.first())
-                {
-                    let expected_armour = if (frame.hour - 300) % 12 == 3 {
-                        i64::MIN
-                    } else {
-                        panel.panel_stats[13].unwrap()
-                    };
-                    assert_eq!(member.armour, expected_armour);
-                }
                 if let TableView::Complete(TableRows::ProductionLines(lines)) =
                     &*restored.tables[TableId::ProductionLines.index()]
                     && let Some(line) = lines.first()

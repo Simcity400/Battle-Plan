@@ -49,7 +49,7 @@ fn frame(province: u32, path_total: u32, path: Vec<u32>) -> DecodedFrame {
             division: 1,
             attrition_value: 2_500,
             attrition_threshold: 0,
-            supply_ratio: 100_000,
+            supply_ratio: Some(100_000),
             supply_grace_maximum: Recorded::Value(100_000),
             supply_grace_remaining: Recorded::Value(0),
             out_of_supply_days: Recorded::Value(Some(0)),
@@ -416,7 +416,7 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
     assert!(!refused(&out, "attrition supply"), "{:?}", out.refused);
     // A 0.1 exact received ratio is 2/7 of the 0.35 threshold: 5/7 unsupplied, half
     // the supply days, times 0.2: 7.14%. The displayed ratio is not the operand.
-    status(&mut frame).supply_ratio = 0;
+    status(&mut frame).supply_ratio = None;
     status(&mut frame).out_of_supply_days = Recorded::Value(Some(15));
     status(&mut frame).supply_ratio_exact = Recorded::Value(Some(10_000));
     status(&mut frame).supply_grace_exact = Recorded::Value(Some(0));
@@ -487,7 +487,7 @@ fn the_supply_line_follows_the_recorded_supply_and_days() {
     status(&mut frame).supply_grace_exact = Recorded::Value(None);
     assert!(refused(&rendered(&frame), "attrition supply"));
     // A refused day count refuses the line by name.
-    status(&mut frame).supply_ratio = 10_000;
+    status(&mut frame).supply_ratio = Some(10_000);
     status(&mut frame).out_of_supply_days = Recorded::Value(None);
     assert!(refused(&rendered(&frame), "attrition supply"));
 }

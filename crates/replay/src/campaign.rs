@@ -1,5 +1,5 @@
 //! A campaign's recording: one `<Campaign name>.battleplan` file holding every session of it
-//! (`H4COLUMN` version 6, [`replay_columnar::envelope`]). Its runs hold every table's hours as
+//! (`H4COLUMN` version 7, [`replay_columnar::envelope`]). Its runs hold every table's hours as
 //! columns ([`crate::columnar_frames`]); its root's campaign records extents hold its sessions,
 //! branches, gaps, control records, recovery notes, where each run came from and where a
 //! capture's writer stopped ([`records`]); its facts extents hold the game facts it carries.

@@ -1,13 +1,33 @@
 //! Recorded land combat condition, modifier and survival-score arithmetic.
 use crate::map::tables::rows;
 use replay_data::{
-    rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandDivisionContext,
-    rows::tables,
+    rows::LandCombatDetailsRow, rows::LandCombatDivisionRow, rows::LandCombatMember,
+    rows::LandCombatMemberValues, rows::LandDivisionContext, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 
-pub type Divisions<'a> = BTreeMap<(u8, u64), &'a LandCombatDivisionRow>;
+pub type Divisions<'a> = BTreeMap<(u8, u64), LandCombatMember<'a>>;
+
+/// The rows of `combat`'s members, which sort together.
+pub fn combat_rows(rows: &[LandCombatDivisionRow], combat: u64) -> &[LandCombatDivisionRow] {
+    let start = rows.partition_point(|row| row.combat < combat);
+    let len = rows[start..].partition_point(|row| row.combat == combat);
+    &rows[start..start + len]
+}
+
+/// Each of `members`' division values, in row order, from the frame's division rows.
+pub fn member_values(
+    frame: &DecodedFrame,
+    members: &[LandCombatDivisionRow],
+) -> io::Result<Vec<Option<LandCombatMemberValues>>> {
+    Ok(replay_data::rows::land_combat_member_values(
+        members,
+        rows::<tables::DivisionPanelStats>(frame)?.rows(),
+        rows::<tables::DivisionStatus>(frame)?.rows(),
+        rows::<tables::DivisionMovement>(frame)?.rows(),
+    ))
+}
 
 /// A division's current hit points and organisation from `Divisions`, with
 /// their maxima from `DivisionStatus` when it has a row this hour.
@@ -21,11 +41,11 @@ pub struct Condition {
 
 pub type Conditions = BTreeMap<u64, Condition>;
 
-/// Every division with a `Divisions` row this hour. A missing
-/// `DivisionStatus` row leaves only the maxima unknown:
-/// organisation sum reads current organisation alone.
+/// Every division with a `Divisions` row this hour. A missing `DivisionPanelStats` row or
+/// refused word leaves only the maxima unknown: organisation sum reads current organisation
+/// alone.
 pub fn conditions(frame: &DecodedFrame) -> io::Result<Conditions> {
-    let status: BTreeMap<_, _> = rows::<tables::DivisionStatus>(frame)?
+    let panels: BTreeMap<_, _> = rows::<tables::DivisionPanelStats>(frame)?
         .rows()
         .iter()
         .map(|row| (row.division, row))
@@ -34,14 +54,14 @@ pub fn conditions(frame: &DecodedFrame) -> io::Result<Conditions> {
         .rows()
         .iter()
         .map(|row| {
-            let status = status.get(&row.id);
+            let panel = panels.get(&row.id);
             (
                 row.id,
                 Condition {
                     strength: row.hit_points,
-                    max_strength: status.map(|status| status.maximum_hit_points),
+                    max_strength: panel.and_then(|panel| panel.maximum_hit_points()),
                     organisation: row.organisation,
-                    max_organisation: status.map(|status| status.maximum_organisation),
+                    max_organisation: panel.and_then(|panel| panel.maximum_organisation()),
                 },
             )
         })
@@ -142,13 +162,13 @@ pub enum ScoreGap {
     /// A division without its `Divisions` row: a participant's current
     /// organisation or a firing committed division's current HP.
     Division(u64),
-    /// A firing committed division without its `DivisionStatus` row, whose
-    /// maximum HP is read on the early path.
+    /// A firing committed division whose `DivisionPanelStats` row lacks its maximum HP, which
+    /// the early path reads.
     MaximumStrength(u64),
     /// A committed division without its `LandCombatDivisions` row.
     Member { side: u8, division: u64 },
-    /// A committed division whose `LandCombatDivisions` row holds neither
-    /// its stats and scales nor an older recording's packets of them.
+    /// A committed division whose stats neither its `LandCombatDivisions` row nor its
+    /// division's rows of the hour hold.
     Numbers { side: u8, division: u64 },
 }
 
@@ -160,13 +180,13 @@ impl ScoreGap {
                 "division {division} has no Divisions row, whose current organisation and hit points it reads"
             ),
             Self::MaximumStrength(division) => format!(
-                "committed division {division} has no DivisionStatus row, whose maximum hit points the early damage estimate reads"
+                "committed division {division} has no maximum hit points in DivisionPanelStats, which the early damage estimate reads"
             ),
             Self::Member { side, division } => format!(
                 "committed division {division} on side {side} has no LandCombatDivisions row"
             ),
             Self::Numbers { side, division } => format!(
-                "committed division {division} on side {side} has no stats and scales in its LandCombatDivisions row"
+                "committed division {division} on side {side} has no stats in its LandCombatDivisions row or its division's rows"
             ),
         }
     }
@@ -188,11 +208,11 @@ fn early_damage(
                 division: id,
             })
     };
-    // A member's stats and scales, which an older recording holds as packets.
     let numbers = |side: usize, id: u64| -> Result<([i64; 5], [i64; 4]), ScoreGap> {
-        let row = member(side, id)?;
-        row.stat_values()
-            .zip(row.scales())
+        let member = member(side, id)?;
+        member
+            .values
+            .map(|values| (values.stat_values, member.scales))
             .ok_or(ScoreGap::Numbers {
                 side: side as u8,
                 division: id,
@@ -285,7 +305,7 @@ pub fn modifier(context: &LandDivisionContext, key: usize, leader: bool) -> Opti
 /// Early battles use damage estimates and the verified content definition context.
 pub fn side_scores<'a>(
     detail: &LandCombatDetailsRow,
-    divisions: impl IntoIterator<Item = &'a LandCombatDivisionRow>,
+    divisions: impl IntoIterator<Item = LandCombatMember<'a>>,
     conditions: &Conditions,
     participants: [&[u64]; 2],
     defines: ScoreDefines,

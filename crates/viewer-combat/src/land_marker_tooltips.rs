@@ -269,10 +269,14 @@ impl Cache {
                 .ok_or_else(|| format!("LandCombatDetails lacks combat {id}"))?;
             let divisions =
                 rows::<tables::LandCombatDivisions>(frame).map_err(|e| e.to_string())?;
+            let members =
+                viewer_foundation::land_combat_math::combat_rows(divisions.rows(), id);
+            let values = viewer_foundation::land_combat_math::member_values(frame, members)
+                .map_err(|e| e.to_string())?;
             let conditions = land_combat_math_conditions(frame).map_err(|e| e.to_string())?;
             let scores = side_scores(
                 detail,
-                divisions.rows(),
+                replay_data::rows::land_combat_members(members, &values),
                 &conditions,
                 [&combat.attackers, &combat.defenders],
                 static_content.scores,

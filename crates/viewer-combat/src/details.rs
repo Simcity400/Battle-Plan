@@ -1,7 +1,10 @@
 //! Combat window operands from recorded simulation state and matching content.
 use installed_content_division_names::{division_names::Database, division_names::Unresolved};
 use installed_content_localisation::{localisation::Argument, localisation::Localisation};
-use replay_data::{rows::LandCombatDivisionRow, rows::TableSchema, rows::tables};
+use replay_data::{
+    rows::LandCombatDivisionRow, rows::LandCombatMember, rows::TableSchema,
+    rows::land_combat_members, rows::tables,
+};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io};
 use viewer_foundation::tooltip_text::tooltip_keys;
@@ -11,7 +14,9 @@ use {
     super::binding::TEXT, super::binding::country_flag, super::binding::fill, super::binding::hide,
     super::binding::text, super::template_icons, super::tooltips::hover_text,
     super::tooltips::set_hover, viewer_foundation::land_combat_math::Condition,
-    viewer_foundation::land_combat_math::conditions, viewer_foundation::tooltip_text::TextIcons,
+    viewer_foundation::land_combat_math::combat_rows,
+    viewer_foundation::land_combat_math::conditions,
+    viewer_foundation::land_combat_math::member_values, viewer_foundation::tooltip_text::TextIcons,
     viewer_foundation::tooltip_text::builtin, viewer_foundation::tooltip_text::displayable,
     viewer_foundation::tooltip_text::token,
 };
@@ -187,26 +192,30 @@ impl std::fmt::Display for Unnamed {
 /// name group. Otherwise use the selected name of a type-zero member from
 /// the content's name groups.
 fn division_name(
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     names: &Database,
     localisation: &Localisation,
     recorded_language: &str,
 ) -> Result<String, Unnamed> {
+    let naming = &row.values.ok_or_else(|| Unnamed::Unavailable(UNRECORDED_NAMING.into()))?.naming;
     division_name_operands(
         division_custom_name(
-            &row.name_custom,
-            row.name_programmatic,
-            &row.name_group,
+            &naming.custom,
+            naming.programmatic,
+            &naming.group,
             localisation,
             recorded_language,
         )?,
-        row.name_type,
-        &row.name_group,
-        row.name_order,
-        row.name_ordered != 0,
+        naming.kind,
+        &naming.group,
+        naming.order,
+        naming.ordered != 0,
         names,
     )
 }
+
+const UNRECORDED_NAMING: &str =
+    "its naming operands are in neither its LandCombatDivisions row nor its division's rows";
 
 /// Player overrides are literals. Visible programmatic overrides are stored client text;
 /// a resolved group instead generates the name, even if an override was recorded.
@@ -258,7 +267,7 @@ fn division_name_operands(
 /// [`division_name`] as the entry draws it: the text path reads
 /// its control bytes, so one the native text layout does not draw is refused.
 fn shown_name(
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     names: &Database,
     icons: &impl TextIcons,
     localisation: &Localisation,
@@ -271,7 +280,7 @@ fn shown_name(
 /// The live getter returns the retained cache, not a freshly generated name.
 /// Only an explicitly unrecorded cache uses the old combat naming projection.
 fn shown_recorded_name(
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     status: Option<&replay_data::rows::DivisionStatusRow>,
     status_gap: &str,
     names: &Database,
@@ -297,23 +306,30 @@ fn shown_recorded_name(
 /// unavailable, naming each division with its group and ordinal.
 fn unnamed_warnings<'a>(
     combat: u64,
-    rows: impl Iterator<Item = &'a LandCombatDivisionRow>,
-    name: impl Fn(&LandCombatDivisionRow) -> Result<String, Unnamed>,
+    rows: impl Iterator<Item = LandCombatMember<'a>>,
+    name: impl Fn(&LandCombatMember<'_>) -> Result<String, Unnamed>,
 ) -> Vec<String> {
     let mut causes: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for row in rows {
-        if let Err(cause) = name(row) {
-            causes.entry(cause.to_string()).or_default().push(format!(
-                "division {} (group {}, {} {})",
-                row.division,
-                row.name_group.escape_ascii(),
-                if row.name_ordered != 0 {
-                    "ordered"
-                } else {
-                    "unordered"
-                },
-                row.name_order
-            ));
+        if let Err(cause) = name(&row) {
+            let division = match row.values {
+                Some(values) => format!(
+                    "division {} (group {}, {} {})",
+                    row.division,
+                    values.naming.group.escape_ascii(),
+                    if values.naming.ordered != 0 {
+                        "ordered"
+                    } else {
+                        "unordered"
+                    },
+                    values.naming.order
+                ),
+                None => format!("division {}", row.division),
+            };
+            causes
+                .entry(cause.to_string())
+                .or_default()
+                .push(division);
         }
     }
     causes
@@ -340,14 +356,14 @@ fn entry_name(name: String, side: u8, committed: bool, flag: Option<&String>) ->
 
 /// An entry's strength and organisation bars; without the division's
 /// condition both are hidden and the refusal counted. A bar whose maximum is
-/// unknown is hidden alone; `status_gap` says why `DivisionStatus` lacks it.
+/// unknown is hidden alone; `panel_gap` says why `DivisionPanelStats` may lack it.
 fn condition_bars(
     out: &mut Bindings,
     values: &mut Values,
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     committed: bool,
     bars: Result<Condition, String>,
-    status_gap: &str,
+    panel_gap: &str,
 ) {
     let bars = match bars {
         Ok(bars) => bars,
@@ -355,7 +371,7 @@ fn condition_bars(
     };
     let unbounded = |bar: &str, maximum: &str| {
         format!(
-            "Land combat {} division {}: its DivisionStatus row is missing ({status_gap}), so its {maximum} maximum is unknown; its {bar} bar is hidden.",
+            "Land combat {} division {}: DivisionPanelStats has no {maximum} maximum for it ({panel_gap}); its {bar} bar is hidden.",
             row.combat, row.division
         )
     };
@@ -367,12 +383,17 @@ fn condition_bars(
         values,
         "str_bar",
         FILL,
-        strength.map(|strength| {
-            if committed {
-                (strength * row.strength_combat_factor as f32 / 100_000.0).clamp(0.0, 1.0)
-            } else {
-                strength
+        strength.and_then(|strength| {
+            if !committed {
+                return Ok(strength);
             }
+            let factor = row.values.map(|values| values.strength_combat_factor).ok_or_else(|| {
+                format!(
+                    "Land combat {} division {}: its strength factor is in neither its LandCombatDivisions row nor its division's rows; its strength bar is hidden.",
+                    row.combat, row.division
+                )
+            })?;
+            Ok((strength * factor as f32 / 100_000.0).clamp(0.0, 1.0))
         }),
     );
     let organisation = bars
@@ -383,7 +404,7 @@ fn condition_bars(
 }
 
 fn entry(
-    row: &LandCombatDivisionRow,
+    row: &LandCombatMember<'_>,
     name: Option<String>,
     committed: bool,
     bonus: Option<i64>,
@@ -396,14 +417,12 @@ fn entry(
     name_widget.hidden = name.is_none();
     name_widget.text = name.map(|name| entry_name(name, row.side, committed, flag));
     if committed {
-        // Division combat inputs, then side bonus and cached stats.
-        // A row holding neither its numbers nor an older packet shows no
-        // stat box.
-        let (scales, stats) = (row.scales(), row.stat_values());
-        let attack = bonus
-            .zip(scales)
-            .map(|(bonus, scales)| mul(mul(scales[2], scales[0]), bonus.wrapping_add(100_000)));
-        let defence = scales.map(|scales| mul(scales[3], scales[1]));
+        // Division combat inputs, then side bonus and cached stats. A member whose stats
+        // are recorded nowhere shows no stat box.
+        let (scales, stats) = (row.scales, row.values.map(|values| values.stat_values));
+        let attack =
+            bonus.map(|bonus| mul(mul(scales[2], scales[0]), bonus.wrapping_add(100_000)));
+        let defence = Some(mul(scales[3], scales[1]));
         for (key, raw) in [
             (
                 "soft_attack",
@@ -618,10 +637,10 @@ fn role_rosters<'a>(
 
 /// True once two units in the side's full ordered LandCombats roster have
 /// different direction keys. Border-war sides always return false.
-fn several_directions(
+fn several_directions<D: std::ops::Deref<Target = LandCombatDivisionRow>>(
     combat: &replay_data::rows::LandCombatRow,
     border_war: bool,
-    divisions: &BTreeMap<(u8, u64), &LandCombatDivisionRow>,
+    divisions: &BTreeMap<(u8, u64), D>,
     movement: &BTreeMap<u64, u32>,
 ) -> Option<bool> {
     if border_war {
@@ -640,18 +659,22 @@ fn several_directions(
     Some(false)
 }
 
-/// One combat's LandCombatDivisionModifiers rows by side and division. A
-/// division a side lists twice keeps its first row, as the side's member list
-/// was searched before.
-pub(super) fn division_modifiers(
-    rows: &[replay_data::rows::LandCombatDivisionModifierRow],
+/// One combat's LandCombatDivisionModifiers rows by side and division, each
+/// division its LandCombatDivisions row's of the same key. A division a side
+/// lists twice keeps its first row, as the side's member list was searched
+/// before; a row without its member row names no division and is left out.
+pub(super) fn division_modifiers<'a>(
+    rows: &'a [replay_data::rows::LandCombatDivisionModifierRow],
+    members: &[LandCombatDivisionRow],
     id: u64,
-) -> BTreeMap<(u8, u64), &replay_data::rows::LandCombatDivisionModifierRow> {
-    let mut members = BTreeMap::new();
+) -> BTreeMap<(u8, u64), &'a replay_data::rows::LandCombatDivisionModifierRow> {
+    let mut found = BTreeMap::new();
     for row in rows.iter().filter(|row| row.combat == id) {
-        members.entry((row.side, row.division)).or_insert(row);
+        if let Some(division) = row.division_in(members) {
+            found.entry((row.side, division)).or_insert(row);
+        }
     }
-    members
+    found
 }
 
 /// Whether the combat is a border-war combat, whose type token 0x39A5
@@ -678,18 +701,17 @@ fn land(
     let detail = details.rows().iter().find(|r| r.combat == id);
     let legacy = rows::<tables::LandCombats>(frame)?;
     let combat = legacy.rows().iter().find(|r| r.id == id);
-    let divisions = rows::<tables::LandCombatDivisions>(frame)?;
-    let divisions_complete = divisions.is_complete();
-    let divisions: BTreeMap<_, _> = divisions
-        .rows()
-        .iter()
-        .filter(|r| r.combat == id)
+    let division_rows = rows::<tables::LandCombatDivisions>(frame)?;
+    let divisions_complete = division_rows.is_complete();
+    let combat_members = combat_rows(division_rows.rows(), id);
+    let member_values = member_values(frame, combat_members)?;
+    let divisions: BTreeMap<_, _> = land_combat_members(combat_members, &member_values)
         .map(|r| ((r.side, r.division), r))
         .collect();
     let modifiers = rows::<tables::LandCombatModifiers>(frame)?;
     let members = rows::<tables::LandCombatDivisionModifiers>(frame)?;
     let member_gap = absence(&members);
-    let members = division_modifiers(members.rows(), id);
+    let members = division_modifiers(members.rows(), combat_members, id);
     let marker = rows::<tables::LandCombatSides>(frame)?;
     let marker = marker.rows().iter().find(|row| row.combat == id);
     let features = rows::<tables::SimulationFeatures>(frame)?;
@@ -701,6 +723,7 @@ fn land(
     let division_gap = absence(&rows::<tables::Divisions>(frame)?);
     let statuses = rows::<tables::DivisionStatus>(frame)?;
     let status_gap = absence(&statuses);
+    let panel_gap = absence(&rows::<tables::DivisionPanelStats>(frame)?);
     let statuses: BTreeMap<_, _> = statuses
         .rows()
         .iter()
@@ -717,7 +740,7 @@ fn land(
     }
     let content = content.ok();
     let names = &static_content.assets.division_names;
-    let shown = |row: &LandCombatDivisionRow| {
+    let shown = |row: &LandCombatMember<'_>| {
         shown_recorded_name(
             row,
             statuses.get(&row.division).copied(),
@@ -774,7 +797,7 @@ fn land(
         let fallback = if divisions.is_empty() {
             [old_ids.cloned().unwrap_or_default(), Vec::new()]
         } else {
-            role_rosters(divisions.values().copied(), side as u8)
+            role_rosters(divisions.values().map(|member| member.row), side as u8)
         };
         let [committed_ids, reserve_ids] = detail.map_or([&fallback[0], &fallback[1]], |detail| {
             [&detail.sides[side].committed, &detail.sides[side].reserves]
@@ -790,7 +813,7 @@ fn land(
                 }
                 if let Some(row) = divisions.get(&(side as u8, *unit)) {
                     let flag = if committed {
-                        let cause = match exiles.entry_owner(row) {
+                        let cause = match exiles.entry_owner(row.row) {
                             Ok(owner) => match flags.get(&owner) {
                                 Some(Ok(flag)) => Ok(flag),
                                 Some(Err(reason)) => Err(reason.clone()),
@@ -830,7 +853,7 @@ fn land(
                             "Land combat {id} division {unit}: its Divisions row is missing ({division_gap}); its strength and organisation bars are hidden."
                         )
                     });
-                    condition_bars(out, &mut widgets, row, committed, condition, &status_gap);
+                    condition_bars(out, &mut widgets, row, committed, condition, &panel_gap);
                 } else {
                     out.warnings.push(format!("LandCombatDivisions: missing combat {id} side {side} division {unit}; entry values remain unknown."));
                 }
@@ -848,7 +871,7 @@ fn land(
                     let exile = match (detail, content) {
                         (Some(detail), Some(content)) => {
                             let [occupier, core] =
-                                exiles.frames(row, detail, &content.exile_against_occupier);
+                                exiles.frames(row.row, detail, &content.exile_against_occupier);
                             [
                                 ("exile occupier badge (frame 14)", occupier),
                                 ("exile core badge (frame 15)", core),
@@ -870,7 +893,7 @@ fn land(
                         modifier.entries.iter().map(|m| m.id),
                         detail.map(|detail| (detail, side)),
                         marker.map(|marker| marker.flags[side]),
-                        row,
+                        *row,
                         opponents.as_deref(),
                         content,
                         exile,
@@ -1091,7 +1114,7 @@ fn land(
     if let (Some(detail), Some(combat)) = (detail, combat) {
         let reconnaissance = |side: u8, roster: &[u64]| {
             roster.iter().try_fold(0_i64, |best, unit| {
-                Some(best.max(divisions.get(&(side, *unit))?.reconnaissance))
+                Some(best.max(divisions.get(&(side, *unit))?.values?.reconnaissance))
             })
         };
         match (
@@ -1114,7 +1137,7 @@ fn land(
                 }
             }
             (_, _, None) => (),
-            _ => out.warnings.push("Land initiative glow: a participant's LandCombatDivisions reconnaissance is missing; neither glow is drawn rather than guessed.".into()),
+            _ => out.warnings.push("Land initiative glow: a participant's LandCombatDivisions row or its reconnaissance is missing; neither glow is drawn rather than guessed.".into()),
         }
     }
     for ((widget, cause), units) in &undecided {

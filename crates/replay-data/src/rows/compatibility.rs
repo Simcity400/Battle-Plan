@@ -97,6 +97,22 @@ pub const LAST_COMPLETE_RESTARTS_FORMAT: u16 = 138;
 /// recorder from the collector's journal (H4COLUMN version 5, which refuses earlier columnar
 /// recordings by name). Row tables and frames are unchanged.
 pub const BLOCK_RECORDINGS_FORMAT: u16 = 139;
+/// Owner-approved: a fact another table of the same hour holds is stored once, a copy kept only
+/// where that table does not give it. DivisionStatus' maxima and DivisionMovement's base speed
+/// are DivisionPanelStats' words, the status pass's maxima kept on the panel row where a word
+/// does not give them; the shown supply ratio is not stored beside its exact value; a land combat
+/// member's division values are its division's rows'; a member's modifier row takes its division
+/// from its LandCombatDivisions row. The relaid tables' tombstones go, and older recordings
+/// refuse them by name.
+pub const STORED_ONCE_FORMAT: u16 = 140;
+/// The tables [`STORED_ONCE_FORMAT`] relays.
+pub const STORED_ONCE_TABLES: [TableId; 5] = [
+    TableId::DivisionStatus,
+    TableId::DivisionPanelStats,
+    TableId::DivisionMovement,
+    TableId::LandCombatDivisions,
+    TableId::LandCombatDivisionModifiers,
+];
 /// Private format 95 was retired when #343 merged main's format 96; its
 /// divergent table contracts were never published (PLAN format ledger).
 pub const RETIRED_FORMAT: u16 = 95;
@@ -600,12 +616,8 @@ pub static RETIRED_TABLES: [TableId; 19] = [
 ];
 
 /// Every retired row field, beside the retired tables' lifetimes in [`HISTORY`].
-pub static RETIRED_FIELDS: [RetiredField; 64] = [
+pub static RETIRED_FIELDS: [RetiredField; 50] = [
     retired(TableId::Provinces, 8, "selected_areas"),
-    retired(TableId::DivisionMovement, 18, "fresh"),
-    retired(TableId::DivisionMovement, 20, "selected"),
-    retired(TableId::DivisionMovement, 21, "transport"),
-    retired(TableId::DivisionStatus, 23, "attrition_inputs"),
     retired(TableId::DivisionLandInputs, 1, "received_supply"),
     retired(TableId::DivisionLandInputs, 2, "maximum_grace"),
     retired(TableId::DivisionLandInputs, 3, "remaining_grace"),
@@ -624,27 +636,6 @@ pub static RETIRED_FIELDS: [RetiredField; 64] = [
         22,
         "transport_mission_inputs",
     ),
-    // The reserve reinforcement speed operands, which the appended
-    // `reinforcement_speed` share replaces ([`RESERVE_SPEED_FORMAT`]), and
-    // the division-commander hover operands; playback takes the division
-    // commander's name, skill and traits from UnitLeaders and
-    // UnitLeaderTraits.
-    retired(TableId::LandCombatDivisions, 21, "commander_inputs"),
-    retired(TableId::LandCombatDivisions, 22, "reinforcement"),
-    retired(TableId::LandCombatDivisions, 23, "reinforcement_modifiers"),
-    retired(TableId::LandCombatDivisions, 24, "reinforcement_supply"),
-    retired(
-        TableId::LandCombatDivisions,
-        25,
-        "reinforcement_acclimatization",
-    ),
-    retired(TableId::LandCombatDivisions, 26, "reinforcement_transport"),
-    // Fuel, the stats and the scales as packets, which a numeric field each
-    // replaces ([`LAND_DIVISION_NUMBERS_FORMAT`]); older recordings' packets
-    // still answer.
-    retired(TableId::LandCombatDivisions, 10, "fuel_packet"),
-    retired(TableId::LandCombatDivisions, 11, "stat_packet"),
-    retired(TableId::LandCombatDivisions, 18, "scale_packet"),
     // The side's list of every member's entries, which
     // LandCombatDivisionModifiers holds a row a member
     // ([`LAND_MODIFIER_ROWS_FORMAT`]).
@@ -698,7 +689,6 @@ pub static RETIRED_FIELDS: [RetiredField; 64] = [
     // No reader at all.
     retired(TableId::ProductionLineModifiers, 7, "conversion"),
     // Playback derives the glyph byte from the row's own value and threshold.
-    retired(TableId::DivisionStatus, 7, "attrition"),
     // Path-cost operands no consumer reads; CountryCounterInputs records
     // the same slot-0 relation bytes.
     retired(TableId::InvasionPreparations, 9, "zero_war_present"),
@@ -4222,6 +4212,15 @@ pub static HISTORY: [LastChange; TableId::ALL.len() + RecordKind::ALL.len()] = {
         };
         index += 1;
     }
+    let mut copies = 0;
+    while copies < STORED_ONCE_TABLES.len() {
+        let id = STORED_ONCE_TABLES[copies];
+        history[id.index()] = LastChange {
+            introduced: history[id.index()].introduced,
+            ..table(id, STORED_ONCE_FORMAT, "stored once")
+        };
+        copies += 1;
+    }
     history
 };
 
@@ -4418,11 +4417,36 @@ pub struct EarlierLayout {
 
 /// Every earlier layout of a table since native captures began whose field count the table's
 /// latest change no longer tells; a native reader checks them against the recording's schema.
-pub static EARLIER_LAYOUTS: [EarlierLayout; 1] = [
+pub static EARLIER_LAYOUTS: [EarlierLayout; 6] = [
     EarlierLayout {
         table: TableId::AirNavalPatrolHistories,
         until: AIR_HISTORY_SLOTS_FORMAT,
         fields: 3,
+    },
+    EarlierLayout {
+        table: TableId::DivisionMovement,
+        until: STORED_ONCE_FORMAT,
+        fields: 25,
+    },
+    EarlierLayout {
+        table: TableId::DivisionPanelStats,
+        until: STORED_ONCE_FORMAT,
+        fields: 23,
+    },
+    EarlierLayout {
+        table: TableId::DivisionStatus,
+        until: STORED_ONCE_FORMAT,
+        fields: 45,
+    },
+    EarlierLayout {
+        table: TableId::LandCombatDivisionModifiers,
+        until: STORED_ONCE_FORMAT,
+        fields: 2,
+    },
+    EarlierLayout {
+        table: TableId::LandCombatDivisions,
+        until: STORED_ONCE_FORMAT,
+        fields: 42,
     },
 ];
 
@@ -4524,12 +4548,17 @@ mod tests {
         );
     }
 
-    /// Native captures of format 126 to 136 framed these tables with fewer fields than today;
-    /// counts from each format's row declarations.
+    /// Native captures of format 126 to 136 framed these tables with other field counts than
+    /// today's; counts from each format's row declarations.
     #[test]
     fn earlier_native_formats_frame_their_tables_as_written() {
         let fewer = |format: u16| -> Vec<(TableId, usize)> {
             let mut fewer = vec![
+                (TableId::DivisionMovement, 25),
+                (TableId::DivisionPanelStats, 23),
+                (TableId::DivisionStatus, 45),
+                (TableId::LandCombatDivisionModifiers, 2),
+                (TableId::LandCombatDivisions, 42),
                 (TableId::States, 13),
                 (TableId::Players, 4),
                 (TableId::RaidIntelInputs, 4),
@@ -4742,26 +4771,9 @@ mod tests {
         // samples and removing public alias marks separately changed their hosts.
         for field in RETIRED_FIELDS {
             let history = field.table.last_change();
-            if field.table == TableId::DivisionStatus {
-                assert_eq!(history.kind, ChangeKind::Meaning);
-                assert_eq!(history.format, DAILY_PROGRESS_FORMAT);
-                assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_some());
-                assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
-                continue;
-            }
-            if matches!(
-                field.table,
-                TableId::LandCombatDivisions | TableId::ProductionLines
-            ) {
+            if field.table == TableId::ProductionLines {
                 assert_eq!(history.kind, ChangeKind::Layout);
-                assert_eq!(
-                    history.format,
-                    if field.table == TableId::LandCombatDivisions {
-                        EXACT_COMBAT_FORMAT
-                    } else {
-                        PRIVATE_COPY_ALIASES_FORMAT
-                    }
-                );
+                assert_eq!(history.format, PRIVATE_COPY_ALIASES_FORMAT);
                 assert!(history.table_gap(field.table, POLITICAL_FORMAT).is_some());
                 assert!(history.table_gap(field.table, FORMAT_VERSION).is_none());
                 continue;
@@ -4803,17 +4815,20 @@ mod tests {
     }
 
     #[test]
-    fn division_status_display_samples_become_daily_in_the_same_format_116() {
-        let table = TableId::DivisionStatus;
-        let history = table.last_change();
-        assert_eq!(history.format, DAILY_PROGRESS_FORMAT);
-        assert_eq!(history.kind, ChangeKind::Meaning);
-        assert!(
-            history
-                .table_gap(table, DAILY_PROGRESS_FORMAT - 1)
-                .is_some()
-        );
-        assert!(history.table_gap(table, DAILY_PROGRESS_FORMAT).is_none());
+    fn stored_once_relays_its_tables_and_refuses_older_recordings() {
+        for table in STORED_ONCE_TABLES {
+            let history = table.last_change();
+            assert_eq!(history.format, STORED_ONCE_FORMAT);
+            assert_eq!(history.kind, ChangeKind::Layout);
+            assert!(history.table_gap(table, STORED_ONCE_FORMAT - 1).is_some());
+            assert!(history.table_gap(table, STORED_ONCE_FORMAT).is_none());
+            assert!(RETIRED_FIELDS.iter().all(|field| field.table != table));
+        }
+        assert_eq!(TableId::DivisionStatus.field_count(), 41);
+        assert_eq!(TableId::DivisionMovement.field_count(), 22);
+        assert_eq!(TableId::DivisionPanelStats.field_count(), 25);
+        assert_eq!(TableId::LandCombatDivisionModifiers.field_count(), 2);
+        assert_eq!(TableId::LandCombatDivisions.field_count(), 15);
     }
 
     #[test]
@@ -5125,7 +5140,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, BLOCK_RECORDINGS_FORMAT);
+        assert_eq!(FORMAT_VERSION, STORED_ONCE_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);
@@ -5149,8 +5164,6 @@ mod tests {
     #[test]
     fn private_alias_columns_do_not_change_native_row_fields_or_prefixes() {
         for (table, fields) in [
-            (TableId::DivisionMovement, 25),
-            (TableId::DivisionStatus, 45),
             (TableId::CombatLogObservers, 11),
             (TableId::NavalCombatDetails, 7),
             (TableId::CountryFuel, 23),
@@ -5164,7 +5177,7 @@ mod tests {
             );
             // Alias storage leaves the native prefix unchanged. These two
             // tables independently changed meaning at the later daily format.
-            let daily = matches!(table, TableId::DivisionStatus | TableId::CombatLogObservers);
+            let daily = matches!(table, TableId::CombatLogObservers);
             assert_eq!(
                 table
                     .last_change()
@@ -5178,20 +5191,11 @@ mod tests {
     #[test]
     fn copy_aliases_are_private_columns_not_native_fields() {
         for (table, fields) in [
-            (TableId::LandCombatDivisions, 42),
-            (TableId::LandCombatDivisionModifiers, 2),
             (TableId::Divisions, 9),
             (TableId::ProductionLines, 13),
         ] {
             assert_eq!(table.field_count(), fields);
-            let format = if matches!(
-                table,
-                TableId::LandCombatDivisions | TableId::LandCombatDivisionModifiers
-            ) {
-                EXACT_COMBAT_FORMAT
-            } else {
-                PRIVATE_COPY_ALIASES_FORMAT
-            };
+            let format = PRIVATE_COPY_ALIASES_FORMAT;
             assert_eq!(table.last_change().format, format);
             assert!(table.last_change().table_gap(table, format).is_none());
             assert!(table.last_change().table_gap(table, format - 1).is_some());

@@ -53,15 +53,24 @@ fn every_packet_host_is_hourly_never_carried_and_readable_at_the_stamped_format(
         assert!(!cadence::is_staggered(host) && !cadence::is_sliced(host));
         let change = host.last_change();
         let (kind, format) = match host {
-            TableId::CountryCounterInputs
-            | TableId::DivisionMovement
-            | TableId::DivisionTemplateIcons => (ChangeKind::AppendedOnly, EXPERIENCE_FORMAT),
+            // Relaid since: the stamped recording refuses it by name.
+            TableId::DivisionMovement => (
+                ChangeKind::Layout,
+                replay_data::rows::compatibility::STORED_ONCE_FORMAT,
+            ),
+            TableId::CountryCounterInputs | TableId::DivisionTemplateIcons => {
+                (ChangeKind::AppendedOnly, EXPERIENCE_FORMAT)
+            }
             TableId::SimulationFeatures => (ChangeKind::AppendedOnly, SCRIPTED_MAP_FORMAT),
             _ => (ChangeKind::AppendedOnly, PACKET_HOUR_FORMAT),
         };
         assert_eq!(change.kind, kind, "{host:?}");
         assert_eq!(change.format, format, "{host:?}");
-        assert!(stamped.table_refusal(host).is_none(), "{host:?}");
+        assert_eq!(
+            stamped.table_refusal(host).is_some(),
+            host == TableId::DivisionMovement,
+            "{host:?}"
+        );
         assert!(FormatVersion::CURRENT.table_refusal(host).is_none());
     }
 }

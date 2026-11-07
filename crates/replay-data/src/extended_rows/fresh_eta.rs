@@ -263,28 +263,6 @@ mod tests {
 
     #[test]
     fn fresh_suffixes_round_trip_and_change_without_legacy_fields() {
-        let previous = DivisionMovementRow {
-            division: u64::MAX,
-            numerator: i64::MIN,
-            ..Default::default()
-        };
-        for speed in [Some(0), Some(i64::MIN), Some(400_000)] {
-            check_suffix(
-                TableId::DivisionMovement,
-                22,
-                &previous,
-                &DivisionMovementRow {
-                    base_speed: speed.into(),
-                    ..previous.clone()
-                },
-            );
-        }
-        // A refusal after a read changes only the speed.
-        let read = DivisionMovementRow {
-            base_speed: Some(400_000).into(),
-            ..previous.clone()
-        };
-        check_suffix(TableId::DivisionMovement, 22, &read, &previous);
         let previous = StateRow {
             id: u32::MAX,
             movement_infrastructure: 918,
@@ -453,60 +431,6 @@ mod tests {
 
     #[test]
     fn movement_state_rail_prefixes_and_current_country_deltas_preserve_values() {
-        let row = DivisionMovementRow {
-            division: u64::MAX,
-            source: 71,
-            target: u32::MAX,
-            numerator: i64::MIN,
-            retreat: u8::MAX,
-            naval_transfer: u8::MAX,
-            combat_count: u32::MAX,
-            path_total: 3,
-            path: vec![31, 31, u32::MAX],
-            alternate_total: 3,
-            alternate_path: vec![u32::MAX, 17, 17],
-            combat_role: u8::MAX,
-            combat_province: u32::MAX,
-            map_entity: u8::MAX,
-            withdrawal: Some(u8::MAX).into(),
-            movement_priority: Some(i32::MIN).into(),
-            base_speed: Some(i64::MAX).into(),
-            ..Default::default()
-        };
-        let decoded = historical_prefix(TableId::DivisionMovement, 18, &row);
-        assert_eq!(
-            decoded,
-            DivisionMovementRow {
-                withdrawal: Recorded::NotRecorded,
-                movement_priority: Recorded::NotRecorded,
-                order_transport: Recorded::NotRecorded,
-                fresh: Recorded::NotRecorded,
-                combat_references: Recorded::NotRecorded,
-                selected: Recorded::NotRecorded,
-                transport: Recorded::NotRecorded,
-                base_speed: Recorded::NotRecorded,
-                fuel: Recorded::NotRecorded,
-                transport_speed: Recorded::NotRecorded,
-                ..row.clone()
-            }
-        );
-        // This prefix ends before the base speed, fuel and regional transport speed.
-        assert_eq!(
-            historical_prefix(TableId::DivisionMovement, 22, &row),
-            DivisionMovementRow {
-                base_speed: Recorded::NotRecorded,
-                fuel: Recorded::NotRecorded,
-                transport_speed: Recorded::NotRecorded,
-                ..row.clone()
-            }
-        );
-        let published = crate::format::FormatVersion::read(99).unwrap();
-        assert_eq!(published.fields(TableId::DivisionMovement), 15);
-        assert_eq!(published.fields(TableId::DivisionMovement).div_ceil(8), 2);
-        assert_eq!(
-            decoded.not_recorded_fields(),
-            full_mask(DivisionMovementRow::SCHEMA.len()) ^ full_mask(15)
-        );
         let row = CountryCounterInputRow {
             forward_visibility: crate::rows::Recorded::Value(None),
             country: u32::MAX,

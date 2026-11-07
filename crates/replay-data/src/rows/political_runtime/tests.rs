@@ -319,22 +319,6 @@ fn retired_previews_discard_supported_payloads_and_current_country_keeps_tombsto
     assert_eq!(province.controller, 3);
     assert_eq!(province.selected_areas, Recorded::Value(Retired));
 
-    let movement = decode_format_101_payloads(
-        TableId::DivisionMovement,
-        &DivisionMovementRow {
-            division: u64::MAX,
-            source: 7,
-            ..Default::default()
-        },
-        &[
-            (20, &[1, 0xfe, 1, 1]),
-            (21, &[1, 1, 9, 0, 0, 0, 0, 0, 0, 0, 0]),
-        ],
-    );
-    assert_eq!(movement.source, 7);
-    assert_eq!(movement.selected, Recorded::Value(Retired));
-    assert_eq!(movement.transport, Recorded::Value(Retired));
-
     let appearance = decode_format_101_payloads(
         TableId::CountryAppearance,
         &CountryAppearanceRow {

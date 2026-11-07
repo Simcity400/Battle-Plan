@@ -303,7 +303,7 @@ fn classify(frame: &DecodedFrame, division: u64, movement: &MovementRowKey) -> S
     if matches!(status.out_of_supply_days, Recorded::Value(Some(days)) if days != 0) {
         terms.push("days out of supply");
     }
-    if status.supply_ratio < 100_000 {
+    if status.displayed_supply_ratio().is_some_and(|ratio| ratio < 100_000) {
         terms.push("partial supply");
     }
     if movement.fuel_limited {
@@ -356,7 +356,7 @@ fn edges(frame: &DecodedFrame, content: &Content) -> BTreeMap<u64, Edge> {
         }
         let speed = terms.with_terms(division, row, content, &content.defines, |terms| {
             eta_derive::edge_speed_with(
-                || eta_derive::base_speed(row),
+                || eta_derive::base_speed(terms),
                 division.province,
                 first,
                 terms,
@@ -478,14 +478,14 @@ mod tests {
         use replay_data::rows::{DivisionMovementRow, OwnerTransportSpeedRow, TableId, TableRows};
         use replay_frame::frame::TableView;
         let mut frame = moving(1, 10);
-        for base_speed in [Recorded::Value(None), Recorded::NotRecorded] {
+        // No panel row: the transfer edge needs no base speed.
+        {
             *frame.tables[TableId::DivisionMovement.index()] =
                 TableView::Complete(TableRows::DivisionMovement(vec![DivisionMovementRow {
                     division: 7,
                     path: vec![2],
                     path_total: 1,
                     naval_transfer: 1,
-                    base_speed,
                     ..Default::default()
                 }]));
             *frame.tables[TableId::DivisionTransportSpeeds.index()] = TableView::Complete(

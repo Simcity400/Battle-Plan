@@ -790,8 +790,15 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
     let statuses = frame.complete::<tables::DivisionStatus>()?;
     let references = witnessed_name_templates(statuses);
     let templates = NameTemplates::new(frame, save, r, !references.is_empty())?;
+    // A member's naming is its own copy or its division's DivisionStatus row's.
+    let values = replay_data::rows::land_combat_member_values(
+        rows,
+        frame.complete::<tables::DivisionPanelStats>().unwrap_or(&[]),
+        statuses,
+        frame.complete::<tables::DivisionMovement>().unwrap_or(&[]),
+    );
     let mut seen = BTreeSet::new();
-    for row in rows {
+    for (row, values) in rows.iter().zip(&values) {
         if row.side > 1 || !seen.insert((row.combat, row.side, row.ordinal)) {
             return Err(invalid("duplicate or invalid land division key"));
         }
@@ -830,24 +837,18 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
         // reserve and no other division, so the share is present exactly
         // where the save lists the division among its side's reserves; its
         // value is a live input the save does not hold.
-        if let Some(share) = r.recorded(
-            &row.reinforcement_speed,
-            "LandCombatDivisions.reinforcement_speed",
-            format!("{label} reserve speed share"),
-        ) {
-            if share.is_none() && role == 2 {
-                r.limitation(
-                    "A reserve's speed share was refused at capture (an operand unreadable or a movement-speed form the port does not follow; collector status land_reserve_speed), so its reinforcement chance is unknown",
-                    label.clone(),
-                );
-            } else {
-                equal(
-                    r,
-                    format!("{label} reserve speed share presence"),
-                    share.is_some(),
-                    role == 2,
-                );
-            }
+        if row.reinforcement_speed.is_none() && role == 2 {
+            r.limitation(
+                "A reserve's speed share was refused at capture (an operand unreadable or a movement-speed form the port does not follow; collector status land_reserve_speed), so its reinforcement chance is unknown",
+                label.clone(),
+            );
+        } else {
+            equal(
+                r,
+                format!("{label} reserve speed share presence"),
+                row.reinforcement_speed.is_some(),
+                role == 2,
+            );
         }
         let Some(unit) = save.divisions.get(&row.division) else {
             r.difference(label, "division present", "division absent");
@@ -865,13 +866,19 @@ fn divisions(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
             row.context.template,
             unit.template.unwrap_or(0),
         );
-        naming(
-            r,
-            &label,
-            Naming::from(row).with_template(references.get(&row.division).copied()),
-            unit,
-            &templates,
-        );
+        match values {
+            Some(values) => naming(
+                r,
+                &label,
+                Naming::from(&values.naming).with_template(references.get(&row.division).copied()),
+                unit,
+                &templates,
+            ),
+            None => r.limitation(
+                "A member's naming operands are in neither its row nor its division's rows of the hour, so its name is not compared",
+                label,
+            ),
+        }
     }
     for (&combat, saved) in &save.land_combats {
         for (side, members) in [(0, &saved.attackers), (1, &saved.defenders)] {
@@ -1034,20 +1041,6 @@ fn member_group<'t>(
     }
 }
 
-impl<'a> From<&'a replay_data::rows::LandCombatDivisionRow> for Naming<'a> {
-    fn from(row: &'a replay_data::rows::LandCombatDivisionRow) -> Self {
-        Self {
-            kind: row.name_type,
-            order: row.name_order,
-            ordered: row.name_ordered,
-            programmatic: row.name_programmatic,
-            custom: &row.name_custom,
-            group: &row.name_group,
-            template: None,
-        }
-    }
-}
-
 impl<'a> From<&'a replay_data::rows::NameOperands> for Naming<'a> {
     fn from(row: &'a replay_data::rows::NameOperands) -> Self {
         Self {
@@ -1167,6 +1160,8 @@ fn modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()
 
 fn division_modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::Result<()> {
     let rows = frame.complete::<tables::LandCombatDivisionModifiers>()?;
+    // A row's division is its own, or its LandCombatDivisions row's of the same key.
+    let divisions = frame.complete::<tables::LandCombatDivisions>().unwrap_or(&[]);
     // Rows by combat and side; each saved member has one.
     let mut counts = BTreeMap::new();
     for row in rows {
@@ -1186,7 +1181,7 @@ fn division_modifiers(frame: &DecodedFrame, save: &Save, r: &mut Report) -> io::
                 "LandCombatDivisionModifiers {}:{}:{} member",
                 row.combat, row.side, row.ordinal
             ),
-            Some(row.division),
+            row.division_in(divisions),
             members.get(row.ordinal as usize).copied(),
         );
     }

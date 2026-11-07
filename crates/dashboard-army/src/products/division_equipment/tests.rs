@@ -80,6 +80,8 @@ fn frame() -> DecodedFrame {
         TableView::Complete(TableRows::NewDivisionEquipment(vec![]));
     *frame.tables[TableId::DivisionStatus.index()] =
         TableView::Complete(TableRows::DivisionStatus(vec![status(1), status(2)]));
+    *frame.tables[TableId::DivisionPanelStats.index()] =
+        TableView::Complete(TableRows::DivisionPanelStats(vec![panel(1), panel(2)]));
     *frame.tables[TableId::DivisionLandInputs.index()] =
         TableView::Complete(TableRows::DivisionLandInputs(vec![
             DivisionLandInputsRow {
@@ -146,11 +148,20 @@ fn equipment(
         country: 11,
     }
 }
+/// A maximum strength of 20.
+fn panel(division: u64) -> replay_data::rows::DivisionPanelStatsRow {
+    let mut panel = replay_data::rows::DivisionPanelStatsRow {
+        division,
+        ..Default::default()
+    };
+    panel.panel_stats[0] = Some(2_000_000);
+    panel
+}
+
 fn status(division: u64) -> DivisionStatusRow {
     let name = format!("Synthetic {division}").into_bytes();
     DivisionStatusRow {
         division,
-        maximum_hit_points: 2_000_000,
         name: Recorded::Value(Some(name.clone())),
         naming: Recorded::Value(Some(NameOperands {
             custom: name,
@@ -425,6 +436,9 @@ fn unknown_need_and_unreadable_status_never_become_zero() {
     };
     *f.tables[TableId::DivisionStatus.index()] = TableView::Unavailable {
         reason: "status missing".into(),
+    };
+    *f.tables[TableId::DivisionPanelStats.index()] = TableView::Unavailable {
+        reason: "panel missing".into(),
     };
     let mut p = params();
     p.template = Some("5".into());

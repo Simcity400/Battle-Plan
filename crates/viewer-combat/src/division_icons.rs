@@ -17,7 +17,9 @@
 //! entry reports the suffix it omitted ([`Omitted`]), the exile frames 14 and
 //! 15 included.
 use super::defines::LandDefines;
-use replay_data::{rows::LandCombatDetailsRow, rows::LandCombatDivisionRow};
+use replay_data::{
+    rows::LandCombatDetailsRow, rows::LandCombatMember, rows::LandCombatMemberValues,
+};
 use std::collections::BTreeMap;
 
 const SCALE: i64 = 100_000;
@@ -62,8 +64,8 @@ fn fixed_limit(define: f32) -> i64 {
 /// where the native division traps.
 fn armour_frames(
     content: &LandDefines,
-    unit: &LandCombatDivisionRow,
-    opponents: &[&LandCombatDivisionRow],
+    unit: &LandCombatMemberValues,
+    opponents: &[&LandCombatMemberValues],
 ) -> Option<[Option<u32>; 2]> {
     let thresholds = &content.piercing_thresholds;
     let defines = content.armour_icons;
@@ -144,6 +146,9 @@ pub(super) enum Omitted {
     /// An opposing committed `LandCombatDivisions` row is missing: the armour
     /// frames read the whole opposing array.
     Opponent,
+    /// The entry's or an opposing committed division's values are in neither its
+    /// `LandCombatDivisions` row nor its division's rows: the armour frames read them.
+    Values,
     /// The native armour division traps on the recorded armour and piercing
     /// (the most negative quotient divided by -1).
     ArmourTrap,
@@ -158,9 +163,6 @@ pub(super) enum Omitted {
     /// An exile frame (14 or 15) is undecided; its cause is reported with
     /// the divisions it covers.
     Exile(u32),
-    /// The division's fuel and capacity are not recorded, so frame 16's
-    /// threshold test is undecided.
-    Fuel,
 }
 
 impl Omitted {
@@ -175,6 +177,9 @@ impl Omitted {
             ),
             Self::Opponent => format!(
                 "an opposing committed LandCombatDivisions row is missing, so every icon from armour on is omitted: {FROM_ARMOUR}"
+            ),
+            Self::Values => format!(
+                "a committed division's values are in neither its LandCombatDivisions row nor its division's rows, so every icon from armour on is omitted: {FROM_ARMOUR}"
             ),
             Self::ArmourTrap => format!(
                 "the game's armour division traps on the recorded armour and piercing, so every icon from armour on is omitted: {FROM_ARMOUR}"
@@ -193,10 +198,6 @@ impl Omitted {
                     .into()
             }
             Self::Exile(frame) => format!("the exile icon {frame} is undecided and omitted"),
-            Self::Fuel => {
-                "the division's fuel and capacity are not recorded, so the fuel icon 16, the anti-air icon 13 and the exile icons 14 and 15 after it are omitted"
-                    .into()
-            }
         }
     }
 }
@@ -210,8 +211,8 @@ pub(super) fn frames(
     recorded: impl Iterator<Item = u32>,
     detail: Option<(&LandCombatDetailsRow, usize)>,
     own_flags: Option<u32>,
-    unit: &LandCombatDivisionRow,
-    opponents: Option<&[&LandCombatDivisionRow]>,
+    unit: LandCombatMember<'_>,
+    opponents: Option<&[LandCombatMember<'_>]>,
     content: Option<&LandDefines>,
     exile: [Option<bool>; 2],
 ) -> (Vec<u32>, Option<Omitted>) {
@@ -228,7 +229,11 @@ pub(super) fn frames(
     let Some(content) = content else {
         return (out, Some(Omitted::Defines));
     };
-    let Some(armour) = armour_frames(content, unit, opponents) else {
+    let against: Option<Vec<_>> = opponents.iter().map(|opponent| opponent.values).collect();
+    let (Some(values), Some(against)) = (unit.values, against) else {
+        return (out, Some(Omitted::Values));
+    };
+    let Some(armour) = armour_frames(content, values, &against) else {
         return (out, Some(Omitted::ArmourTrap));
     };
     out.extend(armour.into_iter().flatten());
@@ -236,14 +241,12 @@ pub(super) fn frames(
     if unit.commander != 0 && unit.commander != own.commander {
         out.push(12);
     }
-    let Some([fuel, capacity]) = unit.fuel_inputs() else {
-        return (out, Some(Omitted::Fuel));
-    };
+    let [fuel, capacity] = values.fuel_inputs;
     if fuel_ratio([fuel, capacity, content.fuel_penalty_start_ratio]) < SCALE {
         out.push(16);
     }
     match engine_native::csub_unit_definition::movement_air_defense_value(
-        unit.air_attack,
+        values.air_attack,
         content.air_superiority[0],
         content.air_superiority[1],
     ) {
@@ -302,12 +305,30 @@ mod tests {
         detail
     }
 
-    fn unit(armour: i64, piercing: i64) -> LandCombatDivisionRow {
-        LandCombatDivisionRow {
-            armour,
-            piercing,
-            side: 1,
-            ..Default::default()
+    struct Unit {
+        row: replay_data::rows::LandCombatDivisionRow,
+        values: LandCombatMemberValues,
+    }
+    impl Unit {
+        fn member(&self) -> LandCombatMember<'_> {
+            LandCombatMember {
+                row: &self.row,
+                values: Some(&self.values),
+            }
+        }
+    }
+
+    fn unit(armour: i64, piercing: i64) -> Unit {
+        Unit {
+            row: replay_data::rows::LandCombatDivisionRow {
+                side: 1,
+                ..Default::default()
+            },
+            values: LandCombatMemberValues {
+                armour,
+                piercing,
+                ..Default::default()
+            },
         }
     }
 
@@ -315,16 +336,18 @@ mod tests {
         recorded: &[u32],
         detail: Option<&LandCombatDetailsRow>,
         flags: u32,
-        unit: &LandCombatDivisionRow,
-        opponents: Option<&[&LandCombatDivisionRow]>,
+        unit: &Unit,
+        opponents: Option<&[&Unit]>,
         exile: [Option<bool>; 2],
     ) -> (Vec<u32>, Option<Omitted>) {
+        let opponents: Option<Vec<_>> =
+            opponents.map(|opponents| opponents.iter().map(|unit| unit.member()).collect());
         frames(
             recorded.iter().copied(),
             detail.map(|detail| (detail, 1)),
             Some(flags),
-            unit,
-            opponents,
+            unit.member(),
+            opponents.as_deref(),
             Some(&content()),
             exile,
         )
@@ -371,44 +394,44 @@ mod tests {
         let infantry = unit(0, 4_861_568);
         let enemy = unit(0, 481_327);
         assert_eq!(
-            armour_frames(&content, &infantry, &[&enemy, &enemy]),
+            armour_frames(&content, &infantry.values, &[&enemy.values, &enemy.values]),
             Some([None, None])
         );
         // Piercing 0.2 of two tanks' armour: nothing pierced to half.
         let tank = unit(2_000_000, 400_000);
         let piercer = unit(0, 400_000);
         assert_eq!(
-            armour_frames(&content, &piercer, &[&tank, &tank]),
+            armour_frames(&content, &piercer.values, &[&tank.values, &tank.values]),
             Some([None, None])
         );
         // 0.6 of both tanks, and an unarmoured opponent that counts as pierced
         // without counting as armoured: 3 / 2 >= 0.6.
         let piercer = unit(0, 1_200_000);
         assert_eq!(
-            armour_frames(&content, &piercer, &[&tank, &tank, &enemy]).unwrap()[0],
+            armour_frames(&content, &piercer.values, &[&tank.values, &tank.values, &enemy.values]).unwrap()[0],
             Some(11)
         );
         let partial = unit(0, 1_000_000);
         let heavy = unit(10_000_000, 0);
         // One of two armoured opponents pierced to at least half: 0.5 >= 0.25.
         assert_eq!(
-            armour_frames(&content, &partial, &[&tank, &heavy]).unwrap()[0],
+            armour_frames(&content, &partial.values, &[&tank.values, &heavy.values]).unwrap()[0],
             Some(10)
         );
         // Our armour against piercing under half: no fully pierced weight, so
         // the ratio defaults to one and the gold shield shows.
         let armoured = unit(5_000_000, 0);
-        assert_eq!(armour_frames(&content, &armoured, &[&enemy]).unwrap()[1], Some(9));
+        assert_eq!(armour_frames(&content, &armoured.values, &[&enemy.values]).unwrap()[1], Some(9));
         // The 0.75 bucket: (1 - 0.75) / 0.75 = 0.333, the grey shield.
         let medium = unit(1_000_000, 0);
         let pierce_three_quarters = unit(0, 800_000);
         assert_eq!(
-            armour_frames(&content, &medium, &[&pierce_three_quarters]).unwrap()[1],
+            armour_frames(&content, &medium.values, &[&pierce_three_quarters.values]).unwrap()[1],
             Some(8)
         );
         // No opposing committed units: the ratio defaults to one.
         assert_eq!(
-            armour_frames(&content, &infantry, &[]),
+            armour_frames(&content, &infantry.values, &[]),
             Some([None, Some(9)])
         );
     }
@@ -425,8 +448,8 @@ mod tests {
         // Its own leader and anti-air above the limit, but no side flag
         // 0x4000: only the general icon.
         let mut madison = unit(0, 4_861_568);
-        madison.commander = 4_140_348_478_057;
-        madison.air_attack = 2_127_473;
+        madison.row.commander = 4_140_348_478_057;
+        madison.values.air_attack = 2_127_473;
         assert_eq!(
             icons(
                 &[],
@@ -438,7 +461,7 @@ mod tests {
             ),
             (vec![12], None)
         );
-        madison.fuel_inputs = [100_000, 1_000_000].map(replay_data::rows::Recorded::Value);
+        madison.values.fuel_inputs = [100_000, 1_000_000];
         assert_eq!(
             icons(
                 &[27, 3],
@@ -465,8 +488,8 @@ mod tests {
                 [2].into_iter(),
                 Some((&detail, 1)),
                 Some(0x4000),
-                &madison,
-                Some(&[&enemy]),
+                madison.member(),
+                Some(&[enemy.member()]),
                 None,
                 decided
             ),
@@ -479,15 +502,15 @@ mod tests {
                 [].into_iter(),
                 Some((&detail, 1)),
                 None,
-                &madison,
-                Some(&[&enemy]),
+                madison.member(),
+                Some(&[enemy.member()]),
                 Some(&content()),
                 [Some(true); 2]
             ),
             (vec![12, 16], Some(Omitted::SideFlags))
         );
-        madison.air_attack = 158_327; // Resulting anti-air is below 1000.
-        madison.commander = detail.sides[1].commander;
+        madison.values.air_attack = 158_327; // Resulting anti-air is below 1000.
+        madison.row.commander = detail.sides[1].commander;
         assert_eq!(
             icons(
                 &[],
@@ -505,8 +528,8 @@ mod tests {
                 [].into_iter(),
                 Some((&detail, 1)),
                 None,
-                &madison,
-                Some(&[&enemy]),
+                madison.member(),
+                Some(&[enemy.member()]),
                 Some(&content()),
                 [Some(true); 2]
             ),

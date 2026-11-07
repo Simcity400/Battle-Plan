@@ -530,7 +530,7 @@ fn the_projector_hands_only_what_changed() {
     };
     let status = |division: u64, received: i64, remaining: i64| DivisionStatusRow {
         division,
-        supply_ratio: received,
+        supply_ratio: Some(received),
         supply_grace_maximum: Recorded::Value(1_000_000),
         supply_grace_remaining: Recorded::Value(remaining),
         ..Default::default()

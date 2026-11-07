@@ -88,7 +88,7 @@ fn status(supply: Option<DivisionSupplyFooter>) -> DivisionStatusRow {
     }
 }
 
-/// The payload a row stores in field 22.
+/// The payload a row stores in its supply field (19).
 fn stored_payload(row: &DivisionStatusRow) -> Vec<u8> {
     let mut bytes = Vec::new();
     encode_row(row, 0, &mut bytes).unwrap();
@@ -96,14 +96,14 @@ fn stored_payload(row: &DivisionStatusRow) -> Vec<u8> {
     input.varint().unwrap();
     for (index, kind) in DivisionStatusRow::SCHEMA.iter().enumerate() {
         let field = kind.decode(&mut input).unwrap();
-        if index == 22 {
+        if index == 19 {
             let Field::Opaque(Opaque::Encoded(payload, _)) = field else {
                 panic!("DivisionStatus.supply is not Opaque");
             };
             return payload.to_vec();
         }
     }
-    unreachable!("DivisionStatus has field 22")
+    unreachable!("DivisionStatus has field 19")
 }
 
 #[test]
@@ -181,7 +181,7 @@ fn an_unchanged_division_supply_footer_writes_no_change() {
         footer.received = 2_000;
     }
     let delta = moved.delta(Some(&previous)).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 22);
+    assert_eq!(delta.mask, 1 << 19);
     assert_eq!(delta.apply(Some(previous)).unwrap(), moved);
 }
 
@@ -467,7 +467,7 @@ fn a_provisional_tombstone_reads_as_not_recorded() {
 
     // A whole row from such a recording keeps every other field.
     let row = DivisionStatusRow {
-        supply_ratio: 50_000,
+        supply_ratio: Some(50_000),
         dig_in_factor: Recorded::Value(Some(7)),
         ..status(Some(displayed()))
     };
@@ -475,11 +475,11 @@ fn a_provisional_tombstone_reads_as_not_recorded() {
     encode_row(&row, 0, &mut bytes).unwrap();
     let mut input = Decoder::new(&bytes);
     input.varint().unwrap();
-    for kind in &DivisionStatusRow::SCHEMA[..22] {
+    for kind in &DivisionStatusRow::SCHEMA[..19] {
         kind.decode(&mut input).unwrap();
     }
     let start = bytes.len() - input.remaining();
-    DivisionStatusRow::SCHEMA[22].decode(&mut input).unwrap();
+    DivisionStatusRow::SCHEMA[19].decode(&mut input).unwrap();
     let end = bytes.len() - input.remaining();
     let mut tombstone = bytes[..start].to_vec();
     tombstone.extend(0_u32.to_le_bytes());
@@ -500,7 +500,7 @@ fn a_provisional_tombstone_reads_as_not_recorded() {
     encode_row(&decoded, 0, &mut again).unwrap();
     assert_eq!(again, tombstone);
     let delta = row.delta(Some(&decoded)).unwrap().unwrap();
-    assert_eq!(delta.mask, 1 << 22);
+    assert_eq!(delta.mask, 1 << 19);
     assert_eq!(delta.apply(Some(decoded.clone())).unwrap(), row);
     // An absence that is not a restored tombstone still refuses to encode.
     let historical = DivisionStatusRow {
