@@ -14,7 +14,7 @@ import type { CameraMode, FlyAircraftStatus } from '../generated/dashboard';
 import { loadAircraftChoice, saveAircraftChoice } from './aircraftChoice';
 import { Icon } from '../components/Icons';
 import type { DashboardClient, DashboardSource } from './client';
-import { addGridItem, addGridItemBelow, bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
+import { addGridItem, addGridItemBelow, bindTracks, clockBounds, createWidget, defaultTemplate, MAX_WIDGETS, mergeViewPreferences, rebaseWidget, seekPositionFor, stableJson } from './model';
 import type { DashboardTemplate, GridLayouts, WidgetSpec } from './model';
 import { keptPageStates } from './pages';
 import type { PageEntry, PageId } from './pages';
@@ -78,7 +78,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   campaignsRef.current = campaigns;
   const [defaultRoleId, setDefaultRoleId] = useState<string | null>(null);
   const [selectedCountries, setSelectedCountries] = useState<Record<string, string | null>>({});
-  const [selectedBranches, setSelectedBranches] = useState<Record<string, number>>({});
+  // Histories chosen by id: indexes shift as a recording grows or its joins change.
+  const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>({});
   const [loadErrors, setLoadErrors] = useState<Record<string, Failure>>({});
   const hasOpened = useRef(false);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
@@ -95,9 +96,8 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   }, [client]);
   const template = useMemo(() => {
     const merged = includeCampaigns(draftTemplate, campaigns);
-    return { ...merged, roles: merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id] ?? null })),
-      tracks: branchSelections(merged.tracks, selectedBranches) };
-  }, [draftTemplate, campaigns, selectedCountries, selectedBranches]);
+    return { ...merged, roles: merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id] ?? null })) };
+  }, [draftTemplate, campaigns, selectedCountries]);
   const [warning, setWarning] = useState<string | null>(restored.warning);
   const [savedTemplate, setSavedTemplate] = useState<DashboardTemplate | null>(null);
   const saved = savedTemplate === draftTemplate ? 'Layout saved on this device' : null;
@@ -167,7 +167,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     return () => { maps.onToggle = null; };
   }, [maps, client]);
   const sourceMap = useMemo(() => new Map(Object.entries(roles.bindings).flatMap(([roleId, binding]) => binding.source ? [[roleId, binding.source] as [string, DashboardSource]] : [])), [roles.bindings]);
-  const tracks = useMemo(() => bindTracks(template, sourceMap), [template.tracks, template.roles, template.alignment, sourceMap]);
+  const tracks = useMemo(() => bindTracks(template, sourceMap, selectedBranches), [template.tracks, template.roles, template.alignment, sourceMap, selectedBranches]);
   const bounds = useMemo(() => clockBounds(tracks), [tracks]);
   const primaryIdentity = defaultRoleId && sourceMap.get(defaultRoleId) ? `${sourceMap.get(defaultRoleId)!.id}:${sourceMap.get(defaultRoleId)!.revision}` : '';
   const defaultLoading = campaigns.some(campaign => campaign.id === defaultRoleId && campaign.loading);
@@ -571,8 +571,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
 
   const onMapBranch = useCallback((trackId: string, branchId: string) => {
     const source = tracks.find(track => track.id === trackId)?.source;
-    const index = source?.metadata.branches.findIndex(branch => branch.id === branchId) ?? -1;
-    if (index >= 0) { clock.stop(); setSelectedBranches(previous => ({ ...previous, [trackId]: index })); }
+    if (source?.metadata.branches.some(branch => branch.id === branchId)) { clock.stop(); setSelectedBranches(previous => ({ ...previous, [trackId]: branchId })); }
   }, [tracks, clock]);
 
   const shownTrack = tracks.find(track => track.roleId === defaultRoleId);
@@ -636,6 +635,12 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     {mapActive && mapReady && desktopAvailable && cameraMode === 'fly' && <AircraftPicker client={client} source={defaultSource ?? null} chosen={aircraft} status={flyAircraft} onChoose={chooseAircraft} host={sideHost} prompt />}
     {mapActive && <MapControls source={defaultSource ?? null} client={client} metadata={defaultSource?.metadata ?? null} branchId={tracks.find(track => track.roleId === defaultRoleId)?.branch.id ?? null}
       onBranch={id => { const track = tracks.find(track => track.roleId === defaultRoleId); if (track) onMapBranch(track.id, id); }}
+      onChooseHistory={client.chooseHistory && defaultSource ? async (segmentId, parentId) => {
+        const campaign = campaignsRef.current.find(campaign => campaign.id === defaultRoleId);
+        if (!campaign) return;
+        await client.chooseHistory!(defaultSource.path, segmentId, parentId, new AbortController().signal);
+        await openCampaign(campaign.path, campaign.label, undefined, true, campaign.id);
+      } : undefined}
       options={mapOptions} onOptions={setMapOptions} poppedOut={popout.open} popoutGeneration={popout.generation} popoutProblem={popoutIssue} popoutStopped={popoutStopped(popout)}
       popoutCameraMode={popout.status?.running ? popout.status.cameraMode : null}
       popoutCameraOverlays={popout.status?.running ? popout.status.cameraOverlays : false}

@@ -26,7 +26,7 @@ import type { FuelConsumptionLevel, FuelConsumptionSelection } from './fuelConsu
 
 const label = (key: string): FuelLabel => ({ key, template: `${key}: {NUM}`, arguments: ['NUM'], reason: null });
 const branch: BranchMetadata = { id: '1', sessionId: '1', firstHour: 0, lastHour: 200,
-  parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] };
+  main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] };
 const reply: FuelReply = { branchId: '1', tag: 'AAA', quantityScale: 32768, gainScale: 100000, dayHours: 24, detailHours: 720,
   gainLabels: [label('Synthetic base'), label('Synthetic states'), label('Synthetic oil'), label('Synthetic flat gain')],
   transferLabels: [label('Synthetic incoming'), label('Synthetic outgoing'), label('Synthetic flat cost')],

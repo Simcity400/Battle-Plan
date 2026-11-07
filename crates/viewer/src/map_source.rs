@@ -64,10 +64,11 @@ impl MapSource {
     /// The hour a read of `hour` of `branch` starts from: the hour itself, which no walk
     /// precedes; none outside every run.
     pub fn walk_start(&self, branch: BranchId, hour: Hour) -> Option<i64> {
+        let segment = self.replay.segment_at(branch, hour)?;
         self.snapshots
             .file()
             .index
-            .find(branch, hour)
+            .find(segment, hour)
             .map(|_| i64::from(hour))
     }
 
@@ -98,14 +99,18 @@ impl MapSource {
             hour,
             reason,
         };
-        if self.snapshots.file().index.find(branch, hour).is_none() {
+        let Some(segment) = self
+            .replay
+            .segment_at(branch, hour)
+            .filter(|segment| self.snapshots.file().index.find(*segment, hour).is_some())
+        else {
             return Ok(gap(crate::playback::gap_reason(&self.replay, branch, hour)));
-        }
+        };
         let read = (|| -> io::Result<Option<DecodedFrame>> {
             if cancelled() {
                 return Err(io::ErrorKind::Interrupted.into());
             }
-            self.snapshots.move_to(branch, hour, &on_worker)?;
+            self.snapshots.move_to_segment(segment, branch, hour, &on_worker)?;
             materialize
                 .then(|| self.snapshots.build(Some(&parallel)))
                 .transpose()

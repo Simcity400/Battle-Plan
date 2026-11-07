@@ -225,6 +225,25 @@ impl Inner {
         }
     }
 
+    /// Asks for the timeline `body` reads of `source` to be prepared while no preparation took it
+    /// up ([`crate::prepared::driver::native::ask`]): a refresh does, or the preparation running
+    /// does before it ends. A refresh the history lane has no room for waits for its next job.
+    fn ask_timeline(&self, source: &Arc<Source>, body: &ProductRequest) {
+        let Some(branch) = crate::prepared::query::asked_branch(source, body) else {
+            return;
+        };
+        let content = self.content_for(source, crate::source::Work::Recorded);
+        match crate::prepared::driver::native::ask(source, content.as_ref(), branch) {
+            Ok(true) => {
+                if let Err(error) = self.queue_refresh(Arc::clone(source), false, true) {
+                    eprintln!("Timeline preparation: {error}");
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("Timeline preparation: {error}"),
+        }
+    }
+
     /// Refreshes share history capacity and one queued item per source. A later
     /// restart request upgrades that item rather than retaining another source.
     pub(super) fn refresh_preparation(
@@ -1375,7 +1394,8 @@ impl Inner {
             }
             LoadJob::PreparedQuery { .. } => Lane::Prepared,
             LoadJob::Preparation { .. }
-            | LoadJob::PreparationPreferences { .. } => Lane::Interactive,
+            | LoadJob::PreparationPreferences { .. }
+            | LoadJob::HistoryChoice { .. } => Lane::Interactive,
             LoadJob::PreparationRefresh { .. } | LoadJob::MapSettings(_) | LoadJob::Open(_) => {
                 Lane::History
             }
@@ -1696,6 +1716,22 @@ impl Inner {
                 #[cfg(test)]
                 self.test_refreshes.fetch_add(1, Ordering::Release);
             }
+            LoadJob::HistoryChoice {
+                request,
+                path,
+                segment_id,
+                choice,
+            } => {
+                if request.cancelled() {
+                    return;
+                }
+                let result = request_result(|| {
+                    history_choice(Path::new(&path), &segment_id, choice.as_deref())
+                        .map_err(|error| error.to_string())?;
+                    bounded_json(&serde_json::json!({}), &request.cancelled)
+                });
+                self.complete(request, result.map_err(Into::into));
+            }
             LoadJob::PreparationPreferences { request, enabled } => {
                 if request.cancelled() {
                     return;
@@ -1751,6 +1787,9 @@ impl Inner {
             } => {
                 if request.cancelled() {
                     return;
+                }
+                if lane != Lane::Sampled {
+                    self.ask_timeline(&source, &body);
                 }
                 let answer = Self::attempt(lane, || {
                     crate::prepared::query::query(
@@ -2033,6 +2072,25 @@ fn read_key_names_ahead(source: &Source, content: Option<ContentOptions>) {
         .spawn_carried(move || drop(resolved.layers.key_names()));
 }
 
+/// Keeps the viewer's choice of the recorded segment `segment` of the recording at `path` goes
+/// on from, then marks the recording changed, so every reader opens it again under the choice.
+fn history_choice(path: &Path, segment: &str, parent: Option<&str>) -> std::io::Result<()> {
+    use replay::campaign::{Replay, timelines};
+    use std::io;
+    let id = |text: &str| {
+        text.parse::<u64>()
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "Invalid recorded segment"))
+    };
+    let segment = id(segment)?;
+    let parent = parent.map(id).transpose()?;
+    let campaign = Replay::read_campaign_id(path)?;
+    timelines::write_choice(&campaign, segment, parent)?;
+    std::fs::File::options()
+        .write(true)
+        .open(path)?
+        .set_modified(std::time::SystemTime::now())
+}
+
 fn request_result<T>(read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     catch_unwind(AssertUnwindSafe(read))
         .unwrap_or_else(|_| Err("Dashboard request failed while reading the recording".into()))
@@ -2063,6 +2121,12 @@ pub(super) enum LoadJob {
     PreparationPreferences {
         request: Arc<Request>,
         enabled: Option<bool>,
+    },
+    HistoryChoice {
+        request: Arc<Request>,
+        path: String,
+        segment_id: String,
+        choice: Option<String>,
     },
     PreparedQuery {
         request: Arc<Request>,
@@ -2116,7 +2180,9 @@ impl LoadJob {
             Self::Open(job) => &job.request,
             Self::Product { request, .. } => request,
             Self::PreparedQuery { request, .. } | Self::Preparation { request, .. } => request,
-            Self::PreparationPreferences { request, .. } => request,
+            Self::PreparationPreferences { request, .. } | Self::HistoryChoice { request, .. } => {
+                request
+            }
             #[cfg(test)]
             Self::Fixture { request, .. } => request,
         })

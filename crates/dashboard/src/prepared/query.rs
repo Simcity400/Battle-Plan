@@ -4796,6 +4796,16 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// The branch `request` asks of `source`, when it names one of its.
+pub(crate) fn asked_branch(source: &Source, request: &ProductRequest) -> Option<u64> {
+    request
+        .params
+        .get("branchId")
+        .or_else(|| request.params.get("selection")?.get("branchId"))
+        .and_then(Value::as_str)
+        .and_then(|id| branch(source, id).ok())
+}
+
 /// What a query routes by: its series family kind, or else its product key.
 fn route(request: &ProductRequest) -> &str {
     match request.product.as_str() {
@@ -4845,12 +4855,7 @@ fn answer(
     let _cpu = matches!(request.product.as_str(), "series-summary" | "series-state").then(|| {
         replay_frame::cpu::scope_named("prepared query", &format!("{}:{name}", request.product))
     });
-    let branch = request
-        .params
-        .get("branchId")
-        .or_else(|| request.params.get("selection")?.get("branchId"))
-        .and_then(Value::as_str)
-        .and_then(|id| branch(source, id).ok());
+    let branch = asked_branch(source, request);
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
     let read = |previous: Option<std::sync::Arc<CachedQuery>>| -> io::Result<CachedQuery> {

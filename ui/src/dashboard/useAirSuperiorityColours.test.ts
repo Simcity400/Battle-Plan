@@ -14,7 +14,7 @@ import type { FactPlan } from './countryFacts';
 import { airColourGroups, airColourPlan, colourHours, COLOURS } from './useAirSuperiorityColours.ts';
 import type { AirColourSources } from './useAirSuperiorityColours';
 
-const branch = { id: '1', sessionId: '1', firstHour: 0, lastHour: 47, parentId: null, parentHour: null, sampleBoundary: 'Synthetic', gaps: [] } as BoundTrack['branch'];
+const branch = { id: '1', sessionId: '1', firstHour: 0, lastHour: 47, main: true, fork: null, joins: [], sampleBoundary: 'Synthetic', gaps: [] } as BoundTrack['branch'];
 const side = (key: string, tag: string) => ({ key, tag, faction: null, colourFaction: null, name: tag, leader: null, coBelligerents: 1 });
 const reply: AirTimeline = { view: 'timeline', branchId: '1', available: true, firstHour: 0, lastHour: 47, days: [23, 47],
   sides: [side('w:1:101', 'Y'), side('w:2:102', 'X')],

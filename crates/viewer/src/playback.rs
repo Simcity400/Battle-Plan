@@ -90,9 +90,16 @@ impl Playback {
     /// Presentation state without synchronous decoding. The hour coordinator
     /// supplies exact frames through `present` before this state is rendered.
     pub fn unloaded(replay: Arc<Replay>) -> io::Result<Self> {
-        let first = replay.branches.first().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "replay contains no branches")
-        })?;
+        // A recording read as timelines opens on its main history.
+        let main = replay.timelines().map(|timelines| timelines.main);
+        let first = replay
+            .branches
+            .iter()
+            .find(|branch| Some(branch.id) == main)
+            .or_else(|| replay.branches.first())
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "replay contains no branches")
+            })?;
         let branch = first.id;
         let hour = first.first_hour;
         Ok(Self {
@@ -1187,6 +1194,48 @@ pub(crate) mod tests {
             (2, 2, 101)
         );
         assert_eq!(playback.range(2), Some((101, 102)));
+    }
+
+    #[test]
+    fn read_as_timelines_the_main_history_plays_through_each_reload_and_keeps_what_it_left() {
+        // 1 plays 100..=103; 2 loads 1's hour 101 and plays on; 3 is the next session, from
+        // 2's last hour.
+        let segments = [
+            records(1, &[100, 101, 102, 103]),
+            records(2, &[102, 103, 104]),
+            records(3, &[105, 106]),
+        ];
+        let replay = Replay::from_records(b"campaign".to_vec(), &segments)
+            .unwrap()
+            .into_timelines(&Default::default())
+            .unwrap();
+        let timelines = replay.timelines().unwrap();
+        assert_eq!(timelines.main, 2);
+        let pieces: Vec<_> = replay
+            .pieces(2)
+            .iter()
+            .map(|piece| (piece.segment, piece.first_hour, piece.last_hour))
+            .collect();
+        assert_eq!(pieces, [(1, 100, 101), (2, 102, 104), (3, 105, 106)]);
+        assert_eq!(replay.pieces(1).len(), 1);
+        assert_eq!(
+            timelines.parting(1),
+            Some(replay::campaign::timelines::Parting::LeftBehind(102))
+        );
+        let mut playback = Playback::new(replay).unwrap();
+        assert_eq!((playback.branch(), playback.hour()), (2, 100));
+        assert_eq!(playback.range(2), Some((100, 106)));
+        for hour in [100, 101, 102, 105, 106] {
+            assert_seek_matches_shared(&mut playback, 2, hour);
+            let Some(frame) = playback.frame() else {
+                panic!("hour {hour} of the main history has a frame");
+            };
+            assert_eq!((frame.branch, frame.hour), (2, hour));
+        }
+        // The play 2 left behind stays whole on its own history.
+        assert_seek_matches_shared(&mut playback, 1, 103);
+        assert!(playback.frame().is_some());
+        assert_eq!(playback.range(1), Some((100, 103)));
     }
 
     #[test]

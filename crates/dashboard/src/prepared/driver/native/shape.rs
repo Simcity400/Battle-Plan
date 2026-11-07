@@ -1,6 +1,8 @@
 //! Where a native recording's segments fall: each one's branch and hours, each branch's extent,
 //! and the proof of the recorded input through an hour, by which a family's committed frontier
-//! is taken up again only while the recording, as it grows, still holds what it accepted.
+//! is taken up again only while the recording, as it grows, still holds what it accepted. A
+//! segment's branch is the one its walks read it as ([`Segment::branch`]): a timeline reads
+//! other branches' runs before its own, the last it reads of each brought earlier.
 
 use dashboard_base::prepared::roots::Frontier;
 use replay::columnar_frames::{Recording, Segment};
@@ -14,10 +16,27 @@ fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.to_owned())
 }
 
-/// [`Shape::proof_at`], read.
-fn proven(recording: &Recording, run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
+/// A run a branch reads: the last ordinal it reads of it, and the run's own branch.
+#[derive(Clone, Copy, Debug)]
+struct Read {
+    run: u32,
+    last: u32,
+    recorded: u64,
+}
+
+/// [`Shape::proof_at`], read: of each run of another branch that `reads` names before `run`,
+/// where it reads through and the chain there; then the chain of every earlier run of `run`'s
+/// own branch, whole; then of `run` through `ordinal`.
+fn proven(recording: &Recording, reads: &[Read], run: u32, ordinal: u32) -> io::Result<[u8; 32]> {
     let branch = recording.run(run)?.branch;
     let mut proof = blake3::Hasher::new();
+    for read in reads.iter().take_while(|read| read.run < run) {
+        if read.recorded != branch {
+            proof.update(&read.run.to_le_bytes());
+            proof.update(&read.last.to_le_bytes());
+            proof.update(&recording.chain_through(read.run, read.last)?);
+        }
+    }
     for earlier in 0..run {
         let held = recording.run(earlier)?;
         if held.branch == branch {
@@ -49,19 +68,29 @@ pub(crate) struct Extent {
     pub last_hour: i32,
 }
 
+/// A branch's segments, by their places in order, and the runs it reads, in order.
+#[derive(Default)]
+struct Of {
+    places: Vec<usize>,
+    reads: Vec<Read>,
+}
+
 pub(crate) struct Shape {
     placed: Vec<Placed>,
     branches: BTreeMap<u64, Extent>,
-    /// The proofs read, by run and ordinal: None where the recording cannot be read.
-    proofs: Mutex<BTreeMap<(u32, u32), Option<[u8; 32]>>>,
+    of: BTreeMap<u64, Of>,
+    /// The proofs read, by branch, run and ordinal: None where the recording cannot be read.
+    proofs: Mutex<BTreeMap<(u64, u32, u32), Option<[u8; 32]>>>,
 }
 
 impl Shape {
+    /// The shape of the segments `recording`'s walks take: each branch's in the order of its
+    /// runs' ordinals, none overlapping another.
     pub(crate) fn new(recording: &Recording) -> io::Result<Self> {
         let segments = recording.segments();
         let mut placed: Vec<Placed> = engine_allocation::vec(segments.len())?;
         let mut branches: BTreeMap<u64, Extent> = BTreeMap::new();
-        let mut latest: BTreeMap<u64, usize> = BTreeMap::new();
+        let mut of: BTreeMap<u64, Of> = BTreeMap::new();
         for (at, segment) in segments.iter().enumerate() {
             let run = recording.run(segment.run)?;
             let hour = |ordinal: u32| {
@@ -69,8 +98,27 @@ impl Shape {
                     .map_err(|_| invalid("A segment's hours pass the clock"))
             };
             let (first_hour, last_hour) = (hour(segment.first)?, hour(segment.last)?);
+            let held = of.entry(segment.branch).or_default();
+            if let Some(&before) = held.places.last()
+                && (placed[before].run, placed[before].last) >= (segment.run, segment.first)
+            {
+                return Err(invalid("A branch's segments go back in the recording"));
+            }
+            engine_allocation::reserve(&mut held.places, 1)?;
+            held.places.push(at);
+            match held.reads.last_mut() {
+                Some(read) if read.run == segment.run => read.last = segment.last,
+                _ => {
+                    engine_allocation::reserve(&mut held.reads, 1)?;
+                    held.reads.push(Read {
+                        run: segment.run,
+                        last: segment.last,
+                        recorded: run.branch,
+                    });
+                }
+            }
             placed.push(Placed {
-                branch: run.branch,
+                branch: segment.branch,
                 run: segment.run,
                 first: segment.first,
                 last: segment.last,
@@ -79,7 +127,7 @@ impl Shape {
                 ends_branch: false,
             });
             branches
-                .entry(run.branch)
+                .entry(segment.branch)
                 .and_modify(|extent| {
                     extent.first_hour = extent.first_hour.min(first_hour);
                     extent.last_hour = extent.last_hour.max(last_hour);
@@ -88,19 +136,21 @@ impl Shape {
                     first_hour,
                     last_hour,
                 });
-            latest.insert(run.branch, at);
         }
-        for at in latest.into_values() {
-            placed[at].ends_branch = true;
+        for held in of.values() {
+            if let Some(&last) = held.places.last() {
+                placed[last].ends_branch = true;
+            }
         }
         Ok(Self {
             placed,
             branches,
+            of,
             proofs: Mutex::default(),
         })
     }
 
-    /// Every segment, in the recording's order.
+    /// Every segment, in the order the recording's walks take them.
     pub(crate) fn len(&self) -> usize {
         self.placed.len()
     }
@@ -109,12 +159,15 @@ impl Shape {
         &self.placed[at]
     }
 
-    /// The place of `segment`, one of the recording's.
+    /// The place of `segment`, one of those the recording's walks take.
     pub(crate) fn at(&self, segment: &Segment) -> io::Result<usize> {
-        self.placed
-            .binary_search_by(|placed| {
+        let places = self.places(segment.branch);
+        places
+            .binary_search_by(|&at| {
+                let placed = &self.placed[at];
                 (placed.run, placed.first).cmp(&(segment.run, segment.first))
             })
+            .map(|found| places[found])
             .map_err(|_| invalid("A segment the recording does not hold"))
     }
 
@@ -122,15 +175,29 @@ impl Shape {
         &self.branches
     }
 
-    /// The proof of the recorded input of run `run`'s branch through its ordinal `ordinal`: the
-    /// hour digest chain of every earlier run of the branch, whole, then of `run` through that
-    /// ordinal ([`Recording::chain_through`]). A recording grown from this one proves the same
-    /// there; one whose hours of the branch to it differ does not. None when it cannot be read.
-    fn proof_at(&self, recording: &Recording, run: u32, ordinal: u32) -> Option<[u8; 32]> {
+    /// The places of `branch`'s segments, in order.
+    fn places(&self, branch: u64) -> &[usize] {
+        self.of.get(&branch).map_or(&[][..], |held| held.places.as_slice())
+    }
+
+    /// The proof of the recorded input `branch` reads through ordinal `ordinal` of run `run`:
+    /// the hour digest chain of each run of another branch it reads before, through where it
+    /// reads it and named by that, then of every earlier run of `run`'s branch, whole, then of
+    /// `run` through that ordinal ([`Recording::chain_through`]). A recording grown from this
+    /// one, its branch read alike, proves the same there; one whose hours it reads to it differ,
+    /// or that reads them from elsewhere, does not. None when it cannot be read.
+    fn proof_at(
+        &self,
+        recording: &Recording,
+        branch: u64,
+        run: u32,
+        ordinal: u32,
+    ) -> Option<[u8; 32]> {
         let mut proofs = self.proofs.lock().unwrap_or_else(PoisonError::into_inner);
-        *proofs
-            .entry((run, ordinal))
-            .or_insert_with(|| proven(recording, run, ordinal).ok())
+        *proofs.entry((branch, run, ordinal)).or_insert_with(|| {
+            let reads = self.of.get(&branch).map_or(&[][..], |held| held.reads.as_slice());
+            proven(recording, reads, run, ordinal).ok()
+        })
     }
 
     /// The proof of the recorded input through segment `at`'s last hour: zeros, which no
@@ -142,18 +209,18 @@ impl Shape {
     /// The proof of the recorded input through ordinal `last` of segment `at`'s run, as
     /// [`Self::proof`].
     pub(crate) fn proof_through(&self, recording: &Recording, at: usize, last: u32) -> [u8; 32] {
-        self.proof_at(recording, self.placed[at].run, last)
+        let placed = &self.placed[at];
+        self.proof_at(recording, placed.branch, placed.run, last)
             .unwrap_or([0; 32])
     }
 
     /// Whether the recording holds hours of `branch` after `frontier`'s last.
     pub(crate) fn after(&self, branch: u64, frontier: &Frontier) -> bool {
         let next = (frontier.next.run, frontier.next.ordinal);
-        self.placed
-            .iter()
-            .rev()
-            .find(|placed| placed.branch == branch)
-            .is_some_and(|placed| (placed.run, placed.last) >= next)
+        self.places(branch).last().is_some_and(|&at| {
+            let placed = &self.placed[at];
+            (placed.run, placed.last) >= next
+        })
     }
 
     /// The first segment of `branch` holding an hour after `frontier`, a family's last on it, or
@@ -165,11 +232,9 @@ impl Shape {
         frontier: Option<&Frontier>,
     ) -> Option<(usize, u32)> {
         let next = frontier.map(|frontier| (frontier.next.run, frontier.next.ordinal));
-        self.placed
-            .iter()
-            .enumerate()
-            .filter(|(_, placed)| placed.branch == branch)
-            .find_map(|(at, placed)| match next {
+        self.places(branch).iter().find_map(|&at| {
+            let placed = &self.placed[at];
+            match next {
                 None => Some((at, placed.first)),
                 Some((run, ordinal)) if (placed.run, placed.last) >= (run, ordinal) => {
                     let first = if placed.run == run {
@@ -180,7 +245,8 @@ impl Shape {
                     Some((at, first))
                 }
                 Some(_) => None,
-            })
+            }
+        })
     }
 
     /// Whether a family's committed `frontier` on `branch` stands for `recording` as it is: the
@@ -191,14 +257,17 @@ impl Shape {
         let (run, Some(last)) = (frontier.next.run, frontier.next.ordinal.checked_sub(1)) else {
             return false;
         };
-        let at = self
-            .placed
-            .partition_point(|placed| (placed.run, placed.last) < (run, last));
-        let holds = self.placed.get(at).is_some_and(|placed| {
-            placed.run == run && placed.first <= last && placed.branch == branch
+        let places = self.places(branch);
+        let at = places.partition_point(|&at| {
+            let placed = &self.placed[at];
+            (placed.run, placed.last) < (run, last)
+        });
+        let holds = places.get(at).is_some_and(|&at| {
+            let placed = &self.placed[at];
+            placed.run == run && placed.first <= last
         });
         holds
-            && self.proof_at(recording, run, last) == Some(frontier.proof)
+            && self.proof_at(recording, branch, run, last) == Some(frontier.proof)
             && (frontier.end.is_some() || frontier.state.is_some() || !self.after(branch, frontier))
     }
 }

@@ -17,7 +17,9 @@
 //! run's ([`publication::halted`]). A family takes up its committed publication
 //! on each branch, as the recording a live recorder writes grows: it goes on from the hour after
 //! its last with the state and carry it saved there, and prepares only the hours the recording
-//! holds since.
+//! holds since. A recording read as timelines is prepared timeline by timeline: its main one,
+//! and each other one a query asked for or its store publishes ([`timelines`]), each walked as
+//! its pieces' segments ([`recording`]).
 
 mod backend;
 mod campaign;
@@ -59,6 +61,7 @@ use dashboard_world::{Needs, World};
 use engine_allocation::labels::{self, Kind, Owner};
 use measure::{Clock, Counted, Lap, Narrow, working_set};
 use replay::{
+    campaign::Replay,
     columnar_frames::{Recording, Segment},
     columnar_runs,
     segments::{self, Outcome, Settings},
@@ -66,8 +69,9 @@ use replay::{
 use replay_data::{format::FormatVersion, rows::TableId, scope::CaptureMode};
 use shape::Shape;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io,
+    path::PathBuf,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64},
@@ -119,10 +123,146 @@ pub(crate) fn names() -> Vec<&'static str> {
 }
 
 /// The columnar recording `source` is prepared from: its recording's runs, read through a reader
-/// of its own.
-pub(crate) fn recording(source: &Source) -> io::Result<Recording> {
+/// of its own, walked as `timelines` ([`view`]).
+pub(crate) fn recording(source: &Source, timelines: Option<&[u64]>) -> io::Result<Recording> {
     let replay = source.replay_ref();
-    replay.recording().selecting(&replay_data::rows::TableId::ALL)
+    view(replay, replay.recording().selecting(&TableId::ALL)?, timelines)
+}
+
+/// `recording`, `replay`'s as recorded, walked as each of `timelines` in turn: of each piece, the
+/// segments of its recorded branch holding its hours, the last brought earlier to its last hour,
+/// read as the timeline. As it is when None: every recorded branch.
+fn view(replay: &Replay, recording: Recording, timelines: Option<&[u64]>) -> io::Result<Recording> {
+    let Some(timelines) = timelines else {
+        return Ok(recording);
+    };
+    let invalid = |message: &str| io::Error::new(io::ErrorKind::InvalidData, message.to_owned());
+    // Each recorded branch's segments, in order, with their run's first hour.
+    let mut recorded: BTreeMap<u64, Vec<(Segment, i64)>> = BTreeMap::new();
+    for segment in recording.recorded_segments() {
+        let first_hour = i64::from(recording.run(segment.run)?.first_hour);
+        recorded
+            .entry(segment.branch)
+            .or_default()
+            .push((*segment, first_hour));
+    }
+    let mut segments = Vec::new();
+    for &timeline in timelines {
+        let mut reached = None;
+        for piece in replay.pieces(timeline) {
+            let (from, to) = (i64::from(piece.first_hour), i64::from(piece.last_hour));
+            for &(segment, first_hour) in recorded.get(&piece.segment).into_iter().flatten() {
+                let first = first_hour + i64::from(segment.first);
+                if first_hour + i64::from(segment.last) < from || first > to {
+                    continue;
+                }
+                if first < from {
+                    return Err(invalid("A timeline's piece starts inside a segment"));
+                }
+                if reached.is_some_and(|reached| reached >= (segment.run, segment.first)) {
+                    return Err(invalid("A timeline's pieces go back in the recording"));
+                }
+                let last = u32::try_from(to - first_hour)
+                    .map_or(segment.last, |last| last.min(segment.last));
+                segments.push(Segment {
+                    branch: timeline,
+                    last,
+                    ..segment
+                });
+                reached = Some((segment.run, last));
+            }
+        }
+    }
+    recording.with_segments(segments)
+}
+
+/// The timelines a preparation of `source` prepares: its main one first, then, in order, each
+/// other one a query asked for ([`ask`]) or its store publishes. None when its replay is not
+/// read as timelines: every recorded branch is prepared then.
+pub(crate) fn timelines(
+    source: &Source,
+    content: Option<&ContentOptions>,
+) -> io::Result<Option<Vec<u64>>> {
+    let replay = source.replay_ref();
+    let Some(held) = replay.timelines() else {
+        return Ok(None);
+    };
+    let mut others: BTreeSet<u64> = asked(source)?.into_iter().collect();
+    let (store, _) = crate::prepared::files(source, content)?;
+    if let Some(snapshot) = store.current()? {
+        others.extend(
+            snapshot
+                .section_names()
+                .filter_map(roots::root_of)
+                .map(|(_, branch)| branch),
+        );
+    }
+    let mut chosen = vec![held.main];
+    chosen.extend(
+        others
+            .into_iter()
+            .filter(|&id| id != held.main && held.get(id).is_some()),
+    );
+    Ok(Some(chosen))
+}
+
+/// Where the timelines queries asked of `source`'s recording are kept: beside its prepared store,
+/// which a Clear removes with it.
+fn asked_path(source: &Source) -> io::Result<PathBuf> {
+    Ok(dashboard_base::prepared::recording_folder(source)?
+        .join("timelines")
+        .join("asked.json"))
+}
+
+/// The timelines queries asked of `source`'s recording ([`ask`]); none when none were kept, or
+/// they cannot be read.
+fn asked(source: &Source) -> io::Result<Vec<u64>> {
+    match std::fs::read(asked_path(source)?) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Keeps each read, change and write of the asked timelines' file whole.
+static ASKING: Mutex<()> = Mutex::new(());
+
+/// Notes that a query asked `branch` of `source`: a timeline other than the main one its store
+/// publishes nothing of yet is kept as asked, and prepared whenever the recording is from now on
+/// ([`timelines`]). Whether it waits for a preparation to take it up.
+pub(crate) fn ask(
+    source: &Source,
+    content: Option<&ContentOptions>,
+    branch: u64,
+) -> io::Result<bool> {
+    let Some(held) = source.replay_ref().timelines() else {
+        return Ok(false);
+    };
+    if branch == held.main || held.get(branch).is_none() {
+        return Ok(false);
+    }
+    let (store, key) = crate::prepared::files(source, content)?;
+    if gates::current(&store, &key).is_some_and(|published| {
+        names()
+            .iter()
+            .any(|name| published.gate(branch, name).is_some())
+    }) {
+        return Ok(false);
+    }
+    let _asking = ASKING.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut kept = asked(source)?;
+    if !kept.contains(&branch) {
+        kept.push(branch);
+        kept.sort_unstable();
+        let path = asked_path(source)?;
+        if let Some(folder) = path.parent() {
+            std::fs::create_dir_all(folder)?;
+        }
+        let staged = path.with_extension("json.new");
+        std::fs::write(&staged, serde_json::to_vec(&kept)?)?;
+        std::fs::rename(staged, path)?;
+    }
+    Ok(true)
 }
 
 /// Whether `recording`, undamaged, is of `source`'s campaign and records every hour its replay
@@ -135,7 +275,7 @@ fn pairs(source: &Source, recording: &Recording) -> io::Result<bool> {
     let Some(runs) = columnar_runs::recorded_runs(recording)? else {
         return Ok(false);
     };
-    Ok(replay.index.iter().all(|block| {
+    Ok(replay.pages().iter().all(|block| {
         runs.iter().any(|&(branch, first, ordinals)| {
             branch == block.branch
                 && first <= block.first_hour
@@ -226,6 +366,11 @@ pub fn measure(
             "The native recording is not of this recording's campaign and hours",
         ));
     }
+    let recording = view(
+        source.replay_ref(),
+        recording,
+        timelines(source, content)?.as_deref(),
+    )?;
     let options = Options {
         families,
         threads: Some(threads),
@@ -244,7 +389,17 @@ pub fn measure(
     let measured = done
         .measured
         .ok_or_else(|| io::Error::other("The run was not measured"))?;
-    Ok((done.accepted, measured, done.failure))
+    // An index the run could not take is prepared alone, as `prepare` prepares it.
+    let unindexed = index.map(|due| due.alone(cancelled)).transpose().err();
+    let failure = match (done.failure, unindexed) {
+        (failure, None) => failure,
+        (None, Some(error)) => Some(error),
+        (Some(failure), Some(error)) => Some(io::Error::new(
+            failure.kind(),
+            format!("{failure}; {error}"),
+        )),
+    };
+    Ok((done.accepted, measured, failure))
 }
 
 /// What a complete native preparation of `source` from `recording` accepted, read from its
@@ -315,8 +470,9 @@ pub(crate) fn complete(
     if published.plan().is_none() {
         return Ok(false);
     }
-    for start in &source.replay_ref().branches {
-        let Some(gate) = published.gate(start.id, family.name()) else {
+    let shape = Shape::new(&recording(source, timelines(source, content)?.as_deref())?)?;
+    for &branch in shape.branches().keys() {
+        let Some(gate) = published.gate(branch, family.name()) else {
             return Ok(false);
         };
         let Some(root) = gate.publication()? else {
@@ -483,7 +639,10 @@ fn run(
         binding(&recording, content),
         plan,
         &families,
-        &|_, branch, frontier| shape.accepts(&recording, branch, frontier),
+        // A timeline it does not prepare now keeps what was published of it.
+        &|_, branch, frontier| {
+            !shape.branches().contains_key(&branch) || shape.accepts(&recording, branch, frontier)
+        },
     )?;
     let commits = Arc::new(Commits::default());
     let noted = Arc::clone(&commits);
@@ -581,8 +740,12 @@ fn run(
         )
     };
     let settings = Settings::new(threads);
-    // Taken now: an index the run never starts with is prepared apart ([`prepare`]).
-    let mut index = due.take().map(Due::ride).transpose()?;
+    // Taken now: an index the run never starts with, or cannot ride, is prepared apart
+    // ([`prepare`]).
+    let mut index = due
+        .take_if(|due| due.rides(&recording))
+        .map(Due::ride)
+        .transpose()?;
     // Each lane's batch seals and commits beside it while it goes on with the next.
     let sealers = members.len().min(threads);
     let walked = publisher.sealing(sealers, || {

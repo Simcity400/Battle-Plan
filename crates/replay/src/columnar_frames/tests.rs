@@ -654,14 +654,17 @@ fn restarts_restore_their_run_s_next_dictionary_ids() {
     let (bytes, _) = recording(&runs, every(&runs), 1, |_| {});
     let file = opened(bytes);
     let segments = file.segments();
+    let branch = file.run(0).unwrap().branch;
     let expected = [
         Segment {
+            branch,
             run: 0,
             restart: None,
             first: 0,
             last: 719,
         },
         Segment {
+            branch,
             run: 0,
             restart: Some(0),
             first: 720,

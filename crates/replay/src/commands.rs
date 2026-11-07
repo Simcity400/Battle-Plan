@@ -859,6 +859,7 @@ pub fn index_with(
             })
             .collect();
         let mut timeline = Timeline {
+            hours: (i32::MIN, i32::MAX),
             session,
             capture,
             world,

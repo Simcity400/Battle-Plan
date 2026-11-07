@@ -43,7 +43,7 @@ const reply: EquipmentStockpileReply = {
     { key: 'mod/trucks', available: raw('800000'), balance: raw('-200000'), stock: raw('800000') }],
 };
 const branch: BranchMetadata = { id: '1', sessionId: '1', firstHour: 0, lastHour: 200,
-  parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] };
+  main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] };
 const unusedTransport = async () => { throw new Error('The stockpile fixture must replace this transport.'); };
 const fixtureClient = (): DashboardClient => ({ available: true, openSource: unusedTransport, releaseSource: unusedTransport,
   product: unusedTransport, setMapViews: unusedTransport, onMapStates: unusedTransport });

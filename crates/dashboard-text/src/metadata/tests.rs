@@ -1425,7 +1425,10 @@ fn every_wire_vector_string_and_summary_copy_fails_by_name_under_real_denied_gro
         &AtomicBool::new(false),
     )
     .unwrap();
-    resident.value.branches[0].parent_id = Some("parent".into());
+    resident.value.branches[0].fork = Some(crate::BranchFork {
+        branch_id: "parent".into(),
+        hour: 100,
+    });
     resident.value.branches[0].gaps.push(crate::RecordingGap {
         first_hour: 101,
         last_hour: 101,

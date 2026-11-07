@@ -238,7 +238,7 @@ impl Source {
     /// checked between reads and decoded frames.
     pub fn open(key: SourceKey, path: PathBuf, cancelled: &AtomicBool) -> io::Result<Self> {
         metadata::check_cancel(cancelled)?;
-        let replay = Arc::new(Replay::open_path(&path).map_err(refuse_older)?);
+        let replay = Arc::new(Replay::open_timelines(&path).map_err(refuse_older)?);
         metadata::check_cancel(cancelled)?;
         let (facts, tables) = recorded(&replay);
         // The catalogue is read with the recording's own executable tables.
@@ -983,12 +983,10 @@ impl Source {
         {
             return false;
         }
-        // A save adds pages to the runs it continues as well as new runs.
-        if old.index.iter().any(|block| {
-            new.index
-                .binary_search_by_key(&(block.run, block.page), |held| (held.run, held.page))
-                .map_or(true, |at| new.index[at] != *block)
-        }) {
+        // A save adds pages to the runs it continues as well as new runs, and timelines to the
+        // ones read before; a changed join takes blocks away.
+        let held: std::collections::HashSet<&replay::campaign::BlockIndex> = new.index.iter().collect();
+        if old.index.iter().any(|block| !held.contains(block)) {
             return false;
         }
         if old

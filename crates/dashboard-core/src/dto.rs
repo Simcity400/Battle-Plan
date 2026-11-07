@@ -78,9 +78,13 @@ pub struct BranchMetadata {
     /// Includes missing leading/trailing hours. This range is not a count of frames.
     pub first_hour: i32,
     pub last_hour: i32,
-    /// A non-null parent is probable, never asserted.
-    pub parent_id: Option<String>,
-    pub parent_hour: Option<i32>,
+    /// The history holding the latest recorded play: the campaign as it went on. Listed first.
+    pub main: bool,
+    /// For a history other than the main one that shares its early play: the main history, and
+    /// the first hour where they part, from which this one's play was left behind.
+    pub fork: Option<BranchFork>,
+    /// Each place it goes on with play recorded after a load or in another session.
+    pub joins: Vec<BranchJoin>,
     pub sample_boundary: String,
     /// Reported capture losses, not a claim that recovered frames are absent.
     pub gaps: Vec<RecordingGap>,
@@ -95,6 +99,55 @@ pub struct BranchMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub catalogue_hour: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchFork {
+    pub branch_id: String,
+    pub hour: i32,
+}
+
+/// Why recorded play joins the history before it.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum JoinEvidence {
+    /// The save's counters continue that history's and no other's.
+    Counters,
+    /// The only recorded history at the save's date its counters allow.
+    Only,
+    /// The same game went on after hours the recorder lost.
+    Process,
+    /// Play the recorder never saw lies between them; joined to the latest history before.
+    Unrecorded,
+    /// The recording can't tell which history the save came from; joined to the latest.
+    Unconfirmed,
+    /// The viewer chose it.
+    Chosen,
+}
+
+/// Where a history goes on with another stretch of recorded play.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchJoin {
+    /// The first hour of the play joined.
+    pub hour: i32,
+    /// The recorded stretch joined, which a choice names.
+    pub segment_id: String,
+    /// The recorded stretch it goes on from.
+    pub parent_id: String,
+    pub evidence: JoinEvidence,
+    /// What the viewer may join it to instead, when the recording can't tell: each earlier
+    /// stretch the save could have come from. Empty when proven.
+    pub choices: Vec<JoinChoice>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct JoinChoice {
+    pub segment_id: String,
+    pub first_hour: i32,
+    pub last_hour: i32,
 }
 
 /// An interval between the reads of `after_hour` and `hour` whose recorded

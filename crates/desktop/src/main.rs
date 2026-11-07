@@ -267,6 +267,7 @@ fn main() {
             dashboard_service::dashboard_product,
             dashboard_service::dashboard_prepared_query,
             dashboard_service::dashboard_preparation_preferences,
+            dashboard_service::dashboard_history_choice,
             dashboard_service::dashboard_preparation_status,
             dashboard_service::dashboard_prepare_source,
             dashboard_service::dashboard_cancel_preparation,

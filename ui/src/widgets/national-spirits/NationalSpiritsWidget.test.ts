@@ -42,7 +42,7 @@ function reply(next = false): IdeaHistoryReply {
     artwork: tokens.map(token => ({ token, name: `${next ? 'New' : 'Old'} ${token}`, description: null, baseDurationDays: null, icon: null })), holders: [] };
 }
 function track(): BoundTrack {
-  const branch = { id: '1', sessionId: '1', firstHour: 100, lastHour: 250, parentId: null, parentHour: null,
+  const branch = { id: '1', sessionId: '1', firstHour: 100, lastHour: 250, main: true, fork: null, joins: [],
     sampleBoundary: 'Sample origin unknown' as const, gaps: [] };
   return { id: 'track', roleId: 'track', label: 'Synthetic', branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: null, branch,
     source: { id: 'source', path: 'C:/recordings/synthetic.battleplan', revision: '1', metadata: {

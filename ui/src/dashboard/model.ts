@@ -110,14 +110,18 @@ export function defaultTemplate(page: PageId = 'overview'): DashboardTemplate {
   };
 }
 
-export function branchSelections(tracks: TrackSpec[], selected: Readonly<Record<string, number>>): TrackSpec[] {
-  return tracks.map(track => ({ ...track, branchIndex: selected[track.id] ?? track.branchIndex }));
+/** The history chosen for a track, by id: itself, or the history its play joined since; none when it is gone. */
+function chosenBranch(source: DashboardSource, id: string | undefined) {
+  if (id === undefined) return undefined;
+  const branches = source.metadata.branches;
+  return branches.find(branch => branch.id === id) ?? branches.find(branch => branch.joins.some(join => join.segmentId === id));
 }
 
-export function bindTracks(template: DashboardTemplate, sources: ReadonlyMap<string, DashboardSource>): BoundTrack[] {
+/** Binds each track to its source's history: the one `chosen` names for it by id, else its template's. */
+export function bindTracks(template: DashboardTemplate, sources: ReadonlyMap<string, DashboardSource>, chosen: Readonly<Record<string, string>> = {}): BoundTrack[] {
   return template.tracks.flatMap((track) => {
     const source = sources.get(track.roleId);
-    const branch = source?.metadata.branches[track.branchIndex];
+    const branch = source && (chosenBranch(source, chosen[track.id]) ?? source.metadata.branches[track.branchIndex]);
     if (!source || !branch) return [];
     if (template.alignment === 'anchors' && track.anchorOffset == null) return [];
     const anchor = branch.firstHour + (track.anchorOffset ?? 0);

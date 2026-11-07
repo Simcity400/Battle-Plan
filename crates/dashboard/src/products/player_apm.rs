@@ -121,12 +121,43 @@ pub(super) fn index(
     }
     crate::metadata::check_cancel(cancelled)?;
     let replay = source.replay_ref();
-    let index = Arc::new(commands::index_with(
-        &replay.sessions,
-        &replay.controls,
-        branch,
-        || crate::metadata::check_cancel(cancelled),
-    )?);
+    // Commands are recorded by segment; a timeline counts each segment's only over its piece.
+    let mut index: Option<Index> = None;
+    let pieces = replay.pieces(branch);
+    let hours = replay::campaign::timelines::command_hours(&pieces);
+    for (piece, (first, last)) in pieces.iter().zip(hours) {
+        let mut held = commands::index_with(
+            &replay.sessions,
+            &replay.controls,
+            piece.segment,
+            || crate::metadata::check_cancel(cancelled),
+        )?;
+        for timeline in &mut held.timelines {
+            timeline.hours = (first, last);
+            // Who played, and as whom, only as far as the piece keeps of the capture.
+            let kept = timeline.bounds(first, last);
+            timeline.actors.retain(|_, history| {
+                history.retain(|observation| kept.is_some_and(|(_, to)| observation.at_qpc <= to));
+                !history.is_empty()
+            });
+        }
+        match &mut index {
+            None => index = Some(held),
+            Some(index) => {
+                index.analysis.recorded |= held.analysis.recorded;
+                index.analysis.lost_observations += held.analysis.lost_observations;
+                index.analysis.unattributed_commands += held.analysis.unattributed_commands;
+                index.analysis.players.extend(held.analysis.players);
+                index.timelines.extend(held.timelines);
+            }
+        }
+    }
+    let index = Arc::new(match index {
+        Some(index) => index,
+        None => commands::index_with(&replay.sessions, &replay.controls, branch, || {
+            crate::metadata::check_cancel(cancelled)
+        })?,
+    });
     crate::metadata::check_cancel(cancelled)?;
     state
         .lock()
@@ -249,10 +280,15 @@ impl Coverage {
             let (Some(start), Some(end)) = (timeline.spans.first(), timeline.spans.last()) else {
                 continue;
             };
+            let (lo, hi) = timeline.hours;
+            let (start, end) = (start.hour.max(lo), end.hour.min(hi));
+            if start > end {
+                continue;
+            }
             engine_allocation::reserve(&mut edges, 2)?;
-            edges.extend([start.hour, end.hour]);
-            let from = timeline.spans.partition_point(|span| span.hour < first);
-            let to = timeline.spans.partition_point(|span| span.hour <= last);
+            edges.extend([start, end]);
+            let from = timeline.spans.partition_point(|span| span.hour < first.max(lo));
+            let to = timeline.spans.partition_point(|span| span.hour <= last.min(hi));
             engine_allocation::reserve(&mut hours, to.saturating_sub(from))?;
             hours.extend(
                 timeline.spans[from.min(to)..to]
@@ -415,8 +451,19 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
     let mut series: BTreeMap<String, Series> = BTreeMap::new();
     for timeline in &index.timelines {
         crate::metadata::check_cancel(cancelled)?;
-        let Some((capture_from, capture_to)) = timeline.bounds(first, last) else {
+        let (lo, hi) = (first.max(timeline.hours.0), last.min(timeline.hours.1));
+        if lo > hi {
             continue;
+        }
+        let Some((capture_from, capture_to)) = timeline.bounds(lo, hi) else {
+            continue;
+        };
+        let within = |membership: Vec<(i32, i32)>| -> Vec<(i32, i32)> {
+            membership
+                .into_iter()
+                .map(|(from, to)| (from.max(lo), to.min(hi)))
+                .filter(|(from, to)| from <= to)
+                .collect()
         };
         let mut intervals: BTreeMap<(String, String), Vec<(u64, u64)>> = BTreeMap::new();
         let mut versions: BTreeMap<(u64, usize), (String, String)> = BTreeMap::new();
@@ -490,11 +537,11 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
         for ((id, tag), mut ranges) in intervals {
             merge_intervals(&mut ranges);
             let item = series.get_mut(&id).unwrap();
-            let membership: Vec<_> = if params.membership.is_none() {
+            let membership = within(if params.membership.is_none() {
                 vec![(first, last)]
             } else {
                 memberships.get(tag.as_str()).cloned().unwrap_or_default()
-            };
+            });
             for &(member_first, member_last) in &membership {
                 let from_hour = first.max(member_first);
                 let to_hour = last.min(member_last);
@@ -540,11 +587,11 @@ pub fn query(index: &Index, params: &ApmParams, cancelled: &AtomicBool) -> io::R
             let Some(counts) = timeline.counts.get(key) else {
                 continue;
             };
-            let membership = if params.membership.is_none() {
+            let membership = within(if params.membership.is_none() {
                 vec![(first, last)]
             } else {
                 memberships.get(tag.as_str()).cloned().unwrap_or_default()
-            };
+            });
             let item = series.get_mut(id).unwrap();
             let count_range = |from: i32, to: i32| {
                 let mut total = Counts::default();

@@ -466,7 +466,9 @@ pub struct Recording {
     /// The tables its format holds as this build reads them otherwise, each with why.
     withheld: Box<[(usize, String)]>,
     runs: Box<[Option<Arc<Run>>]>,
+    /// The segments its walks take ([`Self::with_segments`]), and those it records.
     segments: Box<[Segment]>,
+    recorded: Box<[Segment]>,
     damage: Box<[Damage]>,
     /// Whether walks check every hour against the pages' hour digest chain.
     verify: bool,
@@ -568,6 +570,7 @@ impl Recording {
                 if u64::from(restart.after) + 1 < u64::from(run.ordinals) {
                     engine_allocation::reserve(&mut segments, 1)?;
                     segments.push(Segment {
+                        branch: run.branch,
                         run: index,
                         restart: start.0,
                         first: start.1,
@@ -579,6 +582,7 @@ impl Recording {
             if start.1 < run.ordinals {
                 engine_allocation::reserve(&mut segments, 1)?;
                 segments.push(Segment {
+                    branch: run.branch,
                     run: index,
                     restart: start.0,
                     first: start.1,
@@ -597,6 +601,7 @@ impl Recording {
             root_extent,
             source,
             runs: engine_allocation::boxed_slice(runs)?,
+            recorded: engine_allocation::boxed_slice(engine_allocation::copy_vec(&segments)?)?,
             segments: engine_allocation::boxed_slice(segments)?,
             damage: engine_allocation::boxed_slice(damage)?,
             verify: false,
@@ -635,6 +640,7 @@ impl Recording {
                 self.runs.iter().cloned(),
             )?)?,
             segments: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.segments)?)?,
+            recorded: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.recorded)?)?,
             damage: engine_allocation::boxed_slice(damage)?,
             verify: self.verify,
             selected: [true; TABLE_COUNT],
@@ -839,10 +845,37 @@ impl Recording {
         }
     }
 
-    /// Every readable run's segments in order: from the run's start, then from each restart
-    /// a readable page holds.
+    /// The segments its walks take: those it records ([`Self::recorded_segments`]), unless
+    /// given others ([`Self::with_segments`]).
     pub fn segments(&self) -> &[Segment] {
         &self.segments
+    }
+
+    /// Every readable run's segments in order: from the run's start, then from each restart
+    /// a readable page holds, each of its run's branch.
+    pub fn recorded_segments(&self) -> &[Segment] {
+        &self.recorded
+    }
+
+    /// The recording whose walks take `segments` in place of those it records, as a timeline
+    /// reads them: each one a recorded segment, of any branch, its last ordinal kept or brought
+    /// earlier. A segment may appear more than once.
+    pub fn with_segments(mut self, segments: Vec<Segment>) -> io::Result<Self> {
+        for segment in &segments {
+            let held = self
+                .recorded
+                .binary_search_by_key(&(segment.run, segment.first), |held| (held.run, held.first))
+                .map(|at| &self.recorded[at]);
+            if !held.is_ok_and(|held| {
+                held.restart == segment.restart
+                    && segment.first <= segment.last
+                    && segment.last <= held.last
+            }) {
+                return Err(invalid("A segment the recording does not hold"));
+            }
+        }
+        self.segments = engine_allocation::boxed_slice(segments)?;
+        Ok(self)
     }
 
     /// The page of `segment`'s run whose restart holds the segment's last hour, the run's
@@ -1669,6 +1702,7 @@ impl<'r> Walker<'r> {
                 continue;
             };
             let segment = Segment {
+                branch: run.branch,
                 run: index,
                 restart: None,
                 first: 0,
@@ -1682,9 +1716,10 @@ impl<'r> Walker<'r> {
         Ok(())
     }
 
-    /// The hours of `segment`'s pages from `state` as [`Self::begin`] left it: one manifest
-    /// per ordinal at its run's branch and hour, every manifest and section within the piece
-    /// covering its ordinal, every unit read to its end, and the chain checked when asked.
+    /// The hours of `segment` from `state` as [`Self::begin`] left it: one manifest per ordinal
+    /// through its last, at its branch and hour, every manifest and section within the piece
+    /// covering its ordinal, every unit of a page walked whole read to its end, and the chain
+    /// checked when asked.
     /// `visit` sees each hour once it is applied, with whether it is the walk's first; it
     /// stops the walk by returning false, and the walk then returns false.
     pub fn walk(
@@ -1772,7 +1807,7 @@ impl<'r> Walker<'r> {
                     .ok_or_else(|| damaged(invalid("holds no hour records")))?;
                 let mut records = RecordsDecoder::new(&columns, &arena[records]).map_err(damaged)?;
                 let mut manifest = Manifest {
-                    branch: run.branch,
+                    branch: segment.branch,
                     hour: 0,
                     flags: 0,
                     total_ns: 0,
@@ -1807,9 +1842,11 @@ impl<'r> Walker<'r> {
                 }
                 // Tables whose own block failed inside an hour, which an isolating walk loses.
                 let mut failed = Vec::new();
-                for ordinal in u64::from(page.first)..end {
+                // A segment brought earlier ends inside its last page.
+                let through = end.min(u64::from(segment.last) + 1);
+                for ordinal in u64::from(page.first)..through {
                     let at = i32::try_from(hour(ordinal)).map_err(|_| damaged(invalid("names an hour past 2^31")))?;
-                    records.hour(run.branch, at, &mut manifest).map_err(damaged)?;
+                    records.hour(segment.branch, at, &mut manifest).map_err(damaged)?;
                     for section in &manifest.sections {
                         if (recording.verify || !state.skips(section.table)) && decoders[section.table].is_none() {
                             return Err(damaged(invalid("names a table its block does not hold")));

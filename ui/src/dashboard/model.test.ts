@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { CountryMetadata } from '../shell/api';
 import type { DashboardSource } from './client';
-import { bindTracks, branchSelections, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, recordingEndTime, resolveWindow, widgetAtDefault } from './model.ts';
+import { bindTracks, clockBounds, createWidget, defaultTemplate, pinTime, rebaseWidget, recordingEndTime, resolveWindow, widgetAtDefault } from './model.ts';
 import { setOption } from './options.ts';
 import type { OptionField } from './options';
 import { parseTemplate } from './storage.ts';
@@ -46,7 +46,7 @@ function source(id = 'lease-a', firstHour = 1000, countries = [country()]): Dash
   return { id, path: `C:/recordings/${id}.battleplan`, revision: `revision-${id}`, metadata: {
     path: `C:/recordings/${id}.battleplan`, revision: `revision-${id}`, name: id, format: 1, captureMode: 'full', campaignKey: 'c0ffee',
     branches: [{ id: '7', sessionId: '9', firstHour, lastHour: firstHour + 1000,
-      parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] }],
+      main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] }],
     countries, playerCountryId: countries[0]?.id ?? null, contentVerified: false, partial: null, warnings: [], buildWarnings: [],
   } };
 }
@@ -57,12 +57,14 @@ test('branch selection on a non-first track leaves sibling branches and saved pi
   const replay = source();
   replay.metadata.branches.push({ ...replay.metadata.branches[0], id: '8' });
   const pinned = { ...template.widgets[0], trackIds: ['comparison'], time: { mode: 'pin' as const, windows: { comparison: { firstOffset: 20, lastOffset: 40 } } } };
-  const changed = { ...template, tracks: branchSelections(template.tracks, { comparison: 0 }) };
-  const tracks = bindTracks(changed, new Map([['primary', replay]]));
+  const tracks = bindTracks(template, new Map([['primary', replay]]), { comparison: '7' });
   assert.deepEqual(tracks.map(track => [track.id, track.branch.id]), [['main', '7'], ['comparison', '7']]);
   assert.equal(template.tracks[1].branchIndex, 1);
   assert.deepEqual(resolveWindow(pinned, tracks[1], tracks, 1700), { firstHour: 1020, lastHour: 1040 });
-  assert.deepEqual(branchSelections(template.tracks, { main: 1 }).map(track => track.branchIndex), [1, 1]);
+  assert.deepEqual(bindTracks(template, new Map([['primary', replay]]), { main: '8' }).map(track => track.branch.id), ['8', '8']);
+  // A chosen history whose play joined another since follows it; one gone falls back to the template's.
+  replay.metadata.branches[1] = { ...replay.metadata.branches[1], joins: [{ hour: 1, segmentId: '9', parentId: '8', evidence: 'chosen', choices: [] }] };
+  assert.deepEqual(bindTracks(template, new Map([['primary', replay]]), { main: '9', comparison: '10' }).map(track => track.branch.id), ['8', '8']);
 });
 
 test('explicit anchors align source hours and missing anchors or branches remain unbound', () => {

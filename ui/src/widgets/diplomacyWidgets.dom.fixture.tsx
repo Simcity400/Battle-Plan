@@ -40,7 +40,7 @@ const errors: string[] = [];
 let notes: string[] = [];
 const root = createRoot(host, { onUncaughtError: error => { errors.push(String(error instanceof Error ? error.stack ?? error.message : error)); } });
 
-const branch: BranchMetadata = { id: '1', sessionId: '1', firstHour: 0, lastHour: 200, parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] };
+const branch: BranchMetadata = { id: '1', sessionId: '1', firstHour: 0, lastHour: 200, main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] };
 const span = { firstHour: 0, lastHour: 200 };
 const COVERED = { ...span, complete: true };
 const faction = (id: string, tags: string[]) => ({ id, name: `Synthetic faction ${id}`, nameReason: null, recordedName: id, ...span,

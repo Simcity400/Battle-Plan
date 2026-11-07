@@ -225,13 +225,14 @@ fn a_campaign_completed_by_its_status_alone_is_refused_past_untouched_segments()
         _ => complete(OTHER),
     });
     let recording = opened(&bytes);
+    let branch = recording.run(0).unwrap().branch;
     assert_eq!(
         recording.segments(),
         [
-            Segment { run: 0, restart: None, first: 0, last: 2 * UNIT - 1 },
-            Segment { run: 0, restart: Some(1), first: 2 * UNIT, last: 4 * UNIT - 1 },
-            Segment { run: 0, restart: Some(3), first: 4 * UNIT, last: 6 * UNIT - 1 },
-            Segment { run: 0, restart: Some(5), first: 6 * UNIT, last: 8 * UNIT - 1 },
+            Segment { branch, run: 0, restart: None, first: 0, last: 2 * UNIT - 1 },
+            Segment { branch, run: 0, restart: Some(1), first: 2 * UNIT, last: 4 * UNIT - 1 },
+            Segment { branch, run: 0, restart: Some(3), first: 4 * UNIT, last: 6 * UNIT - 1 },
+            Segment { branch, run: 0, restart: Some(5), first: 6 * UNIT, last: 8 * UNIT - 1 },
         ]
     );
     for at in 1..6 {

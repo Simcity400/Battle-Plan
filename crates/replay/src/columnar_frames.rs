@@ -1420,10 +1420,13 @@ impl Views {
 }
 
 /// Hours a walk can take on its own: from its run's start or from a restart, through the
-/// hour before the run's next restart. Ordinals of the run, inclusive.
+/// hour before the run's next restart, or fewer ([`Recording::with_segments`]). Ordinals of the
+/// run, inclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[derive(replay_spool::Spooled)]
 pub struct Segment {
+    /// The branch its hours are walked as: its run's, or the timeline a view walks it for.
+    pub branch: u64,
     pub run: u32,
     /// The page whose restart the walk starts from; None from the run's start.
     pub restart: Option<usize>,

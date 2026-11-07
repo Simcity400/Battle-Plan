@@ -168,6 +168,11 @@ pub fn directory() -> PathBuf {
     local_data().join("recorder")
 }
 
+/// Where the viewer keeps its choices of how each campaign's histories join.
+pub fn histories_folder() -> PathBuf {
+    local_data().join("histories")
+}
+
 /// Where recordings are saved and listed when no folder was chosen.
 pub fn default_save_folder() -> PathBuf {
     local_data().join("captures")

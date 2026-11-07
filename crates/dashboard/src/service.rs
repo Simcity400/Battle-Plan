@@ -824,6 +824,25 @@ impl Service {
                     LoadJob::PreparationPreferences { request, enabled },
                 );
             }
+            DataCommand::HistoryChoice {
+                id,
+                path,
+                segment_id,
+                choice,
+            } => {
+                let Some(request) = self.inner.begin(id) else {
+                    return;
+                };
+                self.inner.submit(
+                    Arc::clone(&request),
+                    LoadJob::HistoryChoice {
+                        request,
+                        path,
+                        segment_id,
+                        choice,
+                    },
+                );
+            }
             DataCommand::Cancel { id } => {
                 let discarded = self
                     .inner

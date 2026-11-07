@@ -198,12 +198,13 @@ fn a_run_reads_back_from_its_start_and_from_every_restart() {
     assert!(recording.damage().is_empty(), "{:?}", recording.damage());
     assert_eq!(recording.hours(), hours as u64);
     let segments = recording.segments();
+    let branch = recording.run(0).unwrap().branch;
     assert_eq!(
         segments,
         [
-            Segment { run: 0, restart: None, first: 0, last: 719 },
-            Segment { run: 0, restart: Some(0), first: 720, last: 1439 },
-            Segment { run: 0, restart: Some(1), first: 1440, last: 1444 },
+            Segment { branch, run: 0, restart: None, first: 0, last: 719 },
+            Segment { branch, run: 0, restart: Some(0), first: 720, last: 1439 },
+            Segment { branch, run: 0, restart: Some(1), first: 1440, last: 1444 },
         ]
     );
     walks(&recording, &frames);

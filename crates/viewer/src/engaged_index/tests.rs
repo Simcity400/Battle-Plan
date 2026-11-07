@@ -52,7 +52,7 @@ fn a_load_without_its_origin_folds_its_first_hour_as_a_gap() {
         let shared = Arc::new(History::default());
         let country = Country::Tag("AAA".into());
         let mut pass = Pass::new(Arc::clone(&shared), country.clone());
-        pass.fold_hour(frame.branch, frame.hour, Some(&frame), native_load(&start));
+        pass.fold_hour(frame.branch, frame.hour, Some(&frame), native_load(&start), false);
         let (snapshots, _inbox) = mpsc::channel();
         let index = EngagedIndex {
             country,
@@ -264,7 +264,7 @@ fn fold_hours(tag: &str, hours: &[(Hour, &[u32], &[(u32, u32)], [u8; 2])]) -> Pa
     let load = hours.first().map(|hour| hour.0);
     for &(hour, players, factions, bytes) in hours {
         let frame = naval_frame(6, players, factions, 1, bytes);
-        pass.fold_hour(3, hour, Some(&frame), load);
+        pass.fold_hour(3, hour, Some(&frame), load, false);
     }
     pass
 }
@@ -391,10 +391,11 @@ fn a_player_change_hidden_in_an_unreadable_block_rebuilds_nothing_on_recovery() 
         10,
         Some(&naval_frame(6, &[1], none, 1, [0, 0])),
         Some(10),
+        false,
     );
     pass.failed_block(3, 19);
     let mut frame = naval_frame(6, &[3], allied, 1, [0, 0]);
-    pass.fold_hour(3, 20, Some(&frame), Some(10));
+    pass.fold_hour(3, 20, Some(&frame), Some(10), false);
     let index = index(&pass, "C3");
     let served = flags(&index, &mut frame, 20, 3);
     assert_eq!(served.land[&100], Engaged::Unknown);
@@ -425,7 +426,7 @@ fn mismatches_are_named_and_undecided_sides_counted_apart() {
     // Without a load the first hour follows unobserved rebuilds.
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     let mut frame = naval_frame(6, &[1], none, 1, [0, 1]);
-    pass.fold_hour(3, 10, Some(&frame), None);
+    pass.fold_hour(3, 10, Some(&frame), None, false);
     assert_eq!(pass.check.summary.undecided, 2);
     let index = index(&pass, "C1");
     assert_eq!(naval_flag(&index, &mut frame, 10, 1), Engaged::Yes);
@@ -440,20 +441,20 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
     let none: &[(u32, u32)] = &[];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     // An undecodable hour.
-    pass.fold_hour(3, 10, None, Some(10));
+    pass.fold_hour(3, 10, None, Some(10), false);
     // Country links unavailable while naval combats are recorded: neither
     // the perspective nor the recording player resolves.
     let mut frame = naval_frame(6, &[1], none, 1, [0, 0]);
     *frame.tables[TableId::CountryLinks.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "not captured".into(),
     };
-    pass.fold_hour(3, 11, Some(&frame), Some(10));
+    pass.fold_hour(3, 11, Some(&frame), Some(10), false);
     // A failed client read is unidentified even with two humans.
     let mut frame = naval_frame(6, &[1, 5], none, 1, [0, 0]);
     *frame.tables[TableId::LocalPlayer.index()] = replay_frame::frame::TableView::Unavailable {
         reason: "not captured".into(),
     };
-    pass.fold_hour(3, 12, Some(&frame), Some(10));
+    pass.fold_hour(3, 12, Some(&frame), Some(10), false);
     // An unreadable block.
     pass.failed_block(3, 20);
     pass.fold_hour(
@@ -461,6 +462,7 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
         21,
         Some(&naval_frame(6, &[1], none, 0, [0, 0])),
         Some(10),
+        false,
     );
     let summary = pass.shared.check.lock().unwrap().clone();
     assert_eq!(
@@ -483,6 +485,7 @@ fn unread_and_unnamed_hours_are_counted_through_the_pass() {
         10,
         Some(&naval_frame(6, &[1], none, 0, [0, 0])),
         Some(10),
+        false,
     );
     assert!(clean.check.summary.lines()[0].contains("no naval combat side in the 1 folded hours"));
 }
@@ -512,7 +515,7 @@ fn an_observer_view_set_without_a_rebuild_shows_one_sample_later() {
                     },
                 ]),
             );
-            pass.fold_hour(3, hour, Some(&frame), Some(10));
+            pass.fold_hour(3, hour, Some(&frame), Some(10), false);
         }
         pass
     };
@@ -585,7 +588,7 @@ fn the_recording_players_icons_keep_the_clients_carried_frame() {
     ];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C3".into()));
     for frame in &frames {
-        pass.fold_hour(3, frame.hour, Some(frame), Some(10));
+        pass.fold_hour(3, frame.hour, Some(frame), Some(10), false);
     }
     let index = index(&pass, "C3");
     let mut frame = frames[2].clone();
@@ -651,7 +654,7 @@ fn a_joined_recordings_icon_keeps_the_frame_its_recorded_bytes_set() {
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     for frame in &frames {
         // No load: the branch joined a running game.
-        pass.fold_hour(3, frame.hour, Some(frame), None);
+        pass.fold_hour(3, frame.hour, Some(frame), None, false);
     }
     let index = index(&pass, "C1");
     let mut frame = frames[2].clone();
@@ -680,7 +683,7 @@ fn mp_switch_and_observer_hours_are_checked_with_a_stable_human_roster() {
                 observer_country,
             }]),
         );
-        pass.fold_hour(3, hour, Some(&frame), Some(10));
+        pass.fold_hour(3, hour, Some(&frame), Some(10), false);
     }
     let summary = &pass.check.summary;
     assert_eq!(
@@ -707,7 +710,7 @@ fn mismatch_counts_stay_exact_while_only_the_first_five_are_kept() {
     let frame = naval_frame(12, &[1], &[], COMBATS, [1, 1]);
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     for hour in 0..48 {
-        pass.fold_hour(3, hour, Some(&frame), Some(0));
+        pass.fold_hour(3, hour, Some(&frame), Some(0), false);
     }
     let summary = &pass.check.summary;
     assert_eq!((summary.agreements, summary.mismatches), (0, mismatches));
@@ -760,7 +763,7 @@ fn an_unengaged_naval_icon_keeps_its_last_engaged_frame_through_the_index() {
     ];
     let mut pass = Pass::new(Arc::default(), Country::Tag("C1".into()));
     for frame in &frames {
-        pass.fold_hour(3, frame.hour, Some(frame), Some(10));
+        pass.fold_hour(3, frame.hour, Some(frame), Some(10), false);
     }
     let index = index(&pass, "C1");
     let kept = |at: usize| {
@@ -1004,7 +1007,7 @@ fn fold_for_aaa(hours: &[DecodedFrame]) -> (BTreeMap<u64, Engaged>, Provenance) 
     let country = Country::Tag("AAA".into());
     let mut pass = Pass::new(Arc::clone(&shared), country.clone());
     for frame in hours {
-        pass.fold_hour(frame.branch, frame.hour, Some(frame), Some(0));
+        pass.fold_hour(frame.branch, frame.hour, Some(frame), Some(0), false);
     }
     let (snapshots, _inbox) = mpsc::channel();
     let index = EngagedIndex {
@@ -1070,7 +1073,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
     assert_eq!(rebuilt(None), (yes.clone(), Provenance::Unindexed));
     let shared = Arc::new(History::default());
     let mut pass = Pass::new(Arc::clone(&shared), Country::Tag("AAA".into()));
-    pass.fold_hour(1, 0, Some(&frames[0]), Some(0));
+    pass.fold_hour(1, 0, Some(&frames[0]), Some(0), false);
     let (snapshots, _inbox) = mpsc::channel();
     let index = EngagedIndex {
         country: Country::Tag("AAA".into()),
@@ -1085,7 +1088,7 @@ fn a_load_rebuilt_flag_reports_its_provenance() {
     // An unreadable first hour folds no viewer.
     let mut unread = frames[1].clone();
     unread.hour = 0;
-    pass.fold_hour(2, 0, None, None);
+    pass.fold_hour(2, 0, None, None, false);
     unread.branch = 2;
     assert_eq!(
         combats(

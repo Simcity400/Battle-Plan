@@ -33,6 +33,7 @@ pub mod collect;
 pub mod fixtures;
 pub mod hours;
 pub mod records;
+pub mod timelines;
 pub mod writer;
 
 pub use changes::{BlockChange, QuietHours, TableFields};
@@ -204,6 +205,8 @@ pub struct Replay {
     segments: Vec<u32>,
     revision: Revision,
     partial_control: Option<usize>,
+    /// Its segments, when read as timelines ([`Self::into_timelines`]).
+    physical: Option<Box<timelines::Physical>>,
 }
 
 impl Replay {
@@ -341,6 +344,7 @@ impl Replay {
             segments,
             revision,
             partial_control,
+            physical: None,
         })
     }
 
@@ -370,12 +374,15 @@ impl Replay {
 
     /// `block`'s segment in [`Recording::segments`].
     pub(crate) fn segment_of(&self, block: &BlockIndex) -> io::Result<usize> {
-        // The index lists runs in order, each run's pages in order.
-        let position = self
-            .index
+        // The recording's pages list runs in order, each run's pages in order.
+        let (pages, segments) = match &self.physical {
+            Some(physical) => (&physical.index, &physical.segments),
+            None => (&self.index, &self.segments),
+        };
+        let position = pages
             .binary_search_by_key(&(block.run, block.page), |held| (held.run, held.page))
             .map_err(|_| invalid_static("the block is none of the recording's"))?;
-        Ok(self.segments[position] as usize)
+        Ok(segments[position] as usize)
     }
 
     /// Whether blocks `a` and `b` lie in one segment: a walk from its restart reads both.
@@ -543,6 +550,9 @@ impl Replay {
     /// Exact prior history, without recording bytes or decoded rows: every branch's hours and
     /// each session's tail, for a collector or recorder to go on from.
     pub fn into_history(self) -> io::Result<CampaignHistory> {
+        if self.physical.is_some() {
+            return Err(invalid_static("a recording read as timelines holds no recorder history"));
+        }
         self.require_undamaged()?;
         // Each block's last Clock row, which names its load.
         let mut signals = vec![None; self.index.len()];

@@ -7,7 +7,7 @@ import { formatDateTime } from '../dashboard/calendar';
 import { Icon } from '../components/Icons';
 import { SettingsBlock } from './appearance/AppearanceSettings';
 import { useMapDiagnostics } from './diagnosticsSetting';
-import { branchCoverage, branchLabels, missingTime } from './diagnosticsData';
+import { branchCoverage, historyLabels, missingTime } from './diagnosticsData';
 import { damagedRecordingText } from './recordingNotice';
 
 /** How complete the open recording is, and the map's troubleshooting tools: its technical
@@ -45,7 +45,7 @@ export default function MapDiagnostics({ native, metadata, branch }: { native: D
  * from here), and its notes folded away. */
 function Recording({ metadata, shown }: { metadata: ReplayMetadata; shown: BranchChoice | null }) {
   const branches = metadata.branches;
-  const labels = branchLabels(branches);
+  const labels = historyLabels(branches);
   const first = Math.min(...branches.map(branch => branch.firstHour)), last = Math.max(...branches.map(branch => branch.lastHour));
   const gaps = branches.reduce((sum, branch) => sum + branch.gaps.length, 0);
   const losses = branches.flatMap(branch => (branch.eventLosses ?? []).map(loss => ({ branch: branch.id, loss })));

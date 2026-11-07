@@ -1331,7 +1331,7 @@ impl Document {
         texture_quality: u8,
     ) -> io::Result<Self> {
         let path = fs::canonicalize(path)?;
-        let replay = Arc::new(Replay::open_path(&path)?);
+        let replay = Arc::new(Replay::open_timelines(&path)?);
         let source = dashboard::Source::from_replay(
             dashboard::SourceKey {
                 source_id: format!("native-map:{}", path.display()),
@@ -2843,7 +2843,17 @@ impl Document {
                 branch
             } else {
                 let mut candidates = Vec::new();
+                // Histories share the hours before they part: the main one answers for them.
+                let main = playback.replay().timelines().map(|timelines| timelines.main);
+                if let Some(main) = main
+                    && matches!(playback.replay().seek(main, hour)?, SeekResult::Frame(_))
+                {
+                    candidates.push(main);
+                }
                 for branch in &playback.replay().branches {
+                    if Some(branch.id) == main || candidates.first() == main.as_ref() {
+                        continue;
+                    }
                     if matches!(
                         playback.replay().seek(branch.id, hour)?,
                         SeekResult::Frame(_)

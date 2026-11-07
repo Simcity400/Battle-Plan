@@ -42,7 +42,7 @@ export function followMapPlayback(clock: MapClock, track: BoundTrack, seek: Seek
       last = target;
       outside = true;
       pending = null;
-      onStatus(new Error('This date is outside the selected campaign branch. Choose a date within its recording.'));
+      onStatus(new Error('This date is outside the selected history. Choose a date within its recording.'));
       return;
     }
     if (!anchor && !outside) return;

@@ -17,12 +17,12 @@ use replay_data::{
     rows::tables,
 };
 use replay_frame::{
-    branches::BranchStart, branches::Parentage, frame::DecodedFrame, 
+    branches::BranchStart, frame::DecodedFrame,
     frame::Metrics, frame::TableView, frame::ViewIdentity,
 };
 
 use crate::{
-    BranchMetadata, CountryMetadata, DamagedRecording, PartialRecording, RecordingEventLoss,
+    BranchFork, BranchJoin, BranchMetadata, CountryMetadata, JoinChoice, JoinEvidence, DamagedRecording, PartialRecording, RecordingEventLoss,
     RecordingGap, ReplayMetadata, invalid,
 };
 
@@ -130,8 +130,9 @@ impl ResidentMetadata {
                     session_id: text(&branch.session_id)?,
                     first_hour: branch.first_hour,
                     last_hour: branch.last_hour,
-                    parent_id: branch.parent_id.as_deref().map(text).transpose()?,
-                    parent_hour: branch.parent_hour,
+                    main: branch.main,
+                    fork: branch.fork.clone(),
+                    joins: branch.joins.clone(),
                     sample_boundary: text(&branch.sample_boundary)?,
                     gaps: copy_vec(&branch.gaps, |gap| {
                         Ok(RecordingGap {
@@ -1290,6 +1291,21 @@ impl Extents {
             };
             widen(&mut recorded, run.branch, (hour(0)?, hour(last)?));
         }
+        // A recording read as timelines records each timeline's pieces of its segments.
+        if let Some(timelines) = replay.timelines() {
+            let segments = std::mem::take(&mut recorded);
+            for timeline in &timelines.list {
+                for piece in &timeline.pieces {
+                    let Some(&(first, last)) = segments.get(&piece.segment) else {
+                        continue;
+                    };
+                    let (first, last) = (first.max(piece.first_hour), last.min(piece.last_hour));
+                    if first <= last {
+                        widen(&mut recorded, timeline.id, (first, last));
+                    }
+                }
+            }
+        }
         Ok(Self::declared(replay, recorded))
     }
 
@@ -1357,15 +1373,81 @@ fn widen(recorded: &mut BTreeMap<u64, (i32, i32)>, branch: u64, (first, last): (
         .or_insert((first, last));
 }
 
+/// What metadata says of how a history joins its recorded play: whether it is the main one,
+/// where it parts from another, and its joins.
+fn history(replay: &Replay, id: u64) -> io::Result<(bool, Option<BranchFork>, Vec<BranchJoin>)> {
+    use replay::campaign::timelines::{Evidence, Parting};
+    let Some(timelines) = replay.timelines() else {
+        return Ok((true, None, Vec::new()));
+    };
+    let Some(timeline) = timelines.get(id) else {
+        return Ok((false, None, Vec::new()));
+    };
+    let segments = replay.segments_recorded();
+    let extent = |segment: u64| {
+        let mut bounds: Option<(i32, i32)> = None;
+        for block in replay.pages().iter().filter(|block| block.branch == segment) {
+            bounds = Some(bounds.map_or((block.first_hour, block.last_hour), |(first, last)| {
+                (first.min(block.first_hour), last.max(block.last_hour))
+            }));
+        }
+        bounds.or_else(|| {
+            segments
+                .iter()
+                .find(|start| start.id == segment)
+                .map(|start| (start.first_hour, start.first_hour))
+        })
+    };
+    let mut joins = engine_allocation::vec(timeline.joins.len())?;
+    for join in &timeline.joins {
+        let mut choices = Vec::new();
+        if join.evidence.open() {
+            for &segment in &join.candidates {
+                if let Some((first_hour, last_hour)) = extent(segment) {
+                    choices.push(JoinChoice {
+                        segment_id: segment.to_string(),
+                        first_hour,
+                        last_hour,
+                    });
+                }
+            }
+        }
+        joins.push(BranchJoin {
+            hour: join.hour,
+            segment_id: join.segment.to_string(),
+            parent_id: join.parent.to_string(),
+            evidence: match join.evidence {
+                Evidence::Counters => JoinEvidence::Counters,
+                Evidence::Only => JoinEvidence::Only,
+                Evidence::Process => JoinEvidence::Process,
+                Evidence::Unrecorded => JoinEvidence::Unrecorded,
+                Evidence::Unconfirmed => JoinEvidence::Unconfirmed,
+                Evidence::Chosen => JoinEvidence::Chosen,
+            },
+            choices,
+        });
+    }
+    // An alternative names where it parts from the main history, whichever of them loaded.
+    let fork = match timelines.parting(id) {
+        Some(Parting::LeftBehind(hour)) => Some(BranchFork {
+            branch_id: timelines.main.to_string(),
+            hour,
+        }),
+        _ => None,
+    };
+    Ok((timelines.main == id, fork, joins))
+}
+
 fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<BranchMetadata>> {
     let mut branches = engine_allocation::vec(replay.branches.len())?;
-    for branch in &replay.branches {
+    let main = replay.timelines().map(|timelines| timelines.main);
+    // The main history first, which a recording opens on; the rest in recording order.
+    let mut order: Vec<&BranchStart> = replay.branches.iter().collect();
+    order.sort_by_key(|branch| (Some(branch.id) != main, branch.id));
+    for branch in order {
         check_cancel(cancelled)?;
         let (first_hour, last_hour) = branch_bounds(replay, branch);
-        let (parent_id, parent_hour) = match branch.parent {
-            Parentage::Unknown => (None, None),
-            Parentage::Probable { branch, hour } => (Some(branch.to_string()), Some(hour)),
-        };
+        let (is_main, fork, joins) = history(replay, branch.id)?;
         let session = replay
             .sessions
             .iter()
@@ -1394,8 +1476,9 @@ fn read_branches(replay: &Replay, cancelled: &AtomicBool) -> io::Result<Vec<Bran
             session_id: branch.session.to_string(),
             first_hour,
             last_hour,
-            parent_id,
-            parent_hour,
+            main: is_main,
+            fork,
+            joins,
             sample_boundary: engine_allocation::string(session.sample_boundary.name())?,
             gaps,
             event_losses: (!event_losses.is_empty()).then_some(event_losses),

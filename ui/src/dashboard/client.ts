@@ -119,6 +119,9 @@ export interface DashboardClient {
   openSource(path: string, signal: AbortSignal): Promise<DashboardSource>;
   releaseSource(id: string): Promise<void>;
   preparationPreferences?(enabled: boolean | null, signal: AbortSignal): Promise<PreparationPreferences>;
+  /** Joins a recorded stretch of play to the history chosen for it: the segment id it goes on from, or null to let
+   * the recording decide again. The recording then opens again under the choice. */
+  chooseHistory?(path: string, segmentId: string, choice: string | null, signal: AbortSignal): Promise<void>;
   preparationStatus?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   prepareSource?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;
   cancelPreparation?(request: PreparationRequest, signal: AbortSignal): Promise<PreparationReply>;

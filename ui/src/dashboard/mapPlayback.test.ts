@@ -35,7 +35,7 @@ test('map playback reports failures and out-of-range dates without clamping, the
   const stop = followMapPlayback(playback, track, async (_path, _revision, _branch, hour) => { calls.push(hour); if (hour === 100) throw failure; }, status => statuses.push(status));
   await tick(); assert.equal(statuses.at(-1), failure);
   playback.seek(101); await tick();
-  assert.match(String(statuses.at(-1)), /outside the selected campaign branch/);
+  assert.match(String(statuses.at(-1)), /outside the selected history/);
   assert.deepEqual(calls, [100]);
   playback.seek(2); await tick();
   assert.equal(statuses.at(-1), null);

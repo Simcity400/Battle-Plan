@@ -15,7 +15,7 @@ pub(super) struct Planned {
     /// Its first hour.
     pub(super) first: i32,
     /// The segment before it in its branch, and after: the run's next segment, else the
-    /// first of the branch's next run.
+    /// first of the branch's next run, which may be another branch's run read as a timeline.
     pub(super) before: Option<usize>,
     pub(super) after: Option<usize>,
     /// The segment before is of its run: a walk of that one goes on into it with its tables.
@@ -33,16 +33,18 @@ impl Plan {
             let run = recording.run(segment.run)?;
             let first = i32::try_from(i64::from(run.first_hour) + i64::from(segment.first))
                 .map_err(|_| invalid("A segment starts past the hours"))?;
-            let before = latest.insert(run.branch, at);
+            let before = latest.insert(segment.branch, at);
             if let Some(before) = before {
                 planned[before].after = Some(at);
             }
             planned.push(Planned {
-                branch: run.branch,
+                branch: segment.branch,
                 first,
                 before,
                 after: None,
-                follows: before.is_some_and(|before| segments[before].run == segment.run),
+                follows: before.is_some_and(|before| {
+                    segments[before].run == segment.run && segments[before].last + 1 == segment.first
+                }),
             });
         }
         Ok(Self(engine_allocation::boxed_slice(planned)?))

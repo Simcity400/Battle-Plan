@@ -3,7 +3,8 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { branchCoverage, branchLabels, missingTime } from './diagnosticsData.ts';
+import { branchCoverage, historyLabels, missingTime } from './diagnosticsData.ts';
+import { formatDate, gameDate } from '../dashboard/calendar.ts';
 import type { ReplayMetadata } from './api';
 
 test('a branch’s gaps sit where they fall in its recorded time, and missing time reads in hours or days', () => {
@@ -24,7 +25,7 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     }] });
   try {
     const { default: Diagnostics } = await vite.ssrLoadModule('/ui/src/shell/MapDiagnostics.tsx') as typeof import('./MapDiagnostics');
-    const branch = { id: 'b1', sessionId: 's1', firstHour: 43800024, lastHour: 43800024 + 24 * 30, parentId: null, parentHour: null, sampleBoundary: 'hourly', gaps: [] };
+    const branch = { id: 'b1', sessionId: 's1', firstHour: 43800024, lastHour: 43800024 + 24 * 30, main: true, fork: null, joins: [], sampleBoundary: 'hourly', gaps: [] };
     const metadata = { path: 'C:/recordings/GER 1936.battleplan', name: 'GER 1936.battleplan', format: 100, captureMode: 'full', campaignKey: 'c', branches: [branch],
       countries: [], playerCountryId: null, contentVerified: true, partial: null, warnings: ['Provinces.attack not recorded (introduced at format 101)'], buildWarnings: [], revision: '1' } as ReplayMetadata;
     const visible = (value: ReplayMetadata | null) => renderToStaticMarkup(createElement(Diagnostics, { native: null, metadata: value })).replace(/<[^>]*>/g, ' ');
@@ -50,10 +51,10 @@ test('diagnostics say how complete the recording is in plain words, with the fil
     const markup = (value: ReplayMetadata, shown: { id: string; choose: (id: string) => void } | null) =>
       renderToStaticMarkup(createElement(Diagnostics, { native: null, metadata: value, branch: shown }));
     assert.doesNotMatch(markup(metadata, { id: 'b1', choose() {} }), /Showing|>Show</, 'one branch has nothing to switch to');
-    const two = { ...metadata, branches: [branch, { ...branch, id: 'b2', firstHour: branch.firstHour + 24 * 10 }] };
+    const two = { ...metadata, branches: [branch, { ...branch, id: 'b2', main: false, fork: { branchId: 'b1', hour: branch.firstHour + 24 * 10 } }] };
     const switchable = markup(two, { id: 'b1', choose() {} });
-    assert.match(switchable, /Branch 1.*Showing/s, 'the branch being played says so');
-    assert.match(switchable, /aria-label="Show Branch 2"/, 'another branch can be played from its row');
+    assert.match(switchable, /Main history.*Showing/s, 'the history being played says so');
+    assert.ok(switchable.includes(`aria-label="Show Left behind ${formatDate(gameDate(branch.firstHour + 24 * 10)!)}"`), 'another history can be played from its row');
     assert.doesNotMatch(markup(two, null), /Showing|aria-label="Show /, 'without a playing campaign there is nothing to switch');
     assert.match(visible(null), /No recording open/);
     assert.match(visible(null), /Technical overlay/);
@@ -61,8 +62,10 @@ test('diagnostics say how complete the recording is in plain words, with the fil
   } finally { await vite.close(); }
 });
 
-test('branches are numbered within their session, as the map settings number them', () => {
-  assert.deepEqual([...branchLabels([{ id: 'a', sessionId: 's' }, { id: 'b', sessionId: 's' }]).values()], ['Branch 1', 'Branch 2']);
-  assert.deepEqual([...branchLabels([{ id: 'a', sessionId: 's' }, { id: 'b', sessionId: 't' }, { id: 'c', sessionId: 't' }]).values()],
-    ['Session 1 · Branch 1', 'Session 2 · Branch 1', 'Session 2 · Branch 2']);
+test('the main history comes first, others by the day they were left behind, numbered when they share it', () => {
+  assert.deepEqual([...historyLabels([
+    { id: 'a', main: true, fork: null, firstHour: 43800024 },
+    { id: 'b', main: false, fork: { branchId: 'a', hour: 43800048 }, firstHour: 43800024 },
+    { id: 'c', main: false, fork: { branchId: 'a', hour: 43800048 }, firstHour: 43800024 },
+  ]).values()], ['Main history', ...[1, 2].map(number => `Left behind ${formatDate(gameDate(43800048)!)} (${number})`)]);
 });

@@ -542,6 +542,93 @@ fn a_proof_covers_every_hour_through_its_frontier() {
     );
 }
 
+/// A timeline read from two recorded branches, the first brought earlier inside one of its pages:
+/// a family sees the first branch's hours through there, then the second's, every one named by
+/// the timeline, and publishes the timeline whole; its proof covers the piece before, so the
+/// second branch read alone, or the first brought earlier elsewhere, proves otherwise.
+#[test]
+fn a_timeline_walks_each_piece_through_its_last_hour() {
+    const TIMELINE: u64 = 7;
+    let plan = test_plan();
+    let (recorded, bytes) = opened(&RUNS);
+    let expected = reference(bytes);
+    let second = recorded.recorded_segments()[1];
+    assert_eq!(second.run, 0);
+    let through = second.first + (second.last - second.first) / 2;
+    let timeline = |through: u32| {
+        let segments = recorded
+            .recorded_segments()
+            .iter()
+            .filter(|segment| segment.run == 1 || (segment.run == 0 && segment.first <= through))
+            .map(|segment| Segment {
+                branch: TIMELINE,
+                last: if segment.run == 0 {
+                    segment.last.min(through)
+                } else {
+                    segment.last
+                },
+                ..*segment
+            })
+            .collect();
+        recorded
+            .selecting(&TableId::ALL)
+            .unwrap()
+            .with_segments(segments)
+            .unwrap()
+    };
+    let mut recording = timeline(through);
+    let shape = Shape::new(&recording).unwrap();
+    assert_eq!(shape.branches().keys().copied().collect::<Vec<_>>(), [TIMELINE]);
+    let fixture = Fixture::new();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let alpha = Probe::new("alpha", None, &cancelled);
+    let kept = Arc::clone(&alpha.kept);
+    let (publisher, resume) = fixture.open(plan, &["alpha"], &recording, &shape);
+    let mut members = bind(&publisher, &resume, &shape, vec![alpha]);
+    let walks = run(
+        &fixture,
+        &mut recording,
+        &shape,
+        &mut members,
+        4,
+        &cancelled,
+        &Commits::default(),
+    );
+    assert!(!walks.ran.cancelled && walks.failed.is_empty());
+    assert_eq!(walks.ran.stats.walks, shape.len());
+    let read: Vec<Fact> = expected
+        .into_iter()
+        .filter(|fact| fact.branch == 2 || (fact.branch == 1 && fact.hour <= through as i32))
+        .map(|fact| Fact {
+            branch: TIMELINE,
+            ..fact
+        })
+        .collect();
+    assert_eq!(*kept.lock().unwrap(), read);
+    let extent = shape.branches()[&TIMELINE];
+    assert_eq!(extent.first_hour, 0);
+    let frontier = publisher
+        .committed(FamilyId::new("alpha"), TIMELINE)
+        .unwrap()
+        .frontier;
+    assert!(frontier.complete && frontier.end.is_none());
+    assert_eq!(
+        (frontier.first_hour, frontier.last_hour, frontier.segments),
+        (extent.first_hour, extent.last_hour, segments_of(&shape, TIMELINE))
+    );
+    let last = shape.len() - 1;
+    let alone = Shape::new(&recorded).unwrap();
+    let own = (0..alone.len()).rfind(|&at| alone.get(at).run == 1).unwrap();
+    assert_eq!(alone.get(own).last, shape.get(last).last);
+    assert_ne!(alone.proof(&recorded, own), shape.proof(&recording, last));
+    let elsewhere = timeline(through + 1);
+    let elsewhere_shape = Shape::new(&elsewhere).unwrap();
+    assert_ne!(
+        elsewhere_shape.proof(&elsewhere, last),
+        shape.proof(&recording, last)
+    );
+}
+
 /// A family takes up every branch its committed publication finished: a run of the same
 /// recording walks nothing, and one of the recording grown by a branch walks that branch alone.
 #[test]

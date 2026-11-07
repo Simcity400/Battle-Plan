@@ -76,6 +76,7 @@ export const browserDashboardClient: DashboardClient = {
   chooseReplayFolder: (initial = '') => request({ type: 'chooseFolder', kind: 'replay', initial }),
 
   preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>({ type: 'preparationPreferences', id: crypto.randomUUID(), enabled }, signal)),
+  chooseHistory: async (path, segmentId, choice, signal) => { await request<unknown>({ type: 'historyChoice', id: crypto.randomUUID(), path, segmentId, choice }, signal); },
   preparationStatus: (query, signal) => preparation('status', query, signal),
   async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };

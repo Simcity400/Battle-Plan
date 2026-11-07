@@ -20,7 +20,8 @@ mod tests;
 /// (from empty tables at its run's start, which are no complete table), so of each segment only
 /// its hours through the last such page are walked, Campaign alone; and from its first hour a
 /// segment after damage in its run, whose restart may hold what the damage hid. A walk meeting
-/// damage stops there, as the run loses those hours.
+/// damage stops there, as the run loses those hours. Each segment the recording records is
+/// checked once, however its walks read it ([`Recording::recorded_segments`]).
 pub(super) fn check(
     recording: &mut Recording,
     replay: &Replay,
@@ -29,7 +30,7 @@ pub(super) fn check(
     recording.select(&[TableId::Campaign]);
     let recording = &*recording;
     let table = TableId::Campaign.index() as u32;
-    let segments = recording.segments();
+    let segments = recording.recorded_segments();
     let mut views = Views::new(&[], replay.format, replay.capture_mode)?;
     let mut state = State::new(schema()?)?;
     let mut walker = Walker::new(recording)?;

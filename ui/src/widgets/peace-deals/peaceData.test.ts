@@ -353,7 +353,7 @@ test('Pin and inclusive range keep event dates but wait for the supplying read',
   const log = preparePeaceLog(data);
   assert.equal(peaceDealKnownAt(exact), 136); assert.equal(peaceDealKnownAt(derived), 125);
   assert.ok(!peaceRowsAt(log, 135).some(row => row.item.deal.id === 'exact'));
-  const branch = { id: '7', sessionId: '9', firstHour: 100, lastHour: 200, parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] };
+  const branch = { id: '7', sessionId: '9', firstHour: 100, lastHour: 200, main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] };
   const track: BoundTrack = { id: 'main', roleId: 'primary', label: 'Campaign', branchIndex: 0, anchorOffset: null, axisOffset: 0, selectedTag: null, branch,
     source: { id: 'source', path: 'synthetic', revision: '1', metadata: { path: 'synthetic', revision: '1', name: 'Synthetic', format: 1, captureMode: 'full', campaignKey: 'c0ffee',
       branches: [branch], countries: [], playerCountryId: null, contentVerified: false, partial: null, warnings: [], buildWarnings: [] } } };

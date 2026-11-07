@@ -23,7 +23,8 @@ use std::{io, sync::atomic::AtomicBool};
 const MAP: &str = "map";
 
 /// Prepare every block of `source` its planned publishers have not
-/// accepted, reporting each accepted commit to `accepted`.
+/// accepted, reporting each accepted commit to `accepted`. A timeline a query
+/// asked for while it ran is prepared before it ends ([`native::timelines`]).
 pub fn prepare(
     source: &Source,
     content: Option<&ContentOptions>,
@@ -34,27 +35,33 @@ pub fn prepare(
     // The families' content resolves beside the index, which reads none of it.
     let options = content.map(|content| &content.options);
     source.resolving_ahead(options, cancelled, || -> io::Result<Accepted> {
-        // Native recordings refused for the index are the campaign map's refusal alone, named
-        // in its status, from the first progress the families report on.
-        let index = change_runs::plan(source)?;
-        let refused = index.refused().map(str::to_owned);
-        let mut forward = |done: &Accepted| match &refused {
-            Some(reason) => {
-                let mut done = done.clone();
-                map_refused(&mut done.sections, reason);
-                accepted(&done);
+        loop {
+            // Native recordings refused for the index are the campaign map's refusal alone,
+            // named in its status, from the first progress the families report on.
+            let index = change_runs::plan(source)?;
+            let refused = index.refused().map(str::to_owned);
+            let mut forward = |done: &Accepted| match &refused {
+                Some(reason) => {
+                    let mut done = done.clone();
+                    map_refused(&mut done.sections, reason);
+                    accepted(&done);
+                }
+                None => accepted(done),
+            };
+            let timelines = native::timelines(source, content)?;
+            let recording = native::recording(source, timelines.as_deref())?;
+            // An index of the recording the families walk is one more lane of their union run:
+            // the recording is walked once. Any other is prepared first, in runs of its own.
+            let (riding, _) = index.take(Some(&recording), cancelled)?;
+            let mut done =
+                native::prepare(source, content, recording, riding, cancelled, &mut forward)?;
+            if let Some(reason) = refused {
+                map_refused(&mut done.sections, &reason);
             }
-            None => accepted(done),
-        };
-        let recording = native::recording(source)?;
-        // An index of the recording the families walk is one more lane of their union run: the
-        // recording is walked once. Any other is prepared first, in runs of its own.
-        let (riding, _) = index.take(Some(&recording), cancelled)?;
-        let mut done = native::prepare(source, content, recording, riding, cancelled, &mut forward)?;
-        if let Some(reason) = refused {
-            map_refused(&mut done.sections, &reason);
+            if native::timelines(source, content)? == timelines {
+                return Ok(done);
+            }
         }
-        Ok(done)
     })
 }
 
@@ -73,7 +80,9 @@ pub fn restore(
         Outcome::Indexed => None,
         Outcome::Refused(reason) => Some(reason),
     };
-    let mut restored = native::restore(source, content, &native::recording(source)?, cancelled)?;
+    let timelines = native::timelines(source, content)?;
+    let recording = native::recording(source, timelines.as_deref())?;
+    let mut restored = native::restore(source, content, &recording, cancelled)?;
     if let (Some(accepted), Some(reason)) = (&mut restored, refused) {
         map_refused(&mut accepted.sections, &reason);
     }

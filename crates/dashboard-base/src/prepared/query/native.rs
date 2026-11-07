@@ -138,7 +138,12 @@ pub fn fill(
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::from(io::ErrorKind::Interrupted));
     }
-    if !snapshots.move_to(branch, hour, &alone)? {
+    let segment = source.replay_ref().segment_at(branch, hour);
+    let moved = match segment {
+        Some(segment) => snapshots.move_to_segment(segment, branch, hour, &alone)?,
+        None => false,
+    };
+    if !moved {
         return Err(unheld(source, snapshots.file(), branch, hour));
     }
     let parallel = Parallel {
@@ -238,9 +243,12 @@ pub fn read_hour(
         }
         let complete = if left_to_native(frame, table) {
             // No keys: the table's status alone, read without its rows.
+            let segment = replay
+                .segment_at(branch, frame.hour)
+                .ok_or_else(|| unheld(source, &file, branch, frame.hour))?;
             let (view, _) = file
                 .rows_at(
-                    branch,
+                    segment,
                     frame.hour,
                     table,
                     &[],

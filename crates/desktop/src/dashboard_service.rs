@@ -494,6 +494,31 @@ pub async fn dashboard_preparation_preferences(
     .await
 }
 
+#[tauri::command]
+pub async fn dashboard_history_choice(
+    window: WebviewWindow,
+    host: State<'_, NativeHost>,
+    service: State<'_, DashboardService>,
+    path: String,
+    segment_id: String,
+    choice: Option<String>,
+    request_id: String,
+) -> Result<Response, QueryError> {
+    request(
+        &window,
+        &host,
+        &service,
+        request_id.clone(),
+        DataCommand::HistoryChoice {
+            id: request_id,
+            path,
+            segment_id,
+            choice,
+        },
+    )
+    .await
+}
+
 async fn preparation_command(
     window: &WebviewWindow,
     host: &NativeHost,

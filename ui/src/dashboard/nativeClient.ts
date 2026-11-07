@@ -129,6 +129,7 @@ export const nativeDashboardClient: DashboardClient = {
   },
 
   preparationPreferences: async (enabled, signal) => validatePreparationPreferences(await request<PreparationPreferences>('dashboard_preparation_preferences', () => ({ enabled }), signal)),
+  chooseHistory: async (path, segmentId, choice, signal) => { await request<unknown>('dashboard_history_choice', () => ({ path, segmentId, choice }), signal); },
   preparationStatus: (query, signal) => preparation('dashboard_preparation_status', query, signal),
   async preparedQuery<T>(source: DashboardSource, product: string, params: unknown, options: PreparedQueryOptions): Promise<T> {
     const query = { sourceId: source.id, revision: source.revision, product, params };

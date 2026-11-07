@@ -147,12 +147,13 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     assert_eq!(capture.sessions, [encoded]);
     assert_eq!(capture.run_sessions, [0, 0, 0]);
     assert_eq!(capture.stop, None);
+    let branch = |run: u32| recording.run(run).unwrap().branch;
     assert_eq!(
         recording.segments(),
         [
-            Segment { run: 0, restart: None, first: 0, last: first as u32 - 1 },
-            Segment { run: 1, restart: None, first: 0, last: 1 },
-            Segment { run: 2, restart: None, first: 0, last: 0 },
+            Segment { branch: branch(0), run: 0, restart: None, first: 0, last: first as u32 - 1 },
+            Segment { branch: branch(1), run: 1, restart: None, first: 0, last: 1 },
+            Segment { branch: branch(2), run: 2, restart: None, first: 0, last: 0 },
         ]
     );
     let epochs: Vec<u8> = (0..3).map(|run| recording.run(run).unwrap().epoch).collect();

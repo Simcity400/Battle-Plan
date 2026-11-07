@@ -162,6 +162,15 @@ pub enum DataCommand {
         #[serde(default)]
         enabled: Option<bool>,
     },
+    /// Joins a recorded stretch of play of the recording at `path` to the history the viewer
+    /// chose: `choice` names the segment it goes on from; null lets the recording decide again.
+    HistoryChoice {
+        id: String,
+        path: String,
+        #[serde(rename = "segmentId")]
+        segment_id: String,
+        choice: Option<String>,
+    },
     Cancel {
         id: String,
     },
@@ -180,6 +189,7 @@ impl DataCommand {
             | Self::PreparedQuery { id, .. }
             | Self::Preparation { id, .. }
             | Self::PreparationPreferences { id, .. }
+            | Self::HistoryChoice { id, .. }
             | Self::Cancel { id } => Some(id),
             Self::Release { .. } => None,
         }

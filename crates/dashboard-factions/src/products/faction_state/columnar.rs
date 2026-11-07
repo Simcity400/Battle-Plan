@@ -434,12 +434,17 @@ impl Capture {
         (lo, hi): (i32, i32),
         cancelled: &AtomicBool,
     ) -> io::Result<Option<(i32, DecodedFrame)>> {
-        let held = (0..recording.run_count()).find_map(|index| {
-            let run = recording.run(index).ok()?;
-            let last = i64::from(run.first_hour) + i64::from(run.ordinals) - 1;
-            (run.branch == branch && run.first_hour <= hi && i64::from(hi) <= last)
-                .then_some((index, run.first_hour))
-        });
+        // The segment its walks read `hi` of `branch` from: a timeline's may be another branch's run.
+        let held = recording
+            .segments()
+            .iter()
+            .filter(|segment| segment.branch == branch)
+            .find_map(|segment| {
+                let run = recording.run(segment.run).ok()?;
+                let hour = |ordinal: u32| i64::from(run.first_hour) + i64::from(ordinal);
+                (hour(segment.first) <= i64::from(hi) && i64::from(hi) <= hour(segment.last))
+                    .then_some((segment.run, run.first_hour))
+            });
         let Some((run, first_hour)) = held else {
             return Err(invalid(format!(
                 "The native capture holds no hour {hi} of branch {branch}"
@@ -458,11 +463,9 @@ impl Capture {
         let mut read = None;
         let mut begun = false;
         // The segments after the first go on from the state it left.
-        for segment in recording
-            .segments()
-            .iter()
-            .filter(|segment| segment.run == run && segment.last >= from && segment.first <= to)
-        {
+        for segment in recording.segments().iter().filter(|segment| {
+            segment.branch == branch && segment.run == run && segment.last >= from && segment.first <= to
+        }) {
             if !begun {
                 walker.begin(segment, &mut state)?;
                 begun = true;

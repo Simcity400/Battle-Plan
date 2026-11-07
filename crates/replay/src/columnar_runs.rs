@@ -846,8 +846,8 @@ pub fn indexed(recording: &Recording, outcome: segments::Outcome) -> io::Result<
 }
 
 /// Whether `a` and `b` are one recording: of one campaign, identity and capture, holding the
-/// same runs, each with the same branch, hours and hour digest chain, in the same segments.
-/// Walks of either then see the same hours.
+/// same runs, each with the same branch, hours and hour digest chain, in the same segments,
+/// which walks of each take whole ([`walks_whole`]). Walks of either then see the same hours.
 pub fn same(a: &Recording, b: &Recording) -> bool {
     let runs = (0..a.run_count()).all(|run| match (a.run(run), b.run(run)) {
         (Ok(a), Ok(b)) => {
@@ -867,9 +867,33 @@ pub fn same(a: &Recording, b: &Recording) -> bool {
         && a.run_count() == b.run_count()
         && runs
         && captured
-        && a.segments() == b.segments()
+        && a.recorded_segments() == b.recorded_segments()
+        && walks_whole(a)
+        && walks_whole(b)
         && a.damage().is_empty()
         && b.damage().is_empty()
+}
+
+/// Whether walks of `recording` take each segment it records once and whole, each run's in
+/// order, whatever branch they read it as and in whatever order of runs: what indexes its runs.
+fn walks_whole(recording: &Recording) -> bool {
+    let (recorded, walked) = (recording.recorded_segments(), recording.segments());
+    if walked.len() != recorded.len() {
+        return false;
+    }
+    let mut seen = vec![false; recorded.len()];
+    walked.iter().all(|segment| {
+        let Ok(at) = recorded
+            .binary_search_by_key(&(segment.run, segment.first), |held| (held.run, held.first))
+        else {
+            return false;
+        };
+        let held = &recorded[at];
+        let follows = at == 0 || recorded[at - 1].run != segment.run || seen[at - 1];
+        let whole = !seen[at] && held.restart == segment.restart && held.last == segment.last;
+        seen[at] = true;
+        whole && follows
+    })
 }
 
 /// Why a preparation's run of `segments` segments left its index short: its family's failure,
@@ -1618,7 +1642,19 @@ impl Snapshots {
         hour: i32,
         on_worker: &(dyn Fn() + Sync),
     ) -> io::Result<bool> {
-        let Some((run, ordinal)) = self.file.index.find(branch, hour) else {
+        self.move_to_segment(branch, branch, hour, on_worker)
+    }
+
+    /// [`Self::move_to`] reading `hour` from the runs of recorded segment `segment`, its frame
+    /// named by `branch`: a timeline's hour read from the segment its piece is of.
+    pub fn move_to_segment(
+        &mut self,
+        segment: u64,
+        branch: u64,
+        hour: i32,
+        on_worker: &(dyn Fn() + Sync),
+    ) -> io::Result<bool> {
+        let Some((run, ordinal)) = self.file.index.find(segment, hour) else {
             return Ok(false);
         };
         self.at = None;

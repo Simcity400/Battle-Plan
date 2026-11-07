@@ -275,7 +275,7 @@ impl EngagedIndex {
         let shared = Arc::new(History::default());
         let mut pass = Pass::new(Arc::clone(&shared), country.clone());
         for frame in frames {
-            pass.fold_hour(frame.branch, frame.hour, Some(frame), load);
+            pass.fold_hour(frame.branch, frame.hour, Some(frame), load, false);
         }
         let (snapshots, _inbox) = mpsc::channel();
         Self {
@@ -428,9 +428,16 @@ fn advance_icons(
 }
 
 /// How an hour follows the last one a track folded.
-fn continuity(last: Option<(Hour, bool)>, hour: Hour, load: Option<Hour>) -> Continuity {
+fn continuity(
+    last: Option<(Hour, bool)>,
+    hour: Hour,
+    load: Option<Hour>,
+    restart: bool,
+) -> Continuity {
     match last {
-        None if load == Some(hour) => Continuity::Load,
+        _ if load == Some(hour) => Continuity::Load,
+        // A history goes on with play of another load or session, whose rebuild was unobserved.
+        _ if restart => Continuity::Gap,
         // A branch that joined a running game, or whose first hours were not
         // folded, starts after unobserved rebuilds.
         None => Continuity::Gap,
@@ -537,11 +544,23 @@ impl Pass {
         let _cost = replay_frame::cpu::scope("viewer", Some("engagement/strikes/text"));
         let mut blocks: Vec<_> = replay.index.iter().collect();
         blocks.sort_by_key(|block| (block.branch, block.first_hour));
-        let loads: BTreeMap<BranchId, Option<Hour>> = replay
-            .branches
-            .iter()
-            .map(|start| (start.id, native_load(start)))
-            .collect();
+        // Each history's first hour of each recorded segment: a native load, or a restart.
+        let mut starts: BTreeMap<(BranchId, Hour), bool> = BTreeMap::new();
+        for history in &replay.branches {
+            for (at, piece) in replay.pieces(history.id).iter().enumerate() {
+                let load = replay
+                    .segments_recorded()
+                    .iter()
+                    .find(|start| start.id == piece.segment)
+                    .and_then(native_load)
+                    .filter(|hour| (piece.first_hour..=piece.last_hour).contains(hour));
+                match load {
+                    Some(hour) => starts.insert((history.id, hour), true),
+                    None if at > 0 => starts.insert((history.id, piece.first_hour), false),
+                    None => None,
+                };
+            }
+        }
         let mut hours = 0;
         for block in blocks {
             if self.cancelled() {
@@ -568,8 +587,15 @@ impl Pass {
                     }
                     let campaign = core::<tables::Campaign>(decoded)
                         .is_ok_and(|rows| rows.len() == 1 && rows[0].id == replay.campaign_id);
-                    let load = loads.get(&block.branch).copied().flatten();
-                    self.fold_hour(block.branch, decoded.hour, campaign.then_some(decoded), load);
+                    let start = starts.get(&(block.branch, decoded.hour)).copied();
+                    let load = (start == Some(true)).then_some(decoded.hour);
+                    self.fold_hour(
+                        block.branch,
+                        decoded.hour,
+                        campaign.then_some(decoded),
+                        load,
+                        start == Some(false),
+                    );
                     hours += 1;
                     Ok(())
                 },
@@ -609,6 +635,7 @@ impl Pass {
         hour: Hour,
         frame: Option<&DecodedFrame>,
         load: Option<Hour>,
+        restart: bool,
     ) {
         let fold = self.folds.entry(branch).or_default();
         fold.icons.resize_with(ICON_KINDS, Default::default);
@@ -617,8 +644,8 @@ impl Pass {
             .resize_with(ICON_KINDS, Default::default);
         fold.recording_icon_changed
             .resize_with(ICON_KINDS, Vec::new);
-        let perspective_continuity = continuity(fold.last, hour, load);
-        let recording_continuity = continuity(fold.recording_last, hour, load);
+        let perspective_continuity = continuity(fold.last, hour, load, restart);
+        let recording_continuity = continuity(fold.recording_last, hour, load, restart);
         let summary = &mut self.check.summary;
         summary.hours += 1;
         // The sides do not depend on who views them.

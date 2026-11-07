@@ -81,7 +81,11 @@ pub fn query(
     let mut regions: Vec<(u64, ClockMeasurement)> = engine_allocation::vec(index.timelines.len())?;
     for timeline in &index.timelines {
         crate::metadata::check_cancel(cancelled)?;
-        if let Some(clock) = timeline.clock(params.first_hour, params.last_hour) {
+        let first = params.first_hour.max(timeline.hours.0);
+        let last = params.last_hour.min(timeline.hours.1);
+        if first <= last
+            && let Some(clock) = timeline.clock(first, last)
+        {
             regions.push((timeline.session, clock));
         }
     }

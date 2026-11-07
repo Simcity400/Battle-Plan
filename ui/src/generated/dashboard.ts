@@ -42,9 +42,18 @@ export type BranchMetadata = { id: string, sessionId: string,
  */
 firstHour: number, lastHour: number,
 /**
- * A non-null parent is probable, never asserted.
+ * The history holding the latest recorded play: the campaign as it went on. Listed first.
  */
-parentId: string | null, parentHour: number | null, sampleBoundary: string,
+main: boolean,
+/**
+ * For a history other than the main one that shares its early play: the main history, and
+ * the first hour where they part, from which this one's play was left behind.
+ */
+fork: BranchFork | null,
+/**
+ * Each place it goes on with play recorded after a load or in another session.
+ */
+joins: Array<BranchJoin>, sampleBoundary: string,
 /**
  * Reported capture losses, not a claim that recovered frames are absent.
  */
@@ -60,6 +69,33 @@ eventLosses?: Array<RecordingEventLoss>,
  * Without a complete country-table read, catalogue membership is unknown, not empty.
  */
 catalogueHour?: number, };
+export type BranchFork = { branchId: string, hour: number, };
+/**
+ * Why recorded play joins the history before it.
+ */
+export type JoinEvidence = "counters" | "only" | "process" | "unrecorded" | "unconfirmed" | "chosen";
+/**
+ * Where a history goes on with another stretch of recorded play.
+ */
+export type BranchJoin = {
+/**
+ * The first hour of the play joined.
+ */
+hour: number,
+/**
+ * The recorded stretch joined, which a choice names.
+ */
+segmentId: string,
+/**
+ * The recorded stretch it goes on from.
+ */
+parentId: string, evidence: JoinEvidence,
+/**
+ * What the viewer may join it to instead, when the recording can't tell: each earlier
+ * stretch the save could have come from. Empty when proven.
+ */
+choices: Array<JoinChoice>, };
+export type JoinChoice = { segmentId: string, firstHour: number, lastHour: number, };
 export type RecordingGap = { firstHour: number, lastHour: number, reason: string, };
 export type RecordingEventLoss = { afterHour: number, hour: number, reason: string, };
 export type CountryMetadata = {

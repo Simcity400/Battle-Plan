@@ -142,8 +142,11 @@ impl Replay {
                 }
                 check()?;
                 let first = manifest.hour == block.first_hour;
-                let (frame, recorded) = views.advance_recorded(state, manifest, first)?;
+                let (mut frame, mut recorded) = views.advance_recorded(state, manifest, first)?;
                 validate_campaign(&frame, &self.campaign_id)?;
+                // Read as timelines, an hour is named by the timeline its page was clipped for.
+                frame.branch = block.branch;
+                recorded.branch = block.branch;
                 campaign.restart();
                 if !visit(block, &recorded, &frame)? {
                     stopped = true;
@@ -289,8 +292,9 @@ impl Replay {
                 campaign.pass(state, manifest, &self.campaign_id)?;
                 return Ok(true);
             }
-            let frame = views.advance(state, manifest, true)?;
+            let mut frame = views.advance(state, manifest, true)?;
             validate_campaign(&frame, &self.campaign_id)?;
+            frame.branch = branch;
             found = Some(frame);
             Ok(false)
         })?;
@@ -423,7 +427,7 @@ impl HourCursor {
             .name("recording cursor".into())
             .spawn(move || {
                 priority.enter(job_priority::Level::Normal);
-                let walked = walk_asked(&replay, &tables, changes, segment, &asks, &replies);
+                let walked = walk_asked(&replay, &tables, changes, segment, branch, &asks, &replies);
                 if let Err(error) = walked {
                     let _ = replies.send(Err(error));
                 } else {
@@ -441,13 +445,14 @@ impl HourCursor {
     }
 }
 
-/// Walks segment `segment` of `replay`, answering each hour asked with its frame, until asked
-/// for none or the segment ends.
+/// Walks segment `segment` of `replay`, answering each hour asked with its frame named by
+/// `branch`, until asked for none or the segment ends.
 fn walk_asked(
     replay: &Replay,
     tables: &[TableId],
     changes: bool,
     segment: usize,
+    branch: BranchId,
     asks: &mpsc::Receiver<Option<Hour>>,
     replies: &mpsc::SyncSender<Reply>,
 ) -> io::Result<()> {
@@ -476,7 +481,7 @@ fn walk_asked(
         views.note(state, manifest, !built)?;
         let frame = views.build(
             state,
-            (manifest.branch, manifest.hour),
+            (branch, manifest.hour),
             metrics(manifest),
             None,
         )?;

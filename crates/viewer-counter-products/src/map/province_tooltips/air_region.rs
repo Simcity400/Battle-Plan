@@ -143,8 +143,11 @@ impl Samples {
         if (self.superseded)() {
             return Err(SUPERSEDED.into());
         }
+        let Some(segment) = self.replay.segment_at(branch, hour) else {
+            return Err(format!("hour {hour} of branch {branch} is not recorded"));
+        };
         if !snapshots
-            .move_to(branch, hour, &|| {})
+            .move_to_segment(segment, branch, hour, &|| {})
             .map_err(|error| {
                 if (self.superseded)() {
                     SUPERSEDED.into()

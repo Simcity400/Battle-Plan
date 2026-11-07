@@ -157,7 +157,7 @@ export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...us
     ]) as [typeof import('./definition.ts'), typeof import('../../dashboard/definitions.ts'), typeof import('../../dashboard/model.ts'),
       typeof import('./MarketLedgerWidget.tsx')];
     registry.registerWidgets([definition]);
-    const branch = { id: '1', sessionId: '1', firstHour: 0, lastHour: 1000, parentId: null, parentHour: null, sampleBoundary: 'Sample origin unknown', gaps: [] };
+    const branch = { id: '1', sessionId: '1', firstHour: 0, lastHour: 1000, main: true, fork: null, joins: [], sampleBoundary: 'Sample origin unknown', gaps: [] };
     const runtime = { tracks: [{ id: 'track', axisOffset: 0, selectedTag: 'SEL', source: { id: 'synthetic', revision: '1', metadata: { campaignKey: 'campaign-a', branches: [branch] } }, branch }],
       client: {}, clock: { getHour: () => 1000, getSnapshot: () => ({ playing: false }) } } as unknown as WidgetProps['runtime'];
     const render = (widget: WidgetSpec) => act(async () => {

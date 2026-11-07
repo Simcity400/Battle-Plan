@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 mod stream;
 
-const SCHEMA: u32 = 5;
+const SCHEMA: u32 = 6;
 const SECTION: &str = "source-metadata-v1";
 const REFUSAL_SCHEMA: &str = "source-metadata-refusals-v1";
 /// A block: its branch, first and last hours, run and page.
@@ -18,22 +18,17 @@ struct Inputs {
     sessions: Vec<Vec<u8>>,
     branches: Vec<Vec<u8>>,
     gaps: Vec<Vec<u8>>,
+    /// How each recorded segment joins its history.
+    links: Vec<String>,
 }
 impl Inputs {
     fn is_prefix_of(&self, current: &Self, replay: &Replay) -> io::Result<bool> {
-        // A save adds pages to the runs it continues as well as new runs: every block read
-        // before is still there.
+        // A save adds pages to the runs it continues as well as new runs, and timelines to the
+        // ones read before: every block read before is still there.
+        let held: std::collections::HashSet<&IndexEntry> = current.index.iter().collect();
         if self.header != current.header
             || self.index.len() > current.index.len()
-            || self
-                .index
-                .iter()
-                .any(|old| {
-                    current
-                        .index
-                        .binary_search_by_key(&(old.3, old.4), |new| (new.3, new.4))
-                        .map_or(true, |at| current.index[at] != *old)
-                })
+            || self.index.iter().any(|old| !held.contains(old))
             || self
                 .sessions
                 .iter()
@@ -43,6 +38,7 @@ impl Inputs {
                 .iter()
                 .any(|old| !current.branches.contains(old))
             || self.gaps.iter().any(|old| !current.gaps.contains(old))
+            || self.links.iter().any(|old| !current.links.contains(old))
         {
             return Ok(false);
         }
@@ -108,6 +104,16 @@ impl Inputs {
                     Ok(bytes)
                 })
                 .collect::<io::Result<_>>()?,
+            links: replay
+                .timelines()
+                .map(|timelines| {
+                    timelines
+                        .links
+                        .iter()
+                        .map(|link| format!("{}:{:?}:{:?}", link.segment, link.parent, link.evidence))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
     }
 }
@@ -210,17 +216,21 @@ pub(super) fn read(
         value: cached.metadata,
         refusals: refusals.raw,
     };
+    // A block is its history's as well as its page: a history read as timelines shares pages.
+    let read: std::collections::HashSet<&IndexEntry> = cached.inputs.index.iter().collect();
     let metadata = metadata::read_append(
         replay,
         path,
         cancelled,
         &previous,
         &|block| {
-            cached
-                .inputs
-                .index
-                .binary_search_by_key(&(block.run, block.page), |held| (held.3, held.4))
-                .is_ok()
+            read.contains(&(
+                block.branch,
+                block.first_hour,
+                block.last_hour,
+                block.run,
+                block.page,
+            ))
         },
     )?;
     Ok(Some(Restored {
