@@ -4,6 +4,7 @@ import { placeTooltip } from './tooltipPlacement';
 import { tooltipStore } from './tooltip';
 import { ScrollableTooltipRows, TooltipRowView } from './TooltipRows';
 import './charts.css';
+import { commitZone } from '../shell/commitCount';
 
 /** Renders chart tooltips in the top layer, so no widget edge can clip them. As a
  * `role="tooltip"` popover it never hides the native map. */
@@ -37,3 +38,5 @@ export default function TooltipLayer() {
     </>}
   </div>;
 }
+
+commitZone(TooltipLayer, 'tooltips');

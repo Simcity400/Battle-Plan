@@ -439,6 +439,8 @@ test('card focus and delayed page navigation preserve reached tooltip ownership'
     key('End'); draw();
     assert.equal(tooltipStore.get(), null);
     assert.equal(reached.at(-1), null);
+    // The list tells its owner what it shows and wants with the next frame.
+    flush();
     assert.deepEqual(wanted.at(-1), ['older', 'current']);
     assert.deepEqual(visible.at(-1), ['B']);
     // A reached pointer row cancels the unloaded End destination. Its eventual

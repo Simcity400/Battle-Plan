@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from 'react';
 import { commitRows, EMPTY_HISTORY, nextDrop, shownRows } from './rowMotion.ts';
+import { inFrame } from '../dashboard/frameUpdates.ts';
 import type { MovingRow, RowHistory } from './rowMotion';
 
 /** How long a row that is gone takes to fade out; the `.moving-row` styles use it too. */
@@ -25,7 +26,8 @@ export function useRowMotion<T>(items: readonly { key: string; item: T }[]): rea
     // A fading row is dropped once it has faded.
     const due = nextDrop(history.current.rows, LEAVE_MS);
     if (due == null) return;
-    const timer = window.setTimeout(() => setClock(performance.now()), Math.max(0, due - performance.now()) + 16);
+    // The drop renders with the next tick while playing, not as a commit of its own.
+    const timer = window.setTimeout(() => inFrame(() => setClock(performance.now())), Math.max(0, due - performance.now()) + 16);
     return () => window.clearTimeout(timer);
   }, [items, clock]);
   return rows;

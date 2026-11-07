@@ -33,6 +33,35 @@ impl eframe::PaintOwner for SessionPaint {
         capture_data: Vec<egui::UserData>,
         window: &Arc<eframe::PaintWindow>,
     ) -> f32 {
+        let started = std::time::Instant::now();
+        let acquire = self.paint_with(
+            painter,
+            viewport_id,
+            pixels_per_point,
+            clear_color,
+            clipped_primitives,
+            textures_delta,
+            capture_data,
+            window,
+        );
+        crate::perf_log::frame_painted(started.elapsed(), acquire);
+        acquire
+    }
+}
+
+impl SessionPaint {
+    #[expect(clippy::too_many_arguments)]
+    fn paint_with(
+        &self,
+        painter: &mut Painter,
+        viewport_id: egui::ViewportId,
+        pixels_per_point: f32,
+        clear_color: [f32; 4],
+        clipped_primitives: &[egui::ClippedPrimitive],
+        textures_delta: &mut egui::TexturesDelta,
+        capture_data: Vec<egui::UserData>,
+        window: &Arc<eframe::PaintWindow>,
+    ) -> f32 {
         match self.session(painter) {
             Some(session) => session.paint(
                 painter,

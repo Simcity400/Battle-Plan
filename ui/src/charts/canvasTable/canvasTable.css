@@ -1,0 +1,7 @@
+/* The probe row carries the DOM table's classes so the canvas reads their styles; it never shows. */
+.canvas-table .canvas-table-probe { position: absolute; visibility: hidden; height: 0; overflow: hidden; pointer-events: none; }
+/* The header table is its own, as short as the header: it sticks itself, as the DOM table's thead does. */
+.canvas-table .canvas-table-head { position: sticky; top: 0; z-index: 2; background: var(--surface); }
+.canvas-table-body { position: relative; }
+.canvas-table-rows { position: sticky; display: block; width: 100%; height: 0; outline: none; }
+.canvas-table-rows:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }

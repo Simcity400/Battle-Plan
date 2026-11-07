@@ -56,6 +56,13 @@ struct Requested {
     within: BTreeMap<String, Vec<(String, i32, i32, bool)>>,
     #[serde(default)]
     share: bool,
+    /// False when the caller holds this publication's events already: they are left out.
+    #[serde(default = "with_events")]
+    events: bool,
+}
+
+fn with_events() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -659,6 +666,11 @@ pub fn series<P: PageRead>(
     value["summaries"] = serde_json::to_value(summaries)?;
     value["exactHours"] = serde_json::to_value(reached_hours)?;
     value["available"] = json!(read_count > 0);
+    if !requested.events
+        && let Some(fields) = value.as_object_mut()
+    {
+        fields.remove("events");
+    }
     Ok(value)
 }
 

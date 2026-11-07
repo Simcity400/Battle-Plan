@@ -22,7 +22,7 @@ import { groupLabel, groupShareReason, MEMBERSHIP_PREPARING, noMembersAt, resolv
 import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { answerHold, usePlaybackHour, type HourHold } from '../../dashboard/playback';
 import { usePreparedFactionTotals } from '../../dashboard/preparedFactionTotals';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { groupNumbers } from '../../dashboard/groupsReply';
@@ -65,7 +65,8 @@ export default function TerritoryWidget(props: WidgetProps) {
 function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactionPick, pickOwner }: WidgetProps & {
   onFactionPick?: (hour: number, id: string) => void; pickOwner?: unknown;
 }) {
-  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hold = useRef<HourHold | null>(null);
+  const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow', hold);
   const tokens = useChartTokens();
   const options = resolveOptions(OPTIONS, widget.options);
   // A world share of occupied land means nothing: the Occupied rule shows its race.
@@ -103,6 +104,11 @@ function TerritoryCountryView({ widget, runtime, active, onDiagnostics, onFactio
   const factionProduct = usePreparedFactionTotals(runtime.client, track, factionParams, moment, active && factions, extent, undefined, false);
   // A head kept while playback's newest loads is ranked and named at the hour it answers.
   const shownMoment = view === 'lines' ? moment : (factions ? factionProduct.headHour : prepared.headHour) ?? moment;
+  // Held where what shows at the hour is the head's alone: no time axis, and no group read beside it.
+  useEffect(() => {
+    hold.current = view !== 'lines' && !grouped && !factions && !aggregate
+      ? answerHold(playbackHour, moment, prepared.headHour, prepared.headThrough) : null;
+  });
   const { error, retry } = factions ? factionProduct : countryProduct;
   const worldStore = useMemo(() => new NumericReply<TerritoryReply>(), [runtime.client]);
   const data = factions ? worldStore.update(numericKey, countryProduct.data, reply => ({ ...reply, warnings: [] })) : countryProduct.data;

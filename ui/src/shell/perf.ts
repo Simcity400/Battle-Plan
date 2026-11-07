@@ -1,8 +1,9 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { attributeCommits, takeCommits } from './commitCount.ts';
 
 /** What the transport saw of one reply, filled in only while measuring. */
-export interface QueryTiming { received?: number; parsed?: number; bytes?: number }
+export interface QueryTiming { received?: number; parsed?: number; bytes?: number; through?: number }
 
 interface MapStateSample { id: string; hour: number | null; fraction: number | null; sequence: number; requestedSequence: number; loading: boolean;
   behind?: number | null; behindReason?: string | null; error: string | null; pending?: string | null }
@@ -21,6 +22,13 @@ interface LongFrameEntry extends PerformanceEntry {
 }
 
 type PerfRecord = { t: string; at: number; [field: string]: unknown };
+
+/** A widget's work, counted per frame:
+ * - `render`: a render of one of its components that reads the clock hour (a discarded transition render counts too);
+ * - `hour`: an hour tick handed to it; `held`: a tick its shown answer's hold kept from it; `unheld`: the tick that ended a hold;
+ * - `read`: a read it asked for; `reply`: a landed reply handed to its state, counted in the frame it renders in (a playing
+ *   clock's tick); `same`: a landed reply equal to the one shown, dropped then. */
+export type WidgetWork = 'render' | 'hour' | 'held' | 'unheld' | 'read' | 'reply' | 'same';
 
 /** Records counted: how many, their bytes and their time span. */
 interface Tally { count: number; bytes: number; from: number; to: number }
@@ -61,6 +69,12 @@ export class PerfRecorder {
   private frameRequest = 0;
   private timer: ReturnType<typeof setInterval>;
   private lastFrame: number | null = null;
+  /** Milliseconds from the last frame's start until the main thread had rendered it; null until it has. */
+  private main: number | null = null;
+  /** Each widget's work since the last frame record. */
+  private work = new Map<string, Partial<Record<WidgetWork, number>>>();
+  /** Commits since the last frame record by the parts of the page that rendered in them. */
+  private zones = new Map<string, number>();
   private playing = false;
   private views = '';
 
@@ -80,14 +94,27 @@ export class PerfRecorder {
           top: top ? `${top.invoker ?? ''} ${top.sourceURL ?? ''}`.trim() : null });
       }
     });
+    // A message posted from a frame's callback runs once the main thread has rendered that frame.
+    const rendered = new MessageChannel();
+    rendered.port1.onmessage = () => { if (this.lastFrame !== null) this.main = round(performance.now() - this.lastFrame); };
     const frame = (now: number) => {
       if (this.stopped) return;
-      if (this.lastFrame !== null) this.push({ t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing });
+      if (this.lastFrame !== null) {
+        const work = this.work.size ? Object.fromEntries(this.work) : undefined;
+        const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
+        this.work.clear();
+        this.zones.clear();
+        this.push({ t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
+          late: round(performance.now() - now), main: this.main, commits: takeCommits(), ...(work && { work }), ...(zones && { zones }) });
+      } else { takeCommits(); this.zones.clear(); }
       this.lastFrame = now;
+      this.main = null;
+      rendered.port2.postMessage(null);
       this.frameRequest = requestAnimationFrame(frame);
     };
     this.frameRequest = requestAnimationFrame(frame);
     this.timer = setInterval(() => { void this.flush(); }, FLUSH_MS);
+    attributeCommits(rendered => { for (const zone of rendered) this.zones.set(zone, (this.zones.get(zone) ?? 0) + 1); });
   }
 
   private observe(type: string, callback: PerformanceObserverCallback): void {
@@ -112,6 +139,28 @@ export class PerfRecorder {
   clock(position: number, playing: boolean, hoursPerSecond: number, sequence: number, seekSequence: number): void {
     this.playing = playing;
     this.push({ t: 'tick', at: epoch(performance.now()), hour: round(position), playing, speed: hoursPerSecond, sequence, seek: seekSequence });
+  }
+
+  /** A widget on the dashboard, named so its counted work can be read by title. */
+  widget(id: string, kind: string, title: string): void {
+    this.push({ t: 'widget', at: epoch(performance.now()), id, kind, title }, true);
+  }
+
+  /** A widget that failed to render, with the components it failed in. */
+  widgetError(widget: string | null, message: string, stack: string | null): void {
+    this.push({ t: 'widget_error', at: epoch(performance.now()), widget, message, stack }, true);
+  }
+
+  /** One piece of a widget's work, written with the next frame record. */
+  count(widget: string, work: WidgetWork): void {
+    let counts = this.work.get(widget);
+    if (!counts) this.work.set(widget, counts = {});
+    counts[work] = (counts[work] ?? 0) + 1;
+  }
+
+  /** The hour whose values a widget now shows; null while it shows none (loading, or values still read). */
+  shown(widget: string, hour: number | null): void {
+    this.push({ t: 'shown', at: epoch(performance.now()), widget, hour });
   }
 
   /** The clock told data views its hour (paced while playing). */
@@ -144,11 +193,12 @@ export class PerfRecorder {
   /** One request to the host, from send to its parsed reply or failure. */
   query(command: string, body: Record<string, unknown>, id: string, started: number, timing: QueryTiming, outcome: 'ok' | 'cancelled' | 'error'): void {
     const query = body.query as { product?: unknown; params?: unknown } | undefined;
-    const { received, parsed, bytes } = timing;
+    const { received, parsed, bytes, through } = timing;
     this.push({ t: 'q', at: epoch(started), id, cmd: command, product: typeof query?.product === 'string' ? query.product : command,
       hour: paramsHour(query?.params), refresh: typeof body.refresh === 'boolean' ? body.refresh : null, outcome,
       ms: round(performance.now() - started), ipc_ms: received === undefined ? null : round(received - started),
-      parse_ms: received === undefined || parsed === undefined ? null : round(parsed - received), bytes: bytes ?? null });
+      parse_ms: received === undefined || parsed === undefined ? null : round(parsed - received), bytes: bytes ?? null,
+      ...(through !== undefined && { through }) });
   }
 
   /** A product answered by the page's own cache (`hit`) or by joining a read in flight (`joined`). */
@@ -199,6 +249,7 @@ export class PerfRecorder {
   async finish(): Promise<boolean> {
     this.stopped = true;
     clearInterval(this.timer);
+    attributeCommits(null);
     cancelAnimationFrame(this.frameRequest);
     for (const observer of this.observers) observer.disconnect();
     await this.flush();

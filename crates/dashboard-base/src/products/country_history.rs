@@ -147,6 +147,29 @@ pub struct RecordedHistories {
 }
 
 impl RecordedHistories {
+    /// The last hour after `hour` through which no country's identity, recorded segment or
+    /// identity read starts or ends; `None` when none does after it.
+    pub fn held_through(&self, hour: i32) -> Option<i32> {
+        fn next<T>(runs: &[T], hour: i32, span: impl Fn(&T) -> (i32, i32)) -> Option<i32> {
+            let at = runs.partition_point(|run| span(run).1 < hour);
+            let run = runs.get(at)?;
+            let (first, last) = span(run);
+            Some(if first > hour { first - 1 } else { last })
+        }
+        let mut held: Option<i32> = None;
+        let mut take = |through: Option<i32>| {
+            if let Some(through) = through {
+                held = Some(held.map_or(through, |held| held.min(through)));
+            }
+        };
+        take(next(&self.identity_reads, hour, |span| (span.first_hour, span.last_hour)));
+        for country in self.countries.values() {
+            take(next(&country.identities, hour, |run| (run.first_hour, run.last_hour)));
+            take(next(&country.segments, hour, |span| (span.first_hour, span.last_hour)));
+        }
+        held
+    }
+
     pub fn bytes(&self) -> usize {
         use crate::prepared::prepass::HeldBytes;
         let mut bytes = HeldBytes::default();

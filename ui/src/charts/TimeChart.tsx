@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { ZoomReset } from './ZoomReset';
+import { inFrame } from '../dashboard/frameUpdates';
 import { BADGE_STRIP, badgesAt, drawBadges, visibleBadges } from './badges';
 import type { EventBadge } from './badges';
 import { clusterHour, drawMarkSummary, eventCount, markClusterAt, markSummaryMatches } from './markSummary';
@@ -159,7 +160,8 @@ export default function TimeChart(props: TimeChartProps) {
   const [zoomed, setZoomed] = useState(false);
   // The event badges drawn right now, as text for assistive technology: they follow
   // the view (window, zoom, playhead), and change only when the drawn set does.
-  const [spoken, setSpoken] = useState('');
+  // Written as the chart draws, never through React: the events move with every frame of playback.
+  const eventsText = useRef<HTMLParagraphElement>(null);
   // Who drives the hover (the pointer, or the keyboard's hour) and the hour it shows,
   // which the keys act on; what the keyboard hover shows is read out as it changes.
   type Point = { x: number; y: number; clientX: number; clientY: number };
@@ -224,8 +226,9 @@ export default function TimeChart(props: TimeChartProps) {
     const sendSummary = () => {
       summaryTimer = null;
       if (!summaryLatest) return;
-      summaryView = summaryLatest; summaryAt = performance.now();
-      summaryView.callback?.({ from: summaryView.from, to: summaryView.to, width: summaryView.width });
+      const sent = summaryView = summaryLatest; summaryAt = performance.now();
+      // Callbacks heard from the frame loop render with the next tick while playing, never a commit of their own.
+      inFrame(() => sent.callback?.({ from: sent.from, to: sent.to, width: sent.width }));
     };
 
     const dispatch = (action: ViewAction) => {
@@ -343,8 +346,8 @@ export default function TimeChart(props: TimeChartProps) {
       overlayContext?.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       shown.current = { x, until };
       if (p.onViewChange && (p.onViewChange !== reported?.handler || x[0] !== reported.x[0] || x[1] !== reported.x[1])) {
-        reported = { handler: p.onViewChange, x };
-        p.onViewChange(x);
+        const told = reported = { handler: p.onViewChange, x };
+        inFrame(() => told.handler(told.x));
       }
       // Whole hours, and while the view keeps moving (playback, a pan or zoom) at most
       // one request per interval, the newest view sent when it ends: not one per
@@ -370,7 +373,7 @@ export default function TimeChart(props: TimeChartProps) {
       const clusterText = summaries.flatMap(summary => summary.clusters.map(cluster => cluster.badge ? `${dayLabel(cluster.badge.hour)}, ${cluster.badge.label}`
         : `${dayLabel(cluster.firstHour) === dayLabel(cluster.lastHour) ? dayLabel(cluster.firstHour) : `${dayLabel(cluster.firstHour)} to ${dayLabel(cluster.lastHour)}`}, ${eventCount(cluster.count)}`)).join('; ');
       const eventText = spokenBadges && clusterText ? `${spokenBadges}; ${clusterText}` : spokenBadges || clusterText;
-      if (eventText !== spokenText) { spokenText = eventText; setSpoken(eventText); }
+      if (eventText !== spokenText && eventsText.current) { spokenText = eventText; eventsText.current.textContent = eventText ? `Events: ${eventText}.` : ''; }
       if (drag?.mode === 'box' && overlayContext) { drawSelection(overlayContext, tokens, drag); overlaid = true; }
 
       // Live hover: re-resolved every frame, so a still pointer stays current during playback.
@@ -401,7 +404,7 @@ export default function TimeChart(props: TimeChartProps) {
         const previous = hoverObserver.current;
         const moved = !!previous && (!Object.is(previous.pickOwner, p.pickOwner) || previous.branchStart !== p.branchStart
           || previous.first !== p.extent[0] || previous.last !== p.extent[1]);
-        if (moved) previous!.callback(null);
+        if (moved) { const callback = previous!.callback; inFrame(() => callback(null)); }
         const told = !previous || moved ? undefined : previous.hour, hour = shownHour.current;
         let tell = hour !== told;
         // Back at the hour already heard: a later move rests afresh.
@@ -418,7 +421,7 @@ export default function TimeChart(props: TimeChartProps) {
         if (tell && pendingHover) { clearTimeout(pendingHover.timer); pendingHover = null; }
         hoverObserver.current = { callback: p.onHover, pickOwner: p.pickOwner,
           branchStart: p.branchStart, first: p.extent[0], last: p.extent[1], hour: tell ? hour : told ?? null };
-        if (tell) p.onHover(hour);
+        if (tell) { const callback = p.onHover; inFrame(() => callback(hour)); }
       }
       if (at) {
         if (p.rows && hit?.by === 'pointer' && pointer) rowRef.current = Math.max(0, Math.min(p.rows.labels.length - 1,
@@ -715,9 +718,9 @@ export default function TimeChart(props: TimeChartProps) {
     }
   };
   return <div className="time-chart" data-detail={props.badges?.flatMap(badge => badge.failure ? [badge.failure.message] : []).join("\n") || undefined}>
-    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={spoken ? `${owner}-events` : undefined}
+    <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-events`}
       aria-keyshortcuts={props.rows ? 'ArrowUp ArrowDown ArrowLeft ArrowRight Home End' : props.tooltip ? 'ArrowLeft ArrowRight Home End' : undefined} onKeyDown={keyDown} onBlur={clearKeyed} />
-    <p id={`${owner}-events`} className="sr-only">{spoken ? `Events: ${spoken}.` : ''}</p>
+    <p ref={eventsText} id={`${owner}-events`} className="sr-only" />
     <p className="sr-only" aria-live="polite">{keySpoken}</p>
     <canvas ref={overlay} className="time-chart-overlay" aria-hidden="true" />
     {zoomed && <ZoomReset onReset={() => controls.current?.dispatch({ type: 'reset' })} />}

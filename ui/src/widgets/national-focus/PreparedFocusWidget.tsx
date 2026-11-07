@@ -17,6 +17,8 @@ import { CurrentFocus, FocusArt, FocusCompletion, FocusFailureNotices, isComplet
 import type { FocusListItem } from './NationalFocusWidget';
 import { useFocusArtwork } from './useFocusArtwork';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries';
+import { inFrame } from '../../dashboard/frameUpdates';
+import { countWork, measuredWidget } from '../../dashboard/widgetPerf';
 import { nameKey, isFailedFact } from '../../dashboard/countryFacts.ts';
 import type { FocusEntry } from '../../generated/dashboard';
 import { lastPage, loadPreparedFocusPage, preparedArtKey, validatePreparedHour, canCarryPreparedFocus, loadPreparedFocusDetail, validateUnavailableFocus } from './preparedFocusData';
@@ -53,6 +55,7 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
   const lane = JSON.stringify([identity, selected === null ? null : String(selected), live, retry]);
   const flight = useRef<{ lane: string; hour: number; running: boolean; shown: boolean; controller: AbortController } | null>(null);
   const wanted = useRef(hour); wanted.current = hour;
+  const measured = measuredWidget();
   const [landed, setLanded] = useState(0);
   // What the last page read, which any hour of this country, recording and content reuses; a retry reads afresh.
   const pageReads = useRef<{ owner: string; client: typeof runtime.client; reads: FocusPageReads } | null>(null);
@@ -66,22 +69,30 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     flight.current = mine;
     const prior = presented.current;
     const crossesGap = (snapshot: Snapshot) => track.branch.gaps.some(gap => gap.firstHour <= Math.max(hour, snapshot.displayHour) && gap.lastHour >= Math.min(hour, snapshot.displayHour));
-    setAnswer({ identity, client: runtime.client, hour,
+    let generation = 0, lastRow = '', presentation: Promise<void> = Promise.resolve();
+    // Every answer of this read renders with the next tick while playing, in the order set.
+    const render = (update: () => void, own?: number) => inFrame(() => {
+      if (!controller.signal.aborted && (own === undefined || own === generation)) update();
+    });
+    render(() => setAnswer({ identity, client: runtime.client, hour,
       snapshot: prior && canCarryPreparedFocus(prior.snapshot.hour, hour) && !crossesGap(prior.snapshot) ? prior.snapshot : null,
-      pending: true, error: null, warnings: [] });
+      pending: true, error: null, warnings: [] }));
     const client = runtime.client as FocusPreparedClient;
     const readsOwner = JSON.stringify([identity, retry]);
-    let generation = 0, lastRow = '', presentation: Promise<void> = Promise.resolve();
     const landedHour = () => { mine.shown = true; if (wanted.current !== hour) setLanded(value => value + 1); };
+    countWork(measured, 'read');
     const show = async (row: ReturnType<typeof validatePreparedHour>, own: number) => {
       if (!row) {
         const warnings = validateUnavailableFocus(await client.preparedQuery!(track.source, 'focus-unavailable', { branchId: track.branch.id, hour }, { signal: controller.signal }), hour);
-        if (!controller.signal.aborted && own === generation) { setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: false, error: null, warnings }); landedHour(); }
+        if (!controller.signal.aborted && own === generation) render(() => {
+          countWork(measured, 'reply');
+          setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: false, error: null, warnings }); landedHour();
+        }, own);
         return;
       }
       if (!controller.signal.aborted && prior && !canCarryPreparedFocus(prior.snapshot.hour, row)) {
         presented.current = null;
-        setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: true, error: null, warnings: [] });
+        render(() => setAnswer({ identity, client: runtime.client, hour, snapshot: null, pending: true, error: null, warnings: [] }), own);
       }
       const page = selected == null ? live ? lastPage(row.completed) : 0n : selected > lastPage(row.completed) ? lastPage(row.completed) : selected;
       const kept = pageReads.current?.owner === readsOwner && pageReads.current.client === runtime.client ? pageReads.current.reads : undefined;
@@ -90,16 +101,21 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
       pageReads.current = { owner: readsOwner, client: runtime.client, reads };
       const snapshot = { ...data, hour: row, page };
       presented.current = { identity, client: runtime.client, snapshot };
-      setOpened(previous => previous && (previous.identity !== identity || previous.client !== runtime.client || previous.slot !== row.slot || previous.countryId !== row.countryId) ? null : previous);
-      setAnswer({ identity, client: runtime.client, hour, snapshot, pending: false, error: null, warnings: [] });
-      landedHour();
+      render(() => {
+        countWork(measured, 'reply');
+        setOpened(previous => previous && (previous.identity !== identity || previous.client !== runtime.client || previous.slot !== row.slot || previous.countryId !== row.countryId) ? null : previous);
+        setAnswer({ identity, client: runtime.client, hour, snapshot, pending: false, error: null, warnings: [] });
+        landedHour();
+      }, own);
     };
     // A failed seek must not reuse another hour's page and progress.
     const failed = (error: unknown, own = generation) => {
       if (controller.signal.aborted || own !== generation) return;
-      setAnswer(previous => ({ identity, client: runtime.client, hour,
-        snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: asFailure(error), warnings: [] }));
-      landedHour();
+      render(() => {
+        setAnswer(previous => ({ identity, client: runtime.client, hour,
+          snapshot: previous?.snapshot && previous.snapshot.hour.at === hour ? previous.snapshot : null, pending: false, error: asFailure(error), warnings: [] }));
+        landedHour();
+      }, own);
     };
     // The final reply waits for the presentation an equal partial reply started.
     const present = (value: unknown): Promise<void> => {
@@ -115,16 +131,18 @@ export default function PreparedFocusWidget({ widget, runtime, active, headerSlo
     void preparedSeriesQuery(client, track.source, 'focus-hour', { branchId: track.branch.id, tag, hour }, controller.signal, retry > 0,
       undefined, undefined, value => { void present(value); }).then(present).catch(error => failed(error)).finally(() => {
       mine.running = false;
-      if (!controller.signal.aborted && wanted.current !== hour) setLanded(value => value + 1);
+      if (!controller.signal.aborted && wanted.current !== hour) render(() => setLanded(value => value + 1));
     });
   }, [runtime.client, track, tag, hour, identity, selected, active, inRange, retry, live, landed]);
   // Leaving this lane, the screen or the recording cancels its read.
   useEffect(() => () => { flight.current?.controller.abort(); flight.current = null; }, [lane, active, inRange, runtime.client, track]);
-  // An answer for another hour is still pending for this one, keeps its snapshot only where it may
-  // carry to this hour, and keeps its failure to itself.
+  // An answer for another hour is still pending for this one, keeps its snapshot where it may carry
+  // to this hour, or while following playback forward, where it is the answer of its own hour until
+  // the next lands; and keeps its failure to itself.
   const held = answer?.identity === identity && answer.client === runtime.client ? answer : null;
-  const carries = (snapshot: Snapshot) => canCarryPreparedFocus(snapshot.hour, hour) && !(track?.branch.gaps ?? []).some(gap =>
-    gap.firstHour <= Math.max(hour, snapshot.displayHour) && gap.lastHour >= Math.min(hour, snapshot.displayHour));
+  const following = live && runtime.clock.getSnapshot().playing;
+  const carries = (snapshot: Snapshot) => (canCarryPreparedFocus(snapshot.hour, hour) || following && hour > snapshot.displayHour)
+    && !(track?.branch.gaps ?? []).some(gap => gap.firstHour <= Math.max(hour, snapshot.displayHour) && gap.lastHour >= Math.min(hour, snapshot.displayHour));
   const shown = !held ? null : held.hour === hour ? held : { ...held, pending: true, error: null,
     snapshot: held.snapshot && carries(held.snapshot) ? held.snapshot : null };
   const snapshot = shown?.snapshot;

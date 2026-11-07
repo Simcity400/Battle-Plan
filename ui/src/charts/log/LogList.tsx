@@ -19,6 +19,7 @@ import { EMPTY_LOG_REVEALS, logRevealHistory, logReveals, logVisibleEntries } fr
 import { logicalScroll, physicalScroll, scrollGeometry, scrollItemTop, wheelScrollDelta } from '../scrollGeometry.ts';
 import '../charts.css';
 import './log.css';
+import { inFrame } from '../../dashboard/frameUpdates.ts';
 
 /** One status above a log, including its empty state ([preparedRangeText]):
  * `exact` is the first hour a proven newest window answers exactly. */
@@ -194,9 +195,11 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     if (!scroller) return;
     const measure = () => setLogicalTop(scrollPosition.current.logical, scroller.clientHeight);
     measure();
-    const observer = new ResizeObserver(measure);
+    // A resize renders within the frame's painting budget, not as a commit of its own.
+    let alive = true;
+    const observer = new ResizeObserver(() => inFrame(() => { if (alive) measure(); }));
     observer.observe(scroller);
-    return () => observer.disconnect();
+    return () => { alive = false; observer.disconnect(); };
   }, [scroller, setLogicalTop]);
   useEffect(() => {
     if (!scroller || !geometry.compressed) return;
@@ -382,17 +385,22 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   }, [items, start, end, reveals, continueMotion]);
   useLayoutEffect(() => { entryHistory.current = visibleEntries; }, [visibleEntries]);
   const drawn = useMemo(() => items.slice(start, end).flatMap(item => item.kind === 'row' ? [item.row] : []), [items, start, end]);
-  useEffect(() => { onVisible?.(drawn); }, [drawn, onVisible]);
+  // What the list tells its owner renders with the next frame (a tick while playing): a layout the
+  // owner's answer changes again can step once a frame, never loop within one.
+  useEffect(() => { if (onVisible) inFrame(() => onVisible(drawn)); }, [drawn, onVisible]);
   const heldIndex = current == null ? undefined : indexById.get(current);
   const heldItem = heldIndex == null ? undefined : items[heldIndex];
   const heldPage = heldItem && heldItem.kind !== 'page' ? heldItem.pageKey : undefined;
   const wanted = useMemo(() => wantedLogPages(items, start, end, [heldPage, pending?.pageKey].filter((key): key is string => key != null)), [items, start, end, heldPage, pending?.pageKey]);
-  useEffect(() => { onWantedPages?.(wanted); }, [onWantedPages, wanted]);
+  useEffect(() => { if (onWantedPages) inFrame(() => onWantedPages(wanted)); }, [onWantedPages, wanted]);
   useEffect(() => () => onWantedPages?.([]), [onWantedPages]);
   const count = items.length;
   const place = (slot: number) => slot < count ? offsets[slot] : offsets[count] + (slot - count) * ROW_HEIGHT[density];
-  const shown = shownMotion(moving, start, end, animate && (!explicitMotion || continueMotion), moved => moved.item.kind === 'row' && rowId(moved.item.row) === current, layout)
+  const placed = shownMotion(moving, start, end, animate && (!explicitMotion || continueMotion), moved => moved.item.kind === 'row' && rowId(moved.item.row) === current, layout)
     .filter(moved => moved.phase !== 'leaving' || (moved.item.kind !== 'page' && (moved.item.pageKey == null || pagesByKey.get(moved.item.pageKey)?.rows != null)));
+  // A row that is gone fades only where nothing took its place: never under a row now there.
+  const taken = new Set(placed.flatMap(moved => moved.phase === 'leaving' ? [] : [moved.slot]));
+  const shown = placed.filter(moved => moved.phase !== 'leaving' || !taken.has(moved.slot));
   // The month of the rows at the top, held above them once its own divider has scrolled away.
   const topMonth = months && view.top > 0 ? monthStarts.filter(month => month.top <= view.top).at(-1) : undefined;
   const optionId = (id: string) => `${listId}-${encodeURIComponent(JSON.stringify(id))}`;

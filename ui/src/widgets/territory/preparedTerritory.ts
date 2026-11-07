@@ -66,7 +66,8 @@ export function usePreparedTerritory(client: DashboardClient, track: BoundTrack 
     return [...runs.values()].sort((a,b)=>a.firstHour-b.firstHour);
   },[head.data,reached.data,summaries.data]);
   // The hour the shown head answers; one kept while playback's newest loads holds its own.
-  return {headHour: head.data && head.moment ? (JSON.parse(head.moment) as [{ hour: number }[]])[0][0]?.hour : undefined, data,sumRuns,lineSummaries,onSummaryView,onHoverHour,onNavigateHour,owner,
+  // The last hour the shown head stays the same through.
+  return {headHour: head.data && head.moment ? (JSON.parse(head.moment) as [{ hour: number }[]])[0][0]?.hour : undefined, headThrough: (head.data as { stableThrough?: number } | undefined)?.stableThrough, data,sumRuns,lineSummaries,onSummaryView,onHoverHour,onNavigateHour,owner,
     keyboardHour:next.data?.hour,keyboardRevision:navigation?.revision,
     error:head.error ?? reached.error ?? summaries.error ?? next.error,
     retry:()=>{head.retry();reached.retry();summaries.retry();next.retry();}};

@@ -15,14 +15,16 @@
 .focus-now-left strong { font-family: var(--font-display); font-size: calc(var(--font-size-display) * 1.57143); font-weight: 700; letter-spacing: -.02em; }
 .focus-now-left small { color: var(--muted); font-size: 0.6875rem; font-weight: 500; }
 .focus-progress { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text) 12%, transparent); }
+/* The fill scales and the knob's track (`i`, as wide as the bar) slides: a moving bar never lays out the page. */
 .focus-progress > span {
-  position: absolute; inset: 0 auto 0 0; width: calc(var(--focus-progress) * 100%); border-radius: 999px;
-  background: var(--accent); transition: width 600ms var(--ease);
+  position: absolute; inset: 0; border-radius: 999px; background: var(--accent);
+  transform-origin: left; transform: scaleX(var(--focus-progress)); transition: transform 600ms var(--ease);
 }
-.focus-progress > span::after { content: ''; position: absolute; right: -4px; top: -2px; width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 40%); }
+.focus-progress > i { position: absolute; inset: 0; pointer-events: none; transform: translateX(calc((var(--focus-progress) - 1) * 100%)); transition: transform 600ms var(--ease); }
+.focus-progress > i::after { content: ''; position: absolute; right: -4px; top: -2px; width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 40%); }
 .is-paused .focus-progress > span { background: var(--warning); box-shadow: none; }
-.is-paused .focus-progress > span::after { display: none; }
-[data-motion='reduced'] .focus-progress > span { transition: none; }
+.is-paused .focus-progress > i { display: none; }
+[data-motion='reduced'] .focus-progress > :is(span, i) { transition: none; }
 
 /* History */
 .focus-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 6px; scrollbar-gutter: stable; }
@@ -47,8 +49,11 @@
 .focus-label { display: grid; gap: 2px; min-width: 0; flex: 1; }
 .focus-label strong { font-size: 0.875rem; font-weight: 500; line-height: 1.3; overflow-wrap: anywhere; }
 .focus-label > span { color: var(--muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
-.focus-entry.is-newest .focus-row { animation: focus-landed 1.6s var(--ease); }
-@keyframes focus-landed { 0%, 40% { background: var(--accent-soft); } 100% { background: transparent; } }
+/* A fading overlay under the row's content, not an animated background: the compositor runs it. */
+.focus-entry.is-newest .focus-row { isolation: isolate; }
+.focus-entry.is-newest .focus-row::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+  background: var(--accent-soft); opacity: 0; animation: focus-landed 1.6s var(--ease); }
+@keyframes focus-landed { 0%, 40% { opacity: 1; } 100% { opacity: 0; } }
 .focus-chevron { flex-shrink: 0; color: var(--quiet); transition: transform var(--t) var(--ease), color var(--t-fast) var(--ease); }
 .focus-chevron path { fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .focus-row:hover .focus-chevron { color: var(--text); }

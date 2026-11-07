@@ -11,6 +11,7 @@ import type { ContentFolders } from '../shell/api';
 import type { SourceReply } from '../generated/dashboard';
 import type { DashboardClient, DashboardMapState, MapOptionsEvent, MapToggleEvent, DashboardSource, MapSettingsReply, PreparedQueryOptions, ProductReply, RecorderSettings, ReplayLibrary } from './client';
 import { replyLengths } from './products.ts';
+import { keepDigest } from './replyDigest.ts';
 import { parseReplyBytes } from './replyParse.ts';
 import { contentRevision } from './contentRevision.ts';
 import { forgetReplySizes } from './replySizes.ts';
@@ -34,8 +35,13 @@ async function rawInvoke<T>(command: string, args: Record<string, unknown>, timi
   if (reply && typeof reply === 'object') {
     replyLengths.set(reply, bytes);
     // A prepared reply's data is kept without its envelope.
-    const data: unknown = (reply as { data?: unknown }).data;
-    if (data && typeof data === 'object') replyLengths.set(data, bytes);
+    const { data, digest } = reply as { data?: unknown; digest?: unknown };
+    if (data && typeof data === 'object') {
+      replyLengths.set(data, bytes);
+      if (typeof digest === 'string') keepDigest(digest, data);
+      const through = (data as { stableThrough?: unknown }).stableThrough;
+      if (timing && typeof through === 'number') timing.through = through;
+    }
   }
   return reply as T;
 }

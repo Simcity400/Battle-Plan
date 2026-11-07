@@ -80,6 +80,9 @@ struct ProductionSelection {
     ranked: bool,
 }
 
+/// Hex digits of a reply's digest: 64 bits, which no two answers a client compares share by chance.
+const DIGEST_HEX: usize = 16;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Reply<'a> {
@@ -936,8 +939,10 @@ fn territory_series(
         Some(shared.last_hour),
     )?
     .unwrap_or_default();
+    let named =
+        published::held_hour(product, params).and_then(|hour| history.held_through(hour));
     let mut data = opened.read(cancelled, |snapshot, directory| {
-        territory::query::series(
+        let mut data = territory::query::series(
             product,
             params.clone(),
             snapshot,
@@ -945,7 +950,10 @@ fn territory_series(
             &history,
             &shared,
             cancelled,
-        )
+        )?;
+        let last = shared.last_hour;
+        published::hold(&mut data, snapshot, directory, product, params, last, named)?;
+        Ok(data)
     })?;
     // Every series reply names the prepared extent it was read through, as the row reply did.
     if let Some(reply) = data.as_object_mut() {
@@ -1009,7 +1017,11 @@ fn score_series(
         return Ok(Value::Null);
     };
     let mut data = opened.read(cancelled, |snapshot, directory| {
-        game_score::query::series(product, params, snapshot, directory, reach, cancelled)
+        let mut data =
+            game_score::query::series(product, params, snapshot, directory, reach, cancelled)?;
+        let last = shared.last_hour;
+        published::hold(&mut data, snapshot, directory, product, params, last, None)?;
+        Ok(data)
     })?;
     // Every series reply names the prepared extent it was read through, as the row reply did.
     if let Some(reply) = data.as_object_mut() {
@@ -1101,9 +1113,14 @@ fn tension_series(
                         read
                     }
                 };
-                query::series(
+                let mut data = query::series(
                     source, product, params, snapshot, directory, &read, &history, cancelled,
-                )
+                )?;
+                let last = snapshot.publication().accepted.last.min(shared.last_hour);
+                let named = published::held_hour(product, params)
+                    .and_then(|hour| history.held_through(hour));
+                published::hold(&mut data, snapshot, directory, product, params, last, named)?;
+                Ok(data)
             })?
         }
     };
@@ -4945,7 +4962,8 @@ fn answer(
     .map_err(crate::invalid)?;
     // The answer's text takes the place of the null its field serialized as.
     reply.truncate(reply.len() - "null}".len());
-    let length = data.len() + 1;
+    // The answer, then a digest of its text, so a client compares replies without reading them.
+    let length = data.len() + r#","digest":""}"#.len() + DIGEST_HEX;
     if reply.len() + length > MAX_REPLY_BYTES {
         return Err(crate::invalid(
             "Projected response exceeds the transport byte budget",
@@ -4954,7 +4972,11 @@ fn answer(
     reply
         .try_reserve_exact(length)
         .map_err(|_| crate::invalid("Not enough memory for projected response"))?;
+    let start = reply.len();
     data.write(&mut reply);
-    reply.push('}');
+    let digest = blake3::hash(&reply.as_bytes()[start..]);
+    reply.push_str(r#","digest":""#);
+    reply.push_str(&digest.to_hex()[..DIGEST_HEX]);
+    reply.push_str(r#""}"#);
     Ok(reply)
 }

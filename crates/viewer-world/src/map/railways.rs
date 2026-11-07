@@ -1614,6 +1614,23 @@ impl RailPass {
         [&self.rail.view, &self.null]
     }
 
+    /// Compiles the pipeline frames draw with, so they compile nothing.
+    pub fn warm(&self, device: &wgpu::Device) {
+        let mut compiled = self.compiled.borrow_mut();
+        if compiled.is_none() {
+            *compiled = Some(
+                super::rail_shader::Rail::new(
+                    device,
+                    &self.effect,
+                    self.samples,
+                    self.format,
+                    DEPTH_FORMAT,
+                )
+                .map_err(|error| error.to_string()),
+            );
+        }
+    }
+
     pub fn draw(
         &self,
         arena: &shader_pipeline::gpu::Arena,
@@ -1629,20 +1646,9 @@ impl RailPass {
         let Some(vertices) = &self.geometry.native_vertices else {
             return Ok(());
         };
-        let mut compiled = self.compiled.borrow_mut();
-        if compiled.is_none() {
-            *compiled = Some(
-                super::rail_shader::Rail::new(
-                    device,
-                    &self.effect,
-                    self.samples,
-                    self.format,
-                    DEPTH_FORMAT,
-                )
-                .map_err(|error| error.to_string()),
-            );
-        }
-        viewer_foundation::map::gpu_contract::compiled(compiled.as_ref().expect("created above"))?
+        self.warm(device);
+        let compiled = self.compiled.borrow();
+        viewer_foundation::map::gpu_contract::compiled(compiled.as_ref().expect("compiled above"))?
             .draw(
                 arena,
                 encoder,

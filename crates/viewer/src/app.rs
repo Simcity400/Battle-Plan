@@ -1364,6 +1364,7 @@ fn load_scene_scoped(
             cache: &document.content.political_gpu,
         },
     )?;
+    scene.apply(device, queue, SceneInput::WarmPipelines)?;
     Ok(scene)
 }
 

@@ -35,6 +35,7 @@ import type { ContentFolders, ReplayMetadata } from './api';
 import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
 import { BuildNotice, RecordingNotice } from './recordingNotice';
+import { commitZone } from './commitCount';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -461,3 +462,5 @@ export default function App() {
     </div>
   );
 }
+
+commitZone(App, 'shell');

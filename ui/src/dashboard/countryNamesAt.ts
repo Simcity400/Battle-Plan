@@ -164,11 +164,18 @@ export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrac
     && item.hour >= track.branch.firstHour && item.hour <= track.branch.lastHour), [wanted, track]);
   const read = useCountryFactsRead(client, track, available, active, NAMES, maxHours, attempt);
   const previous = useRef<ReadonlyMap<string, NameRead>>(new Map());
+  // The last name read for each country: while its name at a new hour is read, that one shows, never "loading".
+  const lastRead = useRef({ track: '', names: new Map<string, NameRead>() });
+  const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
+  if (lastRead.current.track !== trackKey) lastRead.current = { track: trackKey, names: new Map() };
   return useMemo(() => {
     const requested = new Set(available.map(item => nameKey(item.hour, item.tag)));
+    const held = lastRead.current.names;
     const next = new Map(wanted.map(item => {
       const key = nameKey(item.hour, item.tag), before = previous.current.get(key);
-      const value = nameReadFrom(read.get(key), active && requested.has(key));
+      let value = nameReadFrom(read.get(key), active && requested.has(key));
+      if (value.kind === 'value') held.set(item.tag, value);
+      else if (value.kind === 'loading') value = held.get(item.tag) ?? value;
       return [key, sameNameRead(before, value) ? before! : value] as const;
     }));
     if (next.size !== previous.current.size || [...next].some(([key, value]) => previous.current.get(key) !== value)) previous.current = next;

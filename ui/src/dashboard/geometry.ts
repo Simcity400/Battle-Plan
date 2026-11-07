@@ -30,9 +30,22 @@ export function physicalRect(rect: Rect, dpr: number): MapBounds {
  * measured only when it can have changed (`schedule`); clock anchors, a target appearing or going,
  * picker options, hiding and map errors recompose views from the measured layout (`retarget`).
  * Between anchors each native map runs its own clock, so forward playback sends nothing. */
+/** What a map widget shows of an acknowledgement. Playing, any ready frame of the branch answers
+ * the clock, so the frame's hour and sequences, which change with every frame drawn, are left out;
+ * its date is painted, not rendered (`MapViewsStore.paint`). */
+function shownKey(state: DashboardMapState, playing: boolean): string {
+  return JSON.stringify([state.sourceId, state.revision, state.branchId, state.loading, state.error ?? null, state.pending ?? null,
+    state.behindReason ?? null, state.hour == null, ...(playing ? [] : [state.hour, state.sequence, state.requestedSequence])]);
+}
+
 export class MapViewsStore {
   private surfaces = new Map<string, Surface>();
+  /** Each view's newest acknowledgement. */
   private states = new Map<string, DashboardMapState>();
+  /** The acknowledgement each view's widget renders, replaced only when what it shows changes. */
+  private shown = new Map<string, { key: string; state: DashboardMapState }>();
+  private painters = new Map<string, (state: DashboardMapState) => void>();
+  private paintFrame = 0;
   private listeners = new Map<string, Set<() => void>>();
   private hidden = false;
   private viewport: HTMLElement | null = null;
@@ -77,6 +90,8 @@ export class MapViewsStore {
     this.observer.observe(viewport);
     for (const surface of this.surfaces.values()) this.observer.observe(surface.element);
     const stopClock = this.clock.subscribe(this.retarget);
+    // Playing or paused decides what of an acknowledgement is shown.
+    const stopShown = this.clock.subscribe(this.presentAll);
     const stopFrame = this.clock.subscribeFrame(this.checkPresence);
     let stopStates: (() => void) | undefined;
     let stopOptions: (() => void) | undefined;
@@ -99,7 +114,7 @@ export class MapViewsStore {
     const changedResolution = () => { watchResolution(); this.schedule(); };
     watchResolution();
     window.addEventListener('resize', this.schedule);
-    window.addEventListener('scroll', this.schedule, true);
+    window.addEventListener('scroll', this.scrolled, true);
     window.visualViewport?.addEventListener('resize', this.schedule);
     window.visualViewport?.addEventListener('scroll', this.schedule);
     document.addEventListener('visibilitychange', this.schedule);
@@ -114,8 +129,9 @@ export class MapViewsStore {
         // A view's visibility depends only on whether its map failed.
         errorChanged ||= !old?.error !== !state.error;
         this.states.set(state.id, state);
-        this.notify(state.id);
+        this.present(state.id);
       }
+      this.schedulePaint();
       if (errorChanged) this.retarget();
     }).then((stop) => {
       if (!this.active || this.generation !== generation) stop(); else stopStates = stop;
@@ -124,7 +140,11 @@ export class MapViewsStore {
     return () => {
       this.active = false;
       this.states.clear();
+      this.shown.clear();
+      if (this.paintFrame) cancelAnimationFrame(this.paintFrame);
+      this.paintFrame = 0;
       stopClock();
+      stopShown();
       stopFrame();
       stopStates?.();
       stopOptions?.();
@@ -134,7 +154,7 @@ export class MapViewsStore {
       if (this.frame) cancelAnimationFrame(this.frame);
       this.frame = 0;
       window.removeEventListener('resize', this.schedule);
-      window.removeEventListener('scroll', this.schedule, true);
+      window.removeEventListener('scroll', this.scrolled, true);
       window.visualViewport?.removeEventListener('resize', this.schedule);
       window.visualViewport?.removeEventListener('scroll', this.schedule);
       document.removeEventListener('visibilitychange', this.schedule);
@@ -160,13 +180,23 @@ export class MapViewsStore {
   setHidden(hidden: boolean): void { if (hidden !== this.hidden) { this.hidden = hidden; this.retarget(); } }
   retry(id: string): void {
     this.states.delete(id);
+    this.shown.delete(id);
     this.applied = '';
     this.notify(id);
     this.retarget();
   }
   /** Sends the views again, unchanged or not: a restarted viewer is restored with the last anchor it was sent. */
   resend(): void { this.applied = ''; this.retarget(); }
-  getState = (id: string): DashboardMapState | null => this.states.get(id) ?? null;
+  /** The acknowledgement a view's widget renders ([`shownKey`]). */
+  getState = (id: string): DashboardMapState | null => this.shown.get(id)?.state ?? null;
+  /** Paints a view's newest acknowledgement now and at most once a frame after acknowledgements arrive:
+   * what changes with every frame the map draws reaches the page this way, never through a render. */
+  paint(id: string, painter: (state: DashboardMapState) => void): () => void {
+    this.painters.set(id, painter);
+    const state = this.states.get(id);
+    if (state) painter(state);
+    return () => { if (this.painters.get(id) === painter) this.painters.delete(id); };
+  }
   subscribe = (id: string, listener: () => void): (() => void) => {
     let listeners = this.listeners.get(id);
     if (!listeners) { listeners = new Set(); this.listeners.set(id, listeners); }
@@ -175,6 +205,14 @@ export class MapViewsStore {
   };
   /** Layout may have changed: measure again before the next views go out. */
   schedule = (): void => { this.layoutDirty = true; this.retarget(); };
+  /** A scroll moves a map only from the page or an element holding one: a widget's own list or
+   * table scrolling as playback reveals rows must not force the page's layout to be measured. */
+  private scrolled = (event: Event): void => {
+    const target = event.target as Partial<Node> | null;
+    if (target && typeof target.contains === 'function' && target !== document.documentElement
+      && ![...this.surfaces.values()].some(surface => target.contains!(surface.element))) return;
+    this.schedule();
+  };
   /** Views may have changed but layout has not. */
   retarget = (): void => {
     if (!this.active || this.frame) return;
@@ -198,6 +236,26 @@ export class MapViewsStore {
   };
 
   private notify(id: string): void { for (const listener of this.listeners.get(id) ?? []) listener(); }
+  /** Tells a view's widget only when what it shows of the newest acknowledgement changed. */
+  private present(id: string): void {
+    const state = this.states.get(id);
+    if (!state) return;
+    const key = shownKey(state, this.clock.getSnapshot().playing);
+    if (this.shown.get(id)?.key === key) return;
+    this.shown.set(id, { key, state });
+    this.notify(id);
+  }
+  private presentAll = (): void => { for (const id of this.states.keys()) this.present(id); };
+  private schedulePaint(): void {
+    if (this.paintFrame || !this.painters.size || typeof requestAnimationFrame !== 'function') return;
+    this.paintFrame = requestAnimationFrame(() => {
+      this.paintFrame = 0;
+      for (const [id, painter] of this.painters) {
+        const state = this.states.get(id);
+        if (state) painter(state);
+      }
+    });
+  }
   private fail(error: string): void {
     let changed = false;
     for (const id of this.surfaces.keys()) {
@@ -205,7 +263,7 @@ export class MapViewsStore {
       changed ||= old?.error !== error;
       this.states.set(id, old ? { ...old, error } : { id, sourceId: null, revision: null, branchId: null, hour: null,
         fraction: null, sequence: 0, requestedSequence: 0, loading: false, error });
-      this.notify(id);
+      this.present(id);
     }
     if (changed) this.retarget();
   }
@@ -258,8 +316,7 @@ export class MapViewsStore {
   }
 }
 
-/** A map's acknowledged state, which changes with every frame it draws while playing: it renders as
- * a transition, so it never interrupts the widgets' own. */
+/** What a map's widget shows of its acknowledged state ([`MapViewsStore.getState`]), as a transition. */
 export function useMapState(store: MapViewsStore, id: string): DashboardMapState | null {
   const subscribe = useCallback((listener: () => void) => store.subscribe(id, listener), [store, id]);
   const snapshot = useCallback(() => store.getState(id), [store, id]);

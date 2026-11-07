@@ -20,6 +20,8 @@ pub enum SceneInput<'a> {
     WarmRailways(&'a RailAssets),
     WarmOrders(&'a OrderAssets),
     WarmWeather(Arc<crate::map::weather_effects::Assets>),
+    /// After every pass is installed: see [`Scene::warm_pipelines`].
+    WarmPipelines,
     WarmPolitical {
         map: &'a installed_content_core::map::MapData,
         strategic_regions: &'a BTreeMap<u32, installed_content_regions::regions::StrategicRegion>,
@@ -250,6 +252,10 @@ impl Scene {
             }
             SceneInput::WarmWeather(assets) => {
                 self.warm_weather(device, queue, assets)?;
+                applied
+            }
+            SceneInput::WarmPipelines => {
+                self.warm_pipelines(device);
                 applied
             }
             SceneInput::WarmPolitical {

@@ -29,6 +29,18 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
   }, [track, widget, runtime.tracks, staticSequence, mapOptions]);
   useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
   const state = useMapState(runtime.maps, widget.id);
+  // The date of the frame drawn changes with every frame: painted, at most once a display frame.
+  const shownDate = useRef<HTMLSpanElement>(null);
+  const showsDate = runtime.client.nativeMaps !== false && state?.hour != null;
+  useLayoutEffect(() => {
+    if (!showsDate) return;
+    let painted: number | null = null;
+    return runtime.maps.paint(widget.id, latest => {
+      if (latest.hour == null || latest.hour === painted || !shownDate.current) return;
+      painted = latest.hour;
+      shownDate.current.textContent = formatDateTime(latest.hour);
+    });
+  }, [runtime.maps, widget.id, showsDate]);
   const desired = target(runtime.clock.getSnapshot());
   const matched = mapPresentationMatches(state, desired);
   const nativeUnavailable = !runtime.client.available || runtime.client.nativeMaps === false;
@@ -45,8 +57,8 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
           : !desired && track ? 'Choose another time.' : null}</p></>}
       </div>
     </div>
-    {runtime.client.nativeMaps !== false && state?.hour != null && <div className="dash-map-status">
-      <span><Icon name="clock" />{formatDateTime(state.hour)}</span>{matched && state.behindReason
+    {showsDate && <div className="dash-map-status">
+      <span><Icon name="clock" /><span ref={shownDate} /></span>{matched && state.behindReason
         ? <span className="pill warning" title={state.behindReason}>Behind</span>
         : matched ? <span className="pill positive">{widget.time.mode === 'follow' ? 'Live' : widget.time.mode === 'pin' ? 'Pinned' : 'Campaign end'}</span> : <span className="pill warning">Updating…</span>}
     </div>}

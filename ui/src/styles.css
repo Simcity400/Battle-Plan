@@ -184,9 +184,12 @@ input[type='range'].slider:focus-visible::-webkit-slider-thumb { box-shadow: 0 0
 .pill.accent { background: var(--accent-soft); color: var(--accent); }
 .pill.positive { background: var(--positive-soft); color: var(--positive); }
 .pill.warning { background: var(--warning-soft); color: var(--warning); }
-.live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 0 0 currentColor; animation: live-pulse 1.8s var(--ease) infinite; }
-@keyframes live-pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 50%, transparent); } 70%, 100% { box-shadow: 0 0 0 6px transparent; } }
-[data-motion='reduced'] .live-dot { animation: none; }
+/* The pulse is a disc 6px wider than the dot that grows from the dot's size and fades: transform and
+   opacity, which the compositor runs, so a live dot never repaints the page. */
+.live-dot { position: relative; isolation: isolate; width: 7px; height: 7px; border-radius: 50%; background: currentColor; --live-dot-from: calc(7 / 19); }
+.live-dot::after { content: ''; position: absolute; inset: -6px; z-index: -1; border-radius: 50%; background: currentColor; opacity: 0; animation: live-pulse 1.8s var(--ease) infinite; }
+@keyframes live-pulse { 0% { opacity: .5; transform: scale(var(--live-dot-from)); } 70%, 100% { opacity: 0; transform: none; } }
+[data-motion='reduced'] .live-dot::after { content: none; }
 .notice { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: var(--r-md); background: var(--accent-softer);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 28%, transparent); font-size: 0.8125rem; line-height: 1.55; }
 .notice > svg { width: 16px; height: 16px; margin-top: 1px; color: var(--accent); flex-shrink: 0; }

@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef } from 'react';
 import { hasMapOverlay } from '../shell/mapOverlays';
+import { commitZone } from '../shell/commitCount';
 
 /** One tooltip for the whole interface, including controls inside native popovers. */
 export default function Tooltip() {
@@ -104,3 +105,5 @@ export default function Tooltip() {
   }, [id]);
   return <div ref={ref} id={id} popover="manual" role="tooltip" className="app-tooltip" />;
 }
+
+commitZone(Tooltip, 'tooltip');

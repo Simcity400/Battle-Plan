@@ -19,6 +19,7 @@ import { ellipsise } from '../labels';
 import { drawDateOverlay, drawRaceBar, drawRaceGrid, FLAG, MIN_LABEL, NAME_PAD, NAME_X, VALUE_GAP, VALUE_PAD } from './draw';
 import { keyedEntry, paintOrder, raceHeight, raceLayout, raceMoving, raceText, rowAt, rowCentre, rowInView, rowSeen, selectRaceRow, stepRace } from './race';
 import type { RaceItem, RaceLayout, RaceRow, RaceState } from './race';
+import type { PlaybackController } from '../../dashboard/playback';
 import '../charts.css';
 
 /** A real loaded slice of one global ranking; missing rows stay pending. */
@@ -29,12 +30,29 @@ export interface RemoteRaceRows {
   owner: unknown;
 }
 
+/** Entries read ahead of the playhead and asked for every frame: the chart follows playback
+ * without rendering. Cheap to call, and the same array while the moment is unchanged. */
+export interface LiveRace {
+  items: () => readonly RaceItem[];
+  /** The chart's accessible name and the corner date for the moment shown. */
+  label: () => string;
+  overlay: () => string | null;
+  /** Lets the source wake the chart when entries or labels land; returns how to stop. */
+  bind: (wake: () => void) => () => void;
+  clock: PlaybackController;
+}
+
+/** How often a live chart's accessible ranking follows playback. */
+const SPOKEN_MS = 1000;
+
 export interface RaceChartProps {
   /** Names the chart for screen readers. */
   label: string;
   /** The entries at the moment shown, ranked highest first (`rankItems`). Pass the
    * same array while the moment is unchanged: a new array is a new moment. */
   items: readonly RaceItem[];
+  /** Replaces `items` (and the label and date) with entries asked for every frame. */
+  live?: LiveRace;
   remoteRows?: RemoteRaceRows;
   /** How many rows to make room for (the top N), so rows keep their height as
    * entries come and go. Rows that need more room than the chart has scroll. */
@@ -66,9 +84,6 @@ export interface RaceChartProps {
   resetKey?: string;
 }
 
-/** Rows are sized for the top N, so they keep their height while entries come and go;
- * the scroll reaches only the entries there are. */
-const raceSlots = (props: Pick<RaceChartProps, 'items' | 'slots' | 'remoteRows'>) => Math.max(1, props.slots, props.remoteRows?.total ?? props.items.length);
 
 /** The name column's largest share of the chart. */
 const MAX_LABEL_SHARE = 0.4;
@@ -105,6 +120,8 @@ export default function RaceChart(props: RaceChartProps) {
   };
   const [spoken, setSpoken] = useState('');
   const spokenText = useRef('');
+  const ranked = useRef<HTMLParagraphElement>(null);
+  const extent = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const element = canvas.current!;
@@ -120,6 +137,7 @@ export default function RaceChart(props: RaceChartProps) {
     // font: a long list is measured once per moment, not in every frame.
     let measured: { items: readonly RaceItem[]; name: RaceChartProps['name']; nameSamples: RaceChartProps['nameSamples']; tokens: ChartTokens } | null = null;
     const nameWidths = new Map<string, number>();
+    let spokenItems: readonly RaceItem[] | null = null, spokenAt = -Infinity, extentRows = -1;
     let tooltipFor: { key: string; item: RaceItem; props: RaceChartProps; content: TooltipContent | null } | null = null;
 
     const draw = (info: FrameInfo): boolean => {
@@ -137,30 +155,39 @@ export default function RaceChart(props: RaceChartProps) {
       context.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
 
       const tau = easeTau(tokens.motion, motionNow(p.hoursPerSecond), tokens.reducedMotion);
-      state = stepRace(state, p.items, info.now, info.dt, tau);
+      const items = p.live ? p.live.items() : p.items;
+      state = stepRace(state, items, info.now, info.dt, tau);
+      // The scroll reaches only the entries there are.
+      if (p.live && items.length !== extentRows && extent.current) { extentRows = items.length; extent.current.style.height = `calc(${raceHeight(items.length)}px - 100%)`; }
+      if (p.live && items !== spokenItems && (info.now - spokenAt >= SPOKEN_MS || !p.live.clock.getSnapshot().playing)) {
+        spokenItems = items; spokenAt = info.now;
+        element.setAttribute('aria-label', p.live.label());
+        if (ranked.current) ranked.current.textContent = raceText(items, p.name) || p.empty || '';
+      }
       // Columns fitted to the widest name and value seen.
       if (columns.key !== (p.resetKey ?? '')) { columns = { key: p.resetKey ?? '', label: MIN_LABEL, value: 0 }; measured = null; }
-      if (!measured || measured.items !== p.items || measured.name !== p.name || measured.nameSamples !== p.nameSamples || measured.tokens !== tokens) {
+      if (!measured || measured.items !== items || measured.name !== p.name || measured.nameSamples !== p.nameSamples || measured.tokens !== tokens) {
         if (p.remoteRows || measured && measured.tokens !== tokens) nameWidths.clear();
         context.font = font(tokens, tokens.fontSize.body, LABEL_WEIGHT);
-        if (p.items.length) for (const name of p.nameSamples ?? []) {
+        if (items.length) for (const name of p.nameSamples ?? []) {
           let width = nameWidths.get(name);
           if (width === undefined) nameWidths.set(name, width = context.measureText(name).width);
           columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
         }
-        for (const item of p.items) {
+        for (const item of items) {
           const name = p.name(item.key, item);
           let width = nameWidths.get(name);
           if (width === undefined) nameWidths.set(name, width = context.measureText(name).width);
           columns.label = Math.max(columns.label, NAME_X + width + NAME_PAD);
         }
         context.font = font(tokens, tokens.fontSize.body, VALUE_WEIGHT);
-        for (const item of p.items) columns.value = Math.max(columns.value, context.measureText(item.label).width + VALUE_GAP + VALUE_PAD);
-        measured = { items: p.items, name: p.name, nameSamples: p.nameSamples, tokens };
+        for (const item of items) columns.value = Math.max(columns.value, context.measureText(item.label).width + VALUE_GAP + VALUE_PAD);
+        measured = { items, name: p.name, nameSamples: p.nameSamples, tokens };
       }
       const labelWidth = Math.min(columns.label, Math.max(MIN_LABEL, layoutWidth * MAX_LABEL_SHARE));
       const remote = p.remoteRows;
-      const layout = raceLayout(layoutWidth, layoutHeight, raceSlots(p), labelWidth, Math.max(columns.value, 24), scrollTop.current, remote?.total ?? p.items.length);
+      // Rows are sized for the top N, so they keep their height while entries come and go.
+      const layout = raceLayout(layoutWidth, layoutHeight, Math.max(1, p.slots, remote?.total ?? items.length), labelWidth, Math.max(columns.value, 24), scrollTop.current, remote?.total ?? items.length);
       const rows = remote ? state.rows.map(row => ({ ...row, y: row.y + remote.offset, target: row.target + remote.offset })) : state.rows;
       const min = remote ? Math.min(0, remote.min) * 1.06 : state.min;
       const max = remote ? Math.max(1, remote.max) * 1.06 : state.max;
@@ -171,17 +198,18 @@ export default function RaceChart(props: RaceChartProps) {
         const pending = pendingKey.current;
         if (pending && (pending.owner !== remote.owner || pending.resetKey !== p.resetKey)) pendingKey.current = null;
         else if (pending) {
-          const item = p.items[pending.index - remote.offset];
+          const item = items[pending.index - remote.offset];
           if (item) { hover.current = { pointer: null, keyed: item.key, menuKey: false }; pendingKey.current = null; keyIntent.current = true; }
         }
       }
-      shown.current = { layout, rows, items: p.items, min, max, height: layoutHeight,
+      shown.current = { layout, rows, items, min, max, height: layoutHeight,
         owner: remote?.owner ?? p.pickOwner, resetKey: p.resetKey };
 
       context.clearRect(0, 0, layoutWidth, layoutHeight);
-      if (p.dateOverlay) drawDateOverlay(context, layout, tokens, p.dateOverlay);
+      const overlay = p.live ? p.live.overlay() : p.dateOverlay;
+      if (overlay) drawDateOverlay(context, layout, tokens, overlay);
       drawRaceGrid(context, layout, tokens, min, max, p.formatTick ?? formatAxisValue);
-      if (!p.items.length && (!remote || remote.total === 0) && p.empty) {
+      if (!items.length && (!remote || remote.total === 0) && p.empty) {
         context.save();
         context.font = font(tokens, tokens.fontSize.body);
         context.fillStyle = tokens.muted;
@@ -314,6 +342,18 @@ export default function RaceChart(props: RaceChartProps) {
     if (!props.active) hideTooltip(owner);
   }, [props.active, owner]);
   useEffect(() => { if (task.current) scheduler.wake(task.current); });
+  // A live chart wakes when the clock's frame brings other entries, or entries or labels land.
+  const live = props.live;
+  useEffect(() => {
+    if (!live) return;
+    let drawn: readonly RaceItem[] | null = null;
+    const check = () => { const items = live.items(); if (items !== drawn && task.current) { drawn = items; scheduler.wake(task.current); } };
+    // A source wake asks the store at once, not through drawing: a hidden chart (loading, failed) has no
+    // size to draw, and its store must still plan the retry.
+    const stops = [live.clock.subscribeFrame(check), live.clock.subscribe(check), live.bind(() => { drawn = null; check(); })];
+    check();
+    return () => { for (const stop of stops) stop(); };
+  }, [live]);
 
   const wake = () => { if (task.current) scheduler.wake(task.current); };
   const clearKeyed = () => {
@@ -381,18 +421,18 @@ export default function RaceChart(props: RaceChartProps) {
       current.onContextMenu(keyed, rect.left + rect.width / 2, y, row.item);
     }
   };
-  const ranking = raceText(props.items, props.name, props.remoteRows?.offset ?? 0);
+  const ranking = live ? '' : raceText(props.items, props.name, props.remoteRows?.offset ?? 0);
   return <div className="race-chart">
     <div ref={scroller} className="race-scroll themed-scrollbar" onScroll={event => {
       if (event.currentTarget.scrollTop !== scrollTop.current) pendingKey.current = null;
       scrollTop.current = event.currentTarget.scrollTop; wake();
     }}>
-      <canvas ref={canvas} tabIndex={0} role="img" aria-label={props.label} aria-describedby={`${owner}-ranking`}
+      <canvas ref={canvas} tabIndex={0} role="img" aria-label={live ? undefined : props.label} aria-describedby={`${owner}-ranking`}
         aria-keyshortcuts={`ArrowUp ArrowDown Home End${props.onPick ? ' Enter Space' : ''}`} onKeyDown={keyDown} onBlur={clearKeyed} />
       {/* The entries' height past the chart's own: the canvas stays in view while this scrolls. */}
-      <div className="race-extent" style={{ height: `calc(${raceHeight(props.remoteRows?.total ?? props.items.length)}px - 100%)` }} />
+      <div ref={extent} className="race-extent" style={live ? undefined : { height: `calc(${raceHeight(props.remoteRows?.total ?? props.items.length)}px - 100%)` }} />
     </div>
-    <p id={`${owner}-ranking`} className="sr-only">{props.remoteRows ? `${props.remoteRows.total} ranked entries. ${ranking
+    <p ref={ranked} id={`${owner}-ranking`} className="sr-only">{live ? null : props.remoteRows ? `${props.remoteRows.total} ranked entries. ${ranking
       || (props.remoteRows.total === 0 && props.empty) || 'Requested rows are loading.'}` : ranking || props.empty || ''}</p>
     <p className="sr-only" aria-live="polite">{spoken}</p>
   </div>;

@@ -23,6 +23,7 @@
 .log-month { height: 24px; padding: 7px var(--space-3) 0; font-size: var(--type-xs); font-weight: 600; color: var(--muted); background: var(--panel-solid); }
 .log-month.is-sticky { position: absolute; top: 0; left: var(--space-3); right: var(--space-3); z-index: 2; }
 .log.no-motion .moving-row { transition: none; animation: none; }
+.log.no-motion .moving-row.is-entering::after { content: none; }
 .log-empty { display: grid; flex: 1; place-items: center; padding: var(--space-5); color: var(--muted); font-size: var(--type-sm); text-align: center; }
 
 /* The parts a log row is made of: artwork, a sentence with flags, a category tag and a

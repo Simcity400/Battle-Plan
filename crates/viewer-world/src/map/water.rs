@@ -35,17 +35,12 @@ impl WaterPass {
             .is_some_and(|(_, water)| water.as_ref().is_ok_and(|water| water.reads_snow_mud))
     }
 
-    pub fn draw(
-        &self,
-        arena: &shader_pipeline::gpu::Arena,
-        encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
-        inputs: super::water_shader::Inputs<'_>,
-        high: bool,
-        refractions: bool,
-    ) -> io::Result<()> {
-        let device = arena.device();
-        let technique = super::water_shader::technique(high, refractions);
+    /// Compiles the pipeline frames with these settings draw with, so they compile nothing.
+    pub fn warm(&self, device: &wgpu::Device, high: bool, refractions: bool) {
+        self.compile(device, super::water_shader::technique(high, refractions));
+    }
+
+    fn compile(&self, device: &wgpu::Device, technique: &'static str) {
         let mut compiled = self.compiled.borrow_mut();
         if compiled.as_ref().is_none_or(|(name, _)| name != technique) {
             *compiled = Some((
@@ -62,8 +57,24 @@ impl WaterPass {
                 .map_err(|error| error.to_string()),
             ));
         }
+    }
+
+    pub fn draw(
+        &self,
+        arena: &shader_pipeline::gpu::Arena,
+        encoder: &mut wgpu::CommandEncoder,
+        target: super::border_shader::Target<'_>,
+        inputs: super::water_shader::Inputs<'_>,
+        high: bool,
+        refractions: bool,
+    ) -> io::Result<()> {
+        self.compile(
+            arena.device(),
+            super::water_shader::technique(high, refractions),
+        );
+        let compiled = self.compiled.borrow();
         viewer_foundation::map::gpu_contract::compiled(
-            &compiled.as_ref().expect("created above").1,
+            &compiled.as_ref().expect("compiled above").1,
         )?
         .draw(arena, encoder, target, inputs)
     }

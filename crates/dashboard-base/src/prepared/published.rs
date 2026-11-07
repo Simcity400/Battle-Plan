@@ -166,3 +166,50 @@ pub fn open_through(
         through,
     )
 }
+
+/// The hour a series reply answers, which its unchanged span starts at: a state read's one hour,
+/// or the last hour a summary reads. None for anything else.
+pub fn held_hour(product: &str, params: &serde_json::Value) -> Option<i32> {
+    let hour = match product {
+        "series-state" => match params.get("reads")?.as_array()?.as_slice() {
+            [read] => read.get("hour")?.as_f64()?,
+            _ => return None,
+        },
+        "series-summary" => params.get("to")?.as_f64()?,
+        _ => return None,
+    };
+    (hour.is_finite() && hour >= f64::from(i32::MIN) && hour <= f64::from(i32::MAX))
+        .then(|| hour.floor() as i32)
+}
+
+/// Gives `data`, a series reply `snapshot` read at `held_hour`, the last hour it stays the same
+/// (`stableThrough`): every key it read keeps its value and knownness, no catalogued actor is
+/// first seen, nothing else it read changes (`other`: the last such hour) and the publication
+/// reaches it (`last`). A later read up to it would be answered with the same reply.
+pub fn hold<P: dashboard_series::PageRead>(
+    data: &mut serde_json::Value,
+    snapshot: &mut dashboard_series::Snapshot<'_, P>,
+    directory: &dashboard_series::family::Directory,
+    product: &str,
+    params: &serde_json::Value,
+    last: i32,
+    other: Option<i32>,
+) -> std::io::Result<()> {
+    let Some(hour) = held_hour(product, params) else {
+        return Ok(());
+    };
+    if hour > last || !data.is_object() {
+        return Ok(());
+    }
+    let mut through = snapshot.held_through(hour, dashboard_series::Span { first: hour, last })?;
+    for actor in &directory.actors {
+        if actor.first_hour > hour {
+            through = through.min(actor.first_hour - 1);
+        }
+    }
+    if let Some(other) = other {
+        through = through.min(other);
+    }
+    data["stableThrough"] = serde_json::Value::from(through.max(hour));
+    Ok(())
+}

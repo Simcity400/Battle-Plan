@@ -32,7 +32,7 @@ import { Lineage } from '../../dashboard/identity';
 import { resolveWindow } from '../../dashboard/model';
 import { resolveOptions } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { usePreparedWindow } from '../../dashboard/preparedSeries';
+import { usePreparedWindow, type Repeated } from '../../dashboard/preparedSeries';
 import { useParityRows } from '../../dashboard/parityRows';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { useHoverLabels } from '../../dashboard/useHoverLabels';
@@ -42,8 +42,8 @@ import { OPTIONS } from './definition';
 import TensionDrill from './TensionDrillView';
 import { pinTensionDrill, TENSION_BREAKDOWN, tensionEventKeys } from './tensionDrill';
 import { addedAt, contributionAt, contributionPercent, eventGroup, eventsOutsideReads, eventsWithin, formatContribution, formatTension, formatTensionAxis,
-  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing } from './tensionData.ts';
-import { mergePreparedTension, validatePreparedTension } from './preparedTension';
+  countryKey, layerKeys, layerRaw, layerTagAt, otherRaw, rankedAt, readAt, selectedContributionSpans, tensionModel, tensionPercent, tensionPlot, tensionReadPreparing, type TensionModel } from './tensionData.ts';
+import { mergePreparedTension, validatePreparedTension, type PreparedTension } from './preparedTension';
 import './worldTension.css';
 import { motionOf } from '../../charts/easing.ts';
 
@@ -52,6 +52,21 @@ const NO_WARNINGS: string[] = [];
 const OTHER = '\u0000other';
 /** Events a compact grouped-marker tooltip names before counting the rest. */
 const COMPACT_EVENTS = 5;
+
+/** Every reply of a complete publication lists all its threat events: a reader holding one asks without them. */
+const REPEATED_EVENTS: Repeated<PreparedTension> = {
+  omit: { events: false },
+  carry: (value, held) => ({ ...value, events: held.events }),
+  whole: reply => reply.coverage?.complete === true,
+};
+
+/** `hour` once a read holds it, else the newest of the `answered` hours before it a read holds. */
+function newestRead(model: TensionModel | null, hour: number, answered: readonly number[]): number {
+  if (!model || readAt(model, hour)) return hour;
+  let newest = hour;
+  for (const at of answered) if (at <= hour && readAt(model, at)) newest = at;
+  return newest;
+}
 
 /** World tension over time: stacked areas of the countries whose
  * actions generated it, each in its recorded map colour, with world tension as a
@@ -86,17 +101,20 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const share = options.values !== 'recorded';
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const prepared = usePreparedWindow(runtime.client, track?.source, 'world-tension', { branchId: track?.branch.id, share }, extent,
-    [head, drillAt, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedTension,mergePreparedTension);
+    [head, drillAt, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedTension,mergePreparedTension, mergePreparedTension, REPEATED_EVENTS);
   const { data, retry } = prepared;
   const error = useHeldFailure(prepared.error, data !== undefined, retry);
   const model = useMemo(() => data ? tensionModel(data, lineage, track?.source.metadata.countries,
     new Map(data.catalogue.map(country => [countryKey(country),country.firstHour]))) : null, [data, lineage, track?.source]);
+  // The moments shown: each asked hour once read, until then the newest hour read before it.
+  const listHour = useMemo(() => newestRead(model, head, prepared.answered), [model, head, prepared.answered]);
+  const drillShown = useMemo(() => newestRead(model, drillAt, prepared.answered), [model, drillAt, prepared.answered]);
   const resetKey = JSON.stringify([track?.source.id, track?.source.revision, track?.branch.id, options.show]);
   useEffect(() => { dispatchDrill({ type: 'close' }); setSelectedCause(null); }, [resetKey]);
   // A group's members as its membership setting counts them at the moment shown.
   const lastHour = track?.branch.lastHour ?? 0;
-  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, head, lastHour),
-    [widget.countries, dashboardTag, groups.data, head, lastHour]);
+  const filter = useMemo(() => worldFilter(widget.countries, dashboardTag ? [dashboardTag] : [], groups.data, listHour, lastHour),
+    [widget.countries, dashboardTag, groups.data, listHour, lastHour]);
   const membership = useMemo(() => {
     if (widget.countries.kind !== 'group' || widget.countries.membership !== 'hour' || !groups.data || !identities) return null;
     const byCountry = new Map<string, { firstHour: number; lastHour: number }[]>();
@@ -114,9 +132,9 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   // The layers are the largest contributors at the moment shown, each a country
   // identity (`countryKey`: two countries sharing a tag are two layers), named and
   // coloured by its tag; the stack is rebuilt only when they change.
-  const keys = useMemo(() => model ? layerKeys(model, head, count, filter.tags, filter.countryIds) : [], [model, head, count, filter.tags, filter.countryIds]);
+  const keys = useMemo(() => model ? layerKeys(model, listHour, count, filter.tags, filter.countryIds) : [], [model, listHour, count, filter.tags, filter.countryIds]);
   const keysKey = JSON.stringify(keys);
-  const tags = useMemo(() => model ? keys.map(key => layerTagAt(model, key, head)) : [], [model, keys, head]);
+  const tags = useMemo(() => model ? keys.map(key => layerTagAt(model, key, listHour)) : [], [model, keys, listHour]);
   const stack = useMemo(() => model ? tensionPlot(model, JSON.parse(keysKey) as string[], share, membership, true, filter.countryIds) : null,
     [model, keysKey, share, membership, filter.countryIds]);
   const denseParts = useMemo(() => data && prepared.geometryReady && keys.every(key => data.summaries[JSON.stringify(key)])
@@ -131,7 +149,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
   const lookTags = useMemo(() => [...new Set([...tags.filter((tag): tag is string => tag !== null), ...events.flatMap(event => event.tag == null ? [] : [event.tag])])], [tags, events]);
   const identityHistories = useMemo(() => new Map(groups.data?.countryIdentities.map(history => [history.tag, history.identities]) ?? []), [groups.data]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
-  const looks = useCountryLooks(runtime.client, track, lookTags, head, active, segmentAt);
+  const looks = useCountryLooks(runtime.client, track, lookTags, listHour, active, segmentAt);
   const colourOf = useMemo(() => {
     // Nudged apart in a fixed order (by tag) when the app asks for fixed colours, so a
     // country keeps its colour as ranks change; one with no recorded colour is grey.
@@ -201,19 +219,19 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     [prepared.pickOwner, keysKey, membership, filter.countryIds]);
 
   // The values listed beside the chart, at the moment shown.
-  const shownRead = model ? readAt(model, head) : null;
+  const shownRead = model ? readAt(model, listHour) : null;
   const listItems = useMemo(() => {
     if (!model || !shownRead) return [];
-    const rows = keys.map((key, index) => ({ key, item: { tag: tags[index], raw: layerRaw(model, shownRead, contributionAt(model, key, head) ?? '0', share) } }));
+    const rows = keys.map((key, index) => ({ key, item: { tag: tags[index], raw: layerRaw(model, shownRead, contributionAt(model, key, listHour) ?? '0', share) } }));
     rows.push({ key: OTHER, item: { tag: OTHER, raw: layerRaw(model, shownRead, otherRaw(model, shownRead, keys), share) } });
     return rows;
-  }, [model, shownRead, keys, tags, head, share]);
+  }, [model, shownRead, keys, tags, listHour, share]);
   const listKey = JSON.stringify(listItems.map(row => [row.key, row.item.tag, row.item.raw]));
   const stableItems = useMemo(() => listItems, [listKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const moving = useRowMotion(stableItems);
   const root = useRef<HTMLDivElement>(null);
-  useParityRows(root, () => ({ kind: 'chart', label: 'World tension and contributions', scope: 'displayed-hour', hour: head,
-    complete: !!data?.exactHours.includes(head), total: listItems.length, rows: listItems.map(row => ({ key: row.key, ...row.item })), read: shownRead }));
+  useParityRows(root, () => ({ kind: 'chart', label: 'World tension and contributions', scope: 'displayed-hour', hour: listHour,
+    complete: !!data?.exactHours.includes(listHour), total: listItems.length, rows: listItems.map(row => ({ key: row.key, ...row.item })), read: shownRead }));
 
   const content = (() => {
   if (!track) return <WidgetState kind="empty" icon="alert" message="Load a campaign to see world tension." />;
@@ -299,24 +317,24 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     const causes = model.reply.events.flatMap((event, index) => event.hour === hour ? [keys[index]] : []);
     setSelectedCause(causes.length === 1 ? causes[0] : null);
   };
-  const breakdown = !data.exactHours.includes(drillAt) && !readAt(model,drillAt) ? <WidgetState kind="loading" label="Loading world tension…" /> : <TensionDrill model={model} runtime={runtime} track={track} active={active} options={options}
-    extent={extent} playhead={drill.breakdown != null && drill.follow ? followHour : playhead} hour={drillAt} selectedCause={selectedCause} onCause={setSelectedCause}
+  const breakdown = !data.exactHours.includes(drillShown) && !readAt(model,drillShown) ? <WidgetState kind="loading" label="Loading world tension…" /> : <TensionDrill model={model} runtime={runtime} track={track} active={active} options={options}
+    extent={extent} playhead={drill.breakdown != null && drill.follow ? followHour : playhead} hour={drillShown} selectedCause={selectedCause} onCause={setSelectedCause}
     onPick={hour => dispatchDrill(pinnedDrill ? { type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: false, playhead: null }
       : { type: 'pick', hour })} />;
   if (pinnedDrill) return <div className="world-tension-pinned">
-    <p className="drill-empty">{formatDateTime(drillAt)} {followHour != null && (drill.breakdown == null ? widget.time.mode !== 'follow' : !drill.follow)
+    <p className="drill-empty">{formatDateTime(drillShown)} {followHour != null && (drill.breakdown == null ? widget.time.mode !== 'follow' : !drill.follow)
       && <button type="button" className="button small" onClick={() => {
         const hour = Math.floor(runtime.clock.getHour()) + track.axisOffset;
         dispatchDrill({ type: 'open', breakdown: TENSION_BREAKDOWN.id, hour, playing: true, playhead: hour });
       }}>Follow playback</button>}</p>{breakdown}</div>;
-  const total = shownRead ? formatTension(model, shownRead.tensionRaw) : data.exactHours.includes(head) ? 'Not recorded' : 'Loading…';
+  const total = shownRead ? formatTension(model, shownRead.tensionRaw) : data.exactHours.includes(listHour) ? 'Not recorded' : 'Loading…';
   const layerName = (tag: string | null) => tag === OTHER ? 'Other' : tag === null ? 'Unknown country' : looks.name(tag);
   const overviewState = widget.countries.kind === 'group' && groups.error && !groups.data
     ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} />
     : filter.reason ? <WidgetState kind="empty" message={filter.reason} />
       : widget.countries.kind === 'group' && !groups.data ? <WidgetState kind="loading" label="Loading country group…" /> : null;
   const main = overviewState ?? <div className={`world-tension${options.list !== false ? ' has-list' : ''}`}>
-    <p className="sr-only" aria-live="off">{`${dayLabel(head)}: world tension ${total}`}{shownRead ? `; ${listItems.map(row => `${layerName(row.item.tag)} ${formatContribution(model, row.item.raw)}`).join(', ')}` : ''}</p>
+    <p className="sr-only" aria-live="off">{`${dayLabel(listHour)}: world tension ${total}`}{shownRead ? `; ${listItems.map(row => `${layerName(row.item.tag)} ${formatContribution(model, row.item.raw)}`).join(', ')}` : ''}</p>
     <div className="world-tension-chart">
       <TimeChart label="World tension and the countries that generated it" extent={extent} playhead={playhead}
         playback={playback} afterPlayhead={options.afterPlayhead === true} windowHours={Number(options.windowDays ?? 365) * 24}
@@ -343,12 +361,12 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
       {data.preparing?.length ? <p className="chart-line-key">Contributor history and events are still being prepared.</p> : null}
       {!filter.known && !keys.length ? <p className="chart-line-key" role="status">{MEMBERSHIP_PREPARING}</p> : null}
     </div>
-    {options.list !== false && <aside className="world-tension-list" aria-label={`World tension on ${dayLabel(head)}`}>
-      <button type="button" className="world-tension-total" onClick={() => open(head)}><span>World tension</span><b>{total}</b></button>
+    {options.list !== false && <aside className="world-tension-list" aria-label={`World tension on ${dayLabel(listHour)}`}>
+      <button type="button" className="world-tension-total" onClick={() => open(listHour)}><span>World tension</span><b>{total}</b></button>
       <ol style={{ height: `calc(${moving.filter(row => row.phase !== 'leaving').length} * var(--world-tension-row))` }}>
         {moving.map(row => {
           const other = row.item.tag === OTHER;
-          const others = other ? otherCount(head) : 0;
+          const others = other ? otherCount(listHour) : 0;
           const flag = other || row.item.tag === null ? undefined : looks.flag(row.item.tag);
           return <li key={row.key} className={movingRowClass(row)} style={{ transform: `translateY(calc(${row.slot} * var(--world-tension-row)))` }}>
             <i style={{ background: other ? otherColour : colourOf(row.item.tag) }} aria-hidden="true" />
@@ -362,7 +380,7 @@ export default function WorldTensionWidget({ widget, runtime, active, onDiagnost
     {menu.menu}
   </div>;
   return <div ref={anchor} style={{ height: '100%' }}><DrillHost mode={options.drill === 'popout' ? 'popout' : 'inline'}
-    open={drill.breakdown != null} anchor={anchor} title={TENSION_BREAKDOWN.label} day={formatDateTime(drillAt)} following={drill.follow}
+    open={drill.breakdown != null} anchor={anchor} title={TENSION_BREAKDOWN.label} day={formatDateTime(drillShown)} following={drill.follow}
     canFollow={followHour != null} onClose={() => dispatchDrill({ type: 'close' })} onFollow={() => dispatchDrill({ type: 'follow' })}
     onPin={() => runtime.addWidgetBelow(widget.id, pinTensionDrill(widget, track, drillAt, drill.follow))} main={main}>{breakdown}</DrillHost></div>;
   })();

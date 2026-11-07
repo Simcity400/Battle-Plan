@@ -276,6 +276,12 @@ impl Want {
         }
         wanted.contains(&key)
             || started
+            // The targets start a lead past the clock and move every frame; one already
+            // reserved stays while the clock has not passed it, or no decode outlives a frame.
+            || (hour > self.hour
+                && wanted
+                    .iter()
+                    .any(|&(at, target)| at == branch && hour <= target))
             || (hour <= self.hour
                 && facts.newest_reserved_due == Some(hour)
                 && facts.newest_usable_due.is_none_or(|usable| usable <= hour))

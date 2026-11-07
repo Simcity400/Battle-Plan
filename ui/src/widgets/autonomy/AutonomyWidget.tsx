@@ -126,6 +126,13 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
     extent, [head, ...(hoverHour === null ? [] : [hoverHour])], active, validatePreparedAutonomy,mergePreparedAutonomy,overlayReachedAutonomy);
   const { data, retry } = prepared;
   const error = useHeldFailure(prepared.error, data !== undefined, retry);
+  // The moment labelled: the playhead once read, until then the newest hour read before it.
+  const labelHour = useMemo(() => {
+    if (!data || data.exactHours.includes(head)) return head;
+    let newest = head;
+    for (const at of prepared.answered) if (at <= head && data.exactHours.includes(at)) newest = at;
+    return newest;
+  }, [data, head, prepared.answered]);
   const approximate = useMemo(() => data?.approximate ?? Object.values(data?.summaries ?? {}).flatMap(summary => summary.approximate ?? []), [data]);
   const pending = data?.pending ?? NO_SPANS;
   const identityRows = data?.identities ?? groups.data?.countryIdentities;
@@ -175,9 +182,9 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       ? { ...lane, runs: [] } : lane;
   }, [data, exactLanes]);
   useParityRows(root, () => ({ kind: 'chart', label: 'Autonomy scores and thresholds', scope: 'displayed-hour',
-    complete: !!data?.exactHours.includes(head) && !!identities, total: lanesData.length,
-    rows: lanesData.map(lane => ({ countryId: lane.id, run: numericLaneAt(lane.id, head) ? runOf(numericLaneAt(lane.id, head)!, head) : null })),
-    levels: data?.levels, recorded: data?.recorded, unidentified: data?.unidentified, hour: head }));
+    complete: !!data?.exactHours.includes(labelHour) && !!identities, total: lanesData.length,
+    rows: lanesData.map(lane => ({ countryId: lane.id, run: numericLaneAt(lane.id, labelHour) ? runOf(numericLaneAt(lane.id, labelHour)!, labelHour) : null })),
+    levels: data?.levels, recorded: data?.recorded, unidentified: data?.unidentified, hour: labelHour }));
   // Level colours in level order (the palette's fixed order), never by a level's name.
   const palette = useMemo(() => categoricalPalette(tokens.surface), [tokens.surface]);
   const levelColour = (level: number) => palette[level % palette.length];
@@ -185,13 +192,13 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   // The lanes' names and flags as recorded near the moment shown, never across a gap
   // (`useCountryLooks`), and a tooltip's countries as recorded at the hour hovered
   // (`useHoverLabels`), each part (name, flag) on its own.
-  const laneTags = useMemo(() => lanesData.map(lane => identities?.aliasesAt(new Set([lane.id]), head)[0] ?? null), [lanesData, identities, head]);
+  const laneTags = useMemo(() => lanesData.map(lane => identities?.aliasesAt(new Set([lane.id]), labelHour)[0] ?? null), [lanesData, identities, labelHour]);
   const segmentAt = useCallback((tag: string, hour: number) => runAt(identityHistories.get(tag) ?? [], hour)?.firstHour ?? null, [identityHistories]);
   // Names for every lane (the label and order use them); flags only for the lanes in view.
   const [inView, setInView] = useState<[number, number]>([0, 24]);
   const onLanesInView = useCallback((first: number, last: number) => setInView([first, last]), []);
   const flagTags = useMemo(() => laneRequests(laneTags, inView).looks.filter((tag): tag is string => tag !== null), [laneTags, inView]);
-  const looks = useCountryLooks(runtime.client, track, laneTags.filter((tag): tag is string => tag !== null), head, active, segmentAt, undefined, false, flagTags);
+  const looks = useCountryLooks(runtime.client, track, laneTags.filter((tag): tag is string => tag !== null), labelHour, active, segmentAt, undefined, false, flagTags);
   const metadataNames = useMemo(() => new Map(track?.source.metadata.countries.map(country => [country.tag, country.name])), [track?.source]);
   const metadataName = (tag: string) => metadataNames.get(tag) ?? 'Country name unavailable';
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -208,11 +215,11 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
   }, [data, groups.data, groups.error, missingNativeSubjects, missingNativeOverlords, subjects.length, lanesData.length, onDiagnostics]);
 
   const lanes = useMemo<TimelineLane[]>(() => !data ? [] : lanesData.map((lane, index) => {
-    const exact = numericLaneAt(lane.id, head) ?? { ...lane, runs: [] };
-    const run = runOf(exact, head);
+    const exact = numericLaneAt(lane.id, labelHour) ?? { ...lane, runs: [] };
+    const run = runOf(exact, labelHour);
     const tag = laneTags[index];
-    const labels = !data.exactHours.includes(head) && !run ? { label: 'Loading autonomy…', pill: 'Loading…', description: 'Loading autonomy…' }
-      : laneLabels(data, exact, head, unobserved, tag !== null);
+    const labels = !data.exactHours.includes(labelHour) && !run ? { label: 'Loading autonomy…', pill: 'Loading…', description: 'Loading autonomy…' }
+      : laneLabels(data, exact, labelHour, unobserved, tag !== null);
     const colourOf = (span: string) => levelColour(lane.spanLevels.get(span) ?? 0);
     return {
       id: lane.id, label: labels.label, spans: lane.spans,
@@ -225,7 +232,7 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       paint: (ctx, geometry, chartTokens) => paintLane(ctx, lane, geometry, chartTokens, colourOf,
         prepared.geometryReady ? data.summaries[lane.id] : undefined, approximate),
     };
-  }), [data, prepared.geometryReady, approximate, lanesData, numericLaneAt, laneTags, head, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [data, prepared.geometryReady, approximate, lanesData, numericLaneAt, laneTags, labelHour, looks, palette, tokens.surface, tokens.text, unobserved]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groupFailure = groups.error && (widget.countries.kind === 'group' || !identityRows)
     ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
@@ -255,14 +262,14 @@ export default function AutonomyWidget({ widget, runtime, active, onDiagnostics 
       membershipUnknownFor(chosen, bySubject, unobserved))} />;
   }
 
-  const description = `${dayLabel(head)}: ${lanesData.map((lane, index) => {
+  const description = `${dayLabel(labelHour)}: ${lanesData.map((lane, index) => {
     const tag = laneTags[index];
-    return `${tag === null ? lane.tag : looks.name(tag)}: ${!data.exactHours.includes(head) && !runOf(numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head) ? 'Loading autonomy…' : laneLabels(data, numericLaneAt(lane.id, head) ?? { ...lane, runs: [] }, head, unobserved, tag !== null).description}`;
+    return `${tag === null ? lane.tag : looks.name(tag)}: ${!data.exactHours.includes(labelHour) && !runOf(numericLaneAt(lane.id, labelHour) ?? { ...lane, runs: [] }, labelHour) ? 'Loading autonomy…' : laneLabels(data, numericLaneAt(lane.id, labelHour) ?? { ...lane, runs: [] }, labelHour, unobserved, tag !== null).description}`;
   }).join('; ')}.`;
   const binding = (id: string) => ({ id,spans: subjects.find(subject => subject.countryId === id)?.runs.flatMap(run => identities.aliasesAt(new Set([id]),run.firstHour)
     .map(tag => ({tag,firstHour:run.firstHour,lastHour:run.lastHour,startsSegment:run.startsSegment}))) ?? [] });
   return <div className="autonomy">
-    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={head} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
+    <Timeline key={`${track.source.id}:${track.source.revision}:${track.branch.id}`} label={`Autonomy of ${laneTags.map((tag, index) => tag === null ? lanesData[index].tag : looks.name(tag)).join(', ')}`} extent={extent} playhead={playhead} labelHour={labelHour} preserveZoomOnExtentChange={options.grow === true} lanes={lanes}
       rowHeight={LANE_HEIGHT} showIcons={false} showNames={false} description={description} hoursPerSecond={motionOf(runtime.clock.getSnapshot())}
       active={active} revision={`${head}:${data.branchId}:${looks.revision}:${hover.revision}`} approximate={approximate} pending={pending}
       onHover={setHoverHour} onLanesInView={onLanesInView}

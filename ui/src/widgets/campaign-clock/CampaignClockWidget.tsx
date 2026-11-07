@@ -26,17 +26,17 @@ export default function CampaignClockWidget({ widget, runtime, active, onDiagnos
   const track = runtime.tracks.find(track => track.id === widget.trackIds[0]);
   const window = track && resolveWindow(widget, track, runtime.tracks, hour);
   const request = clockRequest(widget, track, window ?? null);
-  const { data, error, retry, moment } = useFollowedProduct<CampaignClockReply>(runtime.client, request,
+  // While the newest hours are read, every row, coverage too, is the shown reply's own.
+  const { data, error, retry } = useFollowedProduct<CampaignClockReply>(runtime.client, request,
     ['firstHour', 'lastHour'], active, validateClock, track?.source);
-  const pending = moment !== JSON.stringify([request?.params.firstHour, request?.params.lastHour]);
   const note = data?.warnings.length ? `${CLOCK_NOTE} ${data.warnings.join(' ')}` : CLOCK_NOTE;
   const rows = useMemo<ClockRow[]>(() => data ? [
     { id: 'total', name: 'Total recorded time', seconds: data.recordedSeconds, note },
     { id: 'playing', name: 'Playing time', seconds: data.playingSeconds, note },
     { id: 'paused', name: 'Paused time', seconds: data.pausedSeconds, note },
     { id: 'coverage', name: 'Coverage', seconds: null,
-      text: pending ? 'Updating…' : data.complete ? 'Complete' : 'Gaps excluded', note },
-  ] : [], [data, note, pending]);
+      text: data.complete ? 'Complete' : 'Gaps excluded', note },
+  ] : [], [data, note]);
   useDiagnostics(onDiagnostics, data?.warnings ?? NO_WARNINGS);
 
   if (!track) return <WidgetState kind="empty" icon="clock" message="Load a campaign to see its recorded clock times." />;

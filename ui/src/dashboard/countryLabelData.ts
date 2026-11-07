@@ -18,8 +18,9 @@ export function flagReadMetadata(read: FlagValue | undefined): Readonly<{ flag?:
 const countryLabel = (name: NameValue, flag: FlagValue | undefined): CountryLabelValue => ({
   ...nameReadMetadata(nameReadFrom(name, true)), ...flagReadMetadata(flag),
 });
-const absent = countryLabel(null, null);
-const absentLabel: CountryLabel = () => absent;
+// A country no read was made for yet is pending, never "not known": that is for a read that found none.
+const pending = countryLabel(undefined, undefined);
+const pendingLabel: CountryLabel = () => pending;
 interface LabelNode { readonly next: Map<string, WeakMap<CountryLabelValue, LabelNode>>; label?: CountryLabel }
 
 export class CountryLabelIndex {
@@ -64,11 +65,11 @@ export class CountryLabelIndex {
         node = child;
       }
       const table: ReadonlyMap<string, CountryLabelValue> = byTag;
-      node.label ??= tag => table.get(tag) ?? absent;
+      node.label ??= tag => table.get(tag) ?? pending;
       labels.set(hour, node.label);
     }
     const table: ReadonlyMap<number, CountryLabel> = labels;
-    const labelAt = (hour: number) => table.get(hour) ?? absentLabel;
+    const labelAt = (hour: number) => table.get(hour) ?? pendingLabel;
     if (!byFlags) this.tables.set(names, byFlags = new WeakMap());
     byFlags.set(flags, labelAt);
     return labelAt;

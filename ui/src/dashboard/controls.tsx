@@ -6,6 +6,7 @@ import { formatDateTime } from './calendar';
 import { Icon } from '../components/Icons';
 import type { BoundTrack, DashboardTemplate } from './model';
 import { usePlaybackHour } from './playback';
+import { inFrame } from './frameUpdates';
 import type { PlaybackController } from './playback';
 import type { DashboardClient } from './client';
 import { newId } from '../shell/ids';
@@ -15,10 +16,11 @@ import { PAUSED_POLL_MS } from '../shell/preparation/controller';
 import { timelineGaps, timelinePrepared } from './timelineGaps';
 import CountryPicker from '../components/CountryPicker';
 import { useMapMuted } from '../shell/muteSetting';
+import { commitZone } from '../shell/commitCount';
 
 /** The header's country picker, showing the flag the game drew at the playback hour.
- * Only this component follows the clock; while playing it asks at most every 250 ms,
- * and the hours between those samples render nothing. */
+ * Only this component follows the clock; while playing it asks at most every 250 ms, rendered with
+ * the clock's next tick, and the hours between those samples render nothing. */
 export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: PlaybackController; track: BoundTrack | undefined } & Omit<ComponentProps<typeof CountryPicker>, 'flagAt'>) {
   const [sampled, setSampled] = useState(() => clock.getHour());
   useEffect(() => {
@@ -26,7 +28,7 @@ export function PlaybackCountryPicker({ clock, track, ...picker }: { clock: Play
     const sample = () => {
       clearTimeout(timer);
       const wait = clock.getSnapshot().playing ? Math.max(0, 250 - (performance.now() - sent)) : 0;
-      timer = setTimeout(() => { sent = performance.now(); setSampled(clock.getHour()); }, wait);
+      timer = setTimeout(() => { sent = performance.now(); inFrame(() => setSampled(clock.getHour())); }, wait);
     };
     sample();
     const stop = clock.subscribeHour(() => { if (clock.getHour() !== hour) { hour = clock.getHour(); sample(); } });
@@ -104,28 +106,56 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
   const previous = useRef<HTMLButtonElement>(null);
   const play = useRef<HTMLButtonElement>(null);
   const next = useRef<HTMLButtonElement>(null);
+  const fill = useRef<HTMLSpanElement>(null);
+  const knob = useRef<HTMLSpanElement>(null);
   const painted = useRef('');
-  const paint = useRef(() => {});
-  paint.current = () => {
+  // The playhead moves as the clock does, linearly between anchors: one compositor animation per
+  // anchor carries it to the end at the playing speed, so no frame touches the page for it.
+  const placed = useRef('');
+  const moving = useRef<Animation[]>([]);
+  const place = useRef(() => {});
+  place.current = () => {
+    const { playing, hoursPerSecond, bounds, seekSequence, position } = clock.getSnapshot();
+    const key = `${playing}:${hoursPerSecond}:${seekSequence}:${bounds?.firstHour}:${bounds?.lastHour}:${playing ? '' : position}`;
+    if (key === placed.current || !fill.current || !knob.current) return;
+    placed.current = key;
+    for (const animation of moving.current) animation.cancel();
+    moving.current = [];
+    const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
+    const at = clock.positionAt();
+    const from = bounds && span > 0 ? Math.min(1, Math.max(0, (at - bounds.firstHour) / span)) : 0;
+    const frames = (progress: number) => [{ transform: `scaleX(${progress})` }, { transform: `translateX(${(progress - 1) * 100}%)` }] as const;
+    const [fillFrom, knobFrom] = frames(from);
+    fill.current.style.transform = fillFrom.transform;
+    knob.current.style.transform = knobFrom.transform;
+    if (!playing || !bounds || span <= 0 || from >= 1 || typeof fill.current.animate !== 'function') return;
+    const timing: KeyframeAnimationOptions = { duration: (bounds.lastHour - at) / hoursPerSecond * 1000, easing: 'linear', fill: 'forwards' };
+    const [fillTo, knobTo] = frames(1);
+    moving.current = [fill.current.animate([fillFrom, fillTo], timing), knob.current.animate([knobFrom, knobTo], timing)];
+  };
+  // The slider's value, its spoken date and the hour-bound buttons follow the clock's ticks and anchors.
+  const settle = useRef(() => {});
+  settle.current = () => {
     const { hour, bounds } = clock.getSnapshot();
     const key = `${hour}:${bounds?.firstHour}:${bounds?.lastHour}:${referenceKey}`;
     if (key === painted.current) return;
     painted.current = key;
-    const span = bounds ? bounds.lastHour - bounds.firstHour : 0;
     if (previous.current) previous.current.disabled = !bounds || hour <= bounds.firstHour;
     if (play.current) play.current.disabled = !bounds || hour >= bounds.lastHour;
     if (next.current) next.current.disabled = !bounds || hour >= bounds.lastHour;
     const input = timeline.current;
     if (!input) return;
     input.value = String(hour);
-    input.style.setProperty('--scrub-progress', `${bounds && span > 0 ? 100 * (hour - bounds.firstHour) / span : 0}%`);
     const raw = reference ? hour + reference.axisOffset : null;
     const gap = raw == null ? undefined : reference?.branch.gaps?.find(item => item.firstHour <= raw && item.lastHour >= raw);
     input.setAttribute('aria-valuetext', raw == null ? 'No recording selected' : `${formatDateTime(raw)}${gap ? `; reported recording gap: ${gap.reason}` : ''}`);
   };
-  // After every render, since React leaves these to the painter, and on every clock frame.
-  useLayoutEffect(() => { painted.current = ''; paint.current(); });
-  useLayoutEffect(() => clock.subscribeFrame(() => paint.current()), [clock]);
+  // After every render, since React leaves these to the painters, and on the clock's ticks and anchors.
+  useLayoutEffect(() => { painted.current = ''; settle.current(); place.current(); });
+  useLayoutEffect(() => {
+    const stops = [clock.subscribeHour(() => settle.current()), clock.subscribe(() => { settle.current(); place.current(); })];
+    return () => { for (const stop of stops) stop(); for (const animation of moving.current) animation.cancel(); };
+  }, [clock]);
   const trackHover = (event: PointerEvent<HTMLInputElement>) => {
     if (!bounds || span <= 0 || !reference) return;
     // The range maps values across the track minus the thumb.
@@ -156,6 +186,7 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
           min={bounds?.firstHour ?? 0} max={bounds?.lastHour ?? 1} step={1}
           onPointerMove={trackHover} onPointerLeave={() => setHover(null)}
           onChange={(event) => { setDraft(null); clock.seek(Number(event.currentTarget.value)); }} />
+        <div className="timeline-progress" aria-hidden="true"><span ref={fill} className="timeline-fill" /><span ref={knob} className="timeline-knob" /></div>
         <div className="timeline-prepared-markers" aria-label="Exact prepared hours">{exact.map((span, index) =>
           <span key={index} className="timeline-prepared" style={{ left: `${span.left}%`, width: `${span.width}%` }}
             data-tooltip={`Exact prepared hours · ${formatDateTime(span.firstHour)} to ${formatDateTime(span.lastHour)}`} />)}</div>
@@ -167,3 +198,6 @@ export function PlaybackStrip({ clock, tracks, alignment, defaultRoleId, client 
     <p className="sr-only" id={helpId}>Date browsing is a draft until Go. {alignment === 'anchors' ? 'The date uses the selected reference track; playback aligns by track anchors.' : 'Tracks share the game-calendar date.'} Only views following playback move with these controls.</p>
   </>;
 }
+
+commitZone(PlaybackStrip, 'playback strip');
+commitZone(PlaybackCountryPicker, 'country picker');

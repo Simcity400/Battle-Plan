@@ -25,6 +25,9 @@ import { HeaderActionsSlot } from '../charts/ZoomReset';
 import { WidgetBody } from './widgets';
 import { HeldFailures, HeldFailuresContext } from './heldFailures';
 import HeldFailureNotices from './HeldFailureNotices';
+import { MeasuredWidget } from './widgetPerf';
+import { perfLog } from '../shell/perf';
+import { commitZone } from '../shell/commitCount';
 
 interface Props {
   template: DashboardTemplate;
@@ -124,6 +127,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     observer.observe(target);
     return () => { observer.disconnect(); cancel(); };
   }, [slots]);
+  useEffect(() => { perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title]);
   const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
   // The native picker's fog click flips this widget's switch, as its control does.
   useEffect(() => runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id]);
@@ -183,12 +187,15 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     <HeldFailureNotices failures={failures} />
     <div className="dash-widget-content"><div className="dash-widget-scaled" style={{ zoom: (widget.contentScale ?? 100) / 100 }}>
       {active === null ? <WidgetState kind="loading" label={`Loading ${widget.title}…`} /> : <HeaderActionsSlot.Provider value={actionsSlot}>
-        <HeldFailuresContext.Provider value={failures}>
+        <HeldFailuresContext.Provider value={failures}><MeasuredWidget.Provider value={widget.id}>
           <Body widget={widget} runtime={runtime} active={active} mapOptions={mapOptions} headerSlot={headerSlot} countrySlot={countrySlot} setOption={saveOption} setOptions={saveOptions} />
-        </HeldFailuresContext.Provider>
+        </MeasuredWidget.Provider></HeldFailuresContext.Provider>
       </HeaderActionsSlot.Provider>}
     </div></div>
   </article>;
 }
 
 export default memo(DashboardGrid);
+
+commitZone(DashboardGrid, 'grid');
+commitZone(WidgetFrame, 'widget frame');

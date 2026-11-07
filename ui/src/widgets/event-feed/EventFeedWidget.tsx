@@ -62,6 +62,9 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
   const parity = import.meta.env.MODE === 'parity' ? useParityPreparation() : null;
   const feed = useEventFeed(runtime, track, active && match.ready && inBranch, hour, filter, filterKey, parity?.requested);
   const [visible, setVisible] = useState<readonly LogRow<FeedEvent>[]>(NO_ROWS);
+  // The list reports a new array whenever it lays out again; only other rows are news.
+  const onVisible = useCallback((rows: readonly LogRow<FeedEvent>[]) => setVisible(previous => previous.length === rows.length
+    && previous.every((row, index) => row.key === rows[index].key) ? previous : rows), []);
   const wanted = useMemo(() => logCountryRequests(visible, row => ({ hour: row.item.event.nameHour,
     tags: [...eventTags(row.item.event), ...ideaTargetTags(row.item.item?.idea)] })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active && inBranch);
@@ -118,7 +121,7 @@ export default function EventFeedWidget({ widget, runtime, active, onDiagnostics
     <LogList key={feed.identity} pages={feed.pages} label="Event feed" density={log.density} months={log.months} preparedCoverage={feed.prefix?.coverage}
       {...(import.meta.env.MODE === 'parity' ? { paritySemantic, parityHistoryComplete } : {})}
       animate={log.animate && widget.time.mode === 'follow'} playhead={widget.time.mode === 'follow' ? hour : null}
-      columns={artwork ? COLUMNS : 'minmax(0, 1fr) auto'} onVisible={setVisible} onWantedPages={feed.onWantedPages}
+      columns={artwork ? COLUMNS : 'minmax(0, 1fr) auto'} onVisible={onVisible} onWantedPages={feed.onWantedPages}
       renderRow={row => {
         const at = row.item;
         const label = labels(row);

@@ -6,7 +6,7 @@ import { asFailure, type Failure } from './queryError.ts';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CountryFlagChoice, CountryFlagImage, CountryFlagReply, CountryFlagSize } from '../generated/dashboard';
 import type { DashboardClient, DashboardSource } from './client';
-import { nameKey, retryDelay, transientError } from './countryFacts.ts';
+import { isFailedFact, nameKey, retryDelay, transientError } from './countryFacts.ts';
 import type { NameAt } from './countryFacts';
 import { askableAt, askTimeline, flagIn, heldTimeline, timelineFailure, retryTimelines, watchTimeline } from './countryTimeline.ts';
 import { useContentRevision } from './contentRevision.ts';
@@ -163,7 +163,7 @@ async function draw(client: DashboardClient, state: Drawings, recording: Dashboa
   pump(client, state);
 }
 
-function watchFlagDrawings(client: DashboardClient, watcher: (drawn: ReadonlySet<string>) => void): () => void {
+export function watchFlagDrawings(client: DashboardClient, watcher: (drawn: ReadonlySet<string>) => void): () => void {
   const watchers = drawings(client, states.get(client)?.content ?? 0).watchers;
   watchers.add(watcher);
   return () => { watchers.delete(watcher); };
@@ -265,7 +265,23 @@ export function useFlagReads(client: DashboardClient, recording: DashboardSource
     }));
     return () => { for (const stop of stops) stop(); };
   }, [active, client, sourceId, revision, branches]);
-  return shown.values;
+  // The last flag drawn for each country: while its flag at a new hour is read or drawn, that one
+  // shows, so a known flag never flips to the empty frame and back. A failure or a recorded
+  // absence still shows as itself.
+  const lastDrawn = useRef({ group: '', flags: new Map<string, FlagRead>() });
+  const group = sourceId === undefined || revision === undefined ? '' : JSON.stringify([groupKey({ id: sourceId, revision }, size), content]);
+  if (lastDrawn.current.group !== group) lastDrawn.current = { group, flags: new Map() };
+  return useMemo(() => {
+    const held = lastDrawn.current.flags;
+    let values: Map<string, FlagValue> | undefined;
+    for (const [branchId, hour, tag] of wanted) {
+      const key = JSON.stringify([branchId, hour, tag]), country = JSON.stringify([branchId, tag]);
+      const value = shown.values.get(key);
+      if (value && !isFailedFact(value) && value.url) held.set(country, value);
+      else if (value === undefined && held.has(country)) (values ??= new Map(shown.values)).set(key, held.get(country)!);
+    }
+    return values ?? shown.values;
+  }, [shown, wanted]);
 }
 
 /** The flags of `wanted` (countries at hours of `track`'s branch) drawn at `size`, keyed by `nameKey`;

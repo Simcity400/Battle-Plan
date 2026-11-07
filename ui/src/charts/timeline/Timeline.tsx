@@ -304,15 +304,24 @@ export default function Timeline(props: TimelineProps) {
       context.drawImage(loaded, px, alignTop ? cy - size / 2 : cy - height / 2, size, height);
     };
 
+    // Where the timeline shows and how big its canvas is change only on a scroll, a resize or new
+    // lanes: measured then, never in a frame, since each measure lays the page out.
+    let viewMeasure: { key: unknown[]; view: ReturnType<typeof viewportState>; window?: { top: number; height: number }; size?: ReturnType<typeof sizeLaneWindow> } | null = null;
     const draw = (info: FrameInfo): boolean => {
       const p = latest.current;
       const row = p.rowHeight ?? ROW_HEIGHT;
-      const { visible, offset: scrolled } = viewportState(spacerElement, scrolling);
+      const key = [p.lanes.length, row, p.stickyAxis, geometry.current];
+      if (!viewMeasure || key.some((value, index) => !Object.is(value, viewMeasure!.key[index]))) viewMeasure = { key, view: viewportState(spacerElement, scrolling) };
+      const { visible, offset: scrolled } = viewMeasure.view;
       offset.current = scrolled;
       const axisTop = p.stickyAxis !== false ? scrolled : 0;
       const viewport = laneWindow(p.lanes.length, visible.top, visible.height, row, geometry.current);
       region.current = viewport;
-      const size = sizeLaneWindow(element, viewport, scrolled, window.devicePixelRatio || 1);
+      if (!viewMeasure.size || viewMeasure.window?.top !== viewport.top || viewMeasure.window.height !== viewport.height) {
+        viewMeasure.size = sizeLaneWindow(element, viewport, scrolled, window.devicePixelRatio || 1);
+        viewMeasure.window = { top: viewport.top, height: viewport.height };
+      }
+      const size = viewMeasure.size;
       if (!size) return false;
       const shown = p.lanes.slice(viewport.first, viewport.end);
       const fallbacks: typeof artFallbacks[number][] = [];
@@ -671,12 +680,13 @@ export default function Timeline(props: TimelineProps) {
       const parent = scrollParent(spacerElement);
       setViewportHeight(parent ? viewHeight(parent, latest.current.rowHeight ?? ROW_HEIGHT) : window.innerHeight);
     };
-    const observer = new ResizeObserver(() => { if (spacerElement.isConnected) { measureView(); wake(); } });
+    const observer = new ResizeObserver(() => { if (spacerElement.isConnected) { viewMeasure = null; measureView(); wake(); } });
     observer.observe(element);
     observer.observe(scrolling);
     for (let parent: HTMLElement | null = spacerElement; parent; parent = parent.parentElement) observer.observe(parent);
     measureView();
     const scroll = () => {
+      viewMeasure = null;
       const p = latest.current;
       const { visible } = viewportState(spacerElement, scrolling);
       if (p.active && (p.stickyAxis !== false || !coversViewport(region.current, p.lanes.length, visible, p.rowHeight ?? ROW_HEIGHT, geometry.current))) {

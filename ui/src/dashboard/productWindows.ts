@@ -5,6 +5,7 @@ import type { DashboardClient, DashboardSource, ProductRequest } from './client'
 import { loadProduct } from './products.ts';
 import { preparationCoverage } from './preparedPrefix.ts';
 import { useHeldFailures } from './heldFailures.ts';
+import { inFrame } from './frameUpdates.ts';
 
 /** A product asked for one fixed window of hours at a time (such as a month of a
  * country's daily reads), so no reply grows with the campaign. */
@@ -76,13 +77,12 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       const kept = keepWanted(previous, identity, want);
       return kept === previous ? previous : { ...kept, owner, attempt: previous.attempt };
     });
-    // Windows landing in the same frame commit together: a widget asking for a whole
-    // campaign renders once a frame, not once a window.
+    // Windows landing before the next frame (a tick while playing) commit together: a widget
+    // asking for a whole campaign renders once a frame, not once a window.
     const arrived: { data: [number, T][]; errors: [number, Failure][] } = { data: [], errors: [] };
-    let frame = 0;
+    let scheduled = false;
     const commit = () => {
-      if (frame) cancelAnimationFrame(frame);
-      frame = 0;
+      scheduled = false;
       if (!arrived.data.length && !arrived.errors.length) return;
       const data = arrived.data.splice(0), errors = arrived.errors.splice(0);
       setHeld(previous => previous.owner !== owner ? previous
@@ -91,7 +91,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
     const arrive = (add: () => void) => {
       if (controller.signal.aborted) return;
       add();
-      frame ||= requestAnimationFrame(commit);
+      if (!scheduled) { scheduled = true; inFrame(commit); }
     };
     for (const window of want) {
       // A window held from its prepared prefix is asked again until complete.

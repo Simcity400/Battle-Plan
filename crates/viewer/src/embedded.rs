@@ -406,6 +406,17 @@ impl Shared {
     }
 }
 
+/// Whether two map states acknowledge the same: the frame's fraction and how far it is behind the
+/// clock change with every frame drawn, and the host shows neither.
+fn same_ack(old: &DashboardMapState, new: &DashboardMapState) -> bool {
+    let bare = |state: &DashboardMapState| DashboardMapState {
+        fraction: None,
+        behind: None,
+        ..state.clone()
+    };
+    bare(old) == bare(new)
+}
+
 fn bounded_message(message: &str) -> String {
     // Errors may include paths or peer input. Leave space for the other
     // fields and JSON escapes without splitting a UTF-8 character.
@@ -873,7 +884,10 @@ impl Controller {
                 error.truncate(end);
             }
         }
-        if self.last_maps.as_ref() == Some(&states) {
+        if self.last_maps.as_ref().is_some_and(|previous| {
+            previous.len() == states.len()
+                && previous.iter().zip(&states).all(|(old, new)| same_ack(old, new))
+        }) {
             return;
         }
         let mut outgoing = self
@@ -888,7 +902,7 @@ impl Controller {
             if self
                 .last_maps
                 .as_ref()
-                .is_some_and(|previous| previous.iter().any(|old| old == state))
+                .is_some_and(|previous| previous.iter().any(|old| same_ack(old, state)))
             {
                 continue;
             }

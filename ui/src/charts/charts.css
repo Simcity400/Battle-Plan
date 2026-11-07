@@ -90,16 +90,22 @@
 /* Table rows that slide to their new place, flash in and fade out (useRowMotion). A
    widget places each row with a translateY and sets --row-glide from the app's motion. */
 .moving-row { transition: transform var(--row-glide, 450ms) cubic-bezier(.2, .8, .2, 1), opacity 450ms; }
-.moving-row.is-entering { animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
+/* Every row motion is transform or opacity, which the compositor runs: the flash is an overlay
+   under the row's content that fades, never an animated background. Each row is positioned. */
+.moving-row.is-entering { isolation: isolate; animation: moving-row-in 700ms cubic-bezier(.2, .8, .2, 1); }
+.moving-row.is-entering::after { content: ''; position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none;
+  background: var(--row-flash, color-mix(in srgb, var(--accent) 16%, transparent)); opacity: 0; animation: moving-row-flash 700ms cubic-bezier(.2, .8, .2, 1); }
 .moving-row.is-leaving { opacity: 0; pointer-events: none; }
 .windowed-rows { min-height: 0; flex: 1; overflow: auto; }
 .windowed-rows-body { position: relative; }
 .windowed-rows .moving-row { position: absolute; top: 0; left: 0; right: 0; }
-@keyframes moving-row-in { from { opacity: 0; background: color-mix(in srgb, var(--accent) 16%, transparent); } }
+@keyframes moving-row-in { from { opacity: 0; } }
+@keyframes moving-row-flash { from { opacity: 1; } }
 /* Reduced motion as the app resolves it (Appearance → Motion, where "system" follows the
    system's preference, useAppearance): rows neither glide, flash nor fade. */
 :root[data-motion='reduced'] .moving-row { transition: none; }
 :root[data-motion='reduced'] .moving-row.is-entering { animation: none; }
+:root[data-motion='reduced'] .moving-row.is-entering::after { content: none; }
 /* Shared project/content blueprint tile, also used by lane label identities. */
 .blueprint-tile { width:72px; height:48px; border-radius:6px; background:var(--blueprint); display:grid; place-items:center; box-shadow:inset 0 0 0 1px var(--blueprint-border); color:var(--blueprint-text); }
 .blueprint-tile img { width:64px; height:39px; object-fit:contain; }

@@ -1,24 +1,38 @@
-/** One animation loop for every chart on the dashboard. A task draws when it is
+/** One animation loop for every painted widget on the dashboard. A task draws when it is
  * woken and keeps frames coming only while it says it is still moving; hidden
- * tasks never draw, and the loop stops entirely when nothing is moving. */
+ * tasks never draw, and the loop stops entirely when nothing is moving. Each frame
+ * gives tasks a fixed budget, round-robin: a task past it waits for the next frame
+ * (first in line there), so under load a widget paints a little less often and a
+ * frame never overruns. */
 
-export interface FrameInfo { now: number; dt: number }
+export interface FrameInfo {
+  now: number;
+  dt: number;
+  /** The clock time by which this frame's painting should end ([`FrameHost.clock`]); none, no limit. */
+  deadline?: number;
+}
 export interface FrameTask {
   /** Draws one frame; returns true to be called again next frame. */
   frame(info: FrameInfo): boolean;
 }
 export interface FrameHost {
   request(callback: (now: number) => void): number;
+  /** The time a task's cost is measured with; `performance.now` without it. */
+  clock?: () => number;
 }
 
 /** Longest step reported to tasks, so a tab returning from the background doesn't jump. */
 const MAX_DT = 64;
+/** What painting may take of a frame, leaving the rest of its 16.7 ms to style, layout and the compositor. */
+export const PAINT_BUDGET_MS = 6;
 
 export class FrameScheduler {
   /** `woken` records a wake that arrives while the task is drawing, so it is not lost. */
   private readonly tasks = new Map<FrameTask, { visible: boolean; awake: boolean; woken: boolean }>();
   private handle: number | null = null;
   private last: number | null = null;
+  /** The first task the last frame's budget left waiting. */
+  private next: FrameTask | null = null;
   private readonly host: FrameHost;
 
   constructor(host: FrameHost) { this.host = host; }
@@ -65,11 +79,22 @@ export class FrameScheduler {
     this.handle = null;
     const dt = this.last == null ? 16 : Math.min(MAX_DT, Math.max(0, now - this.last));
     this.last = now;
-    for (const [task, state] of this.tasks) {
-      if (!state.awake || !state.visible) continue;
+    const clock = this.host.clock ?? (() => performance.now());
+    const started = clock();
+    let ran = 0;
+    // Round-robin: the tasks the last frame left waiting go first.
+    const order = [...this.tasks.keys()];
+    const first = this.next ? order.indexOf(this.next) : -1;
+    this.next = null;
+    const turn = first > 0 ? [...order.slice(first), ...order.slice(0, first)] : order;
+    for (const task of turn) {
+      const state = this.tasks.get(task);
+      if (!state?.awake || !state.visible) continue;
+      if (ran > 0 && clock() - started >= PAINT_BUDGET_MS) { this.next ??= task; continue; }
+      ran++;
       state.woken = false;
       let again = false;
-      try { again = task.frame({ now, dt }); } catch (error) { console.error(error); }
+      try { again = task.frame({ now, dt, deadline: started + PAINT_BUDGET_MS }); } catch (error) { console.error(error); }
       state.awake = again || state.woken;
     }
     if (this.hasRunnableTask()) this.schedule();

@@ -167,6 +167,8 @@ pub struct Scene {
     #[cfg(any(test, feature = "test-support"))]
     pub test_faults: failure_tests::Faults,
     graphics: dashboard_core::protocol::MapGraphics,
+    /// The provinces bitmap's size, which mesh shader globals are defined with.
+    map_size: [u32; 2],
     /// The light depth map, screen-space receiver and blur targets.
     shadow: ShadowPass,
     atlas: Arc<Bound>,
@@ -863,6 +865,7 @@ impl Scene {
             #[cfg(any(test, feature = "test-support"))]
             test_faults: Default::default(),
             graphics,
+            map_size: [assets.map.width, assets.map.height],
             shadow,
             atlas,
             atlas_normal,
@@ -1147,6 +1150,42 @@ impl Scene {
             self.bridges = Some(pass);
         }
         Ok(())
+    }
+
+    /// Compiles every pipeline the scene's graphics draw with that a pass would otherwise compile
+    /// on its first frame, after the passes it warms exist.
+    pub fn warm_pipelines(&mut self, device: &wgpu::Device) {
+        let high = self.graphics.high_gfx_shaders;
+        if self.graphics.water {
+            self.water.warm(device, high, self.graphics.water_reflections);
+        }
+        if let Some(rivers) = self.rivers.as_ref().filter(|_| self.graphics.rivers) {
+            rivers.warm(device, high);
+        }
+        if let Some(railways) = self.railways.as_ref().filter(|_| self.graphics.rails()) {
+            railways.warm(device);
+        }
+        if let Some(trees) = &self.trees {
+            trees.warm(device, high);
+        }
+        if self.graphics.sky && self.sky.is_none() {
+            self.sky = Some(sky_pipeline(device, &self.sky_effect, self.graphics.samples));
+        }
+        let (map, samples) = (self.map_size, self.graphics.samples);
+        for pass in [
+            self.native_map_frame.as_ref(),
+            self.sprawl.as_ref(),
+            self.map_buildings.as_ref(),
+            self.bridges.as_ref(),
+            self.unit_models.as_ref(),
+            self.aircraft.as_ref().map(|(pass, ..)| pass),
+            self.trains.as_ref().map(|(pass, ..)| pass),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            pass.warm_pipelines(device, map, samples);
+        }
     }
 
     /// See [`Scene::warm_trains`].
@@ -3742,16 +3781,7 @@ impl Scene {
         // Draw sky once with the original camera, after map text.
         if self.graphics.sky {
             if self.sky.is_none() {
-                self.sky = Some(
-                    crate::map::sky_shader::Sky::new(
-                        device,
-                        &self.sky_effect,
-                        self.graphics.samples,
-                        SCENE_FORMAT,
-                        DEPTH_FORMAT,
-                    )
-                    .map_err(|error| error.to_string()),
-                );
+                self.sky = Some(sky_pipeline(device, &self.sky_effect, self.graphics.samples));
             }
             passes.run(passes::Pass::Sky, || {
                 #[cfg(any(test, feature = "test-support"))]
@@ -4105,6 +4135,15 @@ pub fn world_size(size: [u32; 2], full_resolution: bool) -> [u32; 2] {
     } else {
         size.map(|dimension| dimension / 2)
     }
+}
+
+fn sky_pipeline(
+    device: &wgpu::Device,
+    effect: &Arc<shader_pipeline::library::Effect>,
+    samples: u32,
+) -> Result<crate::map::sky_shader::Sky, String> {
+    crate::map::sky_shader::Sky::new(device, effect, samples, SCENE_FORMAT, DEPTH_FORMAT)
+        .map_err(|error| error.to_string())
 }
 
 /// The display kind a recorded map event family's floating text is hidden with.

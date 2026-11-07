@@ -8,7 +8,7 @@ import { factionLabelAt, factionLines, factionMemberLabelLimit, factionNameAt, f
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import type { OptionValue } from '../../dashboard/options';
-import { usePlaybackHour } from '../../dashboard/playback';
+import { answerHold, usePlaybackHour, type HourHold } from '../../dashboard/playback';
 import { usePreparedFactionTotals } from '../../dashboard/preparedFactionTotals';
 import { useParityRows } from '../../dashboard/parityRows';
 import { NumericReply } from '../../dashboard/numericReply';
@@ -54,7 +54,8 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
     && before.every((warning, index) => warning === warnings[index]) ? before : warnings), []);
   const anchor = useRef<HTMLDivElement>(null);
   const pinned = options.show === 'members';
-  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (pick?.follow ?? false)));
+  const hold = useRef<HourHold | null>(null);
+  const playbackHour = usePlaybackHour(runtime.clock, active && (widget.time.mode === 'follow' || (pick?.follow ?? false)), hold);
   const viewport = useViewportHeight();
   const view = options.view === 'lines' ? 'lines' : 'race';
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
@@ -79,6 +80,11 @@ export default function FactionRaceView({ widget, runtime, active, onDiagnostics
   const prepared = usePreparedFactionTotals(runtime.client, track, params, moment, active, extent, undefined, !renderMain);
   // Totals kept while playback's newest loads are ranked and named at the hour they answer.
   const shownMoment = view === 'lines' ? moment : prepared.headHour ?? moment;
+  // A race shows the head's hour alone; a time axis keeps moving with the clock.
+  useEffect(() => {
+    hold.current = view === 'race' && !renderMain && pick === null
+      ? answerHold(playbackHour, moment, prepared.headHour, prepared.headThrough) : null;
+  });
   const { data, error, retry } = prepared;
   const numeric = useMemo(() => new NumericReply<FactionTotalsReply>(), [runtime.client]);
   const numbers = numeric.update(JSON.stringify([scope, params]), data, factionNumbers);

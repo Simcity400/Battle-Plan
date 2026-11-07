@@ -921,6 +921,85 @@ impl ModelPass {
         MapBuffer::submitted(buffers)
     }
 
+    fn new_renderer(&self, map: [u32; 2]) -> io::Result<Renderer> {
+        let layers = self
+            .layers
+            .as_ref()
+            .ok_or_else(|| invalid("mesh content stack unavailable"))?;
+        let globals = super::super::shader_sources::globals(map, self.decode);
+        let recorded = layers
+            .without_overlays()
+            .map_or_else(|| layers.clone(), Arc::new);
+        Ok(Renderer {
+            libraries: [
+                Library::new(layers.clone()).with_globals(globals.clone()),
+                Library::new(recorded).with_globals(globals),
+            ],
+            cache: Default::default(),
+            residents: Vec::new(),
+            slots: Vec::new(),
+            resource_ids: ResourceIdentities::default(),
+            geometry: BTreeMap::new(),
+            queue_slots: Vec::new(),
+            frame_handles: Default::default(),
+            binding_storage: Default::default(),
+            scratch: Default::default(),
+            geometry_seen: Vec::new(),
+            prepared: Vec::new(),
+            candidates: Vec::new(),
+            pools: BTreeMap::new(),
+            indices: Pool::default(),
+            draws: DrawList::default(),
+        })
+    }
+
+    /// Compiles every part's lit and caster pipelines (the alpha variant for forced trains)
+    /// into the renderer's cache, so a frame first drawing a mesh builds no pipeline. A part
+    /// that refuses is left for the frame to report.
+    pub fn warm_pipelines(&self, device: &wgpu::Device, map: [u32; 2], samples: u32) {
+        let mut renderer = self.native.borrow_mut();
+        if renderer.is_none() {
+            match self.new_renderer(map) {
+                Ok(created) => *renderer = Some(created),
+                Err(_) => return,
+            }
+        }
+        let native = renderer.as_mut().expect("initialized above");
+        let forced = self.label == "supply trains";
+        for (index, mesh) in self.meshes.iter().enumerate() {
+            let library = self.shader_library(index);
+            for part in mesh.native.iter().flat_map(|descriptor| descriptor.lods.iter().flatten()) {
+                let libraries = &mut native.libraries[library];
+                let lit = if forced {
+                    select_alpha(libraries, part)
+                } else {
+                    select(libraries, part, false)
+                };
+                if let Ok(lit) = lit {
+                    let _ = mesh_shader::Pass::new(
+                        &mut native.cache,
+                        device,
+                        &lit,
+                        &part.geometry,
+                        SCENE_FORMAT,
+                        DEPTH_FORMAT,
+                        samples,
+                    );
+                }
+                if let Ok(shadow) = select(&mut native.libraries[library], part, true) {
+                    let _ = mesh_shader::Pass::caster(
+                        &mut native.cache,
+                        device,
+                        &shadow,
+                        &part.geometry,
+                        DEPTH_MAP_FORMAT,
+                        DEPTH_FORMAT,
+                    );
+                }
+            }
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_native(
         &self,
@@ -945,40 +1024,7 @@ impl ModelPass {
         let forced = self.label == "supply trains";
         let mut renderer = self.native.borrow_mut();
         if renderer.is_none() {
-            let layers = self
-                .layers
-                .as_ref()
-                .ok_or_else(|| invalid("mesh content stack unavailable"))?;
-            *renderer = Some(Renderer {
-                libraries: {
-                    let globals = super::super::shader_sources::globals(
-                        [frame.camera.map.width, frame.camera.map.height],
-                        self.decode,
-                    );
-                    let recorded = layers
-                        .without_overlays()
-                        .map_or_else(|| layers.clone(), Arc::new);
-                    [
-                        Library::new(layers.clone()).with_globals(globals.clone()),
-                        Library::new(recorded).with_globals(globals),
-                    ]
-                },
-                cache: Default::default(),
-                residents: Vec::new(),
-                slots: Vec::new(),
-                resource_ids: ResourceIdentities::default(),
-                geometry: BTreeMap::new(),
-                queue_slots: Vec::new(),
-                frame_handles: Default::default(),
-                binding_storage: Default::default(),
-                scratch: Default::default(),
-                geometry_seen: Vec::new(),
-                prepared: Vec::new(),
-                candidates: Vec::new(),
-                pools: BTreeMap::new(),
-                indices: Pool::default(),
-                draws: DrawList::default(),
-            });
+            *renderer = Some(self.new_renderer([frame.camera.map.width, frame.camera.map.height])?);
         }
         let native = renderer.as_mut().expect("initialized above");
         let stamp = native

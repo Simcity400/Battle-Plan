@@ -5,6 +5,8 @@ import type { DashboardClient, DashboardSource } from '../../dashboard/client';
 import { useContentRevision } from '../../dashboard/contentRevision.ts';
 import { preparedSeriesQuery } from '../../dashboard/preparedSeries.ts';
 import { int, object } from '../../dashboard/validation.ts';
+import { inFrame } from '../../dashboard/frameUpdates.ts';
+import { countWork, measuredWidget } from '../../dashboard/widgetPerf.ts';
 import type { ScoreboardColumnKey, ScoreboardPreparedParams, ScoreboardPreparedReply, ScoreboardSeries } from '../../generated/dashboard';
 import { scoreboardModel, scoreboardRows, validateScoreboardReply } from './scoreboardData.ts';
 import type { ScoreboardRow } from './scoreboardData';
@@ -90,6 +92,7 @@ export async function queryScoreboard(client: DashboardClient, source: Dashboard
 export function usePreparedScoreboard(client: DashboardClient, source: DashboardSource | undefined,
   request: ScoreboardPreparedParams | null, visible: readonly ScoreboardRow[], active: boolean) {
   const content = useContentRevision(client);
+  const widget = measuredWidget();
   const owner = JSON.stringify([source?.id, source?.revision, content, request && { ...request, hour: undefined }]);
   const moment = JSON.stringify(request);
   const [attempt, setAttempt] = useState(0);
@@ -99,26 +102,6 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
   const owned = state?.client === client && state.owner === owner ? state : undefined;
   const heldIndex = useRef<ScoreboardPreparedReply | undefined>(undefined);
   heldIndex.current = owned?.index;
-  useEffect(() => {
-    if (!active || !source || !request) return;
-    const controller = new AbortController();
-    // Another hour's rows are read against the complete index held, and joined to it.
-    const held = heldIndex.current;
-    const base = held && request.index && held.hour !== request.hour && completeIndex(held) ? held : undefined;
-    const asked = base ? { ...request, since: base.hour } : request;
-    setState(previous => ({ client, owner, index: previous?.client === client && previous.owner === owner ? previous.index : undefined,
-      page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: true }));
-    void queryScoreboard(client, source, asked, controller.signal, attempt > 0, reply => {
-      if (controller.signal.aborted) return;
-      const index = joinScoreboardHour(base, reply);
-      setState(previous => {
-        const page = previous?.client === client && previous.owner === owner ? previous.page : undefined;
-        return index ? { client, owner, index, page, pending: false }
-          : { ...previous, client, owner, pending: false, error: asFailure(new Error('The scoreboard rows were read against another hour.')) };
-      });
-    }).catch(error => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: asFailure(error) })); });
-    return () => controller.abort();
-  }, [client, source?.id, source?.revision, owner, moment, active, attempt]);
   const shown = owned?.index;
   const candidates = shown && request ? preparedScoreboardRows(shown, undefined, request.sort, request.descending) : [];
   const mounted = new Set(visible.filter(row => row.hour === shown?.hour).map(row => row.key));
@@ -129,24 +112,62 @@ export function usePreparedScoreboard(client: DashboardClient, source: Dashboard
     ...candidates.slice(0, Math.max(visible.length, 1)).map(row => row.tag),
   ])] : [];
   const wantedKey = JSON.stringify([...wanted].sort());
-  const cellKey = JSON.stringify([moment, shown?.hour, wantedKey]);
+  // The cells of the index shown, whatever hour playback has moved to: a newer request does not cancel them.
+  const cellKey = JSON.stringify([shown?.hour, wantedKey]);
   const cellError = cellFailure?.client === client && cellFailure.owner === owner && cellFailure.key === cellKey
     && cellFailure.attempt === attempt ? cellFailure.error : undefined;
   const supplied = owned?.page?.hour === shown?.hour ? owned?.page : undefined;
   const loaded = new Set(supplied?.data.series.map(row => row.tag));
   const covered = wanted.every(tag => loaded.has(tag)) && !preparedPrefix(supplied)?.pending.length
     && !request?.selection.columns.some(column => fieldPreparing(supplied, column));
+  // Supplied is enough: cells still preparing refresh in place without holding playback back.
+  const cellsLoading = !!shown && !cellError && !owned?.error && wanted.length > 0 && !(supplied && wanted.every(tag => loaded.has(tag)));
+  useEffect(() => {
+    if (!active || !source || !request) return;
+    // One index and its cells at a time: a newer hour is read once the cells of the one shown have landed.
+    if (cellsLoading) return;
+    const controller = new AbortController();
+    // Another hour's rows are read against the complete index held, and joined to it.
+    const held = heldIndex.current;
+    const base = held && request.index && held.hour !== request.hour && completeIndex(held) ? held : undefined;
+    const asked = base ? { ...request, since: base.hour } : request;
+    // Rendered with the next tick while playing, as the reply is.
+    inFrame(() => controller.signal.aborted || setState(previous => ({ client, owner,
+      index: previous?.client === client && previous.owner === owner ? previous.index : undefined,
+      page: previous?.client === client && previous.owner === owner ? previous.page : undefined, pending: true })));
+    countWork(widget, 'read');
+    void queryScoreboard(client, source, asked, controller.signal, attempt > 0, reply => inFrame(() => {
+      if (controller.signal.aborted) return;
+      countWork(widget, 'reply');
+      const index = joinScoreboardHour(base, reply);
+      setState(previous => {
+        const page = previous?.client === client && previous.owner === owner ? previous.page : undefined;
+        return index ? { client, owner, index, page, pending: false }
+          : { ...previous, client, owner, pending: false, error: asFailure(new Error('The scoreboard rows were read against another hour.')) };
+      });
+    })).catch(error => inFrame(() => { if (!controller.signal.aborted) setState(previous => ({ ...previous, client, owner, pending: false, error: asFailure(error) })); }));
+    return () => controller.abort();
+  }, [client, source?.id, source?.revision, owner, moment, active, attempt, cellsLoading]);
   useEffect(() => {
     if (!cellError) setCellFailure(undefined);
-    if (!active || !source || !request || !shown || shown.hour !== request.hour || owned?.pending || owned?.error || cellError || covered || !wanted?.length) return;
+    // The index shown answers its own hour: its cells are read for that hour, even while playback has moved on.
+    if (!active || !source || !request || !shown || owned?.error || cellError || covered || !wanted?.length) return;
     const controller = new AbortController();
     const page = scoreboardCellPage({ ...request, hour: shown.hour }, wanted);
-    void queryScoreboard(client, source, page, controller.signal, attempt > 0, page => {
-      if (!controller.signal.aborted) setState(previous => previous?.client === client && previous.owner === owner && previous.index === shown ? { ...previous, page } : previous);
-    }).catch(error => { if (!controller.signal.aborted) setCellFailure({ client, owner, key: cellKey, attempt, error: asFailure(error) }); });
+    countWork(widget, 'read');
+    void queryScoreboard(client, source, page, controller.signal, attempt > 0, page => inFrame(() => {
+      if (controller.signal.aborted) return;
+      countWork(widget, 'reply');
+      setState(previous => previous?.client === client && previous.owner === owner && previous.index === shown ? { ...previous, page } : previous);
+    })).catch(error => inFrame(() => { if (!controller.signal.aborted) setCellFailure({ client, owner, key: cellKey, attempt, error: asFailure(error) }); }));
     return () => controller.abort();
-  }, [client, owner, shown, cellKey, active, covered, owned?.pending, owned?.error, cellError, attempt]);
-  return { index: shown, page: supplied, pending: owned?.pending ?? (active && !!request), error: owned?.error ?? cellError,
+  }, [client, owner, shown, cellKey, active, covered, owned?.error, cellError, attempt]);
+  // While the newest index's cells are read, the last index whose cells were read stays shown, so a
+  // value is never replaced by "…" as playback moves on; the newest is shown once its cells land.
+  const whole = useRef<{ owner: string; client: DashboardClient; index: ScoreboardPreparedReply; page: ScoreboardPreparedReply } | null>(null);
+  if (shown && supplied && covered) whole.current = { owner, client, index: shown, page: supplied };
+  const kept = whole.current?.owner === owner && whole.current.client === client && shown && !(supplied && covered) ? whole.current : null;
+  return { index: kept?.index ?? shown, page: kept?.page ?? supplied, pending: owned?.pending ?? (active && !!request), error: owned?.error ?? cellError,
     retry: () => setAttempt(value => value + 1), complete: !!shown && covered && shown.data.series.every(row => loaded.has(row.tag)),
     prepare: () => setAll(true) };
 }

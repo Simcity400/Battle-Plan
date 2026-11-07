@@ -180,6 +180,21 @@ fn owed_loss(out: &mut impl Write) {
 thread_local! {
     static STARTED: Cell<Option<Instant>> = const { Cell::new(None) };
     static PREVIOUS: Cell<Option<Instant>> = const { Cell::new(None) };
+    /// The last paint's milliseconds, whole and waiting for a swapchain image.
+    static PAINTED: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
+}
+
+/// eframe painted and presented a frame after its `ui` pass, in `elapsed`, `acquire_secs` of it
+/// waiting for a swapchain image.
+pub(crate) fn frame_painted(elapsed: Duration, acquire_secs: f32) {
+    if log().is_some() {
+        PAINTED.with(|painted| {
+            painted.set(Some((
+                elapsed.as_secs_f64() * 1000.0,
+                f64::from(acquire_secs) * 1000.0,
+            )));
+        });
+    }
 }
 
 /// A window frame begins: eframe's `logic` pass.
@@ -200,7 +215,8 @@ pub(crate) fn frame_ui() {
     }
 }
 
-/// Egui's paint and the present fall outside `work_ms`, inside the interval only.
+/// Egui's paint and the present fall outside `work_ms`, inside the interval only; the record
+/// carries the paint that ended the previous frame (`paint_ms`, `acquire_ms`), null when none did.
 pub(crate) fn frame_end() {
     let Some(log) = log() else {
         return;
@@ -215,10 +231,16 @@ pub(crate) fn frame_end() {
             || "null".to_owned(),
             |previous| format!("{:.3}", started.duration_since(previous).as_secs_f64() * 1000.0),
         );
+    let (paint, acquire) = PAINTED.with(Cell::take).map_or_else(
+        || ("null".to_owned(), "null".to_owned()),
+        |(paint, acquire)| (format!("{paint:.3}"), format!("{acquire:.3}")),
+    );
     let at = epoch_ms();
     let pid = std::process::id();
     log.send(
-        format!(r#"{{"t":"map","at":{at:.3},"pid":{pid},"work_ms":{work:.3},"dt":{interval}}}"#),
+        format!(
+            r#"{{"t":"map","at":{at:.3},"pid":{pid},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire}}}"#
+        ),
         at,
     );
 }

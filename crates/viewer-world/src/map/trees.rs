@@ -875,6 +875,30 @@ impl TreePass {
         self.drawn_buckets.get()
     }
 
+    /// Compiles the canopy pipeline frames at `high` draw with, so they compile nothing; a
+    /// failure is left for the frame to report.
+    pub fn warm(&self, device: &wgpu::Device, high: bool) {
+        let _ = self.compile_lit(device, high);
+    }
+
+    fn compile_lit(&self, device: &wgpu::Device, high: bool) -> io::Result<()> {
+        let mut cached = self.compiled_lit.borrow_mut();
+        if cached.as_ref().is_none_or(|(held, _)| *held != high) {
+            *cached = Some((
+                high,
+                super::tree_shader::Lit::new(
+                    device,
+                    &self.effect,
+                    self.format,
+                    DEPTH_FORMAT,
+                    self.samples,
+                    high,
+                )?,
+            ));
+        }
+        Ok(())
+    }
+
     /// Blends the canopy over the scene, once per visible world-wrap copy.
     pub fn draw(
         &self,
@@ -905,21 +929,9 @@ impl TreePass {
         else {
             return Ok(());
         };
-        let mut cached = self.compiled_lit.borrow_mut();
-        if cached.as_ref().is_none_or(|(high, _)| *high != inputs.high) {
-            *cached = Some((
-                inputs.high,
-                super::tree_shader::Lit::new(
-                    device,
-                    &self.effect,
-                    self.format,
-                    DEPTH_FORMAT,
-                    self.samples,
-                    inputs.high,
-                )?,
-            ));
-        }
-        let compiled = &cached.as_ref().expect("created above").1;
+        self.compile_lit(device, inputs.high)?;
+        let cached = self.compiled_lit.borrow();
+        let compiled = &cached.as_ref().expect("compiled above").1;
         use installed_content_core::pdxshader::program::Stage;
         use shader_pipeline::binding;
         let mut textures: BTreeMap<_, _> = inputs

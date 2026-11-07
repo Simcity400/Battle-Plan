@@ -76,7 +76,7 @@ function CurrentList({ reply, at, item, preparing = null, current = null, curren
           {run.state === 'unknown' && <><b className="special-project-state">State unknown</b>·</>}
           <Scientist reply={runningReply} info={info} /></span></span>
         <span className="focus-now-left"><strong>{run.progress}%</strong><small>{iterationCount(run.iterations)}</small></span>
-        <span className="focus-progress" aria-hidden="true" style={{ '--focus-progress': Math.max(0, run.progress) / 100 } as CSSProperties}><span /></span>
+        <span className="focus-progress" aria-hidden="true" style={{ '--focus-progress': Math.max(0, run.progress) / 100 } as CSSProperties}><span /><i /></span>
       </div>;
     })}</Section> : <p className="special-project-none">{preparing && !current ? 'Projects in progress are still being prepared.' : 'No projects in progress.'}</p>}
     {completed.length + earlier.length > 0 && <Section label="Completed" count={completed.length + earlier.length}>

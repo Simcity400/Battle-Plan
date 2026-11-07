@@ -103,7 +103,7 @@ export function CurrentFocus({ order, art, state, live, reason, failure, failure
         : <><strong>{completion.daysLeft}</strong><small>{completion.daysLeft === 1 ? 'day left' : 'days left'}</small></>}
     </span>}
     {completion && <span className="focus-progress" role="progressbar" aria-label={`${name} progress`} aria-valuemin={0} aria-valuemax={100}
-      aria-valuenow={Math.round(completion.fraction * 100)} style={{ '--focus-progress': completion.fraction } as CSSProperties}><span /></span>}
+      aria-valuenow={Math.round(completion.fraction * 100)} style={{ '--focus-progress': completion.fraction } as CSSProperties}><span /><i /></span>}
   </div>;
 }
 

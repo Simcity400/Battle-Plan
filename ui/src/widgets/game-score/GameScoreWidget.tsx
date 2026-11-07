@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { perfLog } from '../../shell/perf.ts';
 import WidgetState from '../../components/WidgetState';
 import Table, { CountryCell } from '../../charts/table/Table';
 import type { TableColumn } from '../../charts/table/Table';
@@ -19,7 +20,7 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, resolveOptions } from '../../dashboard/options';
-import { usePlaybackMotion } from '../../dashboard/playback';
+import { answerHold, usePlaybackMotion, type HourHold } from '../../dashboard/playback';
 import { useParityRows } from '../../dashboard/parityRows';
 import { usePreparedScore } from './usePreparedScore';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
@@ -34,7 +35,8 @@ const rowKey = (row: ScoreRow) => row.key;
 const tieKey = (row: ScoreRow) => row.tag;
 
 export default function GameScoreWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
-  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow');
+  const hold = useRef<HourHold | null>(null);
+  const playbackHour = useTableHour(runtime.clock, active && widget.time.mode === 'follow', hold);
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const viewport = useViewportHeight();
   const tokens = useChartTokens();
@@ -46,7 +48,14 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const requestedHour = Math.floor(window?.lastHour ?? track?.branch.lastHour ?? 0);
   const prepared = usePreparedScore(runtime, track, requestedHour, active);
   const { error, retry, hour } = prepared;
+  // Held only where everything shown at the hour comes from this reply: every country.
+  useEffect(() => {
+    hold.current = widget.countries.kind === 'all'
+      ? answerHold(playbackHour, requestedHour, prepared.data ? hour : undefined, prepared.data?.stableThrough) : null;
+  });
   const data = prepared.data?.reply;
+  const shownHour = data ? hour : null;
+  useEffect(() => { perfLog?.shown(widget.id, shownHour); }, [widget.id, shownHour]);
   const model = useMemo(() => data ? gameScoreModel(data) : null, [data]);
   const grouped = widget.countries.kind !== 'all' && !(widget.countries.kind === 'group' && widget.countries.group.type === 'top');
   const groups = useCountryGroups(runtime, track, active && grouped);

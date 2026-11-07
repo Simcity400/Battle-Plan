@@ -760,20 +760,11 @@ impl RiverPass {
         [&self.diffuse.view, &self.normal.view, &self.masks.view]
     }
 
-    pub fn draw(
-        &self,
-        arena: &shader_pipeline::gpu::Arena,
-        encoder: &mut wgpu::CommandEncoder,
-        target: super::border_shader::Target<'_>,
-        inputs: super::river_shader::Inputs<'_>,
-        high: bool,
-    ) -> io::Result<()> {
-        let device = arena.device();
-        let (Some(vertices), Some(indices)) = (&self.vertices, &self.indices) else {
-            return Ok(());
-        };
-        let mut compiled = self.compiled.borrow_mut();
-        if let std::collections::btree_map::Entry::Vacant(entry) = compiled.entry(high) {
+    /// Compiles the pipeline frames at `high` draw with, so they compile nothing.
+    pub fn warm(&self, device: &wgpu::Device, high: bool) {
+        if let std::collections::btree_map::Entry::Vacant(entry) =
+            self.compiled.borrow_mut().entry(high)
+        {
             entry.insert(
                 super::river_shader::River::new(
                     device,
@@ -786,6 +777,21 @@ impl RiverPass {
                 .map_err(|error| error.to_string()),
             );
         }
+    }
+
+    pub fn draw(
+        &self,
+        arena: &shader_pipeline::gpu::Arena,
+        encoder: &mut wgpu::CommandEncoder,
+        target: super::border_shader::Target<'_>,
+        inputs: super::river_shader::Inputs<'_>,
+        high: bool,
+    ) -> io::Result<()> {
+        let (Some(vertices), Some(indices)) = (&self.vertices, &self.indices) else {
+            return Ok(());
+        };
+        self.warm(arena.device(), high);
+        let compiled = self.compiled.borrow();
         viewer_foundation::map::gpu_contract::compiled(&compiled[&high])?.draw(
             arena,
             encoder,

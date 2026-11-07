@@ -2115,6 +2115,38 @@ impl<P: PageRead> Snapshot<'_, P> {
             }
         }))
     }
+    /// The last hour of `bounds` (which starts at `hour`) through which every key this snapshot
+    /// has read keeps the value and knownness it has at `hour`: an answer read from those keys at
+    /// `hour` is the same through it. `bounds.last` when none of them changes within `bounds`.
+    pub fn held_through(&mut self, hour: i32, bounds: Span) -> io::Result<i32> {
+        let keys: Vec<u64> = self
+            .defs
+            .iter()
+            .filter(|(_, definition)| definition.is_some())
+            .map(|(key, _)| *key)
+            .collect();
+        let mut through = bounds.last;
+        for key in keys {
+            if through <= hour {
+                break;
+            }
+            let selection = selection_of(key);
+            let bounds = Span {
+                first: hour,
+                last: through,
+            };
+            for next in [
+                self.next_change(selection, hour, true, bounds)?,
+                self.next_evidence_change(selection, hour, true, bounds)?,
+            ]
+            .into_iter()
+            .flatten()
+            {
+                through = through.min(next.saturating_sub(1));
+            }
+        }
+        Ok(through.max(hour))
+    }
     pub fn next_change(
         &mut self,
         selection: Selection<'_>,

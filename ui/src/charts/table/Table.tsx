@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { flushSync } from 'react-dom';
+import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { useContextMenu } from '../../components/ContextMenu';
 import { CountryFlagUrl } from '../../components/CountryFlag';
 import type { MenuItem } from '../../components/ContextMenu';
@@ -318,7 +318,8 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         if (before.scope === widthScope && widths === previous) return;
         const next = { scope: widthScope, widths };
         currentNatural.current = next;
-        flushSync(() => setNatural(next));
+        // Measurements render with the next frame, a tick while playing: never a commit of their own then.
+        inFrame(() => setNatural(next));
       });
     });
     naturalCells.current = { observer, observed, measurements };
@@ -365,7 +366,11 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
         const readings = [...pending].filter(([element]) => element.isConnected).map(([, reading]) => reading);
         pending.clear();
         if (!readings.length) return;
-        flushSync(() => setRowMeasurements(before => {
+        // Rows re-observed at the heights already applied commit nothing.
+        const applied = committedGeometry.current.rowMeasurements;
+        const known = applied.scope === heightScope ? applied.heights : null;
+        if (known && readings.every(([key, height]) => known.get(key) === height)) return;
+        inFrame(() => setRowMeasurements(before => {
           const previous = before.scope === heightScope ? before.heights : new Map<string, number>();
           let heights: Map<string, number> | undefined;
           for (const [key, height] of readings) if (previous.get(key) !== height) {

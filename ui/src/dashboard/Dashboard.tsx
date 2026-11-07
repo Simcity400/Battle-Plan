@@ -38,6 +38,7 @@ import { recordingFilename } from './recordingNames';
 import { followMapPlayback, mapCommands } from './mapPlayback';
 import type { ParityHost } from './parityFixture';
 import { LiveMotion } from '../charts/liveMotion.ts';
+import { commitZone } from '../shell/commitCount';
 
 interface Props { page: PageId; resetToken: number; library: ReplayLibraryState; path: string | null; client: DashboardClient; onPrimaryPath?: (path: string | null) => void; active?: boolean; mapActive?: boolean; mapSwitching?: boolean; mapReady?: boolean; cameraMode?: CameraMode;
   /** Whether flying and walking draw the map's interface, as the viewer last reported it. */
@@ -687,3 +688,5 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     </div>
   </div>;
 }
+
+commitZone(Dashboard, 'dashboard');

@@ -806,6 +806,13 @@ pub fn query(
         return Ok(Value::Null);
     };
     let members = NativeMembers::new(&history, &identities, params.membership, cancelled)?;
+    // What a reply reads besides its measure changes where memberships, names or identities do.
+    let named = published::held_hour(product, &value).and_then(|hour| {
+        [history.held_through(hour), identities.held_through(hour)]
+            .into_iter()
+            .flatten()
+            .min()
+    });
     let asked = Asked {
         source,
         context,
@@ -848,23 +855,28 @@ pub fn query(
                         .flatten(),
                     warnings: metadata.warnings.clone(),
                 };
-                let cell = RefCell::new(&mut *snapshot);
-                let mut readers =
-                    territory::query::measures(&cell, directory, Some((*measure, *rule)));
-                let keys = readers.keys.clone();
-                let presence = Presence {
-                    present: &mut readers.present,
-                    rosters: &mut readers.rosters,
-                    keys: &keys,
+                let mut data = {
+                    let cell = RefCell::new(&mut *snapshot);
+                    let mut readers =
+                        territory::query::measures(&cell, directory, Some((*measure, *rule)));
+                    let keys = readers.keys.clone();
+                    let presence = Presence {
+                        present: &mut readers.present,
+                        rosters: &mut readers.rosters,
+                        keys: &keys,
+                    };
+                    answer(
+                        &asked,
+                        &mut readers.values,
+                        &keys,
+                        measured,
+                        measures,
+                        Some(presence),
+                    )?
                 };
-                answer(
-                    &asked,
-                    &mut readers.values,
-                    &keys,
-                    measured,
-                    measures,
-                    Some(presence),
-                )
+                let last = snapshot.publication().accepted.last.min(history.last_hour);
+                published::hold(&mut data, snapshot, directory, product, &value, last, named)?;
+                Ok(data)
             })
         }
         FactionMeasure::Factories { mode, groups } => {
@@ -965,11 +977,18 @@ pub fn query(
                     unavailable_reason: None,
                     warnings,
                 };
+                let Some(joined) = joined else {
+                    let mut data = {
+                        let cell = RefCell::new(&mut *snapshot);
+                        let mut values = query::counts(&cell, directory, &top);
+                        answer(&asked, &mut values, &keys, measured, measures, None)?
+                    };
+                    let last = snapshot.publication().accepted.last.min(history.last_hour);
+                    published::hold(&mut data, snapshot, directory, product, &value, last, named)?;
+                    return Ok(data);
+                };
                 let cell = RefCell::new(&mut *snapshot);
                 let mut values = query::counts(&cell, directory, &top);
-                let Some(joined) = joined else {
-                    return answer(&asked, &mut values, &keys, measured, measures, None);
-                };
                 joined.read(cancelled, |snapshot, directory| {
                     let cell = RefCell::new(&mut *snapshot);
                     let mut readers = territory::query::measures(&cell, directory, None);

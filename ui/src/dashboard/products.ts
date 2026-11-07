@@ -15,9 +15,11 @@ import { CONTENT_PRODUCTS } from '../generated/dashboard.ts';
 import { newId } from '../shell/ids.ts';
 import { finalPreparedReply } from './preparedPrefix.ts';
 import { useHeldFailure, useHeldFailures } from './heldFailures.ts';
-import { useViewRead } from './viewRead.ts';
+import { useViewRead, type Holds } from './viewRead.ts';
 import { inFrame } from './frameUpdates.ts';
 import { perfLog } from '../shell/perf.ts';
+import { countWork, measuredWidget } from './widgetPerf.ts';
+import { keepDigest } from './replyDigest.ts';
 
 /** Each reply's length as the transport received it, so the cache sizes a reply
  * without serialising it again; a reply without one is measured by serialising. */
@@ -86,7 +88,7 @@ function validatedData<T>(data: unknown, validate?: (data: unknown) => T): T {
   if (!made) validations.set(data, made = new WeakMap());
   let result = made.get(validate);
   if (!result) {
-    try { result = { data: validate(data) }; } catch (refused) { result = { refused }; }
+    try { result = { data: keepDigest(data, validate(data)) }; } catch (refused) { result = { refused }; }
     made.set(validate, result);
   }
   if ('refused' in result) throw result.refused;
@@ -287,6 +289,7 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
   const content = useContentRevision(client);
   // Every request uses the current content revision, never its array index.
   const key = JSON.stringify(requests.map(request => productKey(request, content, !!source && !!client.preparedQuery)));
+  const widget = measuredWidget();
   const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T[]; errors?: readonly Failure[] }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
@@ -299,17 +302,22 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
       const data = values.size === requests.length ? requests.map((_, index) => values.get(index)!) : undefined;
       if (!data && !failures.size) return;
       const errors = failures.size ? [...new Set(failures.values())] : undefined;
-      inFrame(() => controller.signal.aborted || setState(previous => {
-        const kept = previous?.client === client && previous.key === key ? previous : undefined;
-        const shown = data ?? kept?.data;
-        const sameData = kept?.data === shown || !!shown && !!kept?.data && kept.data.every((value, index) => value === shown[index]);
-        const before = kept?.errors ?? NO_ERRORS, after = errors ?? NO_ERRORS;
-        const sameErrors = before.length === after.length && after.every((error, index) => error === before[index]);
-        return kept && sameData && sameErrors ? kept : { client, key, data: shown, errors };
-      }));
+      inFrame(() => {
+        if (controller.signal.aborted) return;
+        countWork(widget, 'reply');
+        setState(previous => {
+          const kept = previous?.client === client && previous.key === key ? previous : undefined;
+          const shown = data ?? kept?.data;
+          const sameData = kept?.data === shown || !!shown && !!kept?.data && kept.data.every((value, index) => value === shown[index]);
+          const before = kept?.errors ?? NO_ERRORS, after = errors ?? NO_ERRORS;
+          const sameErrors = before.length === after.length && after.every((error, index) => error === before[index]);
+          return kept && sameData && sameErrors ? kept : { client, key, data: shown, errors };
+        });
+      });
     };
     requests.forEach((request, index) => {
       const publish = (value: T) => { if (!controller.signal.aborted) { values.set(index, value); commit(); } };
+      countWork(widget, 'read');
       void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(publish,
         error => { if (!controller.signal.aborted) { failures.set(index, asFailure(error)); commit(); } });
     });
@@ -329,13 +337,18 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
 export function useProduct<T>(client: DashboardClient, request: ProductRequest | null, active: boolean, validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> {
   const content = useContentRevision(client);
   const key = request ? productKey(request, content,!!source) : null;
+  const widget = measuredWidget();
   const [state, setState] = useState<{ client: DashboardClient; key: string; data?: T; error?: Failure }>();
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || !request || !key) return;
     const controller = new AbortController();
-    const publish = (data: T) => inFrame(() => controller.signal.aborted || setState(previous =>
-      previous?.client === client && previous.key === key && previous.data === data && !previous.error ? previous : { client, key, data }));
+    const publish = (data: T) => inFrame(() => {
+      if (controller.signal.aborted) return;
+      countWork(widget, 'reply');
+      setState(previous => previous?.client === client && previous.key === key && previous.data === data && !previous.error ? previous : { client, key, data });
+    });
+    countWork(widget, 'read');
     void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(
       publish,
       error => inFrame(() => controller.signal.aborted || setState(previous => ({ client, key,
@@ -358,14 +371,14 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
  * moment is read. Cancelled reads hold a connection until they end, so restarting a
  * slow read every hour would starve every other widget. `moment` names the shown reply, `asking` the one in flight. */
 export function useFollowedProduct<T>(client: DashboardClient, request: ProductRequest | null, moving: readonly string[], active: boolean,
-  validate?: (data: unknown) => T, source?: DashboardSource): ProductState<T> & { moment?: string; asking?: string } {
+  validate?: (data: unknown) => T, source?: DashboardSource, holds?: Holds<ProductRequest, T>): ProductState<T> & { moment?: string; asking?: string } {
   const content = useContentRevision(client);
   const params = (request?.params ?? {}) as Record<string, unknown>;
   const lane = request ? JSON.stringify([request.sourceId, request.revision, request.product, !!source, content,
     Object.entries(params).filter(([name]) => !moving.includes(name))]) : null;
   const viewKey = JSON.stringify(moving.map(name => params[name]));
   const read = useViewRead<ProductRequest, T>(lane, request, viewKey, active,
-    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish, undefined, true), client);
+    (at, signal, publish, restart) => loadProduct<T>(client, at, signal, validate, source, restart, publish, undefined, true), client, holds);
   // A failure belongs to the moment it was asked for; a newer moment is still loading.
   const error = useHeldFailure(read.errorKey === viewKey ? read.error : undefined, read.data !== undefined, read.retry);
   return { data: read.data, error, retry: read.retry, moment: read.viewKey, asking: read.asking };

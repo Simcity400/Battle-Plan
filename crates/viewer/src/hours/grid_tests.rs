@@ -137,6 +137,15 @@ fn the_grid_keeps_a_due_fallback_until_a_newer_usable_hour_is_due_or_installed()
         !want.keeps_flight((1, 80), false, &wanted, &f),
         "the hour installed"
     );
+    assert!(
+        want.keeps_flight((1, 140), false, &wanted, &f),
+        "a reserved hour the moving lead passed, still ahead of the clock"
+    );
+    assert!(
+        !want.keeps_flight((1, 240), false, &wanted, &f),
+        "beyond the window"
+    );
+    assert!(!want.keeps_flight((2, 140), false, &wanted, &f));
     let mut later = Want {
         hour: 170,
         ..want.clone()

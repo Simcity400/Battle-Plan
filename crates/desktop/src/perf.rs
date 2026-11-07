@@ -433,6 +433,130 @@ fn frame_stats(values: Vec<f64>) -> Value {
     result
 }
 
+/// Page frames that came a refresh or more late, by whether the main thread had rendered the
+/// frame before them within a refresh: if it had, the frame was lost after the main thread.
+fn missed_frames(frames: &[&Value]) -> Value {
+    let (mut main_thread, mut after_main, mut unmeasured) = (0u64, 0u64, 0u64);
+    for record in frames {
+        if !number(record, "dt").is_some_and(|dt| dt > 1.5 * BUDGET_MS) {
+            continue;
+        }
+        match record.get("main") {
+            None => unmeasured += 1,
+            Some(main) => match main.as_f64() {
+                Some(main) if main <= BUDGET_MS => after_main += 1,
+                // Null: the main thread had not rendered it by the next frame.
+                _ => main_thread += 1,
+            },
+        }
+    }
+    json!({
+        "count": main_thread + after_main + unmeasured,
+        "main_thread": main_thread,
+        "after_main_thread": after_main,
+        "unmeasured": unmeasured,
+    })
+}
+
+/// Each widget's work counted in the page's frame records while playing (renders, hours, holds,
+/// reads and replies), in all and per second of playing, named as the page last named it.
+fn widget_work(all: &[Value], end: f64, frames: &[&Value], playing_seconds: Option<f64>) -> Value {
+    let mut names: HashMap<&str, &Value> = HashMap::new();
+    for record in all.iter().filter(|record| kind(record) == "widget") {
+        if at(record).is_some_and(|when| when <= end)
+            && let Some(id) = record["id"].as_str()
+        {
+            names.insert(id, record);
+        }
+    }
+    let mut counts: BTreeMap<&str, BTreeMap<&str, u64>> = BTreeMap::new();
+    for record in frames {
+        let Some(work) = record["work"].as_object() else {
+            continue;
+        };
+        for (widget, done) in work {
+            let Some(done) = done.as_object() else {
+                continue;
+            };
+            let into = counts.entry(widget.as_str()).or_default();
+            for (what, count) in done {
+                *into.entry(what.as_str()).or_default() += count.as_u64().unwrap_or(0);
+            }
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(widget, done)| {
+            let named = names.get(widget);
+            let per_second: serde_json::Map<String, Value> = done
+                .iter()
+                .map(|(what, count)| {
+                    let rate = playing_seconds
+                        .filter(|seconds| *seconds > 0.0)
+                        .map(|seconds| *count as f64 / seconds);
+                    ((*what).to_owned(), json!(rate))
+                })
+                .collect();
+            (
+                widget.to_owned(),
+                json!({
+                    "kind": named.map(|record| record["kind"].clone()),
+                    "title": named.map(|record| record["title"].clone()),
+                    "counts": done,
+                    "per_second": per_second,
+                }),
+            )
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
+}
+
+/// Page frames by whether React committed since the frame before, each with how many came a
+/// refresh or more late.
+fn commit_frames(frames: &[&Value]) -> Value {
+    let (mut with, mut without) = ([0u64; 2], [0u64; 2]);
+    let mut commits = 0u64;
+    for record in frames {
+        let Some(count) = record["commits"].as_u64() else {
+            continue;
+        };
+        commits += count;
+        let missed = number(record, "dt").is_some_and(|dt| dt > 1.5 * BUDGET_MS);
+        let into = if count > 0 { &mut with } else { &mut without };
+        into[0] += 1;
+        into[1] += u64::from(missed);
+    }
+    json!({
+        "commits": commits,
+        "after_commit": { "frames": with[0], "missed": with[1] },
+        "without_commit": { "frames": without[0], "missed": without[1] },
+    })
+}
+
+/// Commits by the part of the page that rendered in them (`zones` in the page's frame records,
+/// a commit counted once for each part), in all and per second of playing.
+fn zone_commits(frames: &[&Value], playing_seconds: Option<f64>) -> Value {
+    let mut counts: BTreeMap<&str, u64> = BTreeMap::new();
+    for record in frames {
+        let Some(zones) = record["zones"].as_object() else {
+            continue;
+        };
+        for (zone, count) in zones {
+            *counts.entry(zone.as_str()).or_default() += count.as_u64().unwrap_or(0);
+        }
+    }
+    counts
+        .into_iter()
+        .map(|(zone, count)| {
+            let rate = playing_seconds
+                .filter(|seconds| *seconds > 0.0)
+                .map(|seconds| count as f64 / seconds);
+            (zone.to_owned(), json!({ "count": count, "per_second": rate }))
+        })
+        .collect::<serde_json::Map<String, Value>>()
+        .into()
+}
+
 struct Window {
     start: f64,
     end: f64,
@@ -645,6 +769,11 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
             .filter_map(|record| number(record, "dt"))
             .collect::<Vec<_>>()
     };
+    let playing_frames: Vec<&Value> = frames
+        .iter()
+        .copied()
+        .filter(|record| record["playing"].as_bool() == Some(true))
+        .collect();
     // Capabilities are recorded once, when the page starts, before any `start`.
     let page = all
         .iter()
@@ -745,6 +874,8 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
             let frames = || inside.iter().filter(|record| kind(record) == "map");
             let work = frames().filter_map(|record| number(record, "work_ms"));
             let interval = frames().filter_map(|record| number(record, "dt"));
+            let paint = frames().filter_map(|record| number(record, "paint_ms"));
+            let acquire = frames().filter_map(|record| number(record, "acquire_ms"));
             let mut lost = Loss::default();
             for record in records.iter().filter(|record| kind(record) == "lost") {
                 let (from, to) = (number(record, "from"), number(record, "to"));
@@ -765,6 +896,8 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
                 json!({
                     "role": role,
                     "work_ms": stats(work.collect()),
+                    "paint_ms": stats(paint.collect()),
+                    "acquire_ms": stats(acquire.collect()),
                     "interval_ms": frame_stats(interval.collect()),
                     "lost": lost.json(),
                     "drained": drained,
@@ -880,7 +1013,16 @@ fn summarize(window: &Window, all: &[Value], map: &[Value], page_flushed: Option
         "budget_ms": BUDGET_MS,
         "complete": losses.is_empty() && page_flushed != Some(false),
         "losses": losses,
-        "ui_frames": { "all": frame_stats(dt(false)), "playing": frame_stats(dt(true)) },
+        "ui_frames": {
+            "all": frame_stats(dt(false)),
+            "playing": frame_stats(dt(true)),
+            "playing_late_ms": stats(values(&playing_frames, "late")),
+            "playing_main_ms": stats(values(&playing_frames, "main")),
+            "playing_missed": missed_frames(&playing_frames),
+            "playing_commits": commit_frames(&playing_frames),
+        },
+        "widgets": widget_work(all, window.end, &playing_frames, page_complete.then_some(playing_ms / 1000.0)),
+        "zones": zone_commits(&playing_frames, page_complete.then_some(playing_ms / 1000.0)),
         "long_tasks": long_tasks,
         "long_frames": long_frames,
         "playback": {

@@ -3,6 +3,7 @@ import { asFailure } from '../../dashboard/queryError.ts';
 import { fieldPreparing, preparedPrefix } from '../../dashboard/preparedPrefix';
 import { PreparedLogCoverage } from '../../charts/log/LogList';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { perfLog } from '../../shell/perf.ts';
 import WidgetState from '../../components/WidgetState';
 import { useHeldFailure } from '../../dashboard/heldFailures';
 import Table, { CountryCell } from '../../charts/table/Table';
@@ -70,6 +71,9 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const error = useHeldFailure(result.error, !!result.index && result.index.hour === request?.hour, retry);
   const rows = useMemo(() => result.index ? preparedScoreboardRows(result.index, result.page, ranking.column, ranking.direction === 'descending') : NO_ROWS,
     [result.index, result.page, ranking.column, ranking.direction]);
+  // The hour whose values show: none while only the ranking is read ("…").
+  const shownHour = result.index && result.page?.hour === result.index.hour ? result.index.hour : null;
+  useEffect(() => { perfLog?.shown(widget.id, shownHour); }, [widget.id, shownHour]);
   const wanted = useMemo(() => visible.map(row => ({ hour: row.hour, tag: row.tag })), [visible]);
   const { labelAt } = useCountryLabelsAt(runtime.client, track, wanted, active);
   const nameWanted = useMemo(() => sort.column === 'country' ? rows.map(row => ({ hour: row.hour, tag: row.tag })) : [], [rows, sort.column]);

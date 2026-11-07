@@ -11,9 +11,9 @@
 .special-project-now .focus-now-text > strong { font-size:0.8125rem; font-weight:500; line-height:1.25; letter-spacing:0; }
 .special-project-now .focus-now-text > span { min-width:0; }
 .special-project-now .focus-progress { left:8px; right:8px; bottom:6px; height:3px; }
-.special-project-now .focus-progress > span::after { top:-2.5px; width:7px; height:7px; }
+.special-project-now .focus-progress > i::after { top:-2.5px; width:7px; height:7px; }
 .special-project-now.is-unknown .focus-progress > span { background:var(--quiet); }
-.special-project-now.is-unknown .focus-progress > span::after { display:none; }
+.special-project-now.is-unknown .focus-progress > i { display:none; }
 .special-project-now .blueprint-tile { flex:none; width:60px; height:40px; }
 .special-project-now .blueprint-tile img { width:54px; height:33px; }
 .special-project-now:focus-visible, .special-project-row:focus-visible, .special-project-earlier-item:focus-visible { outline-offset:-2px; }

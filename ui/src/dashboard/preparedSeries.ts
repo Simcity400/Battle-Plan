@@ -7,6 +7,8 @@ import { useContentRevision } from './contentRevision.ts';
 import { finalPreparedReply, preparationCoverage } from './preparedPrefix.ts';
 import { inFrame } from './frameUpdates.ts';
 import { useViewRead } from './viewRead.ts';
+import { replyDigest, keepDigest } from './replyDigest.ts';
+import { countWork, measuredWidget } from './widgetPerf.ts';
 
 export type PreparedSeriesKind = 'series-state' | 'series-summary' | 'series-next-change' | 'events-page' | 'events-clusters';
 
@@ -21,6 +23,7 @@ export const isPreparedProduct = (product: string): product is PreparedProduct =
 export const preparedRefreshMs = (refreshes: number) => refreshes === 0 ? 2000 : refreshes === 1 ? 4000 : 8000;
 
 const POLL_MS = 500;
+const NO_HOURS: readonly number[] = [];
 const pause = (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
   if (signal.aborted) { reject(new DOMException('Campaign preparation cancelled', 'AbortError')); return; }
   const aborted = () => { clearTimeout(timer); reject(new DOMException('Campaign preparation cancelled', 'AbortError')); };
@@ -53,9 +56,13 @@ export async function preparedSeriesQuery(client: DashboardClient, source: Dashb
   };
   let value = await ask();
   if (signal.aborted) throw new DOMException('Campaign preparation cancelled', 'AbortError');
+  let published: string | undefined;
   const accept = (reply: unknown) => {
     if (reply === null) return false;
-    publish?.(reply);
+    // A refreshed reply the same as the one shown is not shown again.
+    const digest = replyDigest(reply);
+    if (digest === undefined || digest !== published) publish?.(reply);
+    published = digest;
     // Focus has answered this point once its dated fields are prepared. Its
     // gate can keep preparing the rest of the branch without reloading the page.
     if (product === 'focus-hour' && reply && typeof reply === 'object') {
@@ -213,6 +220,10 @@ export function mergeReachedRows<R extends { firstHour: number; lastHour: number
     .sort((a,b) => a.firstHour-b.firstHour)}));
 }
 
+/** What every reply of one complete publication repeats whole, which a reader holding such a
+ * reply asks to be left out (`omit`) and restores from it (`carry`) before validating. */
+export interface Repeated<T> { omit: object; carry: (value: object, held: T) => object; whole: (reply: T) => boolean }
+
 /** One source/content owner, one viewport and one set of exact reached hours.
  * Generic summaries page on the transport budget; exact reads are independent
  * of geometry. Page merging combines peers; an optional reached overlay can
@@ -220,11 +231,25 @@ export function mergeReachedRows<R extends { firstHour: number; lastHour: number
  * publish data or navigation. */
 export function usePreparedWindow<T>(client: DashboardClient, source: DashboardSource | undefined, family: 'autonomy' | 'world-tension', params: object,
   bounds: readonly [number, number], hours: readonly number[], active: boolean, validate: (value: unknown) => T,
-  merge: (a:T,b:T) => T, overlayReached: (geometry:T,reached:T) => T = merge) {
+  merge: (a:T,b:T) => T, overlayReached: (geometry:T,reached:T) => T = merge, repeated?: Repeated<T>) {
   const content = useContentRevision(client);
+  const widget = measuredWidget();
   const key = JSON.stringify([source?.id, source?.revision, family, params, content]);
   const owner = useMemo(() => ({ client, key }), [client, key]);
   const current = useRef(owner); current.current = owner;
+  // A reply of the complete publication, whose repeated parts later reads leave out.
+  const whole = useRef<{ owner: typeof owner; reply: T } | null>(null);
+  const readingFor = () => {
+    const held = whole.current?.owner === owner && repeated ? whole.current.reply : undefined;
+    return {
+      params: held === undefined ? params : { ...params, ...repeated!.omit },
+      validate: (value: unknown) => {
+        const reply = keepDigest(value, validate(held !== undefined && value !== null && typeof value === 'object' ? repeated!.carry(value, held) : value));
+        if (repeated?.whole(reply) && whole.current?.owner !== owner) whole.current = { owner, reply };
+        return reply;
+      },
+    };
+  };
   const navigation = useRef(new Set<AbortController>());
   const [view, setView] = useState<{ owner: typeof owner; from: number; to: number; width: number; series: PreparedBinding[] }>();
   const [summaries, setSummaries] = useState<{ owner: typeof owner; geometryKey: string; seriesKey: string; data?: T; error?: Failure }>();
@@ -261,11 +286,14 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
       inFrame(() => {
         if (!live()) return;
         setSummaries({ owner, geometryKey: asked.geometryKey, seriesKey, data });
+        countWork(widget, 'reply');
         // Shown once it lands: until then a moved view waits for it rather than replacing it.
         if (!mine.shown) { mine.shown = true; if (wanted.current.geometryKey !== asked.geometryKey) setLanded(value => value + 1); }
       });
     };
-    void preparedWindowQuery(client,source,family,params,asked.viewport,controller.signal,validate,merge,attempt > 0,publish).then(publish)
+    const reading = readingFor();
+    countWork(widget, 'read');
+    void preparedWindowQuery(client,source,family,reading.params,asked.viewport,controller.signal,reading.validate,merge,attempt > 0,publish).then(publish)
       .catch(error => { if (live()) inFrame(() => live() && setSummaries(previous => ({ ...(previous?.owner === owner ? previous : {}), owner, geometryKey: asked.geometryKey, seriesKey, error: asFailure(error) }))); })
       .finally(() => {
         if (flight.current?.controller !== controller) return;
@@ -277,8 +305,11 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   // Exact reads at the reached hours follow playback one at a time (`useViewRead`): each names
   // its hours, so a landed read stays drawn while the newest hours are read.
   const states = useViewRead<readonly number[], T>(source ? key : null, readHours, readKey, active,
-    (at, signal, publish, restart) => preparedSeriesQuery(client, source!, 'series-state', { ...params, family: { kind: family }, reads: at.map(hour => ({ hour })) },
-      signal, restart, undefined, undefined, value => publish(validate(value))).then(validate), client);
+    (at, signal, publish, restart) => {
+      const reading = readingFor();
+      return preparedSeriesQuery(client, source!, 'series-state', { ...reading.params, family: { kind: family }, reads: at.map(hour => ({ hour })) },
+        signal, restart, undefined, undefined, value => publish(reading.validate(value))).then(reading.validate);
+    }, client);
   const onSummaryView = useCallback((next: { from: number; to: number; width: number }, series: PreparedBinding[] = []) => setView(previous => previous?.owner === owner
     && previous.from === next.from && previous.to === next.to && previous.width === next.width && JSON.stringify(previous.series) === JSON.stringify(series) ? previous : { owner, ...next, series }), [owner]);
   const change = useCallback(async (tag:string,action:'ArrowLeft'|'ArrowRight'|'Home'|'End',from:number|null,first:number,last:number,binding?:PreparedBinding) => {
@@ -304,7 +335,9 @@ export function usePreparedWindow<T>(client: DashboardClient, source: DashboardS
   const geometry=summaries?.owner===owner ? summaries.data : undefined;
   const exact=states.data;
   const data=useMemo(()=>geometry && exact ? overlayReached(geometry,exact) : exact ?? geometry,[geometry,exact,overlayReached]);
-  return { data, error: (summaries?.owner === owner ? summaries.error : undefined) ?? states.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
+  // The hours the shown exact read answers, ascending; the newest asked may still be reading.
+  const answered=useMemo<readonly number[]>(()=>exact !== undefined && states.viewKey ? JSON.parse(states.viewKey) as number[] : NO_HOURS,[exact,states.viewKey]);
+  return { data, answered, error: (summaries?.owner === owner ? summaries.error : undefined) ?? states.error ?? (navigationError?.owner === owner ? navigationError.error : undefined),
     pickOwner,onNavigateHour,keyboardHour: keyboard?.owner === pickOwner ? keyboard.hour : undefined, keyboardRevision: keyboard?.owner===pickOwner ? keyboard.revision : undefined,
     // Drawn while the selected series are the same; the chart places it by hour (`summaryFits`).
     geometryReady: !!geometry && summaries!.seriesKey === seriesKey,

@@ -58,6 +58,11 @@ export function useApm({ widget, runtime, active }: WidgetProps, graph: boolean,
   } : null;
   const product = useFollowedProduct<ApmReply>(runtime.client, track && params ? { sourceId: track.source.id, revision: track.source.revision,
     product: 'player-apm', params } : null, ['firstHour', 'lastHour', 'buckets'], active, validateApm, track?.source);
-  const pending = product.moment !== JSON.stringify([params?.firstHour, params?.lastHour, params?.buckets]);
-  return { track, identity, options, window, first, last, playbackHour, known, reason, groups, pending, ...product };
+  // The hours the shown reply answers; while the newest are read it stays shown, named for its own.
+  const answered = useMemo(() => {
+    if (!product.moment) return null;
+    const [firstHour, lastHour] = JSON.parse(product.moment) as [number, number, number];
+    return { firstHour, lastHour };
+  }, [product.moment]);
+  return { track, identity, options, window, first, last, playbackHour, known, reason, groups, answered, ...product };
 }

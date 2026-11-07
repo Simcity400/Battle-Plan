@@ -32,6 +32,12 @@ const clamp = (value: number, min: number, max: number) => Math.min(max, Math.ma
 const dateText = (date: ReturnType<typeof gameDate>, value: number | null) =>
   date ? formatDate(date) : value != null ? formatDateTime(value) : 'Choose date';
 
+/** Changes the text in place, so a date painted every frame inserts no nodes and leaves style alone. */
+function showText(element: HTMLElement, text: string): void {
+  const node = element.firstChild;
+  if (node instanceof Text && node === element.lastChild) { if (node.data !== text) node.data = text; } else element.textContent = text;
+}
+
 export default function DateTimePicker({ label, hideLabel = false, value, min, max, otherValue, disabled, invalid, describedBy = 'date-range-help range-error', id: suppliedId, onChange, live }: Props) {
   const generatedId = useId();
   const id = suppliedId ?? generatedId;
@@ -69,8 +75,8 @@ export default function DateTimePicker({ label, hideLabel = false, value, min, m
       if (current === shown || !liveDate.current || !liveTime.current) return;
       shown = current;
       const date = current == null ? null : gameDate(current);
-      liveDate.current.textContent = dateText(date, current);
-      liveTime.current.textContent = date ? formatTime(date.hour) : '—';
+      showText(liveDate.current, dateText(date, current));
+      showText(liveTime.current, date ? formatTime(date.hour) : '—');
     };
     paint();
     return live.subscribe(paint);

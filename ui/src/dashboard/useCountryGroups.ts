@@ -5,6 +5,7 @@ import type { CountryGroupReply } from '../generated/dashboard';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { loadCountryGroups } from './products';
+import { inFrame } from './frameUpdates';
 
 /** The branch's smart-group history, loaded once and shared through the product cache.
  * Before preparation covers the branch it is the prepared prefix's, carried on by
@@ -19,12 +20,12 @@ export function useCountryGroups(runtime: Pick<WidgetRuntime, 'client'>, track: 
   useEffect(() => {
     if (!active || !track) return;
     const controller = new AbortController();
-    const publish = (complete: boolean) => (data: CountryGroupReply) => { if (!controller.signal.aborted) setState({ client, key, data, complete }); };
+    const publish = (complete: boolean) => (data: CountryGroupReply) => inFrame(() => { if (!controller.signal.aborted) setState({ client, key, data, complete }); });
     void loadCountryGroups(client, track.source, track.branch.id, controller.signal, attempt > 0, publish(false)).then(
       publish(true),
-      error => { if (!controller.signal.aborted) setState(previous => ({ client, key,
+      error => inFrame(() => { if (!controller.signal.aborted) setState(previous => ({ client, key,
         ...(previous?.client === client && previous.key === key ? { data: previous.data, complete: previous.complete } : {}),
-        error: asFailure(error) })); },
+        error: asFailure(error) })); }),
     );
     return () => controller.abort();
     // The structured key owns source, branch and content revision.

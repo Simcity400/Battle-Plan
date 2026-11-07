@@ -7,6 +7,7 @@ import { newId } from './ids.ts';
 import type { useSidebarIconMenu } from './appearance/SidebarIconMenu';
 import { isSidebarIconId } from './appearance/sidebarIcons';
 import { StyledIcon } from './appearance/StyledIcon';
+import { commitZone } from './commitCount';
 
 /** Analytics in the sidebar: its pages, added with +, renamed or deleted from a right-click
  * menu (or the context-menu key; F2 renames) and reordered by dragging, or Alt+Up / Alt+Down. */
@@ -84,3 +85,5 @@ export default function AnalyticsNav({ pages, page, active, disabled, onChoose, 
     {contextMenu.menu}
   </>;
 }
+
+commitZone(AnalyticsNav, 'navigation');

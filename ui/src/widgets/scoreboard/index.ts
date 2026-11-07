@@ -1,9 +1,12 @@
-import type { OptionChoices, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
+import { createElement } from 'react';
+import type { OptionChoices, WidgetProps, WidgetRenderer, WidgetRuntime } from '../../dashboard/definitions';
 import type { WidgetSpec } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { useProduct } from '../../dashboard/products';
-import { tableSortChoices } from '../../charts/table/options';
+import { narrowTableOf, tableSortChoices } from '../../charts/table/options';
 import ScoreboardWidget from './ScoreboardWidget';
+import CanvasScoreboard from './CanvasScoreboard';
+import { LIVE_WIDGETS } from '../../live/liveSwitch.ts';
 import { OPTIONS } from './definition';
 import { selectedColumns } from './scoreboardData';
 import { scoreboardRegistryRequest, validatePreparedScoreboard } from './preparedScoreboard';
@@ -28,4 +31,11 @@ function useColumns(widget: WidgetSpec, runtime: WidgetRuntime): OptionChoices {
   };
 }
 
-export default { render: ScoreboardWidget, useOptionChoices: useColumns } satisfies WidgetRenderer;
+/** The canvas table where it covers the settings: following playback, all, chosen or top countries. */
+function Scoreboard(props: WidgetProps) {
+  const canvas = LIVE_WIDGETS && props.widget.time.mode === 'follow' && (props.widget.countries.kind !== 'group' || props.widget.countries.group.type === 'top')
+    && narrowTableOf(props.widget.options) === 'hide';
+  return createElement(canvas ? CanvasScoreboard : ScoreboardWidget, props);
+}
+
+export default { render: Scoreboard, useOptionChoices: useColumns } satisfies WidgetRenderer;

@@ -34,7 +34,7 @@
 .table-country > span { overflow: hidden; text-overflow: ellipsis; }
 .table-country .table-country-flag { width: 18px; height: 12px; flex: none; object-fit: contain; border-radius: 1px; }
 .chart-table tr:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
-@media (prefers-reduced-motion: reduce) { .chart-table .moving-row { transition: none; animation: none; } }
+@media (prefers-reduced-motion: reduce) { .chart-table .moving-row { transition: none; animation: none; } .chart-table .moving-row.is-entering::after { content: none; } }
 
 .chart-table.is-wrapped tbody tr { height: auto; min-height: var(--table-row-height); }
 .chart-table.is-wrapped td { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }

@@ -780,6 +780,47 @@ pub struct FactionHistory {
     pub incomplete: usize,
 }
 
+impl FactionHistory {
+    /// The last hour after `hour` through which no faction's roster or name, nor any read,
+    /// presence or unobserved span, starts or ends; `None` when none does after it.
+    pub fn held_through(&self, hour: i32) -> Option<i32> {
+        let mut held: Option<i32> = None;
+        let mut take = |first: i32, last: i32| {
+            let through = if first > hour {
+                first - 1
+            } else if hour <= last {
+                last
+            } else {
+                return;
+            };
+            held = Some(held.map_or(through, |held| held.min(through)));
+        };
+        for runs in self.factions.values() {
+            for run in runs {
+                take(run.first_hour, run.last_hour);
+            }
+        }
+        for names in self.names.values() {
+            for name in names {
+                take(name.first_hour, name.last_hour);
+                // A name its template resolves later reads differently from that read on.
+                if name.lexical_read > hour {
+                    take(name.lexical_read, name.lexical_read);
+                }
+            }
+        }
+        for spans in [&self.country_reads, &self.faction_reads, &self.unobserved]
+            .into_iter()
+            .chain(self.country_presence.values())
+        {
+            for span in spans {
+                take(span.first_hour, span.last_hour);
+            }
+        }
+        held
+    }
+}
+
 /// Raw sum evidence shares the scan's closed blocks, without caching any measure.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct RosterHistory {
