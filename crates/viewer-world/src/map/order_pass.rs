@@ -195,7 +195,7 @@ impl OrderPass {
     }
 
     /// Uploads one hour's ribbons. Called whenever the hour changes.
-    pub fn upload(&mut self, device: &wgpu::Device, field: &OrderField) -> io::Result<()> {
+    pub fn upload(&mut self, device: &wgpu::Device, field: OrderField) -> io::Result<()> {
         self.draws.clear();
         self.native_bytes = bytemuck::cast_slice(&field.native_vertices).into();
         if field.native_vertices.is_empty() {
@@ -208,7 +208,7 @@ impl OrderPass {
             wgpu::BufferUsages::VERTEX,
             bytemuck::cast_slice(&field.native_vertices),
         )?);
-        self.draws = field.draws.clone();
+        self.draws = field.draws;
         Ok(())
     }
 
@@ -296,12 +296,14 @@ impl OrderPass {
         else {
             return Ok(());
         };
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, vertices.slice(..));
         for bucket in &plan.buckets {
             for draw in self.prepare_bucket(arena, native, Mode::Shadow, time, bucket)? {
                 draw.program.begin(pass);
                 draw.bound.bind(pass);
                 for strip in &draw.draw.native_strips {
+                    shader_pipeline::gpu::stats::draw();
                     pass.draw(strip.clone(), 0..1);
                 }
             }
@@ -342,11 +344,13 @@ impl OrderPass {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
+                shader_pipeline::gpu::stats::state();
                 pass.set_vertex_buffer(0, vertices.slice(..));
                 for draw in draws {
                     draw.program.begin(&mut pass);
                     draw.bound.bind(&mut pass);
                     for strip in &draw.draw.native_strips {
+                        shader_pipeline::gpu::stats::draw();
                         pass.draw(strip.clone(), 0..1);
                     }
                 }

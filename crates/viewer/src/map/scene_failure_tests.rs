@@ -149,6 +149,8 @@ impl Fixture {
                 ..Default::default()
             },
         )?;
+        // These scenes draw names they install no hour for.
+        scene.build_names_in_upload(true);
         let perspective = Choice::default();
         let political = viewer_world::map::political::build(&d.map, d.frame()?)?;
         scene.set_political(device, queue, &political.regions)?;
@@ -181,7 +183,7 @@ impl Fixture {
             device,
             queue,
             &d.orders,
-            d.order_field(&perspective)?.as_ref(),
+            d.order_field(&perspective)?.as_ref().clone(),
         )?;
         scene.set_weather_effects(
             device,

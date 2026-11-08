@@ -321,6 +321,10 @@ pub fn dump_png(
             &icons.lazy,
             layers.graphics,
         )?;
+        // A dump is a capture: its models draw complete, built in place.
+        scene.settle_builds(true);
+        // A dump installs no hours: its names build where they draw.
+        scene.build_names_in_upload(true);
         // political fill + borders
         if !layers.omitted.gradient {
             scene.warm_political(
@@ -410,7 +414,12 @@ pub fn dump_png(
         }
         // orders: the recorded player's battle plan
         if !layers.omitted.orders {
-            scene.set_orders(&device, &queue, layers.order_assets, layers.order_field)?;
+            scene.set_orders(
+                &device,
+                &queue,
+                layers.order_assets,
+                layers.order_field.clone(),
+            )?;
         }
         if !layers.omitted.weather {
             scene.set_weather_effects(

@@ -257,8 +257,10 @@ impl Arrow {
     }
 
     pub fn begin(&self, pass: &mut wgpu::RenderPass<'_>) {
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
         pass.set_stencil_reference(self.reference);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
     }
 }

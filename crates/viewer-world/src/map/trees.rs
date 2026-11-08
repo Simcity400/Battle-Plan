@@ -948,10 +948,15 @@ impl TreePass {
         ] {
             textures.insert(binding(slot, Stage::Pixel), view.clone());
         }
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&compiled.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, vertices.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(1, instances.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         let fade = tree_fade(&frame.camera.defines, frame.camera.height);
         {
@@ -969,6 +974,7 @@ impl TreePass {
                     &textures,
                 )?);
             }
+            let mut previous = None;
             for (slot, indices, instances) in self.batches(frame, copy) {
                 if let Some(retained) = inputs.retained {
                     textures.insert(binding(0, Stage::Pixel), self.diffuse[slot].view.clone());
@@ -987,10 +993,12 @@ impl TreePass {
                         self.instance_bytes.clone(),
                     );
                 }
-                bindings[slot].bind(&mut pass);
+                bindings[slot].bind_after(&mut pass, previous);
+                previous = Some(&bindings[slot]);
                 self.drawn
                     .set(self.drawn.get() + instances.end - instances.start);
                 self.drawn_buckets.set(self.drawn_buckets.get() + 1);
+                shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(indices, 0, instances);
             }
         }
@@ -1012,10 +1020,15 @@ impl TreePass {
             return Ok(());
         };
         // There is no lit-tree fade gate. Caller shadow admission remains in scene.rs.
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.compiled_caster.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, vertices.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(1, instances.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         for (copy, offset) in frame.offsets.iter().copied().enumerate() {
             let mut matrix = light_matrix;
@@ -1032,8 +1045,11 @@ impl TreePass {
                     &self.null.view,
                 )?);
             }
+            let mut previous = None;
             for (slot, indices, instances) in self.batches(frame, copy) {
-                bindings[slot].bind(pass);
+                bindings[slot].bind_after(pass, previous);
+                previous = Some(&bindings[slot]);
+                shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(indices, 0, instances);
             }
         }
@@ -1068,10 +1084,15 @@ impl TreePass {
         textures.insert(binding(5, Stage::Pixel), self.null.view.clone());
         textures.insert(binding(7, Stage::Pixel), self.null.view.clone());
         textures.insert(binding(14, Stage::Pixel), self.mask.view.clone());
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.compiled_receiver.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, vertices.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(1, instances.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
         for (copy, offset) in frame.offsets.iter().copied().enumerate() {
             let mut matrix = inputs.shadow_matrix;
@@ -1090,8 +1111,11 @@ impl TreePass {
                     &textures,
                 )?);
             }
+            let mut previous = None;
             for (slot, indices, instances) in self.batches(frame, copy) {
-                bindings[slot].bind(pass);
+                bindings[slot].bind_after(pass, previous);
+                previous = Some(&bindings[slot]);
+                shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(indices, 0, instances);
             }
         }

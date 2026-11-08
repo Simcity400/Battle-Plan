@@ -1793,23 +1793,27 @@ impl ModelField {
                     )
                 }),
         );
-        keyed.sort_unstable_by(|a, b| {
-            let ((am, ax, az), _, ao) = a;
-            let ((bm, bx, bz), _, bo) = b;
-            (
-                meshes.get(*am).map(|mesh| &mesh.asset),
-                meshes.get(*am).is_none().then_some(am),
-                ax,
-                az,
-                ao,
-            )
-                .cmp(&(
-                    meshes.get(*bm).map(|mesh| &mesh.asset),
-                    meshes.get(*bm).is_none().then_some(bm),
-                    bx,
-                    bz,
-                    bo,
-                ))
+        // Order by asset, unknown meshes first by slot, then tile and placement; each placed
+        // mesh's asset is ranked once rather than compared per instance pair.
+        let mut ranked: Vec<usize> = keyed
+            .iter()
+            .map(|((mesh, _, _), _, _)| *mesh)
+            .filter(|&mesh| mesh < meshes.len())
+            .collect();
+        ranked.sort_unstable();
+        ranked.dedup();
+        ranked.sort_by(|&a, &b| meshes[a].asset.cmp(&meshes[b].asset));
+        let mut ranks = vec![0u32; meshes.len()];
+        let mut rank = 0;
+        for (at, &mesh) in ranked.iter().enumerate() {
+            if at == 0 || meshes[ranked[at - 1]].asset.cmp(&meshes[mesh].asset).is_ne() {
+                rank += 1;
+            }
+            ranks[mesh] = rank;
+        }
+        keyed.sort_unstable_by_key(|&((mesh, x, z), _, ordinal)| match ranks.get(mesh) {
+            Some(&rank) => (rank, 0, x, z, ordinal),
+            None => (0, mesh, x, z, ordinal),
         });
         let field = self;
         field.instances.clear();
@@ -2183,6 +2187,13 @@ pub struct ModelPass {
     materials: Vec<ModelMaterial>,
     /// Whether a material's textures are uploaded.
     ready: Vec<bool>,
+    /// Meshes whose every material, and counterpart's, is uploaded or refused.
+    resident: Vec<bool>,
+    /// Whether shader and pipeline builds run in place, as a capture needs, rather than off the
+    /// window thread while the frame draws without the part.
+    settled: Cell<bool>,
+    /// Meshes whose builds are made ([`ModelPass::warm_pipelines`], [`ModelPass::warm_added`]).
+    warmed: Cell<usize>,
     material_refusals: BTreeMap<usize, String>,
     meshes: Vec<ModelMesh>,
     field: ModelField,
@@ -2208,6 +2219,8 @@ pub struct ModelPass {
     /// When each default-state actor appeared on the presentation clock
     /// ([`ModelPass::prepare_default_states`]).
     default_appeared: BTreeMap<(usize, u32, u32), f32>,
+    /// Each mesh's default-state play, worked out when its first actor needs it.
+    default_plays: Vec<Option<Option<DefaultPlay>>>,
     /// This frame's default-state actors refused, by why, with their count.
     pub default_state_refusals: BTreeMap<String, usize>,
     pub events: Vec<entity_animation::Event>,
@@ -2587,7 +2600,7 @@ impl ModelPass {
     fn prepare_default_states(&mut self, time: f32) -> BTreeMap<(usize, u32, u32), u32> {
         self.default_state_refusals.clear();
         let mut native = BTreeMap::new();
-        let mut states = BTreeMap::new();
+        let mut stilled = BTreeMap::<usize, usize>::new();
         let ModelField {
             native_order,
             groups,
@@ -2601,31 +2614,20 @@ impl ModelPass {
             if instance.animation != entity_animation::DEFAULT_STATE {
                 continue;
             }
-            let state = states.entry(group.mesh).or_insert_with(|| {
-                self.rigs.get(group.mesh).and_then(|rig| {
-                    let root = rig.nodes.first()?;
-                    root.clips
-                        .iter()
-                        .any(|clip| clip.state.name == root.default)
-                        .then(|| (root.default.clone(), drawn_variants(rig)))
-                })
+            if self.default_plays.len() <= group.mesh {
+                self.default_plays.resize_with(group.mesh + 1, || None);
+            }
+            let play = self.default_plays[group.mesh].get_or_insert_with(|| {
+                DefaultPlay::of(
+                    self.rigs.get(group.mesh).map(|rig| &**rig),
+                    self.meshes.get(group.mesh),
+                )
             });
-            let Some((default, drawn)) = state.as_ref() else {
+            let Some(play) = play.as_ref() else {
                 continue;
             };
-            if let Some((node, reached, variants)) = drawn {
-                let entity = self.meshes.get(group.mesh).map_or("", |mesh| &mesh.name);
-                let part = if *node == 0 {
-                    String::new()
-                } else {
-                    format!(" (attached entity {node})")
-                };
-                *self
-                        .default_state_refusals
-                        .entry(format!(
-                            "entity {entity}{part} reaches state {reached} of {variants} variants, which the game draws from a per-entity random counter no recording holds; it stays still and silent"
-                        ))
-                        .or_default() += 1;
+            if play.refusal.is_some() {
+                *stilled.entry(group.mesh).or_default() += 1;
                 continue;
             }
             let (seed, identity) = instance.animation_key();
@@ -2638,14 +2640,22 @@ impl ModelPass {
                 entity_animation::Clock {
                     time: time - *appeared,
                     phase: None,
-                    requests: Arc::new(vec![entity_animation::Request {
-                        time: 0.0,
-                        phase_time: None,
-                        state: default.clone(),
-                    }]),
+                    requests: Arc::clone(&play.requests),
                 },
             );
-            native.insert(key, entity_animation::named_request(default));
+            native.insert(key, play.native);
+        }
+        for (mesh, count) in stilled {
+            if let Some(Some(DefaultPlay {
+                refusal: Some(refusal),
+                ..
+            })) = &self.default_plays[mesh]
+            {
+                *self
+                    .default_state_refusals
+                    .entry(refusal.clone())
+                    .or_default() += count;
+            }
         }
         self.default_appeared
             .retain(|key, _| native.contains_key(key));
@@ -2738,6 +2748,9 @@ impl ModelPass {
             textures: (0..library.textures.len()).map(|_| None).collect(),
             materials: library.materials.clone(),
             ready: vec![false; library.materials.len()],
+            resident: Vec::new(),
+            settled: Cell::new(false),
+            warmed: Cell::new(0),
             material_refusals: BTreeMap::new(),
             meshes: library.meshes.clone(),
             field: ModelField::default(),
@@ -2760,6 +2773,7 @@ impl ModelPass {
             default_palette: library.palette.clone(),
             players: BTreeMap::new(),
             default_appeared: BTreeMap::new(),
+            default_plays: Vec::new(),
             default_state_refusals: BTreeMap::new(),
             events: Vec::new(),
             event_namespace: event_namespace(),
@@ -2839,6 +2853,11 @@ impl ModelPass {
     /// Follows a library that grew since the pass last saw it (the unit
     /// library bakes entities as hours first place them). Every library only
     /// ever appends, so existing slots keep their meaning.
+    /// Takes the entities `library` gained, as the next field install would.
+    pub fn sync_library(&mut self, library: &ModelLibrary) {
+        self.sync(library);
+    }
+
     fn sync(&mut self, library: &ModelLibrary) {
         // A library built empty takes its content stack with its first bake, after this pass was
         // made over it; its entities draw from that stack.
@@ -2876,6 +2895,8 @@ impl ModelPass {
             self.default_palette = library.palette.clone();
         }
         if route_change {
+            self.resident.clear();
+            self.default_plays.clear();
             self.bind_field();
             self.rebuild_native_walk();
         }
@@ -2942,6 +2963,9 @@ impl ModelPass {
         library: &ModelLibrary,
         mesh: usize,
     ) -> io::Result<()> {
+        if self.resident.get(mesh).copied().unwrap_or(false) {
+            return Ok(());
+        }
         // A mod entity's recorded counterpart is resident with it, to draw the moment the mod's
         // draw is refused.
         if let Some(&counterpart) = self.alternatives.get(&mesh) {
@@ -2963,6 +2987,10 @@ impl ModelPass {
                 self.material_refusals.insert(material, why.to_string());
             }
         }
+        if self.resident.len() <= mesh {
+            self.resident.resize(mesh + 1, false);
+        }
+        self.resident[mesh] = true;
         Ok(())
     }
 
@@ -3498,6 +3526,49 @@ fn visible(group: &ModelGroup, offset: f32, rectangle: Option<[f32; 4]>) -> bool
     };
     let [gx0, gz0, gx1, gz1] = group.bounds;
     gx0 + offset <= x1 && gx1 + offset >= x0 && gz0 <= z1 && gz1 >= z0
+}
+
+/// What a mesh's [`entity_animation::DEFAULT_STATE`] actors do, the same every frame: play
+/// the entity's default state, or stay still for the reason given.
+struct DefaultPlay {
+    requests: Arc<Vec<entity_animation::Request>>,
+    native: u32,
+    refusal: Option<String>,
+}
+
+impl DefaultPlay {
+    /// `None` when the entity has no clip of its default state.
+    fn of(rig: Option<&Rig>, mesh: Option<&ModelMesh>) -> Option<Self> {
+        let rig = rig?;
+        let root = rig.nodes.first()?;
+        if !root
+            .clips
+            .iter()
+            .any(|clip| clip.state.name == root.default)
+        {
+            return None;
+        }
+        let refusal = drawn_variants(rig).map(|(node, reached, variants)| {
+            let entity = mesh.map_or("", |mesh| &mesh.name);
+            let part = if node == 0 {
+                String::new()
+            } else {
+                format!(" (attached entity {node})")
+            };
+            format!(
+                "entity {entity}{part} reaches state {reached} of {variants} variants, which the game draws from a per-entity random counter no recording holds; it stays still and silent"
+            )
+        });
+        Some(Self {
+            requests: Arc::new(vec![entity_animation::Request {
+                time: 0.0,
+                phase_time: None,
+                state: root.default.clone(),
+            }]),
+            native: entity_animation::named_request(&root.default),
+            refusal,
+        })
+    }
 }
 
 /// The first state with several variants an actor of `rig` can reach from

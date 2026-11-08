@@ -20,15 +20,52 @@ pub fn sort_draws(draws: &mut [OrderDraw]) {
 /// draw order. Raid and battle-plan arrows use the same manager, so a
 /// definition bucket holds both. Labels and the report stay `field`'s.
 pub fn append(field: &OrderField, more: &OrderField) -> OrderField {
-    let mut out = field.clone();
+    append_kept(field, |_| true, more)
+}
+
+/// [`append`] onto a field the caller owns, in place.
+pub fn append_into(mut out: OrderField, more: &OrderField) -> OrderField {
     let base = out.native_vertices.len() as u32;
     out.vertices.extend_from_slice(&more.vertices);
     out.native_vertices.extend_from_slice(&more.native_vertices);
-    out.raid_units.extend(more.raid_units.iter().cloned());
-    out.held.extend(more.held.iter().cloned());
+    out.raid_units.extend_from_slice(&more.raid_units);
+    out.held.extend_from_slice(&more.held);
     out.trade_route_hovers
         .extend_from_slice(&more.trade_route_hovers);
-    out.draws.extend(more.draws.iter().map(|draw| {
+    append_draws(&mut out.draws, base, more);
+    out
+}
+
+/// [`append`] of only the ribbons of `field` that `keep` admits, copying each source once.
+pub fn append_kept(
+    field: &OrderField,
+    keep: impl Fn(&OrderDraw) -> bool,
+    more: &OrderField,
+) -> OrderField {
+    fn joined<T: Clone>(a: &[T], b: &[T]) -> Vec<T> {
+        let mut out = Vec::with_capacity(a.len() + b.len());
+        out.extend_from_slice(a);
+        out.extend_from_slice(b);
+        out
+    }
+    let mut draws = Vec::with_capacity(field.draws.len() + more.draws.len());
+    draws.extend(field.draws.iter().filter(|draw| keep(draw)).cloned());
+    append_draws(&mut draws, field.native_vertices.len() as u32, more);
+    OrderField {
+        vertices: joined(&field.vertices, &more.vertices),
+        native_vertices: joined(&field.native_vertices, &more.native_vertices),
+        draws,
+        trade_route_hovers: joined(&field.trade_route_hovers, &more.trade_route_hovers),
+        labels: field.labels.clone(),
+        raid_units: joined(&field.raid_units, &more.raid_units),
+        held: joined(&field.held, &more.held),
+        report: field.report.clone(),
+    }
+}
+
+/// `more`'s draws after `draws`, their strips moved past `base` native vertices, in draw order.
+fn append_draws(draws: &mut Vec<OrderDraw>, base: u32, more: &OrderField) {
+    draws.extend(more.draws.iter().map(|draw| {
         OrderDraw {
             native_strips: draw
                 .native_strips
@@ -39,8 +76,7 @@ pub fn append(field: &OrderField, more: &OrderField) -> OrderField {
             ..draw.clone()
         }
     }));
-    sort_draws(&mut out.draws);
-    out
+    sort_draws(draws);
 }
 
 pub fn ribbon_height(heights: &HeightField<'_>, x: f32, z: f32) -> f32 {

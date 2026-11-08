@@ -307,6 +307,39 @@ impl GuiResources {
         Ok(())
     }
 
+    /// Every effect loaded, masked and not, that compiles from source, and the animated variant
+    /// each eagerly animated sprite draws with (the handle its submission takes).
+    pub fn effects(&self) -> Vec<Arc<super::native_shader::library::Effect>> {
+        let loaded = self
+            .effects
+            .iter()
+            .flat_map(BTreeMap::values)
+            .filter_map(|(effect, _)| effect.as_ref().ok()?.compiled.clone());
+        let animated = self.sprites.values().filter_map(|prepared| {
+            if prepared.animations.is_empty() {
+                return None;
+            }
+            let effect = prepared.info.effect.as_ref().ok()?.compiled.as_ref()?;
+            let mut defines: Vec<String> = effect
+                .caller()
+                .iter()
+                .filter(|d| {
+                    *d != "MASKING" && *d != "ANIMATED" && !d.starts_with("NUM_ANIMATIONS_")
+                })
+                .cloned()
+                .collect();
+            defines.extend([
+                "ANIMATED".into(),
+                format!("NUM_ANIMATIONS_{}", prepared.animations.len()),
+            ]);
+            Some(effect.variant(defines))
+        });
+        let mut effects: Vec<_> = loaded.chain(animated).collect();
+        effects.sort_by_key(|effect| Arc::as_ptr(effect));
+        effects.dedup_by_key(|effect| Arc::as_ptr(effect));
+        effects
+    }
+
     /// Loads every sprite and font `assets` names, the fallback sprite and the effects the
     /// game's code names itself, appending each texture that loads to `images` once. `Err` only
     /// for a read that fails other than by a file's absence.

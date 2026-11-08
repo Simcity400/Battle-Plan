@@ -535,7 +535,7 @@ impl Renderer {
             } else {
                 bytemuck::cast_slice(&expanded)
             };
-            self.queue.write_texture(
+            crate::gpu::stats::write_texture(&self.queue, 
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
                     mip_level: level as u32,

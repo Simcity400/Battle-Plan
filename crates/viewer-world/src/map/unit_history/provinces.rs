@@ -17,12 +17,50 @@ pub(super) struct Record {
     pub has_candidates: bool,
 }
 
+/// Record indices, one bit each, iterated in ascending order.
+#[derive(Default)]
+#[cfg_attr(test, derive(Debug))]
+pub(super) struct Indices(Vec<u64>);
+
+impl Indices {
+    pub fn insert(&mut self, at: usize) {
+        let word = at / 64;
+        if word >= self.0.len() {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << (at % 64);
+    }
+
+    pub fn remove(&mut self, at: &usize) {
+        if let Some(word) = self.0.get_mut(at / 64) {
+            *word &= !(1 << (at % 64));
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.0.iter().enumerate().flat_map(|(word, &bits)| {
+            let mut bits = bits;
+            std::iter::from_fn(move || {
+                (bits != 0).then(|| {
+                    let bit = bits.trailing_zeros() as usize;
+                    bits &= bits - 1;
+                    word * 64 + bit
+                })
+            })
+        })
+    }
+}
+
 #[derive(Default)]
 #[cfg_attr(test, derive(Debug))]
 pub(super) struct Provinces {
     pub records: Vec<Record>,
     pub indices: BTreeMap<u32, usize>,
-    pub populated: BTreeSet<usize>,
+    pub populated: Indices,
     /// Select the original point-lookup join without changing process environment.
     #[cfg(test)]
     pub lookup_join: Option<bool>,
@@ -253,13 +291,10 @@ impl Provinces {
     }
 
     /// Every entity's placed parts, `movement` (sorted by slot) carrying the moving ones.
-    pub(super) fn placed(
-        &self,
-        movement: &[(Slot, MovementDelta)],
-    ) -> Vec<(usize, ModelInstance)> {
+    pub(super) fn placed(&self, movement: &[(Slot, MovementDelta)]) -> Vec<(usize, ModelInstance)> {
         self.populated
             .iter()
-            .flat_map(|&at| self.records[at].province.entities.iter())
+            .flat_map(|at| self.records[at].province.entities.iter())
             .flat_map(|(slot, entity)| {
                 let delta = movement
                     .binary_search_by_key(slot, |entry| entry.0)
@@ -276,7 +311,7 @@ impl Provinces {
     pub fn populated_ids(&self) -> BTreeSet<u32> {
         self.populated
             .iter()
-            .map(|&at| self.records[at].id)
+            .map(|at| self.records[at].id)
             .collect()
     }
 }

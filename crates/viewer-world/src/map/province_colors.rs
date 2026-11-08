@@ -97,32 +97,35 @@ impl ProvinceColors {
                     cache: None,
                 })
             });
-        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("province stripe pixels"),
-            layout: &pipeline.get_bind_group_layout(0),
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: source.ids.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: palette.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: tiles.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::TextureView(&output),
-                },
-            ],
-        });
+        let group = shader_pipeline::gpu::stats::create_bind_group(
+            &device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("province stripe pixels"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: source.ids.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: palette.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: tiles.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(&output),
+                    },
+                ],
+            },
+        );
         Ok(Self {
             bound: Bound { texture, view },
             colors,
@@ -169,7 +172,12 @@ impl ProvinceColors {
         next.visit_changes(&self.last, |&id, _, new| {
             let color = new.copied().unwrap_or(0);
             self.colors[id as usize] = color;
-            queue.write_buffer(&self.palette, u64::from(id) * 4, bytemuck::bytes_of(&color));
+            shader_pipeline::gpu::stats::write_buffer(
+                &queue,
+                &self.palette,
+                u64::from(id) * 4,
+                bytemuck::bytes_of(&color),
+            );
             let province = &self.provinces[id as usize];
             if province.pixels == 0 {
                 return;
@@ -189,8 +197,18 @@ impl ProvinceColors {
             return Ok(());
         }
         self.params[3] = self.dirty_tiles.len() as u32;
-        queue.write_buffer(&self.tiles, 0, bytemuck::cast_slice(&self.dirty_tiles));
-        queue.write_buffer(&self.uniform, 0, bytemuck::cast_slice(&self.params));
+        shader_pipeline::gpu::stats::write_buffer(
+            &queue,
+            &self.tiles,
+            0,
+            bytemuck::cast_slice(&self.dirty_tiles),
+        );
+        shader_pipeline::gpu::stats::write_buffer(
+            &queue,
+            &self.uniform,
+            0,
+            bytemuck::cast_slice(&self.params),
+        );
         self.pending = true;
         Ok(())
     }
@@ -205,7 +223,9 @@ impl ProvinceColors {
             label: Some("province stripe pixels"),
             timestamp_writes: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline);
+        shader_pipeline::gpu::stats::bind();
         pass.set_bind_group(0, &self.group, &[]);
         let count = self.params[3];
         let stride = self.params[4];

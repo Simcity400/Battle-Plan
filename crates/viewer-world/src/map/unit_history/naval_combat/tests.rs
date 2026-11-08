@@ -1164,13 +1164,13 @@ fn assert_installed_history(history: &unit_history::History, expected_ids: &BTre
             .collect()
     );
     assert_eq!(
-        dense.populated,
+        dense.populated.iter().collect::<Vec<_>>(),
         dense
             .records
             .iter()
             .enumerate()
             .filter_map(|(index, record)| (!record.province.entities.is_empty()).then_some(index))
-            .collect()
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         history.province_bounds,

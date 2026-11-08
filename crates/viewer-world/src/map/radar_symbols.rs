@@ -421,9 +421,13 @@ impl Pass {
             multiview_mask: None,
         });
         self.program.begin(&mut pass);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));
-        for bound in draws {
-            bound.bind(&mut pass);
+        let mut previous = None;
+        for bound in &draws {
+            bound.bind_after(&mut pass, previous);
+            previous = Some(bound);
+            shader_pipeline::gpu::stats::draw();
             pass.draw(0..4, 0..1);
         }
         Ok(())

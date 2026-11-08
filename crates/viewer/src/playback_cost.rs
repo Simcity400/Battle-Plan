@@ -132,6 +132,11 @@ fn run(args: &[OsString]) -> io::Result<()> {
     }
     let mut translated = Vec::new();
     let mut hours = None;
+    let mut schedule = crate::app::playback_cost::Schedule {
+        step: 1,
+        pan: None,
+        pngs: Vec::new(),
+    };
     let mut from = false;
     let mut speed = false;
     let mut args = args.iter();
@@ -149,6 +154,31 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         .and_then(|v| v.parse::<u32>().ok())
                         .filter(|v| *v > 0)
                         .ok_or_else(|| invalid("--hours needs a positive u32"))?,
+                );
+            }
+            Some("--hour-step") => {
+                schedule.step = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(|v| v.parse::<u32>().ok())
+                    .filter(|v| *v > 0)
+                    .ok_or_else(|| invalid("--hour-step needs a positive u32"))?;
+            }
+            Some("--png-frame") => {
+                schedule.pngs.push(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .ok_or_else(|| invalid("--png-frame needs a frame index"))?,
+                );
+            }
+            Some("--pan") => {
+                schedule.pan = Some(
+                    args.next()
+                        .and_then(|v| v.to_str())
+                        .and_then(|v| v.parse::<f32>().ok())
+                        .filter(|v| v.is_finite())
+                        .ok_or_else(|| invalid("--pan needs map units per frame"))?,
                 );
             }
             Some("--speed") => {
@@ -192,7 +222,11 @@ fn run(args: &[OsString]) -> io::Result<()> {
     if options.hour_fraction != 0.0 {
         return Err(invalid("--from-hour must be a whole game hour"));
     }
-    let end = i64::from(options.hour.unwrap()) + i64::from(hours) - 1;
+    let span = match schedule.pan {
+        Some(_) => 0,
+        None => (i64::from(hours) - 1) * i64::from(schedule.step),
+    };
+    let end = i64::from(options.hour.unwrap()) + span;
     options.playback_cost_end =
         Some(i32::try_from(end).map_err(|_| invalid("Hour range overflows"))?);
     let recording = fs::canonicalize(options.replay.as_ref().unwrap())?;
@@ -257,8 +291,15 @@ fn run(args: &[OsString]) -> io::Result<()> {
         )));
     }
     let recording_meta = fs::metadata(&recording)?;
-    let mut report =
-        crate::app::playback_cost::measure(config, options.clone(), document, hours, monitor)?;
+    let mut report = crate::app::playback_cost::measure(
+        config,
+        options.clone(),
+        document,
+        hours,
+        schedule,
+        monitor,
+        &output,
+    )?;
     report["setup_and_teardown_seconds"] =
         json!(setup.elapsed().as_secs_f64() - report["wall_seconds"].as_f64().unwrap());
     report["recording"] = json!({"path":recording,"sha256":hash(&recording)?});

@@ -168,17 +168,24 @@ std::thread_local! {
 pub struct Span {
     name: &'static str,
     start: Option<Instant>,
+    /// The window thread's cycles at the start, noted for playback-cost frames.
+    cycles: Option<u64>,
 }
 
 pub fn span(name: &'static str) -> Span {
     Span {
         name,
         start: crate::profile_writer::profiling().then(Instant::now),
+        cycles: (replay_frame::cpu::enabled() && shader_pipeline::gpu::stats::on_window_thread())
+            .then(replay_frame::cpu::thread_cycles),
     }
 }
 
 impl Drop for Span {
     fn drop(&mut self) {
+        if let Some(cycles) = self.cycles {
+            replay_frame::cpu::note(self.name, "span", cycles);
+        }
         let Some(start) = self.start else {
             return;
         };
@@ -272,6 +279,8 @@ pub fn adopt_thread_records(records: Option<ThreadRecords>) {
 pub struct CpuLaps {
     last: Option<Instant>,
     laps: Vec<(&'static str, f64)>,
+    /// Thread cycles at the last lap while playback-cost accounting notes each lap.
+    cycles: Option<u64>,
 }
 
 impl CpuLaps {
@@ -279,9 +288,11 @@ impl CpuLaps {
     pub fn start(&mut self, clock: Option<Instant>) {
         self.last = clock;
         self.laps.clear();
+        self.cycles = replay_frame::cpu::enabled().then(replay_frame::cpu::thread_cycles);
     }
 
     pub fn lap(&mut self, name: &'static str) {
+        self.note(name);
         if self.last.is_some() {
             self.lap_at(name, Instant::now(), false);
         }
@@ -289,8 +300,16 @@ impl CpuLaps {
 
     /// Ends a lap, summing repeated pass/view labels in their first-use order.
     pub fn lap_sum(&mut self, name: &'static str) {
+        self.note(name);
         if self.last.is_some() {
             self.lap_at(name, Instant::now(), true);
+        }
+    }
+
+    fn note(&mut self, name: &'static str) {
+        if let Some(cycles) = self.cycles {
+            replay_frame::cpu::note(name, "lap", cycles);
+            self.cycles = Some(replay_frame::cpu::thread_cycles());
         }
     }
 

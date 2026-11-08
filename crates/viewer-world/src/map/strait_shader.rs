@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::{collections::BTreeMap, io, sync::Arc};
 
-use eframe::wgpu::{self, util::DeviceExt};
+use eframe::wgpu;
 use installed_content_core::{ResolvedLayers, pdxshader::program::Stage};
 use installed_content_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
@@ -187,16 +187,22 @@ impl Straits {
             None
         } else {
             Some((
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("native strait vertices"),
-                    contents: bytemuck::cast_slice(&vertices),
-                    usage: wgpu::BufferUsages::VERTEX,
-                }),
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("native strait indices"),
-                    contents: bytemuck::cast_slice(&indices),
-                    usage: wgpu::BufferUsages::INDEX,
-                }),
+                shader_pipeline::gpu::stats::create_buffer_init(
+                    &device,
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("native strait vertices"),
+                        contents: bytemuck::cast_slice(&vertices),
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                ),
+                shader_pipeline::gpu::stats::create_buffer_init(
+                    &device,
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("native strait indices"),
+                        contents: bytemuck::cast_slice(&indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    },
+                ),
                 count,
             ))
         };
@@ -267,13 +273,20 @@ impl Straits {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&compiled.pipeline.pipeline);
         pass.set_stencil_reference(compiled.stencil_reference);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, vertices.slice(..));
+        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint16);
+        let mut previous = None;
         for binding in &bindings {
-            binding.bind(&mut pass);
+            binding.bind_after(&mut pass, previous);
+            previous = Some(binding);
+            shader_pipeline::gpu::stats::draw();
             pass.draw_indexed(0..*count, 0, 0..1);
         }
         Ok(())

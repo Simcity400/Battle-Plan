@@ -74,7 +74,7 @@ pub enum SceneInput<'a> {
     RestartUnitModels(Option<&'a BTreeSet<u32>>),
     SetOrders {
         assets: &'a OrderAssets,
-        field: &'a OrderField,
+        field: OrderField,
     },
     SetPreparedWeatherEffects {
         assets: Arc<crate::map::weather_effects::Assets>,
@@ -82,6 +82,8 @@ pub enum SceneInput<'a> {
         continuity: Continuity,
     },
     SetPolitical(&'a Arc<Regions>),
+    /// An hour's independent layers, installed at once ([`Scene::set_hour_layers`]).
+    SetHourLayers(crate::map::scene::HourLayers<'a>),
     SetBorderPlans {
         classes: &'a crate::map::border_pass::ClassPlan,
         zone: &'a crate::map::demilitarized::ZonePlan,
@@ -167,6 +169,66 @@ pub enum SceneInput<'a> {
     CutProvinceFrame(f32),
 }
 
+impl SceneInput<'_> {
+    /// The input's name, which its upload cost is charged under.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::WarmTrains { .. } => "WarmTrains",
+            Self::WarmUnitModels { .. } => "WarmUnitModels",
+            Self::WarmAircraft { .. } => "WarmAircraft",
+            Self::WarmMapBuildings { .. } => "WarmMapBuildings",
+            Self::WarmBridges { .. } => "WarmBridges",
+            Self::WarmRailways { .. } => "WarmRailways",
+            Self::WarmOrders { .. } => "WarmOrders",
+            Self::WarmWeather { .. } => "WarmWeather",
+            Self::WarmPolitical { .. } => "WarmPolitical",
+            Self::WarmPipelines => "WarmPipelines",
+            Self::SetBorders { .. } => "SetBorders",
+            Self::SetRivers { .. } => "SetRivers",
+            Self::SetTrees { .. } => "SetTrees",
+            Self::SetSprawl { .. } => "SetSprawl",
+            Self::SetMapFrame { .. } => "SetMapFrame",
+            Self::InstallAnimatedText { .. } => "InstallAnimatedText",
+            Self::SetPreparedRailways { .. } => "SetPreparedRailways",
+            Self::SetBridges { .. } => "SetBridges",
+            Self::SetMapBuildings { .. } => "SetMapBuildings",
+            Self::SetTrains { .. } => "SetTrains",
+            Self::SetAircraft { .. } => "SetAircraft",
+            Self::RestartUnitModels { .. } => "RestartUnitModels",
+            Self::SetOrders { .. } => "SetOrders",
+            Self::SetPreparedWeatherEffects { .. } => "SetPreparedWeatherEffects",
+            Self::SetPolitical { .. } => "SetPolitical",
+            Self::SetHourLayers { .. } => "SetHourLayers",
+            Self::SetBorderPlans { .. } => "SetBorderPlans",
+            Self::SetSnowMud { .. } => "SetSnowMud",
+            Self::SetFogOfWar { .. } => "SetFogOfWar",
+            Self::PresentHours { .. } => "PresentHours",
+            Self::MissingMapTextEvents { .. } => "MissingMapTextEvents",
+            Self::SetUnitMovement { .. } => "SetUnitMovement",
+            Self::SetUnitModels { .. } => "SetUnitModels",
+            Self::UseWorkers { .. } => "UseWorkers",
+            Self::ShareProvinceSchedule { .. } => "ShareProvinceSchedule",
+            Self::AdvanceProvinces { .. } => "AdvanceProvinces",
+            Self::SetMovementArrows { .. } => "SetMovementArrows",
+            Self::PrepareArrowBounds { .. } => "PrepareArrowBounds",
+            Self::SetUnitSelection { .. } => "SetUnitSelection",
+            Self::SelectProvinces { .. } => "SelectProvinces",
+            Self::SetRaidUnits { .. } => "SetRaidUnits",
+            Self::SetFactionHighlight { .. } => "SetFactionHighlight",
+            Self::SetAirRanges { .. } => "SetAirRanges",
+            Self::SetAirTransfers { .. } => "SetAirTransfers",
+            Self::SetRadar { .. } => "SetRadar",
+            Self::SetAirAssignment { .. } => "SetAirAssignment",
+            Self::SetStrategicStyles { .. } => "SetStrategicStyles",
+            Self::SetGraphics { .. } => "SetGraphics",
+            Self::SetPlayer { .. } => "SetPlayer",
+            Self::SetVisibility { .. } => "SetVisibility",
+            Self::LabelFrame { .. } => "LabelFrame",
+            Self::CutProvinceFrame { .. } => "CutProvinceFrame",
+        }
+    }
+}
+
 /// What an applied input returns to its host: the replaced product a setter hands back, if any.
 #[allow(clippy::large_enum_variant)]
 pub enum SceneOutput {
@@ -219,7 +281,7 @@ impl Scene {
         queue: &wgpu::Queue,
         input: SceneInput<'_>,
     ) -> io::Result<SceneOutput> {
-        let _cost = replay_frame::cpu::scope("viewer", Some("upload"));
+        let _cost = replay_frame::cpu::scope(input.name(), Some("upload"));
         let applied = SceneOutput::Applied;
         Ok(match input {
             SceneInput::WarmTrains(assets) => {
@@ -323,7 +385,11 @@ impl Scene {
                 assets,
                 plan,
                 continuity,
-            } => SceneOutput::Aircraft(self.set_aircraft(assets, plan, continuity)?),
+            } => {
+                let replaced = self.set_aircraft(assets, plan, continuity)?;
+                self.warm_added_aircraft(device)?;
+                SceneOutput::Aircraft(replaced)
+            }
             SceneInput::RestartUnitModels(provinces) => {
                 self.restart_unit_models(provinces);
                 applied
@@ -339,6 +405,10 @@ impl Scene {
             } => SceneOutput::WeatherEffects(
                 self.set_prepared_weather_effects(device, queue, assets, prepared, continuity)?,
             ),
+            SceneInput::SetHourLayers(layers) => {
+                self.set_hour_layers(device, queue, layers)?;
+                applied
+            }
             SceneInput::SetPolitical(regions) => {
                 self.set_political(device, queue, regions)?;
                 applied

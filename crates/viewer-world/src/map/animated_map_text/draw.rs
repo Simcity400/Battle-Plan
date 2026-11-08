@@ -535,12 +535,16 @@ pub fn draw(
         let rectangle = scissor_rectangle(submission.pass.scissor_enabled, target, scissor)?;
         pass.set_scissor_rect(rectangle[0], rectangle[1], rectangle[2], rectangle[3]);
         pass.set_stencil_reference(submission.pass.stencil_reference.unwrap_or(0));
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&submission.pass.pipeline.pipeline);
         submission.pass.bindings.bind(pass);
         for (slot, vertices) in submission.vertices.iter().enumerate() {
+            shader_pipeline::gpu::stats::state();
             pass.set_vertex_buffer(slot as u32, vertices.slice());
         }
+        shader_pipeline::gpu::stats::draw();
         pass.draw(range.clone(), 0..1);
     }
     Ok(())

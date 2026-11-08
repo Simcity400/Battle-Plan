@@ -34,7 +34,7 @@ use std::{
 };
 
 use bytemuck::{Pod, Zeroable};
-use eframe::wgpu::{self, util::DeviceExt};
+use eframe::wgpu;
 
 use super::map_mode::{Draw, ModeLayer, POLITICAL, Source, Style};
 use super::political::Regions;
@@ -95,7 +95,7 @@ fn buffer(
 ) -> io::Result<wgpu::Buffer> {
     check_size(device, label, bytes.len().max(4) as u64, usage)?;
     Ok(
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        shader_pipeline::gpu::stats::create_buffer_init(&device, &wgpu::util::BufferInitDescriptor {
             label: Some(label),
             contents: if bytes.is_empty() { &[0; 4] } else { bytes },
             usage,
@@ -1475,11 +1475,11 @@ impl PoliticalGpu {
                 self.capacity as u64 * REGION_BYTES,
                 rw,
             )?;
-            queue.write_buffer(&self.region_buffer, 0, bytemuck::cast_slice(&self.regions));
+            shader_pipeline::gpu::stats::write_buffer(&queue, &self.region_buffer, 0, bytemuck::cast_slice(&self.regions));
             rebind = true;
         } else {
             for slot in region_changes {
-                queue.write_buffer(
+                shader_pipeline::gpu::stats::write_buffer(&queue, 
                     &self.region_buffer,
                     slot as u64 * REGION_BYTES,
                     bytemuck::bytes_of(&self.regions[slot]),
@@ -1491,11 +1491,11 @@ impl PoliticalGpu {
             let size = (self.alpha.len() as u64)
                 .max((self.alpha_buffer.size() * 2).min(storage / stride * stride));
             self.alpha_buffer = zero_buffer(device, "political exact alpha", size, rw)?;
-            queue.write_buffer(&self.alpha_buffer, 0, &self.alpha);
+            shader_pipeline::gpu::stats::write_buffer(&queue, &self.alpha_buffer, 0, &self.alpha);
             rebind = true;
         } else {
             for slot in alpha_changes {
-                queue.write_buffer(
+                shader_pipeline::gpu::stats::write_buffer(&queue, 
                     &self.alpha_buffer,
                     (slot * self.alpha_stride) as u64,
                     &self.alpha[slot * self.alpha_stride..(slot + 1) * self.alpha_stride],
@@ -1521,7 +1521,7 @@ impl PoliticalGpu {
         }
         // Contiguous changed entries share an upload; no map-sized CPU data is touched here.
         for range in runs(&changed) {
-            queue.write_buffer(
+            shader_pipeline::gpu::stats::write_buffer(&queue, 
                 &self.mapping_buffer,
                 (range.start * 4) as u64,
                 bytemuck::cast_slice(&self.mapping[range]),
@@ -1543,10 +1543,10 @@ impl PoliticalGpu {
         self.params.count = dirty.len() as u32;
         self.pending = !dirty.is_empty();
         if self.pending {
-            queue.write_buffer(&self.dirty_buffer, 0, bytemuck::cast_slice(&dirty));
-            queue.write_buffer(&self.uniform, 0, bytemuck::bytes_of(&self.params));
+            shader_pipeline::gpu::stats::write_buffer(&queue, &self.dirty_buffer, 0, bytemuck::cast_slice(&dirty));
+            shader_pipeline::gpu::stats::write_buffer(&queue, &self.uniform, 0, bytemuck::bytes_of(&self.params));
             let x = self.params.count.min(self.params.dispatch_stride);
-            queue.write_buffer(
+            shader_pipeline::gpu::stats::write_buffer(&queue, 
                 &self.indirect,
                 0,
                 bytemuck::cast_slice(&[x, self.params.count.div_ceil(x), 1]),
@@ -1637,7 +1637,9 @@ impl PoliticalGpu {
                 label: Some("political fill"),
                 timestamp_writes: None,
             });
+            shader_pipeline::gpu::stats::pipeline();
             pass.set_pipeline(&self.kernel.pipelines[pipeline]);
+            shader_pipeline::gpu::stats::bind();
             pass.set_bind_group(0, &self.group, &[]);
             if indirect {
                 pass.dispatch_workgroups_indirect(&self.indirect, 0);
@@ -1784,7 +1786,7 @@ fn bind(
     layout: &wgpu::BindGroupLayout,
     buffers: [&wgpu::Buffer; 9],
 ) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
+    shader_pipeline::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
         label: Some("political compute"),
         layout,
         entries: &buffers

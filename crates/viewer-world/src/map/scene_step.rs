@@ -87,8 +87,12 @@ impl Presentation<'_> {
         let visible = camera.visible_ground(size, MARGIN);
         let animation_offsets = wrap_offsets(visible, camera.map.x());
         drop(view_span);
-        // Every mission is placed; one the display hides stays placed and only stops drawing.
-        if let Some((pass, assets, plan)) = aircraft.as_deref_mut() {
+        // The aircraft share no state with the rest of the walk, so they step beside it.
+        let fly = || {
+            // Every mission is placed; one the display hides stays placed and only stops drawing.
+            let Some((pass, assets, plan)) = aircraft.as_deref_mut() else {
+                return None;
+            };
             let _aircraft_span = viewer_foundation::profiling::span("step_aircraft");
             let field_span = viewer_foundation::profiling::span("aircraft_field");
             // The band reads the actors' players as the previous frame left them.
@@ -106,109 +110,117 @@ impl Presentation<'_> {
             let _animate_span = viewer_foundation::profiling::span("aircraft_animate");
             let _animate_profile = viewer_foundation::profiling::thread_span("aircraft_animate");
             pass.animate_with_workers(animation_time, None, &[0.], workers);
-        }
-        // Trains run below the railway fade, whether or not the display shows them.
-        if let Some((pass, assets, plan)) = trains
-            && rails_shown
-        {
-            let _trains_span = viewer_foundation::profiling::span("step_trains");
-            let field_span = viewer_foundation::profiling::span("train_field");
-            pass.replace_field(&assets.library, plan.field(assets, animation_time));
-            drop(field_span);
-            let _animate_span = viewer_foundation::profiling::span("train_animate");
-            pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
-        }
-        // City actors are precreated outside the dynamic mesh creation budget. Each province's
-        // damage inputs select their states.
-        if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
-            let _cities_span = viewer_foundation::profiling::span("step_cities");
-            let update_span = viewer_foundation::profiling::span("city_update");
-            if let Some(placed) = presentation.update(
+            drop((_animate_span, _animate_profile, _aircraft_span));
+            // A pool thread's records join the frame's.
+            viewer_foundation::profiling::take_thread_records()
+        };
+        let walk = || {
+            // Trains run below the railway fade, whether or not the display shows them.
+            if let Some((pass, assets, plan)) = trains
+                && rails_shown
+            {
+                let _trains_span = viewer_foundation::profiling::span("step_trains");
+                let field_span = viewer_foundation::profiling::span("train_field");
+                pass.replace_field(&assets.library, plan.field(assets, animation_time));
+                drop(field_span);
+                let _animate_span = viewer_foundation::profiling::span("train_animate");
+                pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
+            }
+            // City actors are precreated outside the dynamic mesh creation budget. Each province's
+            // damage inputs select their states.
+            if let (Some(pass), Some(presentation)) = (sprawl, city_presentation) {
+                let _cities_span = viewer_foundation::profiling::span("step_cities");
+                let update_span = viewer_foundation::profiling::span("city_update");
+                if let Some(placed) = presentation.update(
+                    camera,
+                    size,
+                    crate::map::models::draws_city_sprawl(&camera),
+                    animation_time,
+                ) {
+                    let _place_span = viewer_foundation::profiling::span("city_place");
+                    pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
+                }
+                drop(update_span);
+                let clocks_span = viewer_foundation::profiling::span("city_clocks");
+                pass.set_clock_records(presentation.clock_records(), animation_time);
+                drop(clocks_span);
+                let _animate_span = viewer_foundation::profiling::span("city_animate");
+                let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
+                pass.animate_with_workers(animation_time, None, &[0.0], workers);
+            }
+            let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
+            if let Some(arrows) = &movement_arrows {
+                gates.arrows = arrows.cutoff();
+            }
+            // The raids map mode draws no land unit models (ships stay), and it and the operatives
+            // mode no unit arrows, as the game's camera cutoffs would.
+            let gates = gates.for_mode(&visibility);
+            let history_profile = viewer_foundation::profiling::thread_span("history_update");
+            let models = unit_history.update_models_with_frame(
                 camera,
                 size,
-                crate::map::models::draws_city_sprawl(&camera),
                 animation_time,
-            ) {
-                let _place_span = viewer_foundation::profiling::span("city_place");
-                pass.update_placed(placed, crate::map::sprawl::SPRAWL_TILE);
-            }
-            drop(update_span);
-            let clocks_span = viewer_foundation::profiling::span("city_clocks");
-            pass.set_clock_records(presentation.clock_records(), animation_time);
-            drop(clocks_span);
-            let _animate_span = viewer_foundation::profiling::span("city_animate");
-            let _animate_profile = viewer_foundation::profiling::thread_span("city_animate");
-            pass.animate_with_workers(animation_time, None, &[0.0], workers);
-        }
-        let mut gates = unit_gates.unwrap_or(UnitGates::OFF);
-        if let Some(arrows) = &movement_arrows {
-            gates.arrows = arrows.cutoff();
-        }
-        // The raids map mode draws no land unit models (ships stay), and it and the operatives
-        // mode no unit arrows, as the game's camera cutoffs would.
-        let gates = gates.for_mode(&visibility);
-        let history_profile = viewer_foundation::profiling::thread_span("history_update");
-        let models = unit_history.update_models_with_frame(
-            camera,
-            size,
-            animation_time,
-            gates,
-            mesh_limit,
-            building_history,
-            true,
-            province_frame,
-        );
-        drop(history_profile);
-        if let Some(arrows) = movement_arrows {
-            let _arrows_span = viewer_foundation::profiling::span("step_arrows");
-            arrows.advance(
-                last_animation_time.map_or(0.0, |last| (animation_time - last).max(0.0)),
-                last_animation_time.is_some_and(|last| animation_time < last),
-                camera.height,
-                |province| unit_history.arrows_admitted(province),
+                gates,
+                mesh_limit,
+                building_history,
+                true,
+                province_frame,
             );
-        }
-        if let Some(text) = animated_text {
-            let _text_span = viewer_foundation::profiling::span("step_text");
-            text.advance(camera, animation_time, province_frame);
-        }
-        if let Some(pass) = map_buildings {
-            let _buildings_span = viewer_foundation::profiling::span("step_buildings");
-            if viewer_foundation::profile_writer::profiling() {
-                // Observe the existing result only; no new reuse decision or input walk.
-                viewer_foundation::profiling::record_count(
-                    "building_field_reused",
-                    u64::from(models.buildings.is_none()),
-                );
-                viewer_foundation::profiling::record_count(
-                    "building_field_updated",
-                    u64::from(models.buildings.is_some()),
+            drop(history_profile);
+            if let Some(arrows) = movement_arrows {
+                let _arrows_span = viewer_foundation::profiling::span("step_arrows");
+                arrows.advance(
+                    last_animation_time.map_or(0.0, |last| (animation_time - last).max(0.0)),
+                    last_animation_time.is_some_and(|last| animation_time < last),
+                    camera.height,
+                    |province| unit_history.arrows_admitted(province),
                 );
             }
-            if let Some(placed) = models.buildings {
-                let _place_span = viewer_foundation::profiling::span("building_place");
-                pass.update_placed(placed, BUILDING_TILE);
+            if let Some(text) = animated_text {
+                let _text_span = viewer_foundation::profiling::span("step_text");
+                text.advance(camera, animation_time, province_frame);
             }
-            let _animate_span = viewer_foundation::profiling::span("building_animate");
-            let _animate_profile = viewer_foundation::profiling::thread_span("building_animate");
-            pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
-        }
-        if let Some(pass) = unit_models {
-            let _units_span = viewer_foundation::profiling::span("step_units");
-            let place_span = viewer_foundation::profiling::span("unit_place");
-            let place_profile = viewer_foundation::profiling::thread_span("unit_place");
-            pass.update_placed(models.units, crate::map::unit_models::UNIT_TILE);
-            drop(place_profile);
-            drop(place_span);
-            let clocks_span = viewer_foundation::profiling::span("unit_clocks");
-            pass.set_clocks(unit_history.combat_clocks());
-            drop(clocks_span);
-            // Advance hidden entities too. History retires their players independently of
-            // render culling.
-            let _animate_span = viewer_foundation::profiling::span("unit_animate");
-            let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
-            pass.animate_with_workers(animation_time, None, &[0.0], workers);
-        }
+            if let Some(pass) = map_buildings {
+                let _buildings_span = viewer_foundation::profiling::span("step_buildings");
+                if viewer_foundation::profile_writer::profiling() {
+                    // Observe the existing result only; no new reuse decision or input walk.
+                    viewer_foundation::profiling::record_count(
+                        "building_field_reused",
+                        u64::from(models.buildings.is_none()),
+                    );
+                    viewer_foundation::profiling::record_count(
+                        "building_field_updated",
+                        u64::from(models.buildings.is_some()),
+                    );
+                }
+                if let Some(placed) = models.buildings {
+                    let _place_span = viewer_foundation::profiling::span("building_place");
+                    pass.update_placed(placed, BUILDING_TILE);
+                }
+                let _animate_span = viewer_foundation::profiling::span("building_animate");
+                let _animate_profile =
+                    viewer_foundation::profiling::thread_span("building_animate");
+                pass.animate_with_workers(animation_time, visible, &animation_offsets, workers);
+            }
+            if let Some(pass) = unit_models {
+                let _units_span = viewer_foundation::profiling::span("step_units");
+                let place_span = viewer_foundation::profiling::span("unit_place");
+                let place_profile = viewer_foundation::profiling::thread_span("unit_place");
+                pass.update_placed(models.units, crate::map::unit_models::UNIT_TILE);
+                drop(place_profile);
+                drop(place_span);
+                let clocks_span = viewer_foundation::profiling::span("unit_clocks");
+                pass.set_clocks(unit_history.combat_clocks());
+                drop(clocks_span);
+                // Advance hidden entities too. History retires their players independently of
+                // render culling.
+                let _animate_span = viewer_foundation::profiling::span("unit_animate");
+                let _animate_profile = viewer_foundation::profiling::thread_span("unit_animate");
+                pass.animate_with_workers(animation_time, None, &[0.0], workers);
+            }
+        };
+        let (flown, ()) = workers.join(fly, walk);
+        viewer_foundation::profiling::adopt_thread_records(flown);
         // Missile scenarios finished since the last frame start their explosions on the clock
         // the flying aircraft share. Their own clock mark moves with the start, so a frame that
         // fails later starts none of them again.

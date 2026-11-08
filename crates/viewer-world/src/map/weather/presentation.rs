@@ -14,6 +14,11 @@ pub struct Presentation {
     pub unknown: Vec<u8>,
     /// Cells [`Self::unknown`] hatches.
     hatched: usize,
+    /// Each [`Self::unknown`] page's hatched cells.
+    page_hatched: Vec<u32>,
+    /// The pending, shown and faded masks [`Self::unknown`] was last folded from, held so their
+    /// pages' identities stay theirs.
+    refreshed: [Option<Paged<u8>>; 3],
     unknown_changed: bool,
     shown_unknown: Paged<u8>,
     faded_unknown: Option<Paged<u8>>,
@@ -26,6 +31,22 @@ pub struct Presentation {
     last_time: Option<f32>,
     last_refresh: f64,
     fade: f32,
+}
+
+/// Whether `now` and `was` hold the same page `page`, by allocation.
+fn same_page(now: &Option<Paged<u8>>, was: &Option<Paged<u8>>, page: usize) -> bool {
+    match (now, was) {
+        (None, None) => true,
+        (Some(now), Some(was)) => {
+            let (pages, held) = (now.pages().len(), was.pages().len());
+            (page >= pages && page >= held)
+                || (page < pages && page < held && {
+                    let (a, b) = (now.page(page), was.page(page));
+                    a.len() == b.len() && std::ptr::eq(a.as_ptr(), b.as_ptr())
+                })
+        }
+        _ => false,
+    }
 }
 
 fn dirty_pages(
@@ -96,9 +117,7 @@ impl Presentation {
                 || self
                     .shared_pending
                     .as_ref()
-                    .is_some_and(|had| {
-                        had.texels == snow.texels && had.unknown == snow.unknown
-                    }));
+                    .is_some_and(|had| had.texels == snow.texels && had.unknown == snow.unknown));
         if !reset && !changed {
             return Ok(false);
         }
@@ -163,22 +182,59 @@ impl Presentation {
     /// Recomputes the drawn hatch flags from the pending, shown and faded-from masks.
     fn refresh_unknown(&mut self) {
         let count = self.size[0] as usize * self.size[1] as usize;
-        let flagged = |mask: Option<&Paged<u8>>, cell: usize| {
-            mask.and_then(|mask| mask.get(cell)).is_some_and(|&flag| flag != 0)
-        };
-        let pending = self.shared_pending.as_ref().map(|snow| &snow.unknown);
-        let mut changed = self.unknown.len() != count;
+        let masks = [
+            self.shared_pending
+                .as_ref()
+                .map(|snow| snow.unknown.clone()),
+            Some(self.shown_unknown.clone()),
+            self.faded_unknown.clone(),
+        ];
+        let resized = self.unknown.len() != count;
+        let mut changed = resized;
         self.unknown.resize(count, 0);
-        self.hatched = 0;
-        for cell in 0..count {
-            let hatched = flagged(pending, cell)
-                || flagged(Some(&self.shown_unknown), cell)
-                || flagged(self.faded_unknown.as_ref(), cell);
-            self.hatched += usize::from(hatched);
-            let value = if hatched { u8::MAX } else { 0 };
-            changed |= self.unknown[cell] != value;
-            self.unknown[cell] = value;
+        let pages = count.div_ceil(map_display_data::PAGE_ITEMS);
+        if resized || self.page_hatched.len() != pages {
+            self.page_hatched.clear();
+            self.page_hatched.resize(pages, 0);
+            self.refreshed = Default::default();
         }
+        let mut flags = [0u8; map_display_data::PAGE_ITEMS];
+        for (page, cells) in self
+            .unknown
+            .chunks_mut(map_display_data::PAGE_ITEMS)
+            .enumerate()
+        {
+            // A page whose three source pages are the ones it was folded from keeps its flags.
+            if !resized
+                && masks
+                    .iter()
+                    .zip(&self.refreshed)
+                    .all(|(now, was)| same_page(now, was, page))
+            {
+                continue;
+            }
+            let flags = &mut flags[..cells.len()];
+            flags.fill(0);
+            for mask in masks.iter().flatten() {
+                if page < mask.pages().len() {
+                    for (flag, &byte) in flags.iter_mut().zip(mask.page(page)) {
+                        *flag |= byte;
+                    }
+                }
+            }
+            let mut hatched = 0;
+            let mut differs = 0;
+            for (cell, &flag) in cells.iter_mut().zip(flags.iter()) {
+                let value = if flag != 0 { u8::MAX } else { 0 };
+                hatched += u32::from(value & 1);
+                differs |= *cell ^ value;
+                *cell = value;
+            }
+            self.page_hatched[page] = hatched;
+            changed |= differs != 0;
+        }
+        self.hatched = self.page_hatched.iter().map(|&count| count as usize).sum();
+        self.refreshed = masks;
         self.unknown_changed |= changed;
     }
 
@@ -388,7 +444,9 @@ mod tests {
         assert!(!player.take_unknown_upload(), "one upload per change");
         player.advance(0.0, 0.0).unwrap();
         // Equal bytes with another mask are a change; the texels still show the old cells.
-        player.set_shared(&snapshot([1, 0, 0], 2), Continue).unwrap();
+        player
+            .set_shared(&snapshot([1, 0, 0], 2), Continue)
+            .unwrap();
         assert_eq!(player.unknown, [255, 255, 0]);
         assert!(player.take_unknown_upload());
         // The refresh shows the new hour while its planes still fade from the old one.

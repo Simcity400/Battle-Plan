@@ -162,10 +162,14 @@ impl Fullscreen {
     }
 
     pub(super) fn render(&self, pass: &mut wgpu::RenderPass<'_>, bindings: &gpu::Bindings) {
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
         bindings.bind(pass);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));
+        shader_pipeline::gpu::stats::draw();
         pass.draw(0..3, 0..1);
     }
 }

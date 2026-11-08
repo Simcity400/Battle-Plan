@@ -9,13 +9,16 @@ use installed_content_core::pdxshader::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
 };
 use wgpu;
 
 #[path = "gpu/arena.rs"]
 mod arena;
 pub use arena::{Arena, Slice};
+
+#[path = "gpu/stats.rs"]
+pub mod stats;
 
 #[cfg(any(test, feature = "test-support"))]
 #[path = "gpu/uploads.rs"]
@@ -28,8 +31,9 @@ pub struct Pipeline {
     core: Arc<Core>,
     /// Stamped with this user's arena frames, so users of one core never prune each other's.
     groups: Arc<Mutex<Groups>>,
-    /// Shader-filtered variants by native binding mask, made for this user.
-    variants: Mutex<HashMap<u32, Cached>>,
+    /// Shader-filtered variants by native binding mask, made for this user; `None` while one
+    /// builds elsewhere ([`Pipeline::start_variant`]).
+    variants: Arc<Mutex<HashMap<u32, Option<Cached>>>>,
 }
 
 /// What a pipeline is on its device: the compiled program, its layouts and samplers. Every user
@@ -63,7 +67,7 @@ impl Pipeline {
         Self {
             core,
             groups: Arc::default(),
-            variants: Mutex::default(),
+            variants: Arc::default(),
         }
     }
 }
@@ -230,6 +234,7 @@ impl Bindings {
         let before = previous.map(|previous| previous.resources.get());
         // The bound views may select a shader-filtered variant of the caller's pipeline.
         if before.is_none_or(|previous| previous.pipeline != resources.pipeline) {
+            crate::gpu::stats::pipeline();
             pass.set_pipeline(&resources.pipeline);
         }
         let offsets = &self.offsets[..self.count];
@@ -237,10 +242,12 @@ impl Bindings {
             previous.resources.get().groups[0] != resources.groups[0]
                 || previous.offsets[..previous.count] != *offsets
         }) {
+            crate::gpu::stats::bind();
             pass.set_bind_group(0, &resources.groups[0], offsets);
         }
         for index in 1..3 {
             if before.is_none_or(|previous| previous.groups[index] != resources.groups[index]) {
+                crate::gpu::stats::bind();
                 pass.set_bind_group(index as u32, &resources.groups[index], &[]);
             }
         }
@@ -392,7 +399,7 @@ impl BindingProgram {
             }
             None => {
                 let group = scoped(device, || {
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
                         label: Some("native constants"),
                         layout: &self.layouts[0],
                         entries: &self
@@ -431,7 +438,7 @@ impl BindingProgram {
             }
             None => {
                 let group = scoped(device, || {
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
                         label: Some("native textures"),
                         layout: &self.layouts[1],
                         entries: &self
@@ -504,6 +511,7 @@ impl State {
     }
 }
 
+#[derive(Clone)]
 struct PipelineKey {
     effect: uuid::Uuid,
     technique: usize,
@@ -528,32 +536,134 @@ pub(crate) fn sampler_key(sampler: &Sampler) -> [u32; 10] {
     ]
 }
 
+/// The bound samplers a pipeline is built from: those its program reads, or every one when the
+/// program is not compiled. The others cannot change the pipeline.
+fn read_samplers<'a>(
+    state: &'a State,
+    reads: Option<&'a Compiled>,
+) -> impl Iterator<Item = (u32, [u32; 10])> + 'a {
+    state
+        .samplers
+        .iter()
+        .filter(move |(binding, _)| {
+            reads.is_none_or(|compiled| {
+                compiled.vertex.samplers.contains(binding)
+                    || compiled.pixel.samplers.contains(binding)
+            })
+        })
+        .map(|(binding, sampler)| (*binding, sampler_key(sampler)))
+}
+
 impl PipelineKey {
+    fn same(&self, other: &Self) -> bool {
+        self.effect == other.effect
+            && self.technique == other.technique
+            && self.blend == other.blend
+            && self.write_mask == other.write_mask
+            && self.pass == other.pass
+            && self.samplers == other.samplers
+    }
+
     /// Hash of the key a lookup would build, from borrowed parts.
-    fn hash(effect: uuid::Uuid, technique: usize, state: &State, pass: &Pass) -> u64 {
+    fn hash(
+        effect: uuid::Uuid,
+        technique: usize,
+        state: &State,
+        pass: &Pass,
+        reads: Option<&Compiled>,
+    ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::hash::DefaultHasher::new();
         (effect, technique, state.blend, state.write_mask, pass).hash(&mut hasher);
-        for (binding, sampler) in &state.samplers {
-            (binding, sampler_key(sampler)).hash(&mut hasher);
+        for sampler in read_samplers(state, reads) {
+            sampler.hash(&mut hasher);
         }
         hasher.finish()
     }
 
-    fn matches(&self, effect: uuid::Uuid, technique: usize, state: &State, pass: &Pass) -> bool {
+    fn matches(
+        &self,
+        effect: uuid::Uuid,
+        technique: usize,
+        state: &State,
+        pass: &Pass,
+        reads: Option<&Compiled>,
+    ) -> bool {
         self.effect == effect
             && self.technique == technique
             && self.blend == state.blend
             && self.write_mask == state.write_mask
             && self.pass == *pass
-            && self.samplers.iter().copied().eq(state
+            && self
                 .samplers
                 .iter()
-                .map(|(binding, sampler)| (*binding, sampler_key(sampler))))
+                .copied()
+                .eq(read_samplers(state, reads))
     }
 }
 
-type Cached = Result<Arc<Pipeline>, String>;
+pub type Cached = Result<Arc<Pipeline>, String>;
+
+/// GUI pipeline and texture-variant builds under way on their threads.
+static BUILDING: (Mutex<usize>, Condvar) = (Mutex::new(0), Condvar::new());
+/// Every such build ever started.
+static STARTED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Counts one build under way until dropped.
+pub(crate) struct Building(());
+
+impl Building {
+    pub(crate) fn start() -> Self {
+        STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *BUILDING.0.lock().unwrap_or_else(|error| error.into_inner()) += 1;
+        Self(())
+    }
+}
+
+/// How many GUI pipeline and texture-variant builds have started, ever.
+pub fn builds_started() -> u64 {
+    STARTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// How many GUI pipeline and texture-variant builds are under way.
+pub fn builds_under_way() -> usize {
+    *BUILDING.0.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        let mut building = BUILDING.0.lock().unwrap_or_else(|error| error.into_inner());
+        *building -= 1;
+        if *building == 0 {
+            BUILDING.1.notify_all();
+        }
+    }
+}
+
+/// Waits until no GUI pipeline or texture-variant build is under way.
+pub fn wait_for_builds() {
+    let mut building = BUILDING.0.lock().unwrap_or_else(|error| error.into_inner());
+    while *building != 0 {
+        building = BUILDING
+            .1
+            .wait(building)
+            .unwrap_or_else(|error| error.into_inner());
+    }
+}
+
+/// Whether a packed cache entry was made under `state`.
+pub(crate) fn same_packed(cached: &State, state: &State) -> bool {
+    cached.blend == state.blend
+        && cached.write_mask == state.write_mask
+        && cached
+            .samplers
+            .iter()
+            .map(|(slot, sampler)| (*slot, sampler_key(sampler)))
+            .eq(state
+                .samplers
+                .iter()
+                .map(|(slot, sampler)| (*slot, sampler_key(sampler))))
+}
 
 type PackedKey = (
     uuid::Uuid,
@@ -565,19 +675,75 @@ type PackedKey = (
 
 /// Every device's pipeline cores by [`PipelineKey`], held weakly: a cache that misses takes a core
 /// another user on its device already holds, so N map views compile each pipeline once, and the
-/// last user lets it go. Failures are not shared; each cache keeps its own.
-struct DeviceCores(Mutex<Vec<DeviceEntry>>);
+/// last user lets it go. Failures are not shared; each cache keeps its own. A core is made
+/// outside the lock, so a lookup never waits on another thread's build; only a user asking for
+/// the core under way waits for it.
+struct DeviceCores(Mutex<Vec<DeviceEntry>>, Condvar);
 
 struct DeviceEntry {
     device: wgpu::Device,
     cores: HashMap<u64, Vec<(PipelineKey, std::sync::Weak<Core>, Diagnostics)>>,
+    /// Cores being made, by hash.
+    building: Vec<(u64, PipelineKey)>,
 }
 
-static DEVICE_CORES: DeviceCores = DeviceCores(Mutex::new(Vec::new()));
+static DEVICE_CORES: DeviceCores = DeviceCores(Mutex::new(Vec::new()), Condvar::new());
+
+/// Takes a core under way off its device's list when its making ends, however it ends.
+struct Making<'a> {
+    cores: &'a DeviceCores,
+    device: &'a wgpu::Device,
+    hash: u64,
+    key: PipelineKey,
+}
+
+impl Drop for Making<'_> {
+    fn drop(&mut self) {
+        let mut devices = self.cores.lock();
+        if let Some(entry) = devices
+            .iter_mut()
+            .find(|entry| entry.device == *self.device)
+            && let Some(at) = entry
+                .building
+                .iter()
+                .position(|(hash, key)| *hash == self.hash && key.same(&self.key))
+        {
+            entry.building.swap_remove(at);
+        }
+        self.cores.1.notify_all();
+    }
+}
 
 impl DeviceCores {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<DeviceEntry>> {
+        self.0.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    /// The live core on `device` that `matches`, taken while it is still held, without making
+    /// one.
+    fn held(
+        &self,
+        device: &wgpu::Device,
+        hash: u64,
+        matches: impl Fn(&PipelineKey) -> bool,
+    ) -> Option<(Arc<Core>, Diagnostics)> {
+        let devices = self.lock();
+        devices
+            .iter()
+            .find(|entry| entry.device == *device)
+            .and_then(|entry| entry.cores.get(&hash))
+            .and_then(|cores| {
+                cores.iter().find_map(|(cached, core, diagnostics)| {
+                    matches(cached)
+                        .then(|| core.upgrade())
+                        .flatten()
+                        .map(|core| (core, diagnostics.clone()))
+                })
+            })
+    }
+
     /// The live core on `device` that `matches`, else the one `create` makes, recorded under
-    /// `key`. Held through creation, so users asking at once compile it once.
+    /// `key`. Users asking at once for one under way wait for it, so it is made once.
     fn get_or_create(
         &self,
         device: &wgpu::Device,
@@ -586,37 +752,74 @@ impl DeviceCores {
         key: impl FnOnce() -> PipelineKey,
         create: impl FnOnce() -> (Result<Arc<Core>, String>, Diagnostics),
     ) -> (Result<Arc<Core>, String>, Diagnostics) {
-        let mut devices = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        devices.retain_mut(|entry| {
-            entry.cores.retain(|_, cores| {
-                cores.retain(|(_, core, _)| core.strong_count() != 0);
-                !cores.is_empty()
-            });
-            !entry.cores.is_empty() || entry.device == *device
-        });
-        let at = match devices.iter().position(|entry| entry.device == *device) {
-            Some(at) => at,
-            None => {
-                devices.push(DeviceEntry {
-                    device: device.clone(),
-                    cores: HashMap::new(),
+        let mut devices = self.lock();
+        loop {
+            devices.retain_mut(|entry| {
+                entry.cores.retain(|_, cores| {
+                    cores.retain(|(_, core, _)| core.strong_count() != 0);
+                    !cores.is_empty()
                 });
-                devices.len() - 1
+                !entry.cores.is_empty() || !entry.building.is_empty() || entry.device == *device
+            });
+            let at = match devices.iter().position(|entry| entry.device == *device) {
+                Some(at) => at,
+                None => {
+                    devices.push(DeviceEntry {
+                        device: device.clone(),
+                        cores: HashMap::new(),
+                        building: Vec::new(),
+                    });
+                    devices.len() - 1
+                }
+            };
+            let entry = &devices[at];
+            if let Some((core, diagnostics)) = entry.cores.get(&hash).and_then(|bucket| {
+                bucket.iter().find_map(|(cached, core, diagnostics)| {
+                    matches(cached)
+                        .then(|| core.upgrade())
+                        .flatten()
+                        .map(|core| (core, diagnostics.clone()))
+                })
+            }) {
+                return (Ok(core), diagnostics);
             }
-        };
-        let bucket = devices[at].cores.entry(hash).or_default();
-        if let Some((core, diagnostics)) = bucket.iter().find_map(|(cached, core, diagnostics)| {
-            matches(cached)
-                .then(|| core.upgrade())
-                .flatten()
-                .map(|core| (core, diagnostics.clone()))
-        }) {
-            return (Ok(core), diagnostics);
+            if !entry
+                .building
+                .iter()
+                .any(|(building, key)| *building == hash && matches(key))
+            {
+                break;
+            }
+            devices = self
+                .1
+                .wait(devices)
+                .unwrap_or_else(|error| error.into_inner());
         }
+        let key = key();
+        let entry = devices
+            .iter_mut()
+            .find(|entry| entry.device == *device)
+            .expect("kept above");
+        entry.building.push((hash, key.clone()));
+        drop(devices);
+        let making = Making {
+            cores: self,
+            device,
+            hash,
+            key,
+        };
         let (result, diagnostics) = create();
         if let Ok(core) = &result {
-            bucket.push((key(), Arc::downgrade(core), diagnostics.clone()));
+            let mut devices = self.lock();
+            if let Some(entry) = devices.iter_mut().find(|entry| entry.device == *device) {
+                entry.cores.entry(hash).or_default().push((
+                    making.key.clone(),
+                    Arc::downgrade(core),
+                    diagnostics.clone(),
+                ));
+            }
         }
+        drop(making);
         (result, diagnostics)
     }
 }
@@ -681,18 +884,10 @@ impl Cache {
             samples,
             topology,
         );
-        let entries = self.packed.entry(key).or_default();
-        if let Some((_, result, diagnostics)) = entries.iter().find(|(cached, _, _)| {
-            cached.blend == state.blend
-                && cached.write_mask == state.write_mask
-                && cached
-                    .samplers
-                    .iter()
-                    .map(|(slot, sampler)| (*slot, sampler_key(sampler)))
-                    .eq(state
-                        .samplers
-                        .iter()
-                        .map(|(slot, sampler)| (*slot, sampler_key(sampler))))
+        if let Some((_, result, diagnostics)) = self.packed.get(&key).and_then(|entries| {
+            entries
+                .iter()
+                .find(|(cached, _, _)| same_packed(cached, state))
         }) {
             diagnostics.credit();
             if let Err(reason) = result {
@@ -700,18 +895,118 @@ impl Cache {
             }
             return result.clone();
         }
-        let (result, diagnostics) = diagnostics::capture(|| {
-            let compiled = selection.effect.compiled(selection.index)?;
-            let mut pass = Pass::packed(&compiled, state, format, samples);
-            pass.primitive.topology = topology;
-            self.get_pass(device, selection, state, &pass)
-        });
+        let (result, diagnostics) =
+            self.build_packed(device, selection, state, format, samples, topology);
         diagnostics.credit();
         self.packed
             .entry(key)
             .or_default()
             .push((state.clone(), result.clone(), diagnostics));
         result
+    }
+
+    /// What [`Self::get`] makes on a miss, with what making it observed, kept by no cache.
+    pub fn build_packed(
+        &mut self,
+        device: &wgpu::Device,
+        selection: &super::library::Selection,
+        state: &State,
+        format: wgpu::TextureFormat,
+        samples: u32,
+        topology: wgpu::PrimitiveTopology,
+    ) -> (Cached, Diagnostics) {
+        diagnostics::capture(|| {
+            let compiled = selection.effect.compiled(selection.index)?;
+            let mut pass = Pass::packed(&compiled, state, format, samples);
+            pass.primitive.topology = topology;
+            self.get_pass(device, selection, state, &pass)
+        })
+    }
+
+    /// Keeps a [`Self::build_packed`] result made elsewhere, as [`Self::get`] keeps its own.
+    pub fn adopt_packed(
+        &mut self,
+        selection: &super::library::Selection,
+        state: &State,
+        (format, samples, topology): (wgpu::TextureFormat, u32, wgpu::PrimitiveTopology),
+        (result, diagnostics): (Cached, Diagnostics),
+    ) {
+        let key = (
+            selection.effect.id,
+            selection.index,
+            format,
+            samples,
+            topology,
+        );
+        let entries = self.packed.entry(key).or_default();
+        if !entries
+            .iter()
+            .any(|(cached, _, _)| same_packed(cached, state))
+        {
+            entries.push((state.clone(), result, diagnostics));
+        }
+    }
+
+    /// Whether [`Self::get`] finds this draw's pipeline without compiling a program or building a
+    /// pipeline: made here, or held on its device, which this cache then holds too.
+    pub fn ready(
+        &mut self,
+        device: &wgpu::Device,
+        selection: &super::library::Selection,
+        state: &State,
+        format: wgpu::TextureFormat,
+        samples: u32,
+        topology: wgpu::PrimitiveTopology,
+    ) -> bool {
+        let key = (
+            selection.effect.id,
+            selection.index,
+            format,
+            samples,
+            topology,
+        );
+        if self.packed.get(&key).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|(cached, _, _)| same_packed(cached, state))
+        }) {
+            return true;
+        }
+        let compiled = match selection.effect.compiled_now(selection.index) {
+            None => return false,
+            // A failed compile is found, not built.
+            Some(Err(_)) => return true,
+            Some(Ok(compiled)) => compiled,
+        };
+        let mut pass = Pass::packed(&compiled, state, format, samples);
+        pass.primitive.topology = topology;
+        let (effect, index, reads) = (selection.effect.id, selection.index, Some(&*compiled));
+        let hash = PipelineKey::hash(effect, index, state, &pass, reads);
+        let matches = |cached: &PipelineKey| cached.matches(effect, index, state, &pass, reads);
+        if self
+            .entries
+            .get(&hash)
+            .is_some_and(|bucket| bucket.iter().any(|(cached, _, _)| matches(cached)))
+        {
+            return true;
+        }
+        let Some((core, diagnostics)) = DEVICE_CORES.held(device, hash, matches) else {
+            return false;
+        };
+        let key = PipelineKey {
+            effect,
+            technique: index,
+            samplers: read_samplers(state, reads).collect(),
+            blend: state.blend,
+            write_mask: state.write_mask,
+            pass,
+        };
+        self.entries.entry(hash).or_default().push((
+            key,
+            Ok(Arc::new(Pipeline::over(core))),
+            diagnostics,
+        ));
+        true
     }
 
     pub fn get_pass(
@@ -722,11 +1017,13 @@ impl Cache {
         pass: &Pass,
     ) -> Result<Arc<Pipeline>, String> {
         let effect = &selection.effect;
-        let hash = PipelineKey::hash(effect.id, selection.index, state, pass);
+        let reads = effect.compiled_now(selection.index).and_then(Result::ok);
+        let reads = reads.as_deref();
+        let hash = PipelineKey::hash(effect.id, selection.index, state, pass, reads);
         let bucket = self.entries.entry(hash).or_default();
         let result = match bucket
             .iter()
-            .find(|(key, _, _)| key.matches(effect.id, selection.index, state, pass))
+            .find(|(key, _, _)| key.matches(effect.id, selection.index, state, pass, reads))
         {
             Some((_, result, diagnostics)) => {
                 diagnostics.credit();
@@ -736,11 +1033,7 @@ impl Cache {
                 let key = || PipelineKey {
                     effect: effect.id,
                     technique: selection.index,
-                    samplers: state
-                        .samplers
-                        .iter()
-                        .map(|(binding, sampler)| (*binding, sampler_key(sampler)))
-                        .collect(),
+                    samplers: read_samplers(state, reads).collect(),
                     blend: state.blend,
                     write_mask: state.write_mask,
                     pass: pass.clone(),
@@ -749,7 +1042,7 @@ impl Cache {
                 let (result, diagnostics) = DEVICE_CORES.get_or_create(
                     device,
                     hash,
-                    |cached| cached.matches(effect.id, selection.index, state, pass),
+                    |cached| cached.matches(effect.id, selection.index, state, pass, reads),
                     key,
                     || {
                         diagnostics::capture(|| {
@@ -781,6 +1074,107 @@ impl Cache {
 }
 
 impl Pipeline {
+    /// The filtered bindings whose bound view cannot be filtered on `device`.
+    fn unfilterable<'a>(
+        &self,
+        device: &wgpu::Device,
+        textures: &impl Fn(u32) -> Option<&'a wgpu::TextureView>,
+    ) -> u32 {
+        self.filtered.iter().fold(0, |mask, binding| {
+            let manual = textures(*binding).is_some_and(|view| {
+                view.texture()
+                    .format()
+                    .sample_type(None, Some(device.features()))
+                    == Some(wgpu::TextureSampleType::Float { filterable: false })
+            });
+            mask | if manual { 1 << binding } else { 0 }
+        })
+    }
+
+    fn make_variant(&self, device: &wgpu::Device, mask: u32) -> Cached {
+        let fallback = self
+            .fallback
+            .as_ref()
+            .expect("variants exist for fallbacks");
+        scoped(device, || {
+            Core::create(
+                device,
+                &fallback.compiled,
+                &fallback.effect,
+                &fallback.technique,
+                &fallback.state,
+                &fallback.pass,
+                mask,
+            )
+        })
+        .and_then(|result| result)
+        .map(|core| Arc::new(Pipeline::over(Arc::new(core))))
+        .map_err(|reason| {
+            format!(
+                "effect {:?}, technique {:?}: {reason}",
+                fallback.effect, fallback.technique.name
+            )
+        })
+    }
+
+    /// Whether binding these textures draws with a variant this pipeline has not made; if so its
+    /// build starts on a thread of its own, unless one is under way.
+    pub fn start_variant<'a>(
+        self: &Arc<Self>,
+        device: &wgpu::Device,
+        textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
+    ) -> bool {
+        if self.fallback.is_none() {
+            return false;
+        }
+        let mask = self.unfilterable(device, &textures);
+        if mask == 0 {
+            return false;
+        }
+        let mut variants = self
+            .variants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match variants.get(&mask) {
+            Some(Some(_)) => return false,
+            Some(None) => return true,
+            None => {}
+        }
+        variants.insert(mask, None);
+        drop(variants);
+        let (pipeline, device, building) = (Arc::clone(self), device.clone(), Building::start());
+        let build = move || {
+            let _building = building;
+            // A build that panicked is refused by name, so its draws never wait for it.
+            let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                pipeline.make_variant(&device, mask)
+            }))
+            .unwrap_or_else(|_| Err("a texture variant build panicked".into()));
+            pipeline
+                .variants
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(mask, Some(made));
+        };
+        if let Err(error) = std::thread::Builder::new()
+            .name("pipeline variant builds".into())
+            .spawn(job_priority::carry(build))
+        {
+            // With no thread to build on, the draw is refused by name, never built here.
+            self.variants
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .insert(
+                    mask,
+                    Some(Err(format!(
+                        "texture variant builds could not start a thread: {error}"
+                    ))),
+                );
+            return false;
+        }
+        true
+    }
+
     fn release_bind_groups(&self) {
         {
             let mut groups = self.groups.lock().unwrap_or_else(|e| e.into_inner());
@@ -796,7 +1190,7 @@ impl Pipeline {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .values()
-            .filter_map(|result| result.as_ref().ok())
+            .filter_map(|result| result.as_ref()?.as_ref().ok())
         {
             pipeline.release_bind_groups();
         }
@@ -905,6 +1299,7 @@ impl Core {
         pass: &Pass,
         unfilterable: u32,
     ) -> Result<Self, String> {
+        stats::build();
         let mut buffers = compiled.vertex.buffers.clone();
         buffers.extend_from_slice(&compiled.pixel.buffers);
         buffers.sort_by_key(|buffer| buffer.binding);
@@ -1057,7 +1452,7 @@ impl Core {
             ],
             immediate_size: 0,
         });
-        let samplers = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let samplers = crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
             label: Some("native samplers"),
             layout: &samplers_layout,
             entries: &samplers
@@ -1266,45 +1661,28 @@ impl Pipeline {
         textures: impl Fn(u32) -> Option<&'a wgpu::TextureView>,
         capture: bool,
     ) -> Result<(Bindings, Option<BindingProgram>), String> {
-        if let Some(fallback) = &self.fallback {
+        if self.fallback.is_some() {
             let device = arena.device();
-            let mask = self.filtered.iter().fold(0, |mask, binding| {
-                let manual = textures(*binding).is_some_and(|view| {
-                    view.texture()
-                        .format()
-                        .sample_type(None, Some(device.features()))
-                        == Some(wgpu::TextureSampleType::Float { filterable: false })
-                });
-                mask | if manual { 1 << binding } else { 0 }
-            });
+            let mask = self.unfilterable(device, &textures);
             if mask != 0 {
-                let variant = self
+                let made = self
                     .variants
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .entry(mask)
-                    .or_insert_with(|| {
-                        scoped(device, || {
-                            Core::create(
-                                device,
-                                &fallback.compiled,
-                                &fallback.effect,
-                                &fallback.technique,
-                                &fallback.state,
-                                &fallback.pass,
-                                mask,
-                            )
-                        })
-                        .and_then(|result| result)
-                        .map(|core| Arc::new(Pipeline::over(Arc::new(core))))
-                        .map_err(|reason| {
-                            format!(
-                                "effect {:?}, technique {:?}: {reason}",
-                                fallback.effect, fallback.technique.name
-                            )
-                        })
-                    })
-                    .clone()?;
+                    .get(&mask)
+                    .cloned()
+                    .flatten();
+                let variant = match made {
+                    Some(variant) => variant,
+                    None => {
+                        let variant = self.make_variant(device, mask);
+                        self.variants
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .insert(mask, Some(variant.clone()));
+                        variant
+                    }
+                }?;
                 return variant.bind(arena, constants, textures, capture);
             }
         }
@@ -1348,7 +1726,7 @@ impl Pipeline {
             }
             None => {
                 let group = scoped(device, || {
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
                         label: Some("native constants"),
                         layout: &self.layouts[0],
                         entries: &self
@@ -1400,7 +1778,7 @@ impl Pipeline {
             }
             None => {
                 let group = scoped(device, || {
-                    device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
                         label: Some("native textures"),
                         layout: &self.layouts[1],
                         entries: &self
@@ -1484,6 +1862,7 @@ impl Pipeline {
     ) {
         // A null blend-factor pointer gives D3D11's all-ones blend constant.
         if previous.is_none() {
+            crate::gpu::stats::state();
             pass.set_blend_constant(wgpu::Color::WHITE);
         }
         draw.bindings
@@ -1493,8 +1872,10 @@ impl Pipeline {
                 || previous.vertices.offset != draw.vertices.offset
                 || previous.vertices.size != draw.vertices.size
         }) {
+            crate::gpu::stats::state();
             pass.set_vertex_buffer(0, draw.vertices.slice());
         }
+        crate::gpu::stats::draw();
         pass.draw(0..draw.count, 0..1);
     }
 }

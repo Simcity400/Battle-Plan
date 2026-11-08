@@ -1,11 +1,42 @@
-use job_priority::SpawnCarried as _;
 use super::*;
+use job_priority::SpawnCarried as _;
 use replay_frame::cpu;
 use serde_json::{Value, json};
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
 };
+
+/// Which hours the frames show: every `step`th hour, or one hour under a camera moving `pan`
+/// map units a frame.
+#[derive(Clone)]
+pub(crate) struct Schedule {
+    pub step: u32,
+    pub pan: Option<f32>,
+    /// Frames whose scene is also written to `<out>/frame-<index>.png`, after their timing.
+    pub pngs: Vec<u32>,
+}
+
+/// The window thread's charged time by label, and every lap note, for one frame's difference.
+fn main_labels(snapshot: &Value) -> std::collections::HashMap<String, u64> {
+    snapshot["labels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|row| row["role"] == "main")
+        .chain(snapshot["notes"].as_array().into_iter().flatten())
+        .map(|row| {
+            (
+                format!(
+                    "{}/{}",
+                    row["family"].as_str().unwrap_or("-"),
+                    row["category"].as_str().unwrap_or("-")
+                ),
+                row["ns"].as_u64().unwrap_or(0),
+            )
+        })
+        .collect()
+}
 
 #[derive(Clone, Copy, Default)]
 struct Memory {
@@ -122,11 +153,11 @@ fn process_cycles() -> Option<u64> {
 
 fn distribution(mut values: Vec<f64>) -> Value {
     if values.is_empty() {
-        return json!({"p50":null,"p95":null,"max":null});
+        return json!({"p50":null,"p95":null,"p99":null,"max":null});
     }
     values.sort_by(f64::total_cmp);
     let rank = |p: f64| ((values.len() as f64 * p).ceil() as usize).saturating_sub(1);
-    json!({"p50":values[rank(0.5)],"p95":values[rank(0.95)],"max":values.last()})
+    json!({"p50":values[rank(0.5)],"p95":values[rank(0.95)],"p99":values[rank(0.99)],"max":values.last()})
 }
 
 pub(crate) fn measure(
@@ -134,7 +165,9 @@ pub(crate) fn measure(
     mut options: Options,
     mut document: Document,
     hours: u32,
+    schedule: Schedule,
     mut monitor: Monitor,
+    output: &std::path::Path,
 ) -> io::Result<Value> {
     let state = pollster::block_on(async {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -190,7 +223,13 @@ pub(crate) fn measure(
         viewer.graphics,
     )?);
     viewer.scene.as_mut().unwrap().set_graphics(viewer.graphics);
-    viewer.playing = true;
+    // Frames written as PNGs are captures, so their models draw complete.
+    viewer
+        .scene
+        .as_mut()
+        .unwrap()
+        .settle_builds(!schedule.pngs.is_empty());
+    viewer.playing = schedule.pan.is_none();
     viewer.speed = 1440.0;
     viewer.animation_seek = true;
     viewer.last_view = Some(hours::View {
@@ -231,8 +270,22 @@ pub(crate) fn measure(
     let mut gpu_allocated = None::<u64>;
     let mut gpu_reserved = None::<u64>;
     let mut warning_frames = 0u32;
+    let mut frames = io::BufWriter::new(std::fs::File::create_new(output.join("frames.jsonl"))?);
+    let mut labels_before = main_labels(&cpu::snapshot());
+    shader_pipeline::gpu::stats::mark_window_thread();
+    shader_pipeline::gpu::stats::take();
+    let map_width = MapSize::of(&document.map).x();
     for index in 0..hours {
-        let hour = i32::try_from(i64::from(start) + i64::from(index)).map_err(io::Error::other)?;
+        let offset = match schedule.pan {
+            Some(_) => 0,
+            None => i64::from(index) * i64::from(schedule.step),
+        };
+        let hour = i32::try_from(i64::from(start) + offset).map_err(io::Error::other)?;
+        if let Some(pan) = schedule.pan {
+            let mut placement = camera.placement();
+            placement.center[0] = (placement.center[0] + pan * index as f32).rem_euclid(map_width);
+            viewer.capture.as_mut().unwrap().pinned = Some((pixels, Some(placement)));
+        }
         viewer.playhead = Some(Playhead {
             branch,
             hour,
@@ -292,6 +345,40 @@ pub(crate) fn measure(
             gpu_reserved = Some(gpu_reserved.unwrap_or(0).max(report.total_reserved_bytes));
         }
         warning_frames += u32::from(!viewer.map_warnings.is_empty());
+        // The frame's own bookkeeping below is charged to no frame scope.
+        drop(_other_cost);
+        if schedule.pngs.contains(&index) {
+            crate::render::write_png(
+                viewer.scene.as_ref().expect("drawn above"),
+                &state.device,
+                &state.queue,
+                &output.join(format!("frame-{index}.png")),
+            )?;
+        }
+        let counts = shader_pipeline::gpu::stats::take();
+        let labels_after = main_labels(&cpu::snapshot());
+        let mut scopes = serde_json::Map::new();
+        for (label, ns) in &labels_after {
+            let spent = ns.saturating_sub(labels_before.get(label).copied().unwrap_or(0));
+            if spent > 0 {
+                scopes.insert(label.clone(), json!(spent / 1000));
+            }
+        }
+        labels_before = labels_after;
+        serde_json::to_writer(
+            &mut frames,
+            &json!({"frame":index,"hour":hour,"thread_us":frame_thread_cpu.last(),
+                "wall_us":frame_wall.last(),
+                "gpu":shader_pipeline::gpu::stats::NAMES.iter().zip(counts)
+                    .map(|(name, count)| (name.to_string(), json!(count)))
+                    .collect::<serde_json::Map<_, _>>(),
+                "scopes_us":scopes}),
+        )?;
+        io::Write::write_all(
+            &mut frames,
+            b"
+",
+        )?;
         if index % 100 == 0 {
             println!("Playback cost: {}/{} hours, at {}", index + 1, hours, hour);
         }
@@ -303,6 +390,7 @@ pub(crate) fn measure(
             timeout: None,
         })
         .map_err(io::Error::other)?;
+    io::Write::flush(&mut frames)?;
     let seconds = wall.elapsed().as_secs_f64();
     let cycle_ns = cycle_start
         .zip(process_cycles())
@@ -316,6 +404,8 @@ pub(crate) fn measure(
     let memory = monitor.finish();
     let mut report = crate::playback_cost::accounting(&before, &after, process_ns, cycle_ns, hours);
     report["schema"] = json!(1);
+    report["hour_step"] = json!(schedule.pan.is_none().then_some(schedule.step));
+    report["pan_units_per_frame"] = json!(schedule.pan);
     report["branch"] = json!(branch);
     report["from_hour"] = json!(start);
     report["game_hours"] = json!(hours);

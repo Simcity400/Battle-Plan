@@ -378,7 +378,6 @@ struct ShownHour {
     /// The unit models' omitted stacks by reason
     /// ([`viewer_world::map::unit_models::ModelReport::warnings`]).
     model_warnings: Vec<String>,
-    political_summary: (usize, usize),
     political_build: Duration,
     limitations: Limitations,
     /// What the weather table held, the snow and mud grid's size and how long
@@ -393,7 +392,11 @@ struct ShownHour {
 impl ShownHour {
     /// The hour's technical stats, shown only in diagnostics mode.
     fn stats(&self) -> [String; 2] {
-        let (filled, distinct) = self.political_summary;
+        // Counted only when diagnostics show it, never on the hour's install.
+        let (filled, distinct) = self
+            .borders
+            .as_ref()
+            .map_or((0, 0), |(political, _)| political.layers.summary());
         let (summary, [width, height], build) = &self.snow;
         [
             format!(
@@ -533,8 +536,8 @@ struct Uploaded {
     snow_mud: Option<Arc<viewer_world::map::weather::SnowMud>>,
     /// The intel map on the GPU; hours with the same fog share one.
     intel: Option<Arc<IntelMap>>,
-    /// The battle plan on the GPU; hours with the same plan tables share one
-    /// (`viewer_counter_products::map::orders::TABLES`).
+    /// The hour's battle plan, which the frame uploads once with its air orders; hours with the
+    /// same plan tables share one (`viewer_counter_products::map::orders::TABLES`).
     orders: Option<Arc<viewer_foundation::map::ribbon_content::OrderField>>,
     air_order_sources: Option<(
         Arc<viewer_foundation::map::ribbon_content::OrderField>,
@@ -1025,6 +1028,8 @@ pub struct Viewer {
     map_error: Option<String>,
     camera: Option<Placement>,
     camera_manual: bool,
+    /// The scene builds in place for the frame a capture saves ([`Scene::settle_builds`]).
+    settled_capture: bool,
     /// The recording a rebuild in place opens again: its next open keeps the camera, orbit,
     /// walk, flight and chosen start instead of starting over.
     held_view: Option<(PathBuf, HeldClock)>,
@@ -1230,6 +1235,9 @@ pub struct Viewer {
     picker: picker::PickerState,
     picker_error: Option<String>,
     picker_refused: std::collections::BTreeMap<String, usize>,
+    /// The controls the picker last drew and the extent it drew them at, which the next
+    /// frame's input hits, as the user saw them.
+    picker_controls: Option<([f32; 2], Vec<([f32; 4], viewer_combat::picker::Control)>)>,
     // capture
     /// The readback to run once the next frame is drawn; a host export and
     /// `--window-dump` both arm it.
@@ -1361,6 +1369,16 @@ fn load_scene_scoped(
         },
     )?;
     scene.apply(device, queue, SceneInput::WarmPipelines)?;
+    let icons = &document.icons;
+    scene.warm_gui(
+        device,
+        icons
+            .counters
+            .gui
+            .effects()
+            .into_iter()
+            .chain(icons.combat.gui.effects()),
+    );
     Ok(scene)
 }
 
@@ -1560,6 +1578,7 @@ impl Viewer {
             awaiting_folders: config.resolve_options().is_err(),
             camera: options.camera,
             camera_manual: options.camera.is_some(),
+            settled_capture: false,
             held_view: None,
             held_clock: None,
             zoom: Motion::default(),
@@ -1681,6 +1700,7 @@ impl Viewer {
             picker: Default::default(),
             picker_error: None,
             picker_refused: Default::default(),
+            picker_controls: None,
             // capture
             capture,
             capture_note: None,
@@ -3898,9 +3918,21 @@ impl Viewer {
             self.picker_keys(ui, document, extent);
         }
         // The picker's lists take no scrollbar, so the wheel over them does nothing of theirs.
-        let picker_hit = match self.draw_picker(document, extent, false, animation_time, false) {
-            Some(Ok(drawn)) => point.and_then(|point| drawn.control_at(point).cloned()),
-            _ => None,
+        let picker_hit = match &self.picker_controls {
+            Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => point
+                .and_then(|point| {
+                    controls
+                        .iter()
+                        .rev()
+                        .find(|(rect, _)| {
+                            viewer_foundation::map::gui_resources::contains(*rect, point)
+                        })
+                        .map(|(_, control)| control.clone())
+                }),
+            _ => match self.draw_picker(document, extent, false, animation_time, false) {
+                Some(Ok(drawn)) => point.and_then(|point| drawn.control_at(point).cloned()),
+                _ => None,
+            },
         };
         if let Some(control) = &picker_hit {
             if response.clicked() {
@@ -4294,6 +4326,16 @@ impl Viewer {
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.movers", Some("other"));
         let scene = self.scene.as_mut().expect("created above");
+        // The frame a capture saves draws complete, built in place; live frames build elsewhere.
+        let saving = self.options.window_dump
+            || self
+                .capture
+                .as_ref()
+                .is_some_and(|capture| capture.remaining == 0);
+        if saving != self.settled_capture {
+            scene.settle_builds(saving);
+            self.settled_capture = saving;
+        }
         // A `--window-dump` settles unit models for its camera, as `--dump`
         // does; a host export keeps the live history.
         if !self.unit_field_uploaded {
@@ -5112,6 +5154,14 @@ impl Viewer {
                 self.picker_error = None;
                 self.picker_refused.clone_from(&picker_drawn.drawn.refused);
             }
+            match (&picker_drawn, &mut self.picker_controls) {
+                (Some(drawn), Some((drawn_at, controls))) => {
+                    *drawn_at = extent;
+                    controls.clone_from(&drawn.controls);
+                }
+                (Some(drawn), held) => *held = Some((extent, drawn.controls.clone())),
+                (None, held) => *held = None,
+            }
             let over_picker = point.is_some_and(|point| {
                 picker_drawn
                     .as_ref()
@@ -5235,19 +5285,6 @@ impl Viewer {
             &state.queue,
             point.filter(|_| !over_combat),
         )?;
-        let overlay = if self.looks.is_some() {
-            &self.free_overlay
-        } else {
-            self.overlay.as_ref().expect("built above")
-        };
-        let mut combined;
-        let label_batch = if additions.is_empty() {
-            overlay
-        } else {
-            combined = overlay.clone();
-            combined.quads.extend(additions.quads);
-            &combined
-        };
         // capture: at a fixed clock `Scene::render` takes the luminance
         // adaptation instantaneously, because the clock did not advance, which
         // is what a dump's own pair of frames does.
@@ -5351,17 +5388,19 @@ impl Viewer {
                             || *highlights != ranges.highlighted_bases
                     },
                 ) {
-                    let mut field = (**base).clone();
-                    field.draws.retain(|draw| !draw.air_mode);
                     let air_field = air.highlighted(&ranges.highlighted_bases);
-                    let field = viewer_foundation::map::ribbon_mesh::append(&field, &air_field);
+                    let field = viewer_foundation::map::ribbon_mesh::append_kept(
+                        base,
+                        |draw| !draw.air_mode,
+                        &air_field,
+                    );
                     scene
                         .apply(
                             device,
                             queue,
                             SceneInput::SetOrders {
                                 assets: &document.orders,
-                                field: &field,
+                                field,
                             },
                         )
                         .map_err(|error| error.to_string())?;
@@ -5425,7 +5464,16 @@ impl Viewer {
                 SceneInput::CutProvinceFrame(animation_time),
             )
             .map_err(|error| error.to_string())?;
-        scene
+        // The frame's tooltip, combat and picker quads draw after the overlay's own, which keeps
+        // them only for this render.
+        let overlay = if self.looks.is_some() {
+            &mut self.free_overlay
+        } else {
+            self.overlay.as_mut().expect("built above")
+        };
+        let laid_out = overlay.quads.len();
+        overlay.quads.extend(additions.quads);
+        let rendered = scene
             .render(
                 &state.device,
                 &state.queue,
@@ -5448,7 +5496,7 @@ impl Viewer {
                         names: self.placements.as_deref(),
                         layer_alpha: name_fade.0,
                         strategic_names,
-                        sprites: interface.then_some(label_batch),
+                        sprites: interface.then_some(&*overlay),
                         ui_scale,
                         interface,
                         country_names: interface || flying_names,
@@ -5460,8 +5508,9 @@ impl Viewer {
                     // trees
                     no_trees: false,
                 },
-            )
-            .map_err(|e| e.to_string())?;
+            );
+        overlay.quads.truncate(laid_out);
+        rendered.map_err(|e| e.to_string())?;
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));
         // Both coordinator paths stamp the same submitted scene, before audio,
@@ -7358,7 +7407,6 @@ pub(crate) mod tests {
             plan_warnings: Vec::new(),
             building_warnings: Vec::new(),
             model_warnings: Vec::new(),
-            political_summary: (0, 0),
             political_build: Duration::ZERO,
             limitations: Default::default(),
             snow: Default::default(),

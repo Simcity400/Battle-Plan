@@ -160,10 +160,14 @@ impl Blur {
     }
 
     pub fn render(&self, pass: &mut wgpu::RenderPass<'_>, axis: usize, bindings: &gpu::Bindings) {
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipelines[axis].pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
         bindings.bind(pass);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));
+        shader_pipeline::gpu::stats::draw();
         pass.draw(0..4, 0..1);
     }
 }

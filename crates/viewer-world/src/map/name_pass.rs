@@ -935,7 +935,14 @@ pub struct NamePass {
     names: Vec<StaticName>,
     /// [`Placements::generation`] the chunks were built from.
     generation: Option<u64>,
+    /// The names the chunks hold; a new generation of equal names keeps them.
+    built: Option<Vec<WorldName>>,
     count: u32,
+    /// [`Self::upload`] builds the glyph buffers its placements lack: chosen by renders that
+    /// install no hours ([`Self::build_in_upload`]).
+    builds_in_upload: bool,
+    /// Why the frame's names are refused: placements nothing prepared before it.
+    unprepared: Option<String>,
 }
 
 impl NamePass {
@@ -970,8 +977,24 @@ impl NamePass {
             draws: Vec::new(),
             names: Vec::new(),
             generation: None,
+            built: None,
             count: 0,
+            builds_in_upload: false,
+            unprepared: None,
         })
+    }
+
+    /// Whether [`Self::upload`] builds glyph buffers itself, for renders that install no hours.
+    /// Otherwise the hour's install prepares them ([`Self::prepare_static`]), and placements it
+    /// did not prepare are refused by name.
+    pub fn build_in_upload(&mut self, builds: bool) {
+        self.builds_in_upload = builds;
+    }
+
+    /// Whether the glyph buffers hold `placements`' names.
+    fn holds(&self, placements: &Placements) -> bool {
+        self.generation == Some(placements.generation)
+            || self.built.as_ref() == Some(&placements.country)
     }
 
     pub fn set_strategic_names(&mut self, selection: StrategicNames) {
@@ -990,36 +1013,27 @@ impl NamePass {
         wrap: &[f32],
     ) {
         self.draws.clear();
-        if self.generation != Some(placements.generation) {
-            let limit = device.limits().max_buffer_size;
-            let max_vertices = (limit / std::mem::size_of::<NameVertex>() as u64).max(6);
-            let (chunks, names) = static_names(placements, max_vertices);
-            self.chunks = chunks
-                .iter()
-                .filter(|chunk| !chunk.is_empty())
-                .map(|chunk| {
-                    use wgpu::util::DeviceExt;
-                    // Build BL, BR, TL, TR, BR, TL vertices; exchange vertices 3 and 4 while bending country glyphs.
-                    let vertices: Vec<_> = chunk
-                        .chunks_exact(6)
-                        .flat_map(|glyph| {
-                            let order = if self.country_layer {
-                                [5, 2, 0, 2, 1, 0]
-                            } else {
-                                [5, 2, 0, 1, 2, 0]
-                            };
-                            order.map(|index| glyph[index])
-                        })
-                        .collect();
-                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("native mapname vertices"),
-                        contents: bytemuck::cast_slice(&vertices),
-                        usage: wgpu::BufferUsages::VERTEX,
-                    })
-                })
-                .collect();
-            self.names = names;
-            self.generation = Some(placements.generation);
+        self.unprepared = None;
+        // Placements without names need no buffers.
+        if self.holds(placements) || self.builds_in_upload || placements.country.is_empty() {
+            self.prepare_static(device, placements);
+        } else {
+            let reason = format!(
+                "{} reached their frame without their glyph buffers prepared",
+                if self.country_layer {
+                    "country names"
+                } else {
+                    "plan labels"
+                }
+            );
+            #[cfg(any(test, feature = "test-support"))]
+            panic!("{reason}");
+            #[cfg(not(any(test, feature = "test-support")))]
+            {
+                self.unprepared = Some(reason);
+                self.update_count();
+                return;
+            }
         }
         if self.country_layer {
             self.draws = native_hover_copies(
@@ -1032,6 +1046,46 @@ impl NamePass {
             );
         }
         self.update_count();
+    }
+
+    /// Builds the glyph buffers of `placements`, which no camera changes, unless they hold them.
+    pub fn prepare_static(&mut self, device: &wgpu::Device, placements: &Placements) {
+        if self.generation != Some(placements.generation)
+            && self.built.as_ref() != Some(&placements.country)
+        {
+            let limit = device.limits().max_buffer_size;
+            let max_vertices = (limit / std::mem::size_of::<NameVertex>() as u64).max(6);
+            let (chunks, names) = static_names(placements, max_vertices);
+            self.chunks = chunks
+                .iter()
+                .filter(|chunk| !chunk.is_empty())
+                .map(|chunk| {
+                    // Build BL, BR, TL, TR, BR, TL vertices; exchange vertices 3 and 4 while bending country glyphs.
+                    let vertices: Vec<_> = chunk
+                        .chunks_exact(6)
+                        .flat_map(|glyph| {
+                            let order = if self.country_layer {
+                                [5, 2, 0, 2, 1, 0]
+                            } else {
+                                [5, 2, 0, 1, 2, 0]
+                            };
+                            order.map(|index| glyph[index])
+                        })
+                        .collect();
+                    shader_pipeline::gpu::stats::create_buffer_init(
+                        &device,
+                        &wgpu::util::BufferInitDescriptor {
+                            label: Some("native mapname vertices"),
+                            contents: bytemuck::cast_slice(&vertices),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        },
+                    )
+                })
+                .collect();
+            self.names = names;
+            self.built = Some(placements.country.clone());
+        }
+        self.generation = Some(placements.generation);
     }
 
     pub fn select_arrows(&mut self, admitted: &[(usize, usize)]) {
@@ -1049,6 +1103,9 @@ impl NamePass {
     }
 
     pub fn validate_draw(&self, frames: &[&[u8]], view: Option<usize>) -> io::Result<()> {
+        if let Some(reason) = &self.unprepared {
+            return Err(io::Error::other(reason.clone()));
+        }
         for draw in self
             .draws
             .iter()
@@ -1115,9 +1172,13 @@ impl NamePass {
             multiview_mask: None,
         });
         compiled.begin(&mut pass);
+        let mut previous = None;
         for (draw, binding) in draws.iter().zip(&bindings) {
-            binding.bind(&mut pass);
+            binding.bind_after(&mut pass, previous);
+            previous = Some(binding);
+            shader_pipeline::gpu::stats::state();
             pass.set_vertex_buffer(0, self.chunks[draw.chunk].slice(..));
+            shader_pipeline::gpu::stats::draw();
             pass.draw(draw.vertices.clone(), 0..1);
         }
         Ok(())

@@ -60,7 +60,7 @@ impl Prepared {
                 draw.outer_color[3] = color[3];
             }
         }
-        ribbon_mesh::append(&field, &self.transfers.field)
+        ribbon_mesh::append_into(field, &self.transfers.field)
     }
     pub fn warnings(&self) -> Vec<String> {
         self.refused

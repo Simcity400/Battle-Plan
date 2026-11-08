@@ -269,10 +269,8 @@ impl Viewer {
         let count = u32::try_from(ahead.saturating_add(1)).unwrap_or(0);
         let lead = build_lead(self.speed, self.build_latency_ms);
         let ahead = match activation {
-            Ok(stride) => {
-                i32::try_from(u64::from(lead) + u64::from(stride) * u64::from(count))
-                    .unwrap_or(i32::MAX)
-            }
+            Ok(stride) => i32::try_from(u64::from(lead) + u64::from(stride) * u64::from(count))
+                .unwrap_or(i32::MAX),
             Err(_) => ahead,
         };
         let shown = shown_held(
@@ -458,7 +456,6 @@ impl Viewer {
                     plan_warnings: Vec::new(),
                     building_warnings: Vec::new(),
                     model_warnings: Vec::new(),
-                    political_summary: (0, 0),
                     political_build: Duration::ZERO,
                     limitations: Default::default(),
                     snow: Default::default(),
@@ -520,7 +517,7 @@ impl Viewer {
             overlay_tables,
             held,
         } = layers;
-        self.uploaded.products = held;
+        retired.push(std::mem::replace(&mut self.uploaded.products, held));
         self.music = music;
         self.battles = battles;
         let scene = self
@@ -529,60 +526,6 @@ impl Viewer {
             .ok_or_else(|| std::io::Error::other("the map scene was not created"))?;
         laps.lap("apply_start");
         let uploaded = &mut self.uploaded;
-        if uploaded.rails != Some(rails.id) {
-            let map_products::landscape::RailProduct(mesh, bridges, _) = rails.value.as_ref();
-            {
-                let _rail_span = viewer_foundation::profiling::span("rail_geometry");
-                let geometry = viewer_world::map::railways::PreparedRailGeometry::for_install(
-                    &state.device,
-                    mesh,
-                    rails.geometry.as_ref(),
-                )?;
-                let replaced = scene
-                    .apply(
-                        &state.device,
-                        &state.queue,
-                        SceneInput::SetPreparedRailways {
-                            assets: &document.rail_assets,
-                            geometry,
-                        },
-                    )?
-                    .into_prepared_railways();
-                retired.push(replaced);
-            }
-            {
-                let _bridges_span = viewer_foundation::profiling::span("bridges_install");
-                scene.apply(
-                    &state.device,
-                    &state.queue,
-                    SceneInput::SetBridges {
-                        bridges: &document.bridges,
-                        field: bridges.clone(),
-                    },
-                )?;
-            }
-            uploaded.rails = Some(rails.id);
-        }
-        laps.lap("rails_upload");
-        if uploaded.buildings != Some(buildings.id) {
-            let skipped = skipped.as_ref().map(|hours| {
-                hours
-                    .iter()
-                    .map(|(hour, _)| &hour.value)
-                    .collect::<Vec<_>>()
-            });
-            scene.apply(
-                &state.device,
-                &state.queue,
-                SceneInput::SetMapBuildings {
-                    assets: &document.map_buildings,
-                    prepared: buildings.value.clone(),
-                    passed: skipped.as_deref(),
-                },
-            )?;
-            uploaded.buildings = Some(buildings.id);
-        }
-        laps.lap("buildings_upload");
         // The raid offer cycle is presentation history too: it starts again
         // exactly when the trains and the weather do.
         present_raids(
@@ -662,23 +605,17 @@ impl Viewer {
             } else {
                 units.reset_convoys();
             }
-            self.unit_field_uploaded = false;
         }
+        // The unit field installs with the hour's other layers rather than on a later frame.
+        let unit_field = (!keep_movers).then(|| units.field(&document.unit_models));
         let model_warnings = units.report.warnings();
         retired.push(self.unit_models.replace(units));
+        // The frame uploads the plan once, with this hour's air orders appended.
         if uploaded
             .orders
             .as_ref()
             .is_none_or(|had| !Arc::ptr_eq(had, &orders))
         {
-            scene.apply(
-                &state.device,
-                &state.queue,
-                SceneInput::SetOrders {
-                    assets: &document.orders,
-                    field: &orders,
-                },
-            )?;
             retired.push(uploaded.orders.replace(Arc::clone(&orders)));
         }
         let plan_warnings = orders.report.warnings();
@@ -701,63 +638,91 @@ impl Viewer {
             retired.push(replaced);
         }
         laps.lap("effects_upload");
-        if uploaded.political != Some(political.id) {
-            let _political_span = viewer_foundation::profiling::span("political_show");
-            scene.apply(
-                &state.device,
-                &state.queue,
-                SceneInput::SetPolitical(&political.layers.regions),
-            )?;
-            uploaded.political = Some(political.id);
-        }
-        // borders: the window has no demilitarised-zone override, so the zone is the
-        // recorded one.
-        if uploaded.borders != Some(borders.id) {
-            scene.apply(
-                &state.device,
-                &state.queue,
-                SceneInput::SetBorderPlans {
-                    classes: &borders.classes,
-                    zone: &borders.highlighted,
-                },
-            )?;
-            uploaded.borders = Some(borders.id);
-        }
-        laps.lap("border_classes");
         // Equal snapshots preserve local refresh history; discontinuities reset it.
         let same_snow = uploaded
             .snow_mud
             .as_ref()
             .is_some_and(|had| Arc::ptr_eq(had, &snow_mud) || same_snow_content(had, &snow_mud));
-        if !same_snow || continuity == Continuity::Reset {
-            scene.apply(
-                &state.device,
-                &state.queue,
-                SceneInput::SetSnowMud {
-                    snow: &snow_mud,
-                    continuity,
-                },
-            )?;
-            uploaded.snow_mud = Some(Arc::clone(&snow_mud));
-        }
-        laps.lap("snow_upload");
+        let snow_changed = !same_snow || continuity == Continuity::Reset;
         // fog of war: hours whose fog did not change share the grid on the GPU.
-        if uploaded
+        let fog_changed = uploaded
             .intel
             .as_ref()
-            .is_none_or(|had| !Arc::ptr_eq(had, &intel))
-        {
-            scene.apply(
-                &state.device,
-                &state.queue,
-                SceneInput::SetFogOfWar {
-                    texels: &intel.texels,
-                    fog: intel.fog,
-                },
-            )?;
+            .is_none_or(|had| !Arc::ptr_eq(had, &intel));
+        let passed = skipped.as_ref().map(|hours| {
+            hours
+                .iter()
+                .map(|(hour, _)| &hour.value)
+                .collect::<Vec<_>>()
+        });
+        let installs_units = unit_field.is_some();
+        let rails_changed = uploaded.rails != Some(rails.id);
+        // The plan installs with the hour's air orders as no hover highlights them; a hover the
+        // frame finds uploads them again.
+        let highlighted = overlay.air_ranges.shown(None).highlighted_bases.clone();
+        let plan = uploaded.orders.clone();
+        // borders: the window has no demilitarised-zone override, so the zone is the
+        // recorded one.
+        scene.apply(
+            &state.device,
+            &state.queue,
+            SceneInput::SetHourLayers(viewer_world::map::scene::HourLayers {
+                buildings: (uploaded.buildings != Some(buildings.id)).then(|| {
+                    (
+                        &document.map_buildings,
+                        buildings.value.clone(),
+                        passed.as_deref(),
+                    )
+                }),
+                political: (uploaded.political != Some(political.id))
+                    .then_some(&political.layers.regions),
+                border_plans: (uploaded.borders != Some(borders.id))
+                    .then_some((&borders.classes, &borders.highlighted)),
+                snow_mud: snow_changed.then_some((&snow_mud, continuity)),
+                fog: fog_changed.then_some((&intel.texels, intel.fog)),
+                unit_models: unit_field
+                    .map(|field| (&document.unit_models, field, self.options.window_dump)),
+                rails: rails_changed.then(|| {
+                    let map_products::landscape::RailProduct(mesh, bridges, _) =
+                        rails.value.as_ref();
+                    (
+                        &document.rail_assets,
+                        mesh,
+                        rails.geometry.as_ref(),
+                        &document.bridges,
+                        bridges.clone(),
+                    )
+                }),
+                names: Some(&names),
+                orders: plan.as_deref().map(|plan| {
+                    (
+                        &document.orders,
+                        plan,
+                        &*overlay.air_orders,
+                        highlighted.as_slice(),
+                    )
+                }),
+            }),
+        )?;
+        if let Some(plan) = plan {
+            uploaded.air_order_sources = Some((plan, Arc::clone(&overlay.air_orders), highlighted));
+        }
+        uploaded.rails = Some(rails.id);
+        uploaded.buildings = Some(buildings.id);
+        uploaded.political = Some(political.id);
+        uploaded.borders = Some(borders.id);
+        if snow_changed {
+            uploaded.snow_mud = Some(Arc::clone(&snow_mud));
+        }
+        if fog_changed {
             uploaded.intel = Some(Arc::clone(&intel));
         }
-        laps.lap("fog_upload");
+        if installs_units {
+            self.unit_field_uploaded = true;
+            // The field placed the raid units at the hour's start.
+            self.raid_tick = Some(0.0);
+        }
+        laps.lap("hour_layers");
         retired.push(self.placements.replace(names));
         self.placements_at = Some((branch, hour, self.map_mode.clone()));
         let counter_view = overlay.counter_view().clone();
@@ -851,7 +816,6 @@ impl Viewer {
             plan_warnings,
             building_warnings,
             model_warnings,
-            political_summary: political.layers.summary(),
             political_build: political.layers.build,
             limitations,
             header,
@@ -1067,8 +1031,7 @@ impl HourPresentation for NativePresentation<'_> {
                         }))
                     },
                 );
-                let (shown_epoch, hour, usable) =
-                    (built.epoch, built.hour, built.layers.is_ok());
+                let (shown_epoch, hour, usable) = (built.epoch, built.hour, built.layers.is_ok());
                 let started = std::time::Instant::now();
                 let applied = viewer.apply_hour(state, document, built, skipped, retired, laps);
                 crate::perf_log::map_upload(

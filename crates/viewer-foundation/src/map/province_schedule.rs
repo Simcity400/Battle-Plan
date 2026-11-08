@@ -14,7 +14,7 @@
 //! pools read its list and bits.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex},
 };
 
@@ -30,17 +30,79 @@ pub enum Update {
     OffScreen,
 }
 
+/// Province ids, one bit each, iterated in ascending order.
+#[derive(Clone, Debug, Default)]
+struct Ids(Vec<u64>);
+
+impl PartialEq for Ids {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Ids {
+    fn insert(&mut self, id: u32) {
+        let word = id as usize / 64;
+        if word >= self.0.len() {
+            self.0.resize(word + 1, 0);
+        }
+        self.0[word] |= 1 << (id % 64);
+    }
+
+    fn remove(&mut self, id: &u32) {
+        if let Some(word) = self.0.get_mut(*id as usize / 64) {
+            *word &= !(1 << (id % 64));
+        }
+    }
+
+    fn contains(&self, id: &u32) -> bool {
+        self.0
+            .get(*id as usize / 64)
+            .is_some_and(|word| word >> (id % 64) & 1 != 0)
+    }
+
+    fn clear(&mut self) {
+        self.0.fill(0);
+    }
+
+    fn retain(&mut self, keep: impl Fn(&u32) -> bool) {
+        for (word, bits) in self.0.iter_mut().enumerate() {
+            let mut set = *bits;
+            while set != 0 {
+                let bit = set.trailing_zeros();
+                set &= set - 1;
+                if !keep(&(word as u32 * 64 + bit)) {
+                    *bits &= !(1 << bit);
+                }
+            }
+        }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = u32> + '_ {
+        self.0.iter().enumerate().flat_map(|(word, &bits)| {
+            let mut bits = bits;
+            std::iter::from_fn(move || {
+                (bits != 0).then(|| {
+                    let bit = bits.trailing_zeros();
+                    bits &= bits - 1;
+                    word as u32 * 64 + bit
+                })
+            })
+        })
+    }
+}
+
 /// One view's phase, dirty bits and the frame's update list.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Schedule {
     /// The retained off-screen update cursor.
     phase: u32,
     /// The provinces whose bit `0x2` is clear; every other is set, as the constructor leaves it.
-    clean: HashSet<u32>,
+    clean: Ids,
     /// This frame's provinces updated with the native in-view flag 1.
-    in_view: HashSet<u32>,
+    in_view: Ids,
     /// This frame's provinces updated out of view.
-    off_screen: HashSet<u32>,
+    off_screen: Ids,
     /// The frame's advance was made and its unit walk has not yet read it.
     pending: bool,
     /// The presentation clock of the last advance the view's counters made themselves
@@ -87,7 +149,7 @@ impl Schedule {
     /// Canonical carried state for cross-crate presentation oracles.
     #[cfg(any(test, feature = "test-support"))]
     pub fn presentation_state(&self) -> impl PartialEq + std::fmt::Debug {
-        let sorted = |values: &HashSet<u32>| values.iter().copied().collect::<BTreeSet<_>>();
+        let sorted = |values: &Ids| values.iter().collect::<BTreeSet<_>>();
         (
             self.phase,
             sorted(&self.clean),
@@ -248,8 +310,8 @@ impl Schedule {
     pub fn updates(&self) -> impl Iterator<Item = (u32, Update)> + '_ {
         self.in_view
             .iter()
-            .map(|&id| (id, Update::InView))
-            .chain(self.off_screen.iter().map(|&id| (id, Update::OffScreen)))
+            .map(|id| (id, Update::InView))
+            .chain(self.off_screen.iter().map(|id| (id, Update::OffScreen)))
     }
 
     /// Whether `province` is in this frame's update list: in view, or out of view with its dirty bit
@@ -269,7 +331,7 @@ impl Schedule {
     pub fn take_pending(&mut self) -> bool {
         let pending = std::mem::take(&mut self.pending);
         if pending {
-            for &id in self.in_view.iter().chain(&self.off_screen) {
+            for id in self.in_view.iter().chain(self.off_screen.iter()) {
                 if let Some(remaining) = self.forced.get_mut(&id) {
                     *remaining -= 1;
                     if *remaining == 0 {
@@ -289,8 +351,8 @@ impl Schedule {
         let spent = self
             .in_view
             .iter()
-            .chain(&self.off_screen)
-            .filter_map(|&id| self.forced.get(&id).map(|&count| (id, count)))
+            .chain(self.off_screen.iter())
+            .filter_map(|id| self.forced.get(&id).map(|&count| (id, count)))
             .collect();
         self.take_pending();
         let mut updates: Vec<_> = self.updates().collect();

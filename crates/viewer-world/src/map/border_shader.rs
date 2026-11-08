@@ -224,13 +224,20 @@ impl Border {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        let mut previous = None;
         for (batch, binding) in &bound {
-            binding.bind(&mut pass);
+            binding.bind_after(&mut pass, previous);
+            previous = Some(binding);
             for run in &batch.runs {
+                shader_pipeline::gpu::stats::state();
                 pass.set_vertex_buffer(0, run.vertices.slice(..));
+                shader_pipeline::gpu::stats::state();
                 pass.set_index_buffer(run.indices.slice(..), wgpu::IndexFormat::Uint32);
+                shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(0..run.count, 0, 0..1);
             }
         }

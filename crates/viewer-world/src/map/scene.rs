@@ -163,6 +163,55 @@ impl FactionHighlight {
 }
 
 /// The uploaded game textures, the data textures and the two passes.
+/// One hour's layers that install into disjoint parts of the scene ([`Scene::set_hour_layers`]);
+/// each is installed only when given.
+#[derive(Default)]
+pub struct HourLayers<'a> {
+    pub buildings: Option<(
+        &'a MapBuildingAssets,
+        map_display_data::buildings::Buildings,
+        Option<&'a [&'a map_display_data::buildings::Buildings]>,
+    )>,
+    pub political: Option<&'a Arc<Regions>>,
+    pub border_plans: Option<(
+        &'a crate::map::border_pass::ClassPlan,
+        &'a crate::map::demilitarized::ZonePlan,
+    )>,
+    pub snow_mud: Option<(&'a Arc<crate::map::weather::SnowMud>, Continuity)>,
+    pub fog: Option<(&'a map_display_data::Paged<u8>, bool)>,
+    pub unit_models: Option<(&'a UnitModelAssets, crate::map::unit_history::Field, bool)>,
+    /// The hour's railway strips (prepared, or prepared here from the mesh) and its bridges.
+    pub rails: Option<(
+        &'a RailAssets,
+        &'a RailMesh,
+        Option<&'a Arc<crate::map::railways::PreparedRailGeometry>>,
+        &'a Bridges,
+        ModelField,
+    )>,
+    /// The hour's country names, whose glyph buffers are built before any frame draws them.
+    pub names: Option<&'a Placements>,
+    /// The hour's plan with its air orders appended under these highlighted bases.
+    pub orders: Option<(
+        &'a OrderAssets,
+        &'a OrderField,
+        &'a crate::map::air_orders::Prepared,
+        &'a [u64],
+    )>,
+}
+
+/// The scene state a plan install writes.
+struct OrderParts<'a> {
+    orders: &'a mut Option<OrderPass>,
+    labels: &'a mut Placements,
+    label_passes: &'a mut [NamePass; 3],
+    radar: [(
+        &'a mut Option<crate::map::radar_symbols::Pass>,
+        &'a mut Option<String>,
+    ); 3],
+    samples: u32,
+    effect: &'a Arc<shader_pipeline::library::Effect>,
+}
+
 pub struct Scene {
     #[cfg(any(test, feature = "test-support"))]
     pub test_faults: failure_tests::Faults,
@@ -187,6 +236,10 @@ pub struct Scene {
     // fog of war
     intel_map: Bound,
     intel_installed: Option<map_display_data::Paged<u8>>,
+    /// The changed intel pages' texels, expanded to the texture's RGBA.
+    intel_scratch: Vec<u8>,
+    /// See [`Scene::settle_builds`].
+    settled_builds: bool,
     fow_noise: Arc<Bound>,
     /// Whether this hour has a fog-of-war input at all; see
     /// [`Scene::set_fog_of_war`].
@@ -277,7 +330,8 @@ pub struct Scene {
     /// The battle-plan labels: the same `mapname` effect, drawn right after
     /// the plan's ribbons.
     order_label_pass: [NamePass; 3],
-    order_labels: [Placements; 3],
+    /// Every arrow mode's label pass reads the one plan's labels.
+    order_labels: Placements,
     sprite_pass: SpritePass,
     sprite_camera: Option<viewer_foundation::map::sprites::CameraFrame>,
     empty_batch: Batch,
@@ -858,8 +912,9 @@ impl Scene {
             )
         };
         let order_label_pass = [label_pass()?, label_pass()?, label_pass()?];
-        let sprite_pass =
+        let mut sprite_pass =
             SpritePass::new(device, queue, samples, &icon_textures, lazy, OUTPUT_FORMAT)?;
+        sprite_pass.defer_builds(true);
 
         let scene = Self {
             #[cfg(any(test, feature = "test-support"))]
@@ -883,6 +938,8 @@ impl Scene {
             // fog of war
             intel_map,
             intel_installed: None,
+            intel_scratch: Vec::new(),
+            settled_builds: false,
             fow_noise,
             fog: false,
             visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
@@ -958,7 +1015,7 @@ impl Scene {
             name_pass,
             near_name_pass,
             order_label_pass,
-            order_labels: std::array::from_fn(|_| Placements::default()),
+            order_labels: Placements::default(),
             sprite_pass,
             sprite_camera: None,
             empty_batch: Batch::default(),
@@ -1155,7 +1212,10 @@ impl Scene {
     /// Compiles every pipeline the scene's graphics draw with that a pass would otherwise compile
     /// on its first frame, after the passes it warms exist.
     pub fn warm_pipelines(&mut self, device: &wgpu::Device) {
+        use crate::map::terrain_shader::Mode;
         let high = self.graphics.high_gfx_shaders;
+        self.compiled_terrain
+            .warm(device, &[Mode::Underwater, Mode::Receiver, Mode::Lit(high)]);
         if self.graphics.water {
             self.water.warm(device, high, self.graphics.water_reflections);
         }
@@ -1228,39 +1288,39 @@ impl Scene {
     }
 
     fn warm_radar(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, assets: &OrderAssets) {
-        for (pass, refusal, page, label) in [
-            (
-                &mut self.radar,
-                &mut self.radar_refusal,
-                &assets.radar,
-                "Radar symbols",
-            ),
-            (
-                &mut self.air_ranges,
-                &mut self.air_ranges_refusal,
-                &assets.air_range,
-                "Air ranges",
-            ),
-            (
-                &mut self.air_transfers,
-                &mut self.air_transfers_refusal,
-                &assets.air_transfer,
-                "Air transfer progress",
-            ),
-        ] {
+        Self::warm_radar_parts(
+            [
+                (&mut self.radar, &mut self.radar_refusal),
+                (&mut self.air_ranges, &mut self.air_ranges_refusal),
+                (&mut self.air_transfers, &mut self.air_transfers_refusal),
+            ],
+            (device, queue),
+            (self.graphics.samples, &self.arrow_effect),
+            assets,
+        );
+    }
+
+    fn warm_radar_parts(
+        passes: [(
+            &mut Option<crate::map::radar_symbols::Pass>,
+            &mut Option<String>,
+        ); 3],
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        (samples, effect): (u32, &Arc<shader_pipeline::library::Effect>),
+        assets: &OrderAssets,
+    ) {
+        let pages = [
+            (&assets.radar, "Radar symbols"),
+            (&assets.air_range, "Air ranges"),
+            (&assets.air_transfer, "Air transfer progress"),
+        ];
+        for ((pass, refusal), (page, label)) in passes.into_iter().zip(pages) {
             if pass.is_some() || refusal.is_some() {
                 continue;
             }
             match page.as_ref().map_err(Clone::clone).and_then(|page| {
-                crate::map::radar_symbols::Pass::named(
-                    device,
-                    queue,
-                    self.graphics.samples,
-                    page,
-                    &self.arrow_effect,
-                    label,
-                )
-                .map_err(|e| e.to_string())
+                crate::map::radar_symbols::Pass::named(device, queue, samples, page, effect, label)
+                    .map_err(|e| e.to_string())
             }) {
                 Ok(value) => *pass = Some(value),
                 Err(reason) => *refusal = Some(reason),
@@ -1379,21 +1439,37 @@ impl Scene {
         field: crate::map::unit_history::Field,
         steady: bool,
     ) -> io::Result<()> {
-        if self.unit_models.is_none() {
-            self.unit_models = Some(ModelPass::new(&assets.library(), "unit models"));
-        }
-        self.unit_gates = Some(assets.gates);
-        self.unit_history.set_prepared_with_naval(
-            field.targets,
-            assets.bounds.clone(),
-            steady,
-            field.naval,
-        );
-        self.unit_history.set_raids(field.raids);
-        if let Some(pass) = &mut self.unit_models {
-            pass.upload(device, queue, &assets.library(), field.models)?;
-        }
-        Ok(())
+        Self::install_unit_models(
+            (
+                &mut self.unit_models,
+                &mut self.unit_gates,
+                &mut self.unit_history,
+            ),
+            (device, queue),
+            assets,
+            (field, steady),
+            (self.map_size, self.graphics.samples),
+        )
+    }
+
+    fn install_unit_models(
+        (models, gates, history): (
+            &mut Option<ModelPass>,
+            &mut Option<UnitGates>,
+            &mut crate::map::unit_history::History,
+        ),
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        assets: &UnitModelAssets,
+        (field, steady): (crate::map::unit_history::Field, bool),
+        (map, samples): ([u32; 2], u32),
+    ) -> io::Result<()> {
+        let pass = models.get_or_insert_with(|| ModelPass::new(&assets.library(), "unit models"));
+        *gates = Some(assets.gates);
+        history.set_prepared_with_naval(field.targets, assets.bounds.clone(), steady, field.naval);
+        history.set_raids(field.raids);
+        pass.upload(device, queue, &assets.library(), field.models)?;
+        // Entities the hour baked into the library draw whole from its first frame.
+        pass.warm_added(device, map, samples)
     }
 
     /// Offline exports settle models even when the unit layer is omitted.
@@ -1574,7 +1650,14 @@ impl Scene {
             self.player = None;
             return Ok(());
         };
-        player::Player::place(&mut self.player, device, queue, model)
+        player::Player::place(&mut self.player, device, queue, model)?;
+        // A newly placed entity draws whole from its first frame.
+        if let Some(player) = &self.player {
+            player
+                .pass
+                .warm_added(device, self.map_size, self.graphics.samples)?;
+        }
+        Ok(())
     }
 
     /// The player's instances the last frame drew, for reporting.
@@ -1614,6 +1697,16 @@ impl Scene {
         }
     }
 
+    /// Takes the aircraft the hour's plan baked into the library and makes their builds, so their
+    /// first frame draws them whole.
+    pub fn warm_added_aircraft(&mut self, device: &wgpu::Device) -> io::Result<()> {
+        if let Some((pass, assets, _)) = &mut self.aircraft {
+            pass.sync_library(&assets.library());
+            pass.warm_added(device, self.map_size, self.graphics.samples)?;
+        }
+        Ok(())
+    }
+
     pub fn set_trains(
         &mut self,
         assets: Arc<crate::map::trains::TrainAssets>,
@@ -1647,13 +1740,17 @@ impl Scene {
         bridges: &Bridges,
         field: ModelField,
     ) -> io::Result<()> {
-        if self.bridges.is_none() {
-            self.bridges = Some(ModelPass::new(&bridges.library, "railway bridges"));
-        }
-        if let Some(pass) = &mut self.bridges {
-            pass.upload(device, queue, &bridges.library, field)?;
-        }
-        Ok(())
+        Self::install_bridges(&mut self.bridges, (device, queue), bridges, field)
+    }
+
+    fn install_bridges(
+        pass: &mut Option<ModelPass>,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        bridges: &Bridges,
+        field: ModelField,
+    ) -> io::Result<()> {
+        pass.get_or_insert_with(|| ModelPass::new(&bridges.library, "railway bridges"))
+            .upload(device, queue, &bridges.library, field)
     }
 
     /// Builds the battle-plan pass and uploads this hour's ribbons.
@@ -1666,21 +1763,52 @@ impl Scene {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         assets: &OrderAssets,
-        field: &OrderField,
+        field: OrderField,
     ) -> io::Result<()> {
-        self.warm_radar(device, queue, assets);
-        if self.orders.is_none() {
-            self.orders = Some(OrderPass::new(
-                device,
-                self.graphics.samples,
-                queue,
-                assets,
-                &self.arrow_effect,
-            )?);
+        Self::install_orders(
+            OrderParts {
+                orders: &mut self.orders,
+                labels: &mut self.order_labels,
+                label_passes: &mut self.order_label_pass,
+                radar: [
+                    (&mut self.radar, &mut self.radar_refusal),
+                    (&mut self.air_ranges, &mut self.air_ranges_refusal),
+                    (&mut self.air_transfers, &mut self.air_transfers_refusal),
+                ],
+                samples: self.graphics.samples,
+                effect: &self.arrow_effect,
+            },
+            (device, queue),
+            assets,
+            field,
+        )
+    }
+
+    fn install_orders(
+        parts: OrderParts<'_>,
+        gpu: (&wgpu::Device, &wgpu::Queue),
+        assets: &OrderAssets,
+        mut field: OrderField,
+    ) -> io::Result<()> {
+        let OrderParts {
+            orders,
+            labels,
+            label_passes,
+            radar,
+            samples,
+            effect,
+        } = parts;
+        let (device, queue) = gpu;
+        Self::warm_radar_parts(radar, gpu, (samples, effect), assets);
+        if orders.is_none() {
+            *orders = Some(OrderPass::new(device, samples, queue, assets, effect)?);
         }
-        if let Some(pass) = &mut self.orders {
+        if let Some(pass) = orders {
+            *labels = std::mem::take(&mut field.labels);
             pass.upload(device, field)?;
-            self.order_labels = std::array::from_fn(|_| field.labels.clone());
+            for pass in label_passes {
+                pass.prepare_static(device, labels);
+            }
         }
         Ok(())
     }
@@ -1708,17 +1836,26 @@ impl Scene {
         assets: &RailAssets,
         geometry: Arc<crate::map::railways::PreparedRailGeometry>,
     ) -> io::Result<Arc<crate::map::railways::PreparedRailGeometry>> {
-        if self.railways.is_none() {
-            self.railways = Some(RailPass::new(
-                device,
-                self.graphics.samples,
-                queue,
-                SCENE_FORMAT,
-                assets,
-            )?);
+        Self::install_railways(
+            &mut self.railways,
+            (device, queue),
+            self.graphics.samples,
+            assets,
+            geometry,
+        )
+    }
+
+    fn install_railways(
+        railways: &mut Option<RailPass>,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        samples: u32,
+        assets: &RailAssets,
+        geometry: Arc<crate::map::railways::PreparedRailGeometry>,
+    ) -> io::Result<Arc<crate::map::railways::PreparedRailGeometry>> {
+        if railways.is_none() {
+            *railways = Some(RailPass::new(device, samples, queue, SCENE_FORMAT, assets)?);
         }
-        Ok(self
-            .railways
+        Ok(railways
             .as_mut()
             .expect("created above")
             .adopt_geometry(geometry))
@@ -1745,18 +1882,48 @@ impl Scene {
         prepared: map_display_data::buildings::Buildings,
         passed: Option<&[&map_display_data::buildings::Buildings]>,
     ) -> io::Result<()> {
-        self.warm_map_buildings(device, queue, assets)?;
+        Self::install_map_buildings(
+            (
+                &mut self.map_buildings,
+                &mut self.building_history,
+                &mut self.city_presentation,
+                &mut self.sprawl,
+            ),
+            (device, queue),
+            assets,
+            prepared,
+            passed,
+        )
+    }
+
+    fn install_map_buildings(
+        (buildings, history, cities, sprawl): (
+            &mut Option<ModelPass>,
+            &mut BuildingHistory,
+            &mut Option<crate::map::sprawl::Presentation>,
+            &mut Option<ModelPass>,
+        ),
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        assets: &MapBuildingAssets,
+        prepared: map_display_data::buildings::Buildings,
+        passed: Option<&[&map_display_data::buildings::Buildings]>,
+    ) -> io::Result<()> {
+        if buildings.is_none() {
+            let mut pass = ModelPass::new(&assets.library, "map buildings");
+            pass.upload_library(device, queue, &assets.library)?;
+            *buildings = Some(pass);
+        }
         for hour in passed.unwrap_or_default() {
-            let installed = self.building_history.install_display(hour, assets)?;
-            self.building_history.advance(&installed);
-            if let Some(presentation) = &mut self.city_presentation {
+            let installed = history.install_display(hour, assets)?;
+            history.advance(&installed);
+            if let Some(presentation) = cities.as_mut() {
                 presentation.advance_shared(&installed.city_damage);
             }
         }
-        self.set_city_damage(&prepared, passed.is_none());
-        let installed = self.building_history.install_display(&prepared, assets)?;
-        if self.building_history.set(installed, passed.is_some())
-            && let Some(pass) = &mut self.map_buildings
+        Self::install_city_damage(cities, sprawl, &prepared, passed.is_none());
+        let installed = history.install_display(&prepared, assets)?;
+        if history.set(installed, passed.is_some())
+            && let Some(pass) = buildings
         {
             pass.reset_animation();
         }
@@ -1786,7 +1953,21 @@ impl Scene {
         prepared: &map_display_data::buildings::Buildings,
         reset: bool,
     ) {
-        if let Some(presentation) = &mut self.city_presentation {
+        Self::install_city_damage(
+            &mut self.city_presentation,
+            &mut self.sprawl,
+            prepared,
+            reset,
+        );
+    }
+
+    fn install_city_damage(
+        cities: &mut Option<crate::map::sprawl::Presentation>,
+        sprawl: &mut Option<ModelPass>,
+        prepared: &map_display_data::buildings::Buildings,
+        reset: bool,
+    ) {
+        if let Some(presentation) = cities {
             if reset {
                 presentation.reset();
             }
@@ -1794,7 +1975,7 @@ impl Scene {
                 &prepared.city_damage,
             )));
         }
-        if reset && let Some(pass) = &mut self.sprawl {
+        if reset && let Some(pass) = sprawl {
             pass.reset_animation();
         }
     }
@@ -1826,25 +2007,40 @@ impl Scene {
         snow: &Arc<crate::map::weather::SnowMud>,
         continuity: Continuity,
     ) -> io::Result<()> {
-        if self.snow_presentation.set_shared(snow, continuity)? {
-            Self::upload_snow(
-                device,
-                queue,
-                &mut self.snow_mud,
+        Self::install_snow_mud(
+            (
                 &mut self.snow_presentation,
-            )?;
+                &mut self.snow_mud,
+                &mut self.snow_unknown,
+                &mut self.hatch_coverage,
+                &mut self.post,
+            ),
+            (device, queue),
+            snow,
+            continuity,
+        )
+    }
+
+    fn install_snow_mud(
+        (presentation, texels, unknown, coverage, post): (
+            &mut crate::map::weather::Presentation,
+            &mut Bound,
+            &mut Bound,
+            &mut Option<crate::map::weather::HatchCoverage>,
+            &mut PostPass,
+        ),
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        snow: &Arc<crate::map::weather::SnowMud>,
+        continuity: Continuity,
+    ) -> io::Result<()> {
+        if presentation.set_shared(snow, continuity)? {
+            Self::upload_snow(device, queue, texels, presentation)?;
         }
-        Self::update_hatch(
-            device,
-            queue,
-            &mut self.snow_unknown,
-            &mut self.hatch_coverage,
-            &mut self.snow_presentation,
-        )?;
+        Self::update_hatch(device, queue, unknown, coverage, presentation)?;
         if let Some(factors) = &snow.post_factors {
-            self.post.set_snow_factors(factors);
+            post.set_snow_factors(factors);
         } else {
-            self.post.set_snow(snow.province_snow.try_as_slice()?)?;
+            post.set_snow(snow.province_snow.try_as_slice()?)?;
         }
         Ok(())
     }
@@ -1929,7 +2125,31 @@ impl Scene {
         texels: &map_display_data::Paged<u8>,
         fog: bool,
     ) -> io::Result<()> {
-        let size = self.intel_map.texture.size();
+        Self::install_fog_of_war(
+            (
+                &self.intel_map,
+                &mut self.intel_installed,
+                &mut self.intel_scratch,
+                &mut self.fog,
+            ),
+            queue,
+            texels,
+            fog,
+        )
+    }
+
+    fn install_fog_of_war(
+        (intel_map, installed, scratch, shown): (
+            &Bound,
+            &mut Option<map_display_data::Paged<u8>>,
+            &mut Vec<u8>,
+            &mut bool,
+        ),
+        queue: &wgpu::Queue,
+        texels: &map_display_data::Paged<u8>,
+        fog: bool,
+    ) -> io::Result<()> {
+        let size = intel_map.texture.size();
         let expected = (size.width * size.height) as usize;
         if texels.len() != expected {
             return Err(invalid(format!(
@@ -1939,31 +2159,37 @@ impl Scene {
                 texels.len()
             )));
         }
-        if self
-            .intel_installed
-            .as_ref()
-            .is_some_and(|old| texels.ptr_eq(old))
-        {
-            self.fog = fog;
+        if installed.as_ref().is_some_and(|old| texels.ptr_eq(old)) {
+            *shown = fog;
             return Ok(());
         }
-        let pages = self.intel_installed.as_ref().map_or_else(
+        let pages = installed.as_ref().map_or_else(
             || (0..texels.pages().len()).collect(),
             |old| texels.changed_pages(old),
         );
-        for page in pages {
-            let alpha = texels.page(page);
-            let bytes: Vec<_> = alpha.iter().flat_map(|&alpha| [0, 0, 0, alpha]).collect();
+        // Consecutive changed pages are one contiguous texel range and go up in one write.
+        let mut at = 0;
+        while at < pages.len() {
+            let first = pages[at];
+            let mut end = at + 1;
+            while end < pages.len() && pages[end] == pages[end - 1] + 1 {
+                end += 1;
+            }
+            scratch.clear();
+            for &page in &pages[at..end] {
+                scratch.extend(texels.page(page).iter().flat_map(|&alpha| [0, 0, 0, alpha]));
+            }
             write_range(
                 queue,
-                &self.intel_map.texture,
+                &intel_map.texture,
                 size.width,
-                page * map_display_data::PAGE_ITEMS,
-                &bytes,
+                first * map_display_data::PAGE_ITEMS,
+                scratch,
             );
+            at = end;
         }
-        self.intel_installed = Some(texels.clone());
-        self.fog = fog;
+        *installed = Some(texels.clone());
+        *shown = fog;
         Ok(())
     }
 
@@ -2060,10 +2286,32 @@ impl Scene {
         queue: &wgpu::Queue,
         regions: &Arc<Regions>,
     ) -> io::Result<()> {
-        let Some(political) = &mut self.political else {
+        Self::install_political(
+            (
+                &mut self.political,
+                &mut self.mode_channels,
+                &mut self.gradient1,
+                &mut self.gradient2,
+            ),
+            (device, queue),
+            regions,
+        )
+    }
+
+    fn install_political(
+        (political, channels, gradient1, gradient2): (
+            &mut Option<crate::map::political_gpu::View>,
+            &mut [Option<[f32; 2]>; 2],
+            &mut Bound,
+            &mut Bound,
+        ),
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        regions: &Arc<Regions>,
+    ) -> io::Result<()> {
+        let Some(political) = political else {
             return Err(invalid("PoliticalComputeNotWarmed"));
         };
-        self.mode_channels = regions
+        *channels = regions
             .mode
             .as_ref()
             .map_or([None; 2], |draw| draw.channel_constants());
@@ -2075,8 +2323,8 @@ impl Scene {
             view: texture.create_view(&Default::default()),
             texture,
         };
-        self.gradient1 = bound(first);
-        self.gradient2 = bound(second);
+        *gradient1 = bound(first);
+        *gradient2 = bound(second);
         Ok(())
     }
 
@@ -2138,17 +2386,199 @@ impl Scene {
         classes: &crate::map::border_pass::ClassPlan,
         zone: &crate::map::demilitarized::ZonePlan,
     ) -> io::Result<()> {
-        if let Some(pass) = &mut self.borders {
+        Self::install_border_plans(
+            (
+                &mut self.borders,
+                &mut self.demilitarized,
+                &mut self.faction_highlight_regions,
+            ),
+            device,
+            classes,
+            zone,
+        )
+    }
+
+    fn install_border_plans(
+        (borders, demilitarized, highlighted): (
+            &mut Option<BorderPass>,
+            &mut Option<DemilitarizedPass>,
+            &mut Vec<u32>,
+        ),
+        device: &wgpu::Device,
+        classes: &crate::map::border_pass::ClassPlan,
+        zone: &crate::map::demilitarized::ZonePlan,
+    ) -> io::Result<()> {
+        if let Some(pass) = borders {
             let _border_span = viewer_foundation::profiling::span("ordinary_border_install");
             pass.set_plan(device, classes)?;
         }
-        if let Some(pass) = &mut self.demilitarized {
+        if let Some(pass) = demilitarized {
             let _zone_span = viewer_foundation::profiling::span("dmz_install");
             pass.set_plan(device, zone)?;
             pass.clear_hover();
         }
-        self.faction_highlight_regions.clear();
+        highlighted.clear();
         Ok(())
+    }
+
+    /// Installs an hour's layers at once on the frame's workers. Each writes only its own part
+    /// of the scene, so the order they finish in changes nothing; the first refusal in the
+    /// order of [`HourLayers`]' fields is returned.
+    pub fn set_hour_layers(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layers: HourLayers<'_>,
+    ) -> io::Result<()> {
+        let HourLayers {
+            buildings,
+            political,
+            border_plans,
+            snow_mud,
+            fog,
+            unit_models,
+            rails,
+            names,
+            orders,
+        } = layers;
+        let gpu = (device, queue);
+        type Job<'a> = Box<dyn FnOnce() -> io::Result<()> + Send + 'a>;
+        let mut jobs: Vec<Job<'_>> = Vec::with_capacity(6);
+        if let Some((assets, prepared, passed)) = buildings {
+            let parts = (
+                &mut self.map_buildings,
+                &mut self.building_history,
+                &mut self.city_presentation,
+                &mut self.sprawl,
+            );
+            jobs.push(Box::new(move || {
+                Self::install_map_buildings(parts, gpu, assets, prepared, passed)
+            }));
+        }
+        if let Some(regions) = political {
+            let parts = (
+                &mut self.political,
+                &mut self.mode_channels,
+                &mut self.gradient1,
+                &mut self.gradient2,
+            );
+            jobs.push(Box::new(move || {
+                Self::install_political(parts, gpu, regions)
+            }));
+        }
+        if let Some((classes, zone)) = border_plans {
+            let parts = (
+                &mut self.borders,
+                &mut self.demilitarized,
+                &mut self.faction_highlight_regions,
+            );
+            jobs.push(Box::new(move || {
+                Self::install_border_plans(parts, device, classes, zone)
+            }));
+        }
+        if let Some((snow, continuity)) = snow_mud {
+            let parts = (
+                &mut self.snow_presentation,
+                &mut self.snow_mud,
+                &mut self.snow_unknown,
+                &mut self.hatch_coverage,
+                &mut self.post,
+            );
+            jobs.push(Box::new(move || {
+                Self::install_snow_mud(parts, gpu, snow, continuity)
+            }));
+        }
+        if let Some((texels, shown)) = fog {
+            let parts = (
+                &self.intel_map,
+                &mut self.intel_installed,
+                &mut self.intel_scratch,
+                &mut self.fog,
+            );
+            jobs.push(Box::new(move || {
+                Self::install_fog_of_war(parts, queue, texels, shown)
+            }));
+        }
+        if let Some((assets, mesh, prepared, bridges, field)) = rails {
+            let (railways, bridge_pass, samples) =
+                (&mut self.railways, &mut self.bridges, self.graphics.samples);
+            jobs.push(Box::new(move || {
+                let geometry = crate::map::railways::PreparedRailGeometry::for_install(
+                    device, mesh, prepared,
+                )?;
+                // The replaced strips are let go here, off the window thread.
+                drop(Self::install_railways(
+                    railways, gpu, samples, assets, geometry,
+                )?);
+                Self::install_bridges(bridge_pass, gpu, bridges, field)
+            }));
+        }
+        if let Some(placements) = names {
+            let (country, near, empty) = (
+                &mut self.name_pass,
+                &mut self.near_name_pass,
+                &self.empty_placements,
+            );
+            jobs.push(Box::new(move || {
+                country.prepare_static(device, placements);
+                near.prepare_static(device, placements.near.as_deref().unwrap_or(empty));
+                Ok(())
+            }));
+        }
+        if let Some((assets, base, air, highlighted)) = orders {
+            let parts = OrderParts {
+                orders: &mut self.orders,
+                labels: &mut self.order_labels,
+                label_passes: &mut self.order_label_pass,
+                radar: [
+                    (&mut self.radar, &mut self.radar_refusal),
+                    (&mut self.air_ranges, &mut self.air_ranges_refusal),
+                    (&mut self.air_transfers, &mut self.air_transfers_refusal),
+                ],
+                samples: self.graphics.samples,
+                effect: &self.arrow_effect,
+            };
+            jobs.push(Box::new(move || {
+                let air = air.highlighted(highlighted);
+                let field = viewer_foundation::map::ribbon_mesh::append_kept(
+                    base,
+                    |draw| !draw.air_mode,
+                    &air,
+                );
+                Self::install_orders(parts, gpu, assets, field)
+            }));
+        }
+        if let Some((assets, field, steady)) = unit_models {
+            let parts = (
+                &mut self.unit_models,
+                &mut self.unit_gates,
+                &mut self.unit_history,
+            );
+            let target = (self.map_size, self.graphics.samples);
+            jobs.push(Box::new(move || {
+                Self::install_unit_models(parts, gpu, assets, (field, steady), target)
+            }));
+        }
+        let slots: Vec<_> = jobs
+            .into_iter()
+            .map(|job| std::sync::Mutex::new((Some(job), None)))
+            .collect();
+        self.workers.run(slots.len(), &|index| {
+            let mut slot = slots[index]
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(job) = slot.0.take() {
+                slot.1 = Some(job());
+            }
+        });
+        slots
+            .into_iter()
+            .map(|slot| {
+                slot.into_inner()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .1
+            })
+            .try_for_each(|result| result.unwrap_or(Ok(())))
     }
 
     pub fn faction_highlight_regions(&self) -> &[u32] {
@@ -2187,6 +2617,35 @@ impl Scene {
     /// the border meshes, and after them the two overlay layers of [`Overlay`].
     pub fn samples(&self) -> u32 {
         self.graphics.samples
+    }
+
+    /// Builds every model and GUI shader and pipeline a frame needs before drawing it, as a
+    /// capture must, instead of drawing without a part or GUI draw until its background build
+    /// finishes.
+    pub fn settle_builds(&mut self, settled: bool) {
+        self.settled_builds = settled;
+        self.sprite_pass.defer_builds(!settled);
+    }
+
+    /// Whether name passes build their glyph buffers when they draw, for renders that install no
+    /// hours. Otherwise the hour's install prepares them and a frame that finds them unprepared
+    /// refuses its names by name.
+    pub fn build_names_in_upload(&mut self, builds: bool) {
+        for pass in [&mut self.name_pass, &mut self.near_name_pass]
+            .into_iter()
+            .chain(&mut self.order_label_pass)
+        {
+            pass.build_in_upload(builds);
+        }
+    }
+
+    /// Compiles the GUI `effects` and builds the pipelines their draws make, so no frame does.
+    pub fn warm_gui(
+        &mut self,
+        device: &wgpu::Device,
+        effects: impl IntoIterator<Item = Arc<shader_pipeline::library::Effect>>,
+    ) {
+        self.sprite_pass.warm(device, effects);
     }
 
     pub fn set_graphics(&mut self, graphics: dashboard_core::protocol::MapGraphics) {
@@ -2268,6 +2727,9 @@ impl Scene {
             &mut self.snow_presentation,
         )?;
         let snow_mud_fade = self.snow_presentation.fade();
+        for model in model_passes!(self).into_iter().flatten() {
+            model.settle_builds(self.settled_builds);
+        }
         let mut passes = passes::Frame::new(&mut self.pass_diagnostics);
         self.arena.reset();
         let arena = &self.arena;
@@ -2603,13 +3065,12 @@ impl Scene {
                     }
                 }
             });
-            for ((pass, labels), mode) in self
-                .order_label_pass
-                .iter_mut()
-                .zip(&self.order_labels)
-                .zip([ArrowMode::Main, ArrowMode::Seethrough, ArrowMode::Late])
-            {
-                pass.upload(device, labels, camera, size, 1.0, &offsets);
+            for (pass, mode) in self.order_label_pass.iter_mut().zip([
+                ArrowMode::Main,
+                ArrowMode::Seethrough,
+                ArrowMode::Late,
+            ]) {
+                pass.upload(device, &self.order_labels, camera, size, 1.0, &offsets);
                 pass.select_arrows(&orders.labels(mode));
             }
         }
@@ -2645,9 +3106,7 @@ impl Scene {
         // CPU-only boundaries leave the existing GPU query stream unchanged.
         let pass_cpu_laps = RefCell::new(&mut self.pass_cpu_laps);
         let cpu_mark = |label: &'static str| {
-            if clock.is_some() {
-                pass_cpu_laps.borrow_mut().lap_sum(label);
-            }
+            pass_cpu_laps.borrow_mut().lap_sum(label);
         };
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
@@ -3049,6 +3508,9 @@ impl Scene {
         let hatch_heights = &self.hatch_heights.as_ref().unwrap_or(&self.heightmap).view;
         let (snow_unknown, hatch_grid) = (&self.snow_unknown.view, self.snow_presentation.size);
         let (cover, terrain_map) = (&self.cover, self.compiled_terrain.map());
+        if let Some((_, Ok(hatch))) = unknown_hatch {
+            hatch.begin_frame();
+        }
         let draw_hatch = |encoder: &mut wgpu::CommandEncoder,
                           view: usize,
                           surface: crate::map::weather::Surface|
@@ -3072,6 +3534,7 @@ impl Scene {
             let [x, y, z, _] = frame.cam_look_at_dir_global_time;
             hatch.draw(
                 device,
+                queue,
                 encoder,
                 targets,
                 hatch_heights,
@@ -4072,7 +4535,8 @@ fn write_range(
             ((width - x).min(pixels as u32), 1)
         };
         let count = columns as usize * rows as usize * 4;
-        queue.write_texture(
+        shader_pipeline::gpu::stats::write_texture(
+            &queue,
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: 0,

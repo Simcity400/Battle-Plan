@@ -233,11 +233,17 @@ impl Water {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));
+        let mut previous = None;
         for bindings in &bound {
-            bindings.bind(&mut pass);
+            bindings.bind_after(&mut pass, previous);
+            previous = Some(bindings);
+            shader_pipeline::gpu::stats::draw();
             pass.draw(0..4, 0..1);
         }
         Ok(())

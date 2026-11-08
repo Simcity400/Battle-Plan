@@ -301,6 +301,36 @@ impl Workers {
         self.threads
     }
 
+    /// Runs `left` and `right` at once when a pool thread takes a turn, else one after the other.
+    pub fn join<A: Send, B: Send>(
+        &self,
+        left: impl FnOnce() -> A + Send,
+        right: impl FnOnce() -> B + Send,
+    ) -> (A, B) {
+        if self.threads == 1 {
+            return (left(), right());
+        }
+        let left = Mutex::new(Some(left));
+        let right = Mutex::new(Some(right));
+        let a = Mutex::new(None);
+        let b = Mutex::new(None);
+        fn take<T>(slot: &Mutex<Option<T>>) -> Option<T> {
+            slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+        }
+        self.run(2, &|at| match at {
+            0 => *a.lock().unwrap_or_else(|e| e.into_inner()) = take(&left).map(|work| work()),
+            _ => *b.lock().unwrap_or_else(|e| e.into_inner()) = take(&right).map(|work| work()),
+        });
+        (
+            a.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("ran above"),
+            b.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .expect("ran above"),
+        )
+    }
+
     /// Runs `task(0..count)`, each index once, on the calling thread and on
     /// up to `threads - 1` pool threads that take a turn while tasks remain;
     /// returns once every task has run. Tasks are taken in index order, and

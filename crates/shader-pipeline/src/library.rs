@@ -26,6 +26,14 @@ impl Selection {
         let name = &self.effect.source.techniques[self.index].name;
         self.effect.fall_back(why)?.select(name).ok().flatten()
     }
+
+    /// The technique [`Self::fall_back`] would draw instead, refusing nothing: for preparing it
+    /// ahead of a draw that may never refuse the replacement.
+    pub fn recorded(&self) -> Option<Selection> {
+        let name = &self.effect.source.techniques[self.index].name;
+        let recorded = &self.effect.recorded.as_ref()?.effect;
+        recorded.select(name).ok().flatten()
+    }
 }
 
 /// [`with_recorded`] for a pass built from a selected technique.
@@ -245,6 +253,7 @@ impl Effect {
             .ok_or_else(|| format!("effect {:?}: invalid technique {index}", self.source.effect))?;
         let result = slot
             .get_or_init(|| {
+                super::gpu::stats::build();
                 self.cache
                     .get(&self.source, &self.source.techniques[index], &self.defines)
             })
@@ -254,6 +263,23 @@ impl Effect {
         }
         result
     }
+    /// Technique `index`'s program if it has been compiled, without compiling it.
+    pub fn compiled_now(&self, index: usize) -> Option<Result<Arc<Compiled>, String>> {
+        self.compiled.get(index)?.peek().cloned()
+    }
+
+    /// Compiles every technique now. A failure is reported where a technique is used
+    /// ([`Self::compiled`]), not here.
+    pub fn warm(&self) {
+        for (index, slot) in self.compiled.iter().enumerate() {
+            slot.get_or_init(|| {
+                super::gpu::stats::build();
+                self.cache
+                    .get(&self.source, &self.source.techniques[index], &self.defines)
+            });
+        }
+    }
+
     /// Whether a technique of this effect failed to compile; it keeps that failure.
     pub(crate) fn failed(&self) -> bool {
         self.compiled

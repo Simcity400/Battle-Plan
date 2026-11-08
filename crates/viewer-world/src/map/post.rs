@@ -1112,7 +1112,7 @@ impl PostPass {
             target(device, "post reduction 0", schedule.backing, LUMINANCE_FORMAT),
             target(device, "post reduction 1", schedule.backing, LUMINANCE_FORMAT),
         ];
-        let copy = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let copy = shader_pipeline::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
             label: Some("viewer scene copy"),
             layout: &self.layout,
             entries: &[
@@ -1317,8 +1317,11 @@ impl PostPass {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         render.set_pipeline(&self.copy);
+        shader_pipeline::gpu::stats::bind();
         render.set_bind_group(0, &chain.copy, &[]);
+        shader_pipeline::gpu::stats::draw();
         render.draw(0..3, 0..1);
         Ok(())
     }

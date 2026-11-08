@@ -11,7 +11,7 @@
 //! pattern is the viewer's own.
 use crate::map::terrain_shader::{Block, SIDE};
 use bytemuck::{Pod, Zeroable};
-use eframe::wgpu::{self, util::DeviceExt};
+use eframe::wgpu;
 use std::{future::Future, io};
 use viewer_foundation::map::gpu_contract::{DEPTH_FORMAT, SCENE_FORMAT, Targets};
 use viewer_foundation::map::province_map::{HEIGHT_SCALE, WATER_HEIGHT};
@@ -156,6 +156,22 @@ pub struct UnknownHatch {
     indices: wgpu::Buffer,
     count: u32,
     samples: u32,
+    ring: std::cell::RefCell<Ring>,
+}
+
+/// Bytes between draws' parameter blocks, the uniform offset alignment WebGPU guarantees.
+const PARAMS_STRIDE: u64 = 256;
+
+/// A frame's draws write their parameters and blocks into persistent buffers, a parameter slot
+/// and a block range each, rather than making buffers and bindings per draw.
+#[derive(Default)]
+struct Ring {
+    slot: usize,
+    params: Option<(wgpu::Buffer, usize)>,
+    blocks: Option<(wgpu::Buffer, u64)>,
+    used: u64,
+    groups: Vec<wgpu::BindGroup>,
+    views: Option<(wgpu::TextureView, wgpu::TextureView)>,
 }
 
 impl UnknownHatch {
@@ -210,11 +226,14 @@ impl UnknownHatch {
                 multiview_mask: None,
                 cache: None,
             });
-            let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("unknown snow/mud hatch triangles"),
-                contents: bytemuck::cast_slice(&triangles),
-                usage: wgpu::BufferUsages::INDEX,
-            });
+            let indices = shader_pipeline::gpu::stats::create_buffer_init(
+                device,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some("unknown snow/mud hatch triangles"),
+                    contents: bytemuck::cast_slice(&triangles),
+                    usage: wgpu::BufferUsages::INDEX,
+                },
+            );
             (pipeline, indices)
         })?;
         Ok(Self {
@@ -222,12 +241,20 @@ impl UnknownHatch {
             indices,
             count: triangles.len() as u32,
             samples,
+            ring: Default::default(),
         })
     }
 
     /// The scene targets' sample count this pipeline was built for.
     pub fn samples(&self) -> u32 {
         self.samples
+    }
+
+    /// Starts a frame's draws at the first parameter slot and block range.
+    pub fn begin_frame(&self) {
+        let mut ring = self.ring.borrow_mut();
+        ring.slot = 0;
+        ring.used = 0;
     }
 
     /// Hatches the unknown cells of `blocks` ([`Coverage::instances`]) on one surface of one wrap.
@@ -237,6 +264,7 @@ impl UnknownHatch {
     pub fn draw(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         targets: &Targets,
         heights: &wgpu::TextureView,
@@ -247,38 +275,99 @@ impl UnknownHatch {
         if blocks.is_empty() {
             return Ok(());
         }
-        let (group, instances) = scoped(device, "unknown snow and mud hatch bindings", || {
-            let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("unknown snow/mud hatch parameters"),
-                contents: bytemuck::bytes_of(params),
-                usage: wgpu::BufferUsages::UNIFORM,
-            });
-            let instances = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("unknown snow/mud hatch blocks"),
-                contents: bytemuck::cast_slice(blocks),
-                usage: wgpu::BufferUsages::VERTEX,
-            });
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("unknown snow/mud hatch"),
-                layout: &self.pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: uniform.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(heights),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::TextureView(unknown),
-                    },
-                ],
-            });
-            (group, instances)
+        let mut ring = self.ring.borrow_mut();
+        let ring = &mut *ring;
+        let slot = ring.slot;
+        let bytes: &[u8] = bytemuck::cast_slice(blocks);
+        let length = bytes.len() as u64;
+        scoped(device, "unknown snow and mud hatch bindings", || {
+            if ring.params.as_ref().is_none_or(|(_, slots)| *slots <= slot) {
+                let slots = (slot + 1).next_power_of_two().max(4);
+                ring.params = Some((
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("unknown snow/mud hatch parameters"),
+                        size: slots as u64 * PARAMS_STRIDE,
+                        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+                    slots,
+                ));
+                ring.groups.clear();
+            }
+            if ring
+                .blocks
+                .as_ref()
+                .is_none_or(|(_, size)| ring.used + length > *size)
+            {
+                // Earlier draws keep the buffer their commands bound.
+                let size = (ring.used + length).next_power_of_two().max(1 << 16);
+                ring.blocks = Some((
+                    device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("unknown snow/mud hatch blocks"),
+                        size,
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    }),
+                    size,
+                ));
+                ring.used = 0;
+            }
+            if ring
+                .views
+                .as_ref()
+                .is_none_or(|(had_heights, had_unknown)| {
+                    had_heights != heights || had_unknown != unknown
+                })
+            {
+                ring.views = Some((heights.clone(), unknown.clone()));
+                ring.groups.clear();
+            }
+            let (params_buffer, _) = ring.params.as_ref().expect("made above");
+            while ring.groups.len() <= slot {
+                let at = ring.groups.len() as u64 * PARAMS_STRIDE;
+                ring.groups
+                    .push(shader_pipeline::gpu::stats::create_bind_group(
+                        device,
+                        &wgpu::BindGroupDescriptor {
+                            label: Some("unknown snow/mud hatch"),
+                            layout: &self.pipeline.get_bind_group_layout(0),
+                            entries: &[
+                                wgpu::BindGroupEntry {
+                                    binding: 0,
+                                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                        buffer: params_buffer,
+                                        offset: at,
+                                        size: std::num::NonZeroU64::new(
+                                            size_of::<HatchParams>() as u64
+                                        ),
+                                    }),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 1,
+                                    resource: wgpu::BindingResource::TextureView(heights),
+                                },
+                                wgpu::BindGroupEntry {
+                                    binding: 2,
+                                    resource: wgpu::BindingResource::TextureView(unknown),
+                                },
+                            ],
+                        },
+                    ));
+            }
         })
         .map_err(io::Error::other)?;
+        let (params_buffer, _) = ring.params.as_ref().expect("made above");
+        let (blocks_buffer, _) = ring.blocks.as_ref().expect("made above");
+        let first = ring.used;
+        shader_pipeline::gpu::stats::write_buffer(
+            queue,
+            params_buffer,
+            slot as u64 * PARAMS_STRIDE,
+            bytemuck::bytes_of(params),
+        );
+        shader_pipeline::gpu::stats::write_buffer(queue, blocks_buffer, first, bytes);
+        ring.used += length;
+        ring.slot += 1;
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("unknown snow/mud hatch"),
             color_attachments: &[Some(targets.scene_attachment(wgpu::LoadOp::Load))],
@@ -287,10 +376,15 @@ impl UnknownHatch {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &group, &[]);
-        pass.set_vertex_buffer(0, instances.slice(..));
+        shader_pipeline::gpu::stats::bind();
+        pass.set_bind_group(0, &ring.groups[slot], &[]);
+        shader_pipeline::gpu::stats::state();
+        pass.set_vertex_buffer(0, blocks_buffer.slice(first..first + length));
+        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
+        shader_pipeline::gpu::stats::draw();
         pass.draw_indexed(0..self.count, 0, 0..blocks.len() as u32);
         Ok(())
     }

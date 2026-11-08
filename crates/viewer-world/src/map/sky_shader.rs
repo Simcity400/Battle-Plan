@@ -129,10 +129,14 @@ impl Sky {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&self.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
         bindings.bind(&mut pass);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.vertices.slice(..));
+        shader_pipeline::gpu::stats::draw();
         pass.draw(0..3, 0..1);
         Ok(())
     }

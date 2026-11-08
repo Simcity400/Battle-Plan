@@ -128,14 +128,15 @@ impl Arena {
     pub fn flush(&self, queue: &wgpu::Queue) {
         let mut inner = self.inner.borrow_mut();
         for (buffer, offset, bytes) in inner.writes.drain(..) {
-            queue.write_buffer(&buffer, offset, &bytes);
+            crate::gpu::stats::write_buffer(&queue, &buffer, offset, &bytes);
         }
         for chunk in &mut inner.chunks {
             if chunk.staged.len() == chunk.flushed {
                 continue;
             }
             chunk.staged.resize(align(chunk.staged.len(), 4), 0);
-            queue.write_buffer(
+            crate::gpu::stats::write_buffer(
+                &queue,
                 &chunk.buffer,
                 chunk.flushed as u64,
                 &chunk.staged[chunk.flushed..],

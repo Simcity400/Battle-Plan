@@ -55,7 +55,8 @@ impl LutRenderer {
         let sources = (0..assets.luts.len() as u32)
             .zip(&assets.luts)
             .map(|(layer, lut)| {
-                queue.write_texture(
+                shader_pipeline::gpu::stats::write_texture(
+                    &queue,
                     wgpu::TexelCopyTextureInfo {
                         texture: &source,
                         mip_level: 0,

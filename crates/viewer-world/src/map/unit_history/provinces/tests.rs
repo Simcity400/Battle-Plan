@@ -65,7 +65,7 @@ fn formation(candidate: &naval::Candidate, mesh: usize) -> naval::Formation {
 fn assert_same_join(pair: &[Provinces; 2], targets: &Targets, naval: &naval::History) {
     let [merged, looked_up] = pair;
     assert_eq!(merged.indices, looked_up.indices);
-    assert_eq!(merged.populated, looked_up.populated);
+    assert!(merged.populated.iter().eq(looked_up.populated.iter()));
     assert_eq!(merged.records.len(), looked_up.records.len());
     for (a, b) in merged.records.iter().zip(&looked_up.records) {
         assert_eq!(a.id, b.id);

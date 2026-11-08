@@ -365,6 +365,20 @@ impl Terrain {
             samples,
         })
     }
+    /// Builds the pipelines of `modes` now, keeping each result for the frames that draw them.
+    pub fn warm(&mut self, device: &wgpu::Device, modes: &[Mode]) {
+        let effect = Arc::clone(&self.effect);
+        for &mode in modes {
+            drop(self.pipeline(device, mode));
+        }
+        // A mode that fell back to the recorded effect cleared the others: they warm again.
+        if !Arc::ptr_eq(&effect, &self.effect) {
+            for &mode in modes {
+                drop(self.pipeline(device, mode));
+            }
+        }
+    }
+
     fn pipeline(&mut self, device: &wgpu::Device, mode: Mode) -> io::Result<Arc<gpu::Pipeline>> {
         if !self.pipelines.contains_key(&mode) {
             let mut built = self.build_pipeline(device, mode);
@@ -515,12 +529,24 @@ impl Terrain {
             .map(|(i, v)| (binding(i as u32, Stage::Pixel), (*v).clone()))
             .collect();
         let mut batches = Vec::new();
+        let mut buffers = BTreeMap::new();
+        if mode != Mode::Receiver {
+            buffers.insert(
+                binding(2, Stage::Pixel),
+                bytemuck::bytes_of(&inputs.light_grid).to_vec(),
+            );
+        }
         for (frame, offset) in inputs.frames.iter().zip(inputs.offsets) {
             let mut matrix = inputs.matrix;
             for (value, axis) in matrix[3].iter_mut().zip(inputs.matrix[0]) {
                 *value += axis * offset;
             }
-            for (patch, snap) in self.view_blocks(inputs.cover, *offset)? {
+            for stage in [Stage::Vertex, Stage::Pixel] {
+                buffers.insert(binding(0, stage), frame.to_vec());
+            }
+            let blocks = self.view_blocks(inputs.cover, *offset)?;
+            let last = blocks.len().saturating_sub(1);
+            for (index, (patch, snap)) in blocks.into_iter().enumerate() {
                 self.geometry.entry(patch).or_insert_with(|| {
                     let cells = std::array::from_fn(|axis| {
                         ((self.map[axis] - patch.origin[axis]) / patch.step).min(SIDE)
@@ -544,19 +570,15 @@ impl Terrain {
                     }
                 });
                 let b1 = constants(patch, matrix, snap);
-                let mut buffers = BTreeMap::from([
-                    (binding(0, Stage::Vertex), frame.to_vec()),
-                    (binding(0, Stage::Pixel), frame.to_vec()),
-                    (binding(1, Stage::Vertex), b1.clone()),
-                    (binding(1, Stage::Pixel), b1),
-                ]);
-                if mode != Mode::Receiver {
-                    buffers.insert(
-                        binding(2, Stage::Pixel),
-                        bytemuck::bytes_of(&inputs.light_grid).to_vec(),
-                    );
+                for stage in [Stage::Vertex, Stage::Pixel] {
+                    let block = buffers.entry(binding(1, stage)).or_insert_with(Vec::new);
+                    block.clear();
+                    block.extend_from_slice(&b1);
                 }
-                if let Some(retained) = inputs.retained {
+                // Every block binds the same slots, so the state it leaves behind is the view's last.
+                if index == last
+                    && let Some(retained) = inputs.retained
+                {
                     let mut tracked = retained.borrow_mut();
                     self.programs[&mode].bind(&mut tracked, &buffers, &textures);
                     tracked.bind_vertex(1, 4, self.geometry[&patch].cpu_heights.clone());
@@ -572,14 +594,22 @@ impl Terrain {
         Ok(Prepared { pipeline, batches })
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, prepared: &Prepared) {
+        shader_pipeline::gpu::stats::pipeline();
         pass.set_pipeline(&prepared.pipeline.pipeline);
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(0, self.positions.slice(..));
+        let mut previous = None;
         for (key, bindings) in &prepared.batches {
             let geometry = &self.geometry[key];
-            bindings.bind(pass);
+            bindings.bind_after(pass, previous);
+            previous = Some(bindings);
+            shader_pipeline::gpu::stats::state();
             pass.set_vertex_buffer(1, geometry.heights.slice(..));
+            shader_pipeline::gpu::stats::state();
             pass.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint16);
+            shader_pipeline::gpu::stats::draw();
             pass.draw_indexed(0..geometry.count, 0, 0..1);
         }
     }

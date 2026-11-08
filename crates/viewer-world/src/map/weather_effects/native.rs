@@ -4,7 +4,9 @@
 mod packing;
 
 use super::{Emitter, Simulation};
-use eframe::wgpu::{self, util::DeviceExt};
+use eframe::wgpu;
+#[cfg(test)]
+use eframe::wgpu::util::DeviceExt;
 use installed_content_core::{mesh::Transform, particles::RenderDescriptor, pdxshader::program::Stage};
 use shader_pipeline::{binding, gpu, library::Effect};
 #[cfg(test)]
@@ -840,11 +842,14 @@ impl Renderer {
         max_particles: usize,
     ) -> Self {
         let buffer = |label, contents, usage| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage,
-            })
+            shader_pipeline::gpu::stats::create_buffer_init(
+                &device,
+                &wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents,
+                    usage,
+                },
+            )
         };
         Self {
             effect,
@@ -955,6 +960,7 @@ impl Renderer {
         let quad = &self.quad;
         let mut previous: Option<PreviousDraw> = None;
         let mut uploads = OrdinaryUploads::default();
+        shader_pipeline::gpu::stats::state();
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint16);
         for (index, packet) in ordered.iter().enumerate() {
             let key_actor = (packet.registration, packet.actor);
@@ -1157,17 +1163,22 @@ impl Renderer {
                 .filter(|last| Arc::ptr_eq(&last.pass.pipeline, pipeline))
                 .map(|last| &last.pass.bindings);
             if same.is_none() {
+                shader_pipeline::gpu::stats::pipeline();
                 pass.set_pipeline(&pipeline.pipeline);
                 pass.set_stencil_reference(submission.pass.stencil_reference.unwrap_or(0));
+                shader_pipeline::gpu::stats::state();
                 pass.set_blend_constant(wgpu::Color::WHITE);
             }
             submission.pass.bindings.bind_after(&mut pass, same);
             for (slot, buffer) in submission.vertices.iter().enumerate() {
+                shader_pipeline::gpu::stats::state();
                 pass.set_vertex_buffer(slot as u32, buffer.slice());
             }
             if trail.is_some() {
+                shader_pipeline::gpu::stats::draw();
                 pass.draw(0..count, 0..instances);
             } else {
+                shader_pipeline::gpu::stats::draw();
                 pass.draw_indexed(0..6, 0, 0..instances);
             }
             previous = Some(PreviousDraw {

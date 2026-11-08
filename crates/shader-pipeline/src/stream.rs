@@ -16,7 +16,10 @@ use installed_content_core::pdxshader::{
     Address, DepthStencilState, RasterizerState,
     program::{Filter, Sampler, Stage},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 type TextureMap = BTreeMap<u32, Option<wgpu::TextureView>>;
 
@@ -40,6 +43,114 @@ pub struct Stream {
     last_pass: Option<ResolvedPass>,
     pub cache: gpu::Cache,
     pub refused: BTreeMap<String, u64>,
+    /// Where packed pipelines this stream lacks are built, while their draws wait; `None`
+    /// builds them in place.
+    builds: Option<Builds>,
+    /// Draws that waited for a pipeline since [`Self::take_waiting`].
+    waits: u32,
+}
+
+/// What a packed pipeline is built for: its program, bound state and target.
+type Target = (wgpu::TextureFormat, u32, wgpu::PrimitiveTopology);
+
+struct Build {
+    selection: Selection,
+    state: gpu::State,
+    target: Target,
+    /// `None` while it builds.
+    made: Option<(gpu::Cached, Diagnostics)>,
+}
+
+impl Build {
+    fn is(&self, selection: &Selection, state: &gpu::State, target: Target) -> bool {
+        self.selection.effect.id == selection.effect.id
+            && self.selection.index == selection.index
+            && self.target == target
+            && gpu::same_packed(&self.state, state)
+    }
+}
+
+/// Packed pipelines streams lacked, each built on a thread of its own.
+#[derive(Clone, Default)]
+pub struct Builds(Arc<Mutex<Vec<Build>>>);
+
+fn lock(builds: &Mutex<Vec<Build>>) -> std::sync::MutexGuard<'_, Vec<Build>> {
+    builds.lock().unwrap_or_else(|error| error.into_inner())
+}
+
+impl Builds {
+    /// The finished build for this draw, taken; else `None`, its build started unless under way.
+    fn take_or_start(
+        &self,
+        device: &wgpu::Device,
+        selection: &Selection,
+        state: &gpu::State,
+        target: Target,
+    ) -> Option<(gpu::Cached, Diagnostics)> {
+        let mut builds = lock(&self.0);
+        if let Some(at) = builds
+            .iter()
+            .position(|build| build.is(selection, state, target))
+        {
+            return match builds[at].made {
+                Some(_) => builds.swap_remove(at).made,
+                None => None,
+            };
+        }
+        builds.push(Build {
+            selection: selection.clone(),
+            state: state.clone(),
+            target,
+            made: None,
+        });
+        drop(builds);
+        let build = {
+            let (shared, device, selection, state) = (
+                Arc::clone(&self.0),
+                device.clone(),
+                selection.clone(),
+                state.clone(),
+            );
+            let building = gpu::Building::start();
+            move || {
+                let _building = building;
+                let (format, samples, topology) = target;
+                // A build that panicked is refused by name, so its draws never wait for it.
+                let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    gpu::Cache::default()
+                        .build_packed(&device, &selection, &state, format, samples, topology)
+                }))
+                .unwrap_or_else(|_| {
+                    (
+                        Err("a GUI pipeline build panicked".into()),
+                        Diagnostics::default(),
+                    )
+                });
+                if let Some(build) = lock(&shared)
+                    .iter_mut()
+                    .find(|build| build.is(&selection, &state, target))
+                {
+                    build.made = Some(made);
+                }
+            }
+        };
+        match std::thread::Builder::new()
+            .name("GUI pipeline builds".into())
+            .spawn(job_priority::carry(build))
+        {
+            Ok(_) => None,
+            // With no thread to build on, the draw is refused by name, never built here.
+            Err(error) => {
+                lock(&self.0).retain(|build| !build.is(selection, state, target));
+                Some((
+                    Err(format!(
+                        "GUI pipeline builds could not start a thread: {error}"
+                    )),
+                    Diagnostics::default(),
+                ))
+            }
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -158,6 +269,8 @@ impl Default for Stream {
             last_pass: None,
             cache: gpu::Cache::default(),
             refused: BTreeMap::new(),
+            builds: None,
+            waits: 0,
         }
     }
 }
@@ -544,6 +657,109 @@ impl Stream {
         }
     }
 
+    /// Packed pipelines this stream lacks are built on `builds` while their draws wait
+    /// ([`Self::take_waiting`]); `None` builds them in place.
+    pub fn defer_builds(&mut self, builds: Option<Builds>) {
+        self.builds = builds;
+    }
+
+    /// Whether a draw waited for its pipeline since the last call: it was neither prepared nor
+    /// refused, and its binds stay as the game makes them.
+    pub fn take_waiting(&mut self) -> bool {
+        std::mem::take(&mut self.waits) != 0
+    }
+
+    /// The packed pipeline of the bound state for `selection`, or `None` while it builds.
+    fn packed(
+        &mut self,
+        device: &wgpu::Device,
+        selection: &Selection,
+        (format, samples, topology): Target,
+    ) -> Option<gpu::Cached> {
+        if let Some(builds) = &self.builds
+            && !self
+                .cache
+                .ready(device, selection, &self.state, format, samples, topology)
+        {
+            let made = builds.take_or_start(
+                device,
+                selection,
+                &self.state,
+                (format, samples, topology),
+            )?;
+            self.cache
+                .adopt_packed(selection, &self.state, (format, samples, topology), made);
+        }
+        Some(
+            self.cache
+                .get(device, selection, &self.state, format, samples, topology),
+        )
+    }
+
+    /// Builds, in place, the packed pipeline a draw of `selection` alone makes: the technique's
+    /// blend or the renderer default, alpha accumulated or not, and its own samplers. The
+    /// stream's binds are then invalidated and its blend kept.
+    pub fn warm(
+        &mut self,
+        device: &wgpu::Device,
+        selection: &Selection,
+        (default_blend, premultiply): (bool, bool),
+        (format, samples, topology): Target,
+    ) {
+        let blend = |selection: &Selection| {
+            let source = &selection.effect.source;
+            gpu::blend(source, &source.techniques[selection.index])
+        };
+        // A replacement whose blend cannot be built draws the recorded program, as a draw binds it.
+        let (selection, (blend, mask)) = match blend(selection) {
+            Ok(state) => (selection.clone(), state),
+            Err(_) => match selection.recorded() {
+                Some(recorded) => match blend(&recorded) {
+                    Ok(state) => (recorded, state),
+                    Err(_) => return,
+                },
+                None => return,
+            },
+        };
+        let source = &selection.effect.source;
+        let kept = self.blend();
+        self.invalidate_bindings();
+        if default_blend {
+            self.bind_blend(None, wgpu::ColorWrites::ALL);
+        } else {
+            self.bind_blend(blend, mask);
+        }
+        if premultiply {
+            self.accumulate_alpha();
+        }
+        for sampler in source.common.samplers.iter().chain(&source.pixel.samplers) {
+            self.bind_texture(sampler.index, Stage::Pixel, None, Some(sampler));
+        }
+        for sampler in &source.vertex.samplers {
+            self.bind_texture(sampler.index, Stage::Vertex, None, Some(sampler));
+        }
+        // A failure is kept by the cache and reported where a draw meets it; the recorded program
+        // a failed replacement draws instead is made too.
+        if self
+            .cache
+            .get(device, &selection, &self.state, format, samples, topology)
+            .is_err()
+            && let Some(recorded) = selection.recorded()
+        {
+            drop(
+                self.cache
+                    .get(device, &recorded, &self.state, format, samples, topology),
+            );
+        }
+        self.invalidate_bindings();
+        self.bind_blend(kept.0, kept.1);
+    }
+
+    fn wait(&mut self) -> String {
+        self.waits += 1;
+        "its pipeline is being built".into()
+    }
+
     /// `count` records of `stride` bytes drawn as the caller's `topology`: a native four-record
     /// strip stays four records, so `SV_VertexID` runs as it does natively.
     #[allow(clippy::too_many_arguments)]
@@ -558,10 +774,13 @@ impl Stream {
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> Result<Submission, String> {
+        let waits = self.waits;
         let result = self
             .prepare_inner(arena, bytes, stride, count, topology, format, samples)
             .map_err(|reason| format!("native draw {label:?}: {reason}"));
-        if let Err(reason) = &result {
+        if let Err(reason) = &result
+            && self.waits == waits
+        {
             self.refuse(arena, label, reason);
         }
         result
@@ -587,26 +806,19 @@ impl Stream {
         let device = arena.device();
         // A visual mod's replacement that cannot be drawn with the bound state draws the
         // recorded program instead, refused by name.
-        let pipeline =
-            match self
-                .cache
-                .get(device, &selection, &self.state, format, samples, topology)
-            {
-                Ok(pipeline) => pipeline,
-                Err(error) => {
-                    let recorded = selection.fall_back(&error).ok_or(error)?;
-                    let pipeline = self.cache.get(
-                        device,
-                        &recorded,
-                        &self.state,
-                        format,
-                        samples,
-                        topology,
-                    )?;
-                    selection = recorded;
-                    pipeline
-                }
-            };
+        let target = (format, samples, topology);
+        let pipeline = match self.packed(device, &selection, target) {
+            None => return Err(self.wait()),
+            Some(Ok(pipeline)) => pipeline,
+            Some(Err(error)) => {
+                let recorded = selection.fall_back(&error).ok_or(error)?;
+                let Some(pipeline) = self.packed(device, &recorded, target) else {
+                    return Err(self.wait());
+                };
+                selection = recorded;
+                pipeline?
+            }
+        };
         let compiled = selection.effect.compiled(selection.index)?;
         let kinds = || {
             compiled
@@ -617,6 +829,17 @@ impl Stream {
         };
         self.null_textures(arena.device(), &selection, kinds())?;
         self.check_constants(&pipeline)?;
+        let bound = |binding| match self.textures.get(&binding)? {
+            Some(view) => Some(view),
+            None => {
+                let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
+                self.null_textures.get(kind)
+            }
+        };
+        // A texture variant this pipeline lacks builds elsewhere while the draw waits.
+        if self.builds.is_some() && pipeline.start_variant(device, bound) {
+            return Err(self.wait());
+        }
         let draw = pipeline
             .prepare_with(
                 arena,

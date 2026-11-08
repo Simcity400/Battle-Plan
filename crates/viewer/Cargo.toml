@@ -38,6 +38,7 @@ viewer-counters = { path = "../viewer-counters" }
 viewer-raids = { path = "../viewer-raids" }
 viewer-combat = { path = "../viewer-combat" }
 viewer-foundation = { path = "../viewer-foundation" }
+shader-pipeline = { path = "../shader-pipeline" }
 installed-content-sound.workspace = true
 eframe = { version = "0.36.2", default-features = false, features = ["wgpu", "default_fonts"] }
 bytemuck = { workspace = true, features = ["derive"] }

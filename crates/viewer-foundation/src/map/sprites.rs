@@ -24,7 +24,7 @@ use super::{
     gpu_contract::{Targets, sampler_entry, texture_entry},
     lazy_icons::{DYNAMIC_BASE, LazyTextures},
     text,
-    textures::{Bound, ColorSpace, upload},
+    textures::{Bound, ColorSpace, upload, upload_held},
 };
 
 mod fade;
@@ -599,20 +599,23 @@ impl IconTextures {
         self.bound
             .iter()
             .map(|texture| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("icon page"),
-                    layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&texture.view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(sampler),
-                        },
-                    ],
-                })
+                shader_pipeline::gpu::stats::create_bind_group(
+                    &device,
+                    &wgpu::BindGroupDescriptor {
+                        label: Some("icon page"),
+                        layout,
+                        entries: &[
+                            wgpu::BindGroupEntry {
+                                binding: 0,
+                                resource: wgpu::BindingResource::TextureView(&texture.view),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 1,
+                                resource: wgpu::BindingResource::Sampler(sampler),
+                            },
+                        ],
+                    },
+                )
             })
             .collect()
     }
@@ -723,6 +726,15 @@ pub struct SpritePass {
     scratch: Scratch,
     /// The frame is a layer composited later ([`SpritePass::set_layer`]).
     layer: bool,
+    /// Where the streams' missing pipelines build while their draws wait
+    /// ([`SpritePass::defer_builds`]).
+    builds: super::native_shader::stream::Builds,
+    /// A draw of the last upload waited for its pipeline, so the next frame uploads again.
+    waited: bool,
+    /// Refusals this frame's preparations logged.
+    logged: HashSet<String>,
+    /// Made at load, so a lazy texture uploaded during a frame crops with it.
+    unpack: Arc<wgpu::ComputePipeline>,
 }
 
 /// One upload's lists: the frame's snapped quads, the fade pages' and the composites' vertices,
@@ -952,7 +964,71 @@ impl SpritePass {
             fade_pages: 0,
             scratch: Scratch::default(),
             layer: false,
+            builds: Default::default(),
+            waited: false,
+            logged: HashSet::new(),
+            unpack: super::textures::unpack_pipeline(device),
         })
+    }
+
+    /// Whether pipelines the streams lack build elsewhere while their draws wait, drawing
+    /// nothing until ready, rather than in place.
+    pub fn defer_builds(&mut self, defer: bool) {
+        let builds = defer.then(|| self.builds.clone());
+        for stream in [
+            &mut self.native,
+            &mut self.fade_stream,
+            &mut self.bake_stream,
+        ] {
+            stream.defer_builds(builds.clone());
+        }
+    }
+
+    /// Compiles every technique of `effects` and builds the pipelines a draw of each makes on
+    /// its own, into the frame, into a fade page and into a text bake, so no frame builds them.
+    pub fn warm(
+        &mut self,
+        device: &wgpu::Device,
+        effects: impl IntoIterator<Item = Arc<super::native_shader::library::Effect>>,
+    ) {
+        use wgpu::PrimitiveTopology::{TriangleList, TriangleStrip};
+        let (format, samples, layer) = (self.native_format, self.native_samples, self.layer);
+        for effect in effects {
+            effect.warm();
+            for index in 0..effect.source.techniques.len() {
+                let selection = super::native_shader::library::Selection {
+                    effect: Arc::clone(&effect),
+                    index,
+                };
+                // A retained program under the renderer's default blend draws too.
+                for (topology, default_blend) in [TriangleStrip, TriangleList]
+                    .into_iter()
+                    .flat_map(|topology| [(topology, false), (topology, true)])
+                {
+                    self.native.warm(
+                        device,
+                        &selection,
+                        (default_blend, layer),
+                        (format, samples, topology),
+                    );
+                    self.fade_stream.warm(
+                        device,
+                        &selection,
+                        (default_blend, true),
+                        (format, 1, topology),
+                    );
+                }
+                // Text bakes draw lists, their backgrounds under the renderer's default blend.
+                for default_blend in [false, true] {
+                    self.bake_stream.warm(
+                        device,
+                        &selection,
+                        (default_blend, false),
+                        (BAKE_FORMAT, 1, TriangleList),
+                    );
+                }
+            }
+        }
     }
 
     /// Mirrors the content's lazy textures: uploads new and changed ones and
@@ -985,12 +1061,12 @@ impl SpritePass {
             if !plan.upload.contains(&id) {
                 continue;
             }
-            let texture = match upload(
+            let texture = match upload_held(
                 device,
                 queue,
                 &format!("lazy icon {}", id - DYNAMIC_BASE),
                 &entry.texture,
-                ColorSpace::Linear,
+                (ColorSpace::Linear, &self.unpack),
             ) {
                 Ok(texture) => texture,
                 Err(error) => {
@@ -1002,20 +1078,23 @@ impl SpritePass {
                 }
             };
             self.failed.remove(&id);
-            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("lazy icon"),
-                layout: &self.layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&texture.view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
-            });
+            let group = shader_pipeline::gpu::stats::create_bind_group(
+                &device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some("lazy icon"),
+                    layout: &self.layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&texture.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                },
+            );
             self.dynamic.insert(
                 id,
                 DynamicPage {
@@ -1124,7 +1203,17 @@ impl SpritePass {
         if moving {
             // Keep snapshot storage, but its submissions are no longer the current ones.
             self.retained_valid = false;
-            self.upload_changed(device, queue, arena, batch, size, ui_scale);
+            self.waited = false;
+            self.logged.clear();
+            let mut joined = None;
+            loop {
+                let started = shader_pipeline::gpu::builds_started();
+                self.upload_changed(device, queue, arena, batch, size, ui_scale);
+                if !self.join_builds(arena, started, &mut joined) {
+                    break;
+                }
+            }
+            record_join(joined);
             return;
         }
         let uploads = self
@@ -1132,6 +1221,7 @@ impl SpritePass {
             .take()
             .expect("sprite uploads belong to the pass");
         let same = self.retained_valid
+            && !self.waited
             && self
                 .retained
                 .as_ref()
@@ -1139,8 +1229,18 @@ impl SpritePass {
         if same {
             self.retained_diagnostics.credit();
         } else {
-            uploads.reset();
-            self.upload_changed(device, queue, &uploads, batch, size, ui_scale);
+            self.waited = false;
+            self.logged.clear();
+            let mut joined = None;
+            loop {
+                uploads.reset();
+                let started = shader_pipeline::gpu::builds_started();
+                self.upload_changed(device, queue, &uploads, batch, size, ui_scale);
+                if !self.join_builds(arena, started, &mut joined) {
+                    break;
+                }
+            }
+            record_join(joined);
             uploads.flush(queue);
             match self.retained.as_mut() {
                 Some(retained) => retained.update(batch, size, ui_scale, self.synced),
@@ -1180,6 +1280,7 @@ impl SpritePass {
         self.native_refusals.clear();
         self.native.refused.clear();
         self.native.invalidate_bindings();
+        self.take_waiting();
         self.count = 0;
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
             self.bakes.clear();
@@ -1459,10 +1560,13 @@ impl SpritePass {
                         }
                     }
                 }
+                // A draw whose pipeline builds elsewhere waits, unrefused.
+                Err(_) if self.take_waiting() => self.waited = true,
                 // The refused draw left the binds the game makes for it, less what the
                 // replay lacks ([`prepare_draw`]).
                 Err(reason) => {
-                    if !self.native_refusals.contains_key(&reason) {
+                    // Logged once a frame, however often a joined batch is prepared.
+                    if self.logged.insert(reason.clone()) {
                         eprintln!("{reason}");
                     }
                     *self.native_refusals.entry(reason).or_default() += 1;
@@ -1623,11 +1727,15 @@ impl SpritePass {
                         };
                         previous_native = None;
                         if !bound {
+                            shader_pipeline::gpu::stats::pipeline();
                             pass.set_pipeline(&self.fade_legacy);
+                            shader_pipeline::gpu::stats::state();
                             pass.set_vertex_buffer(0, self.fade_vertices.slice(..));
                             bound = true;
                         }
+                        shader_pipeline::gpu::stats::bind();
                         pass.set_bind_group(0, group, &[]);
+                        shader_pipeline::gpu::stats::draw();
                         pass.draw(run.range.clone(), 0..1);
                     }
                     Pipe::Composite(_) => unreachable!("fade pages hold no composites"),
@@ -1658,18 +1766,24 @@ impl SpritePass {
             previous_native = None;
             if let Pipe::Composite(page) = run.pipe {
                 if bound != Some(Pipe::Composite(0)) {
+                    shader_pipeline::gpu::stats::pipeline();
                     pass.set_pipeline(&self.fade.composite);
+                    shader_pipeline::gpu::stats::state();
                     pass.set_vertex_buffer(0, self.composite_vertices.slice(..));
                     bound = Some(Pipe::Composite(0));
                 }
+                shader_pipeline::gpu::stats::bind();
                 pass.set_bind_group(0, &self.fade.pages[page].group, &[]);
+                shader_pipeline::gpu::stats::draw();
                 pass.draw(run.range.clone(), 0..1);
                 continue;
             }
             if bound != Some(run.pipe) {
                 match run.pipe {
                     Pipe::Legacy => {
+                        shader_pipeline::gpu::stats::pipeline();
                         pass.set_pipeline(&self.pipeline);
+                        shader_pipeline::gpu::stats::state();
                         pass.set_vertex_buffer(0, self.vertices.slice(..));
                     }
                     Pipe::Native(_) | Pipe::Composite(_) => unreachable!(),
@@ -1683,7 +1797,9 @@ impl SpritePass {
             let Some(group) = group else {
                 continue;
             };
+            shader_pipeline::gpu::stats::bind();
             pass.set_bind_group(0, group, &[]);
+            shader_pipeline::gpu::stats::draw();
             pass.draw(run.range.clone(), 0..1);
         }
     }
@@ -1806,6 +1922,42 @@ impl SpritePass {
         prepared
     }
 
+    /// Whether the batch just prepared met pipelines no warm-up foresaw (a draw sampling a slot
+    /// it does not bind takes the preceding draw's sampler, and a pipeline can reveal its texture
+    /// variant only once built): their builds are waited for, adding to `joined`, so the batch is
+    /// prepared again until it draws whole. A wait no build answers is refused by name.
+    fn join_builds(
+        &mut self,
+        arena: &shader_pipeline::gpu::Arena,
+        started: u64,
+        joined: &mut Option<std::time::Duration>,
+    ) -> bool {
+        if !std::mem::take(&mut self.waited) {
+            return false;
+        }
+        if shader_pipeline::gpu::builds_started() == started
+            && shader_pipeline::gpu::builds_under_way() == 0
+        {
+            let reason = "a GUI draw waited for a pipeline no build was making".to_string();
+            *self.native_refusals.entry(reason.clone()).or_default() += 1;
+            arena.refuse(&reason);
+            return false;
+        }
+        let waiting = std::time::Instant::now();
+        shader_pipeline::gpu::wait_for_builds();
+        *joined = Some(joined.unwrap_or_default() + waiting.elapsed());
+        true
+    }
+
+    /// Whether a stream's draw waited for its pipeline since the last call.
+    fn take_waiting(&mut self) -> bool {
+        // Each stream is asked, so none carries a wait into a later draw.
+        let native = self.native.take_waiting();
+        let fade = self.fade_stream.take_waiting();
+        let bake = self.bake_stream.take_waiting();
+        native || fade || bake
+    }
+
     /// Each slot `draw` binds: its texture, `None` for a null bind, `Err` naming a texture that
     /// is not resident.
     fn native_views(
@@ -1868,7 +2020,7 @@ impl SpritePass {
                 "text bake target {width}x{height} exceeds device limits"
             ));
         }
-        let format = wgpu::TextureFormat::Bgra8Unorm;
+        let format = BAKE_FORMAT;
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("text sprite bake"),
             size: wgpu::Extent3d {
@@ -1944,6 +2096,24 @@ impl SpritePass {
         Ok(view)
     }
 }
+
+/// Counts and logs a frame's wait for GUI builds no warm-up foresaw.
+fn record_join(joined: Option<std::time::Duration>) {
+    let Some(waited) = joined else {
+        return;
+    };
+    use shader_pipeline::gpu::stats::{Count, add};
+    add(Count::GuiJoins, 1);
+    add(Count::GuiJoinMicros, waited.as_micros() as u64);
+    crate::profiling::record_lap("gui_build_join", waited);
+    eprintln!(
+        "Map GUI: a batch waited {:.2} ms for pipelines no warm-up foresaw",
+        waited.as_secs_f64() * 1000.0
+    );
+}
+
+/// What text sprites bake into.
+const BAKE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 struct CachedBake {
     source: Arc<super::native_shader::draw::Bake>,
@@ -2209,7 +2379,7 @@ fn write_vertices<T: bytemuck::Pod>(
         *capacity = count.next_power_of_two();
         *target = buffer(device, *capacity, std::mem::size_of::<T>());
     }
-    queue.write_buffer(target, 0, bytemuck::cast_slice(vertices));
+    shader_pipeline::gpu::stats::write_buffer(&queue, target, 0, bytemuck::cast_slice(vertices));
 }
 
 /// The device pixels `[x0, y0, x1, y1]` a quad covers as laid out, on a target of `size` at

@@ -278,6 +278,29 @@ pub fn upload(
     texture: &dds::Texture,
     space: ColorSpace,
 ) -> io::Result<Bound> {
+    upload_unpacking(device, queue, label, texture, space, None)
+}
+
+/// [`upload`] during a frame, cropping padded block-compressed mips with the caller's
+/// [`unpack_pipeline`], so it neither builds one nor waits on the device's registry.
+pub fn upload_held(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    texture: &dds::Texture,
+    (space, unpack): (ColorSpace, &wgpu::ComputePipeline),
+) -> io::Result<Bound> {
+    upload_unpacking(device, queue, label, texture, space, Some(unpack))
+}
+
+fn upload_unpacking(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    label: &str,
+    texture: &dds::Texture,
+    space: ColorSpace,
+    unpack: Option<&wgpu::ComputePipeline>,
+) -> io::Result<Bound> {
     check_upload(label, texture, space)?;
     let cube = texture.faces == 6;
     let format = format_of(texture.format, space)?;
@@ -300,7 +323,17 @@ pub fn upload(
     if texture.format.block_bytes().is_some()
         && (!texture.width.is_multiple_of(4) || !texture.height.is_multiple_of(4))
     {
-        return upload_unaligned_bc(device, queue, label, texture, space);
+        return match unpack {
+            Some(unpack) => upload_unaligned_bc(device, queue, label, texture, space, unpack),
+            None => upload_unaligned_bc(
+                device,
+                queue,
+                label,
+                texture,
+                space,
+                &unpack_pipeline(device),
+            ),
+        };
     }
     let gpu = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
@@ -325,7 +358,8 @@ pub fn upload(
             let row_blocks = mip.width.div_ceil(block);
             let bytes_per_row = row_blocks * unit_bytes;
             let expanded = sixteen_bit_texels(texture.format, &mip.data);
-            queue.write_texture(
+            shader_pipeline::gpu::stats::write_texture(
+                &queue,
                 wgpu::TexelCopyTextureInfo {
                     texture: &gpu,
                     mip_level: level as u32,
@@ -367,6 +401,26 @@ pub fn upload(
     ))
 }
 
+/// The device's pipeline that crops padded block-compressed mips. A holder made at load keeps it,
+/// so a texture uploaded during a frame builds nothing.
+pub fn unpack_pipeline(device: &wgpu::Device) -> std::sync::Arc<wgpu::ComputePipeline> {
+    super::device_shared::shared(device, "BC logical extent unpack", || {
+        shader_pipeline::gpu::stats::build();
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("BC logical extent unpack"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("texture_unpack.wgsl").into()),
+        });
+        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("BC logical extent unpack"),
+            layout: None,
+            module: &module,
+            entry_point: Some("unpack"),
+            compilation_options: Default::default(),
+            cache: None,
+        })
+    })
+}
+
 // BC7 keeps logical extents. Crop each padded staging mip without
 // changing authored levels or the hardware's BC interpolation.
 fn upload_unaligned_bc(
@@ -375,6 +429,7 @@ fn upload_unaligned_bc(
     label: &str,
     texture: &dds::Texture,
     space: ColorSpace,
+    pipeline: &wgpu::ComputePipeline,
 ) -> io::Result<Bound> {
     let format = format_of(texture.format, space)?;
     let view_format = if format.is_srgb() {
@@ -398,18 +453,6 @@ fn upload_unaligned_bc(
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
     });
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("BC logical extent unpack"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("texture_unpack.wgsl").into()),
-    });
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: Some("BC logical extent unpack"),
-        layout: None,
-        module: &module,
-        entry_point: Some("unpack"),
-        compilation_options: Default::default(),
-        cache: None,
-    });
     let mut encoder = device.create_command_encoder(&Default::default());
     for (face, mips) in texture.mips.iter().enumerate() {
         for (level, mip) in mips.iter().enumerate() {
@@ -429,7 +472,8 @@ fn upload_unaligned_bc(
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            queue.write_texture(
+            shader_pipeline::gpu::stats::write_texture(
+                &queue,
                 source.as_image_copy(),
                 &mip.data,
                 wgpu::TexelCopyBufferLayout {
@@ -450,22 +494,27 @@ fn upload_unaligned_bc(
                 array_layer_count: Some(1),
                 ..Default::default()
             });
-            let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some(label),
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&source),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&destination),
-                    },
-                ],
-            });
+            let bindings = shader_pipeline::gpu::stats::create_bind_group(
+                &device,
+                &wgpu::BindGroupDescriptor {
+                    label: Some(label),
+                    layout: &pipeline.get_bind_group_layout(0),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&source),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&destination),
+                        },
+                    ],
+                },
+            );
             let mut pass = encoder.begin_compute_pass(&Default::default());
+            shader_pipeline::gpu::stats::pipeline();
             pass.set_pipeline(&pipeline);
+            shader_pipeline::gpu::stats::bind();
             pass.set_bind_group(0, &bindings, &[]);
             pass.dispatch_workgroups(mip.width.div_ceil(8), mip.height.div_ceil(8), 1);
         }
@@ -685,7 +734,8 @@ pub fn write_data(
     bytes_per_texel: u32,
     data: &[u8],
 ) {
-    queue.write_texture(
+    shader_pipeline::gpu::stats::write_texture(
+        &queue,
         texture.as_image_copy(),
         data,
         wgpu::TexelCopyBufferLayout {

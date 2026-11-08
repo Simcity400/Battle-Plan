@@ -244,6 +244,10 @@ fn render(layers: &ResolvedLayers, input: &Input, warnings: &mut Vec<String>) ->
             &icons.lazy,
             Default::default(),
         )?;
+        // An offline scene is a capture: its models draw complete, built in place.
+        scene.settle_builds(true);
+        // An offline scene installs no hours: its names build where they draw.
+        scene.build_names_in_upload(true);
         scene.set_trees(
             &device,
             &queue,

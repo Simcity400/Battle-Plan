@@ -28,7 +28,7 @@ use crate::unit_class::CounterClass;
 use crate::unit_handle::Unit;
 use installed_content_core::movement::MovementMap;
 use std::cell::Cell;
-use std::collections::{BTreeMap, HashSet, btree_map::Entry};
+use std::collections::{BTreeMap, btree_map::Entry};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -1176,8 +1176,8 @@ pub struct MovementHistory {
     render: RenderDelta,
     delta: f32,
     frames: u64,
-    /// The provinces this frame updates in view.
-    in_view: HashSet<u32>,
+    /// The provinces this frame updates in view, one bit per province id.
+    in_view: Vec<u64>,
     units: BTreeMap<Unit, Moving>,
 }
 
@@ -1272,8 +1272,14 @@ impl MovementHistory {
     pub fn begin_frame(&mut self, frame: MovementFrame, in_view: impl IntoIterator<Item = u32>) {
         let previous = self.frame.replace(frame);
         self.frames += 1;
-        self.in_view.clear();
-        self.in_view.extend(in_view);
+        self.in_view.fill(0);
+        for province in in_view {
+            let word = province as usize / 64;
+            if word >= self.in_view.len() {
+                self.in_view.resize(word + 1, 0);
+            }
+            self.in_view[word] |= 1 << (province % 64);
+        }
         let frame_time = previous.map_or(0.0, |previous| (frame.time - previous.time).max(0.0));
         self.delta = self.render.step(frame_time);
         if frame.steady
@@ -1304,7 +1310,12 @@ impl MovementHistory {
         let (day, fastest) = (game_day(frame.hour), clock >= 4);
         state.offer(input, day, fastest);
         state.hour = frame.hour;
-        if state.advanced != self.frames && self.in_view.contains(&state.current.province) {
+        if state.advanced != self.frames
+            && self
+                .in_view
+                .get(state.current.province as usize / 64)
+                .is_some_and(|word| word >> (state.current.province % 64) & 1 != 0)
+        {
             state.advance(frame, day, fastest, self.delta);
             state.advanced = self.frames;
         }

@@ -1,5 +1,6 @@
 //! Compiled mesh passes with retained material state and ordered submission.
 use super::*;
+mod builds;
 pub(super) mod walk;
 mod plans;
 mod plan_tail;
@@ -365,8 +366,8 @@ pub(super) struct Renderer {
     /// The mesh effects of the stack the entities were baked from, then of the recording alone:
     /// a visual mod entity's recorded counterpart ([`super::ModelLibrary::alternatives`]) is
     /// drawn with the recording's own shaders, as the recording draws it.
-    libraries: [Library; 2],
-    cache: shader_pipeline::gpu::Cache,
+    /// The mesh effects and pipeline cache, shared with the background builds.
+    builds: builds::Builds,
     residents: Vec<Resident>,
     /// Mesh/node/LOD/part, then caster/forced selection. Sized from demanded content.
     slots: Vec<MeshSlots>,
@@ -496,6 +497,7 @@ impl DrawList {
         let mut previous: Option<&RecordedDraw> = None;
         let mut vertices = None;
         let mut indices = None;
+        shader_pipeline::gpu::stats::state();
         pass.set_blend_constant(wgpu::Color::WHITE);
         for draw in draws {
             if previous.is_none_or(|last| last.reference != draw.reference) {
@@ -504,12 +506,14 @@ impl DrawList {
             if vertices != Some(draw.vertices) {
                 for (slot, stream) in self.vertices[&draw.vertices].iter().enumerate() {
                     if let Some(stream) = stream {
+                        shader_pipeline::gpu::stats::state();
                         pass.set_vertex_buffer(slot as u32, stream.slice(..));
                     }
                 }
                 vertices = Some(draw.vertices);
             }
             if indices != Some(draw.indices) {
+                shader_pipeline::gpu::stats::state();
                 pass.set_index_buffer(
                     self.indices[&draw.indices].slice(..),
                     wgpu::IndexFormat::Uint32,
@@ -518,6 +522,7 @@ impl DrawList {
             }
             draw.bindings
                 .bind_after(pass, previous.map(|last| &last.bindings));
+            shader_pipeline::gpu::stats::draw();
             pass.draw_indexed(draw.first..draw.first + draw.count, draw.base, 0..1);
             previous = Some(draw);
         }
@@ -755,46 +760,14 @@ fn material_effect(
         .map_err(invalid)
 }
 
-fn select(library: &mut Library, part: &Part, caster: bool) -> io::Result<Selection> {
-    let effect = material_effect(library, part)?;
-    let base = part.material.shader.as_deref().unwrap_or_default();
-    let skinned = !part.geometry.skin.is_empty();
-    let suffix = match (skinned, caster) {
+/// The technique suffix the game appends for skinning and the shadow pass.
+fn selection_suffix(skinned: bool, caster: bool) -> &'static str {
+    match (skinned, caster) {
         (false, false) => "",
         (true, false) => "Skinned",
         (false, true) => "Shadow",
         (true, true) => "SkinnedShadow",
-    };
-    let name = format!("{base}{suffix}");
-    if !base.is_empty()
-        && let Some(selection) = effect.select(&name).map_err(invalid)?
-    {
-        return Ok(selection);
     }
-    // Install the fallback without material UV defines.
-    library
-        .load(b"gfx/FX/pdxmesh.lua", &[])
-        .map_err(invalid)?
-        .select(&format!("PdxMeshColor{suffix}"))
-        .map_err(invalid)?
-        .ok_or_else(|| invalid("native PdxMeshColor fallback is unavailable"))
-}
-
-/// The game appends Alpha to the skin suffix; absent Alpha retains the base
-/// variant (not PdxMeshColor). Draws use this handle as the alpha variant.
-fn select_alpha(library: &mut Library, part: &Part) -> io::Result<Selection> {
-    let base = select(library, part, false)?;
-    let effect = material_effect(library, part)?;
-    let name = part.material.shader.as_deref().unwrap_or_default();
-    let skin = if part.geometry.skin.is_empty() {
-        ""
-    } else {
-        "Skinned"
-    };
-    Ok(effect
-        .select(&format!("{name}{skin}Alpha"))
-        .map_err(invalid)?
-        .unwrap_or(base))
 }
 
 /// Select whether the material uses a caster texture and the alternate queue.
@@ -827,6 +800,10 @@ fn matrix(transform: &mesh::Transform) -> [[f32; 4]; 4] {
 impl ModelPass {
     pub(crate) fn has_placements(&self) -> bool {
         !self.field.native_order.is_empty()
+    }
+
+    pub fn settle_builds(&self, settled: bool) {
+        self.settled.set(settled);
     }
 
     pub fn reset_drawn(&self) {
@@ -931,11 +908,10 @@ impl ModelPass {
             .without_overlays()
             .map_or_else(|| layers.clone(), Arc::new);
         Ok(Renderer {
-            libraries: [
+            builds: builds::Builds::new([
                 Library::new(layers.clone()).with_globals(globals.clone()),
                 Library::new(recorded).with_globals(globals),
-            ],
-            cache: Default::default(),
+            ]),
             residents: Vec::new(),
             slots: Vec::new(),
             resource_ids: ResourceIdentities::default(),
@@ -953,9 +929,9 @@ impl ModelPass {
         })
     }
 
-    /// Compiles every part's lit and caster pipelines (the alpha variant for forced trains)
-    /// into the renderer's cache, so a frame first drawing a mesh builds no pipeline. A part
-    /// that refuses is left for the frame to report.
+    /// Makes every part's lit and caster builds (the alpha variant for forced trains) and every
+    /// node's queue flags, so a frame first drawing a mesh builds nothing and draws it whole. A
+    /// part that refuses is left for the frame to report.
     pub fn warm_pipelines(&self, device: &wgpu::Device, map: [u32; 2], samples: u32) {
         let mut renderer = self.native.borrow_mut();
         if renderer.is_none() {
@@ -968,36 +944,68 @@ impl ModelPass {
         let forced = self.label == "supply trains";
         for (index, mesh) in self.meshes.iter().enumerate() {
             let library = self.shader_library(index);
-            for part in mesh.native.iter().flat_map(|descriptor| descriptor.lods.iter().flatten()) {
-                let libraries = &mut native.libraries[library];
-                let lit = if forced {
-                    select_alpha(libraries, part)
-                } else {
-                    select(libraries, part, false)
-                };
-                if let Ok(lit) = lit {
-                    let _ = mesh_shader::Pass::new(
-                        &mut native.cache,
-                        device,
-                        &lit,
-                        &part.geometry,
-                        SCENE_FORMAT,
-                        DEPTH_FORMAT,
-                        samples,
-                    );
-                }
-                if let Ok(shadow) = select(&mut native.libraries[library], part, true) {
-                    let _ = mesh_shader::Pass::caster(
-                        &mut native.cache,
-                        device,
-                        &shadow,
-                        &part.geometry,
-                        DEPTH_MAP_FORMAT,
-                        DEPTH_FORMAT,
-                    );
-                }
+            for descriptor in &mesh.native {
+                native.builds.warm(
+                    device,
+                    (index, descriptor.node),
+                    library,
+                    &descriptor.lods,
+                    (forced, samples),
+                );
             }
         }
+        self.warmed.set(self.meshes.len());
+    }
+
+    /// Makes the builds of meshes added since the last warm-up, as [`Self::warm_pipelines`] does,
+    /// on a thread of their own joined here, so the calling thread compiles nothing and a frame
+    /// first drawing them draws them whole.
+    pub fn warm_added(&self, device: &wgpu::Device, map: [u32; 2], samples: u32) -> io::Result<()> {
+        let from = self.warmed.get();
+        if from >= self.meshes.len() {
+            return Ok(());
+        }
+        let mut renderer = self.native.borrow_mut();
+        if renderer.is_none() {
+            *renderer = Some(self.new_renderer(map)?);
+        }
+        let builds = &renderer.as_ref().expect("initialized above").builds;
+        let forced = self.label == "supply trains";
+        let added: Vec<_> = (from..self.meshes.len())
+            .flat_map(|index| {
+                let library = self.shader_library(index);
+                self.meshes[index].native.iter().map(move |descriptor| {
+                    ((index, descriptor.node), library, descriptor.lods.clone())
+                })
+            })
+            .collect();
+        let warm = || {
+            for (key, library, lods) in &added {
+                builds.warm(device, *key, *library, lods, (forced, samples));
+            }
+        };
+        use job_priority::SpawnCarried as _;
+        let failed = std::thread::scope(|scope| {
+            // The recording's tables the parse reads go with it.
+            match std::thread::Builder::new()
+                .name("model builds".into())
+                .spawn_scoped_carried(scope, warm)
+            {
+                Ok(worker) => worker
+                    .join()
+                    .err()
+                    .map(|_| "a model build panicked".to_string()),
+                Err(error) => Some(format!("model builds could not start a thread: {error}")),
+            }
+        });
+        // A part the warm-up did not make is refused by name, never built or waited for later.
+        if let Some(reason) = failed {
+            for (key, _, lods) in &added {
+                builds.refuse(*key, lods, forced, &reason);
+            }
+        }
+        self.warmed.set(self.meshes.len());
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1038,6 +1046,8 @@ impl ModelPass {
 
         let mut commands = std::mem::take(&mut native.draws);
         let device = arena.device();
+        let settled = self.settled.get();
+        let mut queued = native.builds.queue(device);
         let mut poses = self.poses.borrow_mut();
         if poses.0 != arena.frame() {
             *poses = (arena.frame(), Vec::new());
@@ -1166,25 +1176,19 @@ impl ModelPass {
                                 queues.resize(descriptor.node + 1, None);
                             }
                             if queues[descriptor.node].is_none() {
-                                let mut admitted = [false; 2];
-                                for part in descriptor.lods.iter().flatten() {
-                                    let lit = select(&mut native.libraries[library], part, false)?;
-                                    let shadow =
-                                        select(&mut native.libraries[library], part, true)?;
-                                    let (_, alternate) = material_flags(
-                                        &lit.effect
-                                            .source
-                                            .blend(&lit.effect.source.techniques[lit.index]),
-                                        &shadow
-                                            .effect
-                                            .source
-                                            .blend(&shadow.effect.source.techniques[shadow.index]),
-                                        !part.material.diffuse.is_empty(),
-                                    );
-                                    admitted[usize::from(alternate)] = true;
-                                }
-                                queues[descriptor.node] = Some(admitted);
+                                // Until its materials are built the node draws nothing.
+                                let Some(admitted) = native.builds.flags(
+                                    &mut queued,
+                                    (group.mesh, descriptor.node),
+                                    library,
+                                    || descriptor.lods.iter().flatten().cloned().collect(),
+                                    settled,
+                                ) else {
+                                    return Ok(());
+                                };
+                                native.queue_slots[group.mesh][descriptor.node] = Some(admitted?);
                             }
+                            let queues = &mut native.queue_slots[group.mesh];
                             let flags = queues[descriptor.node].unwrap();
                             if !match queue {
                                 Queue::Regular => flags[0] && !forced,
@@ -1219,53 +1223,55 @@ impl ModelPass {
                                     .collect();
                             }
 
+                            // An actor draws once every part of its LOD has its pass built.
+                            let variants = usize::from(caster) * 2 + usize::from(forced);
+                            let mut built = true;
+                            for (part, source) in descriptor.lods[lod].iter().enumerate() {
+                                if native.slots[group.mesh][descriptor.node][lod][part][variants]
+                                    .is_none()
+                                {
+                                    built &= native.builds.ready(
+                                        &mut queued,
+                                        (group.mesh, descriptor.node, lod, part, variants),
+                                        library,
+                                        source,
+                                        (caster, forced),
+                                        inputs.samples,
+                                        settled,
+                                    );
+                                }
+                            }
+                            if !built {
+                                return Ok(());
+                            }
                             let mut submitted_mask = 0;
                             for (part, source) in descriptor.lods[lod].iter().enumerate() {
-                                let variants = usize::from(caster) * 2 + usize::from(forced);
                                 let key = match native.slots[group.mesh][descriptor.node][lod][part]
                                     [variants]
                                 {
                                     Some(key) => key,
                                     None => {
-                                        let selection = if forced && !caster {
-                                            select_alpha(&mut native.libraries[library], source)?
-                                        } else {
-                                            select(&mut native.libraries[library], source, caster)?
-                                        };
+                                        let builds::Built {
+                                            lit,
+                                            shadow,
+                                            pass: pipeline,
+                                        } = native.builds.take(&(
+                                            group.mesh,
+                                            descriptor.node,
+                                            lod,
+                                            part,
+                                            variants,
+                                        ))?;
                                         let source_blend = |s: &Selection| {
                                             s.effect
                                                 .source
                                                 .blend(&s.effect.source.techniques[s.index])
                                         };
-                                        let lit =
-                                            select(&mut native.libraries[library], source, false)?;
-                                        let shadow =
-                                            select(&mut native.libraries[library], source, true)?;
                                         let (caster_texture, blended) = material_flags(
                                             &source_blend(&lit),
                                             &source_blend(&shadow),
                                             !source.material.diffuse.is_empty(),
                                         );
-                                        let pipeline = if caster {
-                                            mesh_shader::Pass::caster(
-                                                &mut native.cache,
-                                                device,
-                                                &selection,
-                                                &source.geometry,
-                                                DEPTH_MAP_FORMAT,
-                                                DEPTH_FORMAT,
-                                            )?
-                                        } else {
-                                            mesh_shader::Pass::new(
-                                                &mut native.cache,
-                                                device,
-                                                &selection,
-                                                &source.geometry,
-                                                SCENE_FORMAT,
-                                                DEPTH_FORMAT,
-                                                inputs.samples,
-                                            )?
-                                        };
                                         let (compiled, retained) =
                                             part_program(&pipeline, &source.geometry)?;
                                         let geometry = match native

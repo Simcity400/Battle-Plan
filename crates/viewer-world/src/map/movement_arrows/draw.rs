@@ -237,13 +237,17 @@ pub fn restore_depth(retained: &mut shader_scene::State) {
 
 /// The caller owns the native bucket/wrap order, attachments and scissor rectangle.
 pub fn draw(pass: &mut wgpu::RenderPass<'_>, submission: &NativeSubmission, count: u32) {
+    shader_pipeline::gpu::stats::pipeline();
     pass.set_pipeline(&submission.pass.pipeline.pipeline);
     pass.set_stencil_reference(submission.pass.stencil_reference.unwrap_or(0));
+    shader_pipeline::gpu::stats::state();
     pass.set_blend_constant(wgpu::Color::WHITE);
     submission.pass.bindings.bind(pass);
     for (slot, vertices) in submission.vertices.iter().enumerate() {
+        shader_pipeline::gpu::stats::state();
         pass.set_vertex_buffer(slot as u32, vertices.slice());
     }
+    shader_pipeline::gpu::stats::draw();
     pass.draw(0..count, 0..1);
 }
 

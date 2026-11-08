@@ -322,23 +322,7 @@ pub(crate) fn join<A: Send, B: Send>(
     left: impl FnOnce() -> A + Send,
     right: impl FnOnce() -> B + Send,
 ) -> (A, B) {
-    if workers.threads() == 1 {
-        (left(), right())
-    } else {
-        let left = Mutex::new(Some(left));
-        let right = Mutex::new(Some(right));
-        let a = Mutex::new(None);
-        let b = Mutex::new(None);
-        workers.run(2, &|at| match at {
-            0 => *a.lock().unwrap() = Some(left.lock().unwrap().take().unwrap()()),
-            1 => *b.lock().unwrap() = Some(right.lock().unwrap().take().unwrap()()),
-            _ => unreachable!(),
-        });
-        (
-            a.into_inner().unwrap().unwrap(),
-            b.into_inner().unwrap().unwrap(),
-        )
-    }
+    workers.join(left, right)
 }
 
 /// Stateful resource requests retain the preceding owner's allocation order, without
