@@ -555,17 +555,68 @@ fn a_faction_s_view_folds_its_exact_runs_into_the_view_s_bins() {
 
 #[test]
 fn a_slice_counts_only_its_own_overflowed_faction_hours() {
-    let branch = Branch {
-        tracks: Vec::new(),
-        sums: Sums {
+    let branch = Branch::new(
+        Vec::new(),
+        Sums {
             // Two factions overflow, across both edges of the window and inside it.
             overflow: vec![span(90, 104), span(108, 130), span(101, 102)],
             ..Sums::default()
         },
-    };
+    );
     assert_eq!(slice_sums(&branch, &span(100, 119)).overflowed, 5 + 12 + 2);
     assert_eq!(slice_sums(&branch, &span(105, 107)).overflowed, 0);
     assert_eq!(slice_sums(&branch, &span(0, 200)).overflowed, 15 + 23 + 2);
+}
+
+#[test]
+fn a_kept_branch_holds_a_reply_only_until_a_total_it_is_cut_from_changes() {
+    let run = |first_hour, last_hour, value| MeasureRun {
+        first_hour,
+        last_hour,
+        starts_segment: true,
+        value: Some(value),
+    };
+    let branch = Branch::new(
+        vec![
+            CountryTrack {
+                tag: "GER".into(),
+                runs: vec![run(0, 120, 7)],
+            },
+            // A member whose runs overlap still changes only where one starts or ends.
+            CountryTrack {
+                tag: "ITA".into(),
+                runs: vec![run(0, 140, 5), run(100, 110, 0)],
+            },
+        ],
+        Sums {
+            series: BTreeMap::from([
+                (
+                    "allies".to_owned(),
+                    vec![total(0, 49, 10), total(50, 200, 12)],
+                ),
+                ("axis".to_owned(), vec![total(0, 79, 3), total(90, 200, 4)]),
+            ]),
+            recorded: vec![span(0, 200)],
+            // Overflow spans of different factions overlap.
+            overflow: vec![span(150, 170), span(155, 160)],
+            ..Sums::default()
+        },
+    );
+    let axis = Some(&"axis".to_owned());
+    // Every faction: the first total to change after the hour ends the hold.
+    assert_eq!(branch.held_through(10, None, []), 49);
+    // An unknown stretch holds until the next total is known.
+    assert_eq!(branch.held_through(85, axis, []), 89);
+    // One faction is held by its own total, the overflow and only the members it shows.
+    assert_eq!(branch.held_through(60, Some(&"allies".to_owned()), []), 149);
+    assert_eq!(branch.held_through(60, axis, []), 79);
+    assert_eq!(branch.held_through(91, axis, []), 149);
+    assert_eq!(branch.held_through(91, axis, ["GER"]), 120);
+    assert_eq!(branch.held_through(91, axis, ["ITA"]), 99);
+    assert_eq!(branch.held_through(105, axis, ["ITA"]), 110);
+    assert_eq!(branch.held_through(152, axis, []), 154);
+    assert_eq!(branch.held_through(157, axis, []), 160);
+    assert_eq!(branch.held_through(165, axis, []), 170);
 }
 
 #[test]

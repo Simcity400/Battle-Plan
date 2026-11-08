@@ -150,6 +150,107 @@ fn exact_with(
 struct Branch {
     tracks: Vec<CountryTrack>,
     sums: Sums,
+    /// Each track's change hours by tag (where a run starts, and the hour after one ends), sorted.
+    track_changes: HashMap<String, Vec<i32>>,
+    /// The same for the overflowed spans, which overlap across factions.
+    overflow_changes: Vec<i32>,
+}
+
+/// The sorted hours at which spans that may overlap start or stop holding.
+fn changes(spans: impl Iterator<Item = (i32, i32)>) -> Vec<i32> {
+    let mut hours: Vec<i32> = spans
+        .flat_map(|(first, last)| [first, last.saturating_add(1)])
+        .collect();
+    hours.sort_unstable();
+    hours.dedup();
+    hours
+}
+
+/// The last hour from `hour` before the next of the sorted `changes`.
+fn before_change(changes: &[i32], hour: i32) -> i32 {
+    let at = changes.partition_point(|&change| change <= hour);
+    changes.get(at).map_or(i32::MAX, |&change| change - 1)
+}
+
+/// The last hour from `hour` through which sorted, disjoint `spans` stay as they are at `hour`:
+/// the end of the span holding it, else the hour before the next one starts.
+fn held_in<T>(spans: &[T], hour: i32, span: impl Fn(&T) -> (i32, i32)) -> i32 {
+    let at = spans.partition_point(|item| span(item).1 < hour);
+    spans.get(at).map_or(i32::MAX, |item| {
+        let (first, last) = span(item);
+        if first <= hour { last } else { first - 1 }
+    })
+}
+
+impl Branch {
+    fn new(tracks: Vec<CountryTrack>, sums: Sums) -> Self {
+        let track_changes = tracks
+            .iter()
+            .map(|track| {
+                let runs = track.runs.iter().map(|run| (run.first_hour, run.last_hour));
+                (track.tag.clone(), changes(runs))
+            })
+            .collect();
+        let overflow_changes = changes(
+            sums.overflow
+                .iter()
+                .map(|span| (span.first_hour, span.last_hour)),
+        );
+        Self {
+            tracks,
+            sums,
+            track_changes,
+            overflow_changes,
+        }
+    }
+
+    /// The last hour through which everything a reply held at `hour` is cut from stays as it is
+    /// there: the sums of `faction` (every faction when None), their recorded, disjoint and
+    /// overflowed hours, and the tracks of the `shown` members. It is read from the kept sums
+    /// themselves, so it holds whether or not this request read the member values that built them.
+    fn held_through<'a>(
+        &self,
+        hour: i32,
+        faction: Option<&String>,
+        shown: impl IntoIterator<Item = &'a str>,
+    ) -> i32 {
+        let sums = &self.sums;
+        let mut through = held_in(&sums.recorded, hour, |span| {
+            (span.first_hour, span.last_hour)
+        })
+        .min(held_in(&sums.disjoint, hour, |span| {
+            (span.first_hour, span.last_hour)
+        }))
+        .min(before_change(&self.overflow_changes, hour));
+        for (id, runs) in &sums.series {
+            if faction.is_none_or(|selected| selected == id) {
+                through = through.min(held_in(runs, hour, |run| (run.first_hour, run.last_hour)));
+            }
+        }
+        for tag in shown {
+            if let Some(changes) = self.track_changes.get(tag) {
+                through = through.min(before_change(changes, hour));
+            }
+        }
+        through
+    }
+}
+
+/// The tags a parts reply over `window` shows: those counted in the chosen faction, or in any
+/// faction when it names none, at an hour of the window, as the reply's counted members are.
+fn shown_members<'a>(
+    members: &'a NativeMembers,
+    faction: Option<&String>,
+    window: &HourSpan,
+) -> BTreeSet<&'a str> {
+    members
+        .counted
+        .iter()
+        .filter(|(id, _)| faction.is_none_or(|selected| selected == *id))
+        .flat_map(|(_, runs)| runs)
+        .filter(|run| run.first_hour <= window.last_hour && run.last_hour >= window.first_hour)
+        .map(|run| run.tag.as_str())
+        .collect()
 }
 
 /// The branch's exact sums under the request's measure and membership, built once per
@@ -174,25 +275,19 @@ fn branch_sums(
     // different measures do not displace each other's.
     let lineage = (&params.source, params.membership);
     crate::prepared::query::observations::scope(source, "faction-totals:branch", Some(key))
-        .continue_entry(
-            branch,
-            &lineage,
-            &publication,
-            &lineage,
-            cancelled,
-            |_| {
-                let window = HourSpan {
-                    first_hour: i32::MIN + 1,
-                    last_hour: history.last_hour,
-                };
-                let (tracks, sums) = exact(values, keys, history, members, &window, cancelled)?;
-                Ok(Branch { tracks, sums })
-            },
-        )
+        .continue_entry(branch, &lineage, &publication, &lineage, cancelled, |_| {
+            let window = HourSpan {
+                first_hour: i32::MIN + 1,
+                last_hour: history.last_hour,
+            };
+            let (tracks, sums) = exact(values, keys, history, members, &window, cancelled)?;
+            Ok(Branch::new(tracks, sums))
+        })
 }
 
 /// A window's exact sums and, for member parts, its members' tracks, sliced from the branch's
-/// kept sums: what [`exact`] over the window gives.
+/// kept sums: what [`exact`] over the window gives, and the last hour from the window's last
+/// through which they stay as they are there.
 #[allow(clippy::too_many_arguments)]
 fn sliced(
     source: &Source,
@@ -207,16 +302,19 @@ fn sliced(
     members: &NativeMembers,
     window: &HourSpan,
     cancelled: &AtomicBool,
-) -> io::Result<(Vec<CountryTrack>, Sums)> {
+) -> io::Result<(Vec<CountryTrack>, Sums, i32)> {
     let whole = branch_sums(
         source, key, branch, params, groups, values, measured, keys, history, members, cancelled,
     )?;
-    let tracks = if params.parts == Some(true) {
-        slice_tracks(&whole, members, window, cancelled)?
+    let faction = params.faction_id.as_ref();
+    let (tracks, shown) = if params.parts == Some(true) {
+        let tracks = slice_tracks(&whole, members, window, cancelled)?;
+        (tracks, shown_members(members, faction, window))
     } else {
-        Vec::new()
+        (Vec::new(), BTreeSet::new())
     };
-    Ok((tracks, slice_sums(&whole, window)))
+    let held = whole.held_through(window.last_hour, faction, shown);
+    Ok((tracks, slice_sums(&whole, window), held))
 }
 
 fn clipped_runs(runs: &[FactionTotalRun], window: &HourSpan) -> Vec<FactionTotalRun> {
@@ -859,7 +957,7 @@ pub fn query(
                         .flatten(),
                     warnings: metadata.warnings.clone(),
                 };
-                let mut data = {
+                let (mut data, held) = {
                     let cell = RefCell::new(&mut *snapshot);
                     let mut readers =
                         territory::query::measures(&cell, directory, Some((*measure, *rule)));
@@ -879,7 +977,8 @@ pub fn query(
                     )?
                 };
                 let last = snapshot.publication().accepted.last.min(history.last_hour);
-                published::hold(&mut data, snapshot, directory, product, &value, last, named)?;
+                let other = named.into_iter().chain(held).min();
+                published::hold(&mut data, snapshot, directory, product, &value, last, other)?;
                 Ok(data)
             })
         }
@@ -982,13 +1081,14 @@ pub fn query(
                     warnings,
                 };
                 let Some(joined) = joined else {
-                    let mut data = {
+                    let (mut data, held) = {
                         let cell = RefCell::new(&mut *snapshot);
                         let mut values = query::counts(&cell, directory, &top);
                         answer(&asked, &mut values, &keys, measured, measures, None)?
                     };
                     let last = snapshot.publication().accepted.last.min(history.last_hour);
-                    published::hold(&mut data, snapshot, directory, product, &value, last, named)?;
+                    let other = named.into_iter().chain(held).min();
+                    published::hold(&mut data, snapshot, directory, product, &value, last, other)?;
                     return Ok(data);
                 };
                 let cell = RefCell::new(&mut *snapshot);
@@ -1010,6 +1110,7 @@ pub fn query(
                         measures,
                         Some(presence),
                     )
+                    .map(|(data, _)| data)
                 })
             })
         }
@@ -1077,7 +1178,8 @@ fn publication(
 }
 
 /// A faction reply from `values`, its measure's values by tag key, and the members' territory
-/// presence where a dense summary joins it.
+/// presence where a dense summary joins it; with the last hour through which the branch sums it
+/// is cut from stay as they are at its held hour.
 fn answer(
     asked: &Asked<'_>,
     values: &mut dyn SeriesRead,
@@ -1085,7 +1187,7 @@ fn answer(
     measured: [u8; 32],
     mut measures: CountryMeasures,
     presence: Option<Presence<'_>>,
-) -> io::Result<Value> {
+) -> io::Result<(Value, Option<i32>)> {
     let &Asked {
         source,
         context,
@@ -1102,9 +1204,10 @@ fn answer(
     } = asked;
     if product == "series-next-change" {
         let navigation: series::Navigation = serde_json::from_value(value.clone())?;
-        return Ok(
+        return Ok((
             json!({"hour":navigate(values, keys, history, members, params, &navigation, cancelled)?}),
-        );
+            None,
+        ));
     }
     if product == "series-state" {
         let reads = value["reads"]
@@ -1121,12 +1224,12 @@ fn answer(
             first_hour: hour,
             last_hour: hour,
         };
-        let (tracks, sums) = sliced(
+        let (tracks, sums, held) = sliced(
             source, key, branch, params, page, values, measured, keys, history, members, &window,
             cancelled,
         )?;
         measures.tracks = tracks;
-        return Ok(serde_json::to_value(build_reply(
+        let reply = build_reply(
             source,
             params,
             context,
@@ -1137,7 +1240,8 @@ fn answer(
             &sums,
             Some(&window),
             cancelled,
-        )?)?);
+        )?;
+        return Ok((serde_json::to_value(reply)?, Some(held)));
     }
     if product != "series-summary" {
         return Err(crate::invalid("Unknown faction query"));
@@ -1156,7 +1260,7 @@ fn answer(
     series::summary_budget(view.0, view.1, view.2, 1)?;
     let (is_exact, _) = series::summary_bins((window.first_hour, window.last_hour), view)?;
     if is_exact {
-        let (tracks, sums) = sliced(
+        let (tracks, sums, held) = sliced(
             source, key, branch, params, page, values, measured, keys, history, members, &window,
             cancelled,
         )?;
@@ -1204,10 +1308,10 @@ fn answer(
         let mut reply = serde_json::to_value(reply)?;
         reply["summaries"] = serde_json::to_value(summaries)?;
         super::super::check_reply_budget(&reply)?;
-        return Ok(reply);
+        return Ok((reply, Some(held)));
     }
     let Some(presence) = presence else {
-        return Ok(Value::Null);
+        return Ok((Value::Null, None));
     };
     dense_reply(
         source, context, params, history, identities, members, measures, values, keys, presence,
@@ -1233,7 +1337,7 @@ fn dense_reply(
     measured: [u8; 32],
     view: (f64, f64, u32),
     cancelled: &AtomicBool,
-) -> io::Result<Value> {
+) -> io::Result<(Value, Option<i32>)> {
     let Presence {
         present,
         rosters,
@@ -1377,6 +1481,13 @@ fn dense_reply(
         .into_iter()
         .map(|(tag, runs)| CountryTrack { tag, runs })
         .collect();
+    let faction = params.faction_id.as_ref();
+    let shown = if params.parts == Some(true) {
+        shown_members(members, faction, &window)
+    } else {
+        BTreeSet::new()
+    };
+    let held = whole.held_through(window.last_hour, faction, shown);
     let mut inventory = params.clone();
     inventory.inventory = Some(true);
     let mut reply = build_reply(
@@ -1424,7 +1535,7 @@ fn dense_reply(
         reply["memberSummaries"] = serde_json::to_value(member_summaries)?;
     }
     super::super::check_reply_budget(&reply)?;
-    Ok(reply)
+    Ok((reply, Some(held)))
 }
 
 /// Exact faction sums through a window's hours, by faction.
