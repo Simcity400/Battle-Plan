@@ -85,9 +85,24 @@ export interface LogListProps<T> {
 }
 
 const EMPTY_ROWS: readonly LogRow<never>[] = [];
-/** An unchanged viewport keeps its state, so re-placing the rows never re-renders for nothing. */
-const viewAt = (top: number, height: number, width: number, outerHeight: number) => (before: { top: number; height: number; width: number; outerHeight: number }) =>
-  before.top === top && before.height === height && before.width === width && before.outerHeight === outerHeight ? before : { top, height, width, outerHeight };
+interface LogView { top: number; height: number; width: number; outerHeight: number }
+const EMPTY_VIEW: LogView = { top: 0, height: 0, width: 0, outerHeight: 0 };
+
+/** State set in layout effects only when it changes. A same-value update queued while the list
+ * has other work pending still forces a synchronous commit, and an owner settling over several
+ * renders then counts each as a nested update until React stops the page (#185). Every update
+ * is a plain value, so the last one queued is the state that commits: `latest` is compared with it. */
+function useLayoutState<S>(initial: S): [S, (next: (current: S) => S) => void] {
+  const [state, setState] = useState(initial);
+  const latest = useRef(state);
+  const update = useCallback((next: (current: S) => S) => {
+    const value = next(latest.current);
+    if (value === latest.current) return;
+    latest.current = value;
+    setState(value);
+  }, []);
+  return [state, update];
+}
 
 /** A log: HTML rows newest first, each with its date,
  * that flash in as playback reaches them and glide when their order changes
@@ -107,7 +122,9 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   // A callback ref: the scroller comes and goes with the rows (an empty log has
   // none), and each one is measured and observed as it attaches.
   const [scroller, setScroller] = useState<HTMLDivElement | null>(null);
-  const [view, setView] = useState({ top: 0, height: 0, width: 0, outerHeight: 0 });
+  const [view, updateView] = useLayoutState(EMPTY_VIEW);
+  const placeView = useCallback((top: number, height: number, width: number, outerHeight: number) => updateView(before =>
+    before.top === top && before.height === height && before.width === width && before.outerHeight === outerHeight ? before : { top, height, width, outerHeight }), [updateView]);
   const [active, setActive] = useState<string | null>(null);
   const [pending, setPending] = useState<{ pageKey: string; offset: number } | null>(null);
   const [spoken, setSpoken] = useState('');
@@ -115,7 +132,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
   const cardElements = useRef(new Map<string, HTMLDivElement>());
   const cardObserver = useRef<ResizeObserver | null>(null);
   const knownCards = useRef(new Set<string>());
-  const [measurements, setMeasurements] = useState<CardMeasurements>({ width: 0, density, heights: new Map() });
+  const [measurements, updateMeasurements] = useLayoutState<CardMeasurements>({ width: 0, density, heights: new Map() });
   const actions = useContextMenu(`${label} actions`);
 
   const items = useMemo(() => pages ? logPageItems(pages, months) : logItems(rows, months), [rows, pages, months]);
@@ -167,8 +184,8 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     scroller.scrollTop = physicalScroll(space, top);
     scrollPosition.current = { logical: top, physical: scroller.scrollTop };
     if (priorLayout.current) priorLayout.current.top = top;
-    setView(viewAt(top, height, scroller.clientWidth, scroller.offsetHeight));
-  }, [scroller, totalHeight]);
+    placeView(top, height, scroller.clientWidth, scroller.offsetHeight);
+  }, [scroller, totalHeight, placeView]);
   const readScroll = useCallback((element: HTMLDivElement) => {
     const height = element.clientHeight;
     const space = scrollGeometry(totalHeight, height);
@@ -176,8 +193,8 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
       ? Math.min(space.logicalRange, scrollPosition.current.logical) : logicalScroll(space, element.scrollTop);
     scrollPosition.current = { logical: top, physical: element.scrollTop };
     if (priorLayout.current) priorLayout.current.top = top;
-    setView(viewAt(top, height, element.clientWidth, element.offsetHeight));
-  }, [totalHeight]);
+    placeView(top, height, element.clientWidth, element.offsetHeight);
+  }, [totalHeight, placeView]);
   useLayoutEffect(() => {
     const previous = priorLayout.current;
     const top = anchorRows && previous && (previous.items !== items || (layout === 'card' && previous.offsets !== offsets))
@@ -239,7 +256,7 @@ export default function LogList<T>({ rows = EMPTY_ROWS, pages, onWantedPages, la
     const measure = (nodes: readonly HTMLDivElement[]) => {
       if (cardObserver.current !== observer) return;
       const sizes = nodes.map(node => ({ key: node.dataset.logKey!, height: node.offsetHeight }));
-      setMeasurements(previous => updateCardHeights(previous, view.width, density, sizes, cardFont, heldKeys));
+      updateMeasurements(previous => updateCardHeights(previous, view.width, density, sizes, cardFont, heldKeys));
     };
     const observer = new ResizeObserver(entries => measure(entries.map(entry => entry.target as HTMLDivElement)));
     cardObserver.current = observer;

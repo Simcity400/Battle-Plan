@@ -41,6 +41,19 @@ export function useWindowDisplay<T>(identity: string | null, data: T | undefined
 
 const withEntries = withWindowEntries;
 
+/** An updater React may apply again to a state it has seen: it re-applies queued updates after
+ * rendering past a skipped one, and replays them when a rebased render is interrupted. Each
+ * state gives the same result for the updater's life, so a re-run renders nothing new; fresh
+ * maps on every run would rebuild every row and never settle. */
+function sameOnRerun<S extends object>(update: (previous: S) => S): (previous: S) => S {
+  const made = new WeakMap<S, S>();
+  return previous => {
+    let result = made.get(previous);
+    if (!result) made.set(previous, result = update(previous));
+    return result;
+  };
+}
+
 /** Whether a prepared reply's coverage is still partial (it names some, not complete). */
 const partial = (data: unknown) => preparationCoverage(data) !== undefined && preparationCoverage(data)?.complete !== true;
 
@@ -72,11 +85,11 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
     const controller = new AbortController();
     const want = new Set(wanted);
     // Release what is no longer wanted; a new identity starts afresh.
-    setHeld(previous => {
+    setHeld(sameOnRerun(previous => {
       if (previous.owner !== owner) return { owner, identity, data: new Map(), errors: new Map(), attempt: 0 };
       const kept = keepWanted(previous, identity, want);
       return kept === previous ? previous : { ...kept, owner, attempt: previous.attempt };
-    });
+    }));
     // Windows landing before the next frame (a tick while playing) commit together: a widget
     // asking for a whole campaign renders once a frame, not once a window.
     const arrived: { data: [number, T][]; errors: [number, Failure][] } = { data: [], errors: [] };
@@ -85,8 +98,8 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
       scheduled = false;
       if (!arrived.data.length && !arrived.errors.length) return;
       const data = arrived.data.splice(0), errors = arrived.errors.splice(0);
-      setHeld(previous => previous.owner !== owner ? previous
-        : { ...previous, data: withEntries(previous.data, data), errors: withEntries(previous.errors, errors) });
+      setHeld(sameOnRerun(previous => previous.owner !== owner ? previous
+        : { ...previous, data: withEntries(previous.data, data), errors: withEntries(previous.errors, errors) }));
     };
     const arrive = (add: () => void) => {
       if (controller.signal.aborted) return;
@@ -111,7 +124,7 @@ export function useProductWindows<T>(client: DashboardClient, identity: string |
   const errors = current?.errors;
   // A failed load already left the shared cache; retrying only asks again.
   const retry = useMemo(() => () => {
-    setHeld(previous => previous.owner !== owner ? previous : { ...previous, errors: new Map(), attempt: previous.attempt + 1 });
+    setHeld(sameOnRerun(previous => previous.owner !== owner ? previous : { ...previous, errors: new Map(), attempt: previous.attempt + 1 }));
   }, [owner]);
   const heldErrors = data && errors ? [...errors].flatMap(([window, error]) => data.has(window) ? [error] : []) : [];
   const framed = useHeldFailures(heldErrors, retry) && heldErrors.length > 0;
