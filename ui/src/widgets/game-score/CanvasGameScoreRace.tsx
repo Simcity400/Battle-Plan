@@ -16,18 +16,17 @@ import { formatAxisValue } from '../../charts/valueAxis';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { resolveOptions } from '../../dashboard/options';
-import { useProduct } from '../../dashboard/products';
 import { usePlaybackMotion } from '../../dashboard/playback';
 import { LiveLabels } from '../../live/liveLabels';
 import { useLiveAnswers } from '../../live/useLiveAnswers';
 import '../../charts/race/countryRace.css';
 import { OPTIONS } from './definition';
-import { BAR_PARTS, FALLBACK_LABELS, SCORE_PARTS, gameScoreCountryKnown, gameScoreLabel, gameScoreRace, gameScoreTooltips, validateGameScoreReply } from './gameScoreData';
+import { BAR_PARTS, SCORE_LABELS, SCORE_PARTS, gameScoreCountryKnown, gameScoreRace, gameScoreTooltips } from './gameScoreData';
 import type { ScoreRow } from './gameScoreData';
-import type { GameScoreReply } from '../../generated/dashboard';
 import { liveScoreHour } from './liveScoreHour';
 
-interface RaceMoment { reply: GameScoreReply; rows: ReadonlyMap<string, ScoreRow>; entries: ReturnType<typeof gameScoreRace> }
+interface RaceMoment { rows: ReadonlyMap<string, ScoreRow>; entries: ReturnType<typeof gameScoreRace> }
+const PARTS = BAR_PARTS.map(id => ({ id, label: SCORE_LABELS[id] }));
 const NO_ITEMS: readonly RaceItem[] = [];
 const EMPTY = 'Total scores unavailable at this time.';
 const NO_FLAG: CountryFlagLook = { flagReason: 'The country flag is unavailable at this date.' };
@@ -47,14 +46,11 @@ export default function CanvasGameScoreRace({ widget, runtime, active }: WidgetP
   const { store, phase } = useLiveAnswers<RaceMoment>({ active, lane, runtime, widget, track,
     phaseOf: moment => moment.entries.length ? { state: 'ready' } : { state: 'empty' },
     read: async (hour, signal, restart) => {
-      const { prepared, rows, through, partial } = await liveScoreHour(runtime, track!, content, hour, signal, restart);
-      return { through, partial, value: { reply: prepared.reply, rows: new Map(rows.map(row => [row.key, row])), entries: gameScoreRace(rows, split) } };
+      const { rows, through, partial } = await liveScoreHour(runtime, track!, content, hour, signal, restart);
+      return { through, partial, value: { rows: new Map(rows.map(row => [row.key, row])), entries: gameScoreRace(rows, split) } };
     } });
-  const labelsRequest = track ? { sourceId: track.source.id, revision: track.source.revision, product: 'game_score', params: { branchId: track.branch.id } } : null;
-  const names = useProduct<GameScoreReply>(runtime.client, labelsRequest, active, validateGameScoreReply).data?.labels ?? FALLBACK_LABELS;
-  const parts = useMemo(() => BAR_PARTS.map(id => ({ id, label: gameScoreLabel(names, id) })), [names]);
-  const colours = useMemo(() => partColours(parts, tokens.categories), [parts, tokens.categories]);
-  const live = useMemo<{ race: LiveRace; row: (item?: RaceItem) => { row: ScoreRow; reply: GameScoreReply } | null; flag: (item?: RaceItem) => CountryFlagLook; start: () => void; stop: () => void } | null>(() => {
+  const colours = useMemo(() => partColours(PARTS, tokens.categories), [tokens.categories]);
+  const live = useMemo<{ race: LiveRace; row: (item?: RaceItem) => ScoreRow | null; flag: (item?: RaceItem) => CountryFlagLook; start: () => void; stop: () => void } | null>(() => {
     if (!store || !track) return null;
     const wakers = new Set<() => void>();
     // Subscribes only once started (an effect): a render that is thrown away leaves nothing behind.
@@ -100,7 +96,7 @@ export default function CanvasGameScoreRace({ widget, runtime, active }: WidgetP
         bind: wake => { wakers.add(wake); const stop = store.bind(wake); return () => { wakers.delete(wake); stop(); }; },
         clock: runtime.clock,
       },
-      row: item => { const row = rowOf(item); return row && moment ? { row, reply: moment.reply } : null; },
+      row: item => (moment && rowOf(item)) ?? null,
       flag: item => (item && flags.get(item.key)) ?? NO_FLAG,
       start: () => { labels.start(); for (const wake of wakers) wake(); },
       stop: () => { labels.stop(); },
@@ -115,13 +111,13 @@ export default function CanvasGameScoreRace({ widget, runtime, active }: WidgetP
     {phase.state === 'empty' && <WidgetState kind="empty" message={EMPTY} />}
     {phase.state === 'unavailable' && <WidgetState kind="unavailable" message={phase.message} />}
     {live && <div className="country-race" hidden={phase.state !== 'ready'}>
-      <Legend label="Score parts" items={(split ? parts : []).map(part => ({ id: part.id, label: part.label, color: colours.get(part.id) ?? tokens.muted }))} />
+      <Legend label="Score parts" items={(split ? PARTS : []).map(part => ({ id: part.id, label: part.label, color: colours.get(part.id) ?? tokens.muted }))} />
       <div className="country-race-chart">
         <RaceChart label="Game score" items={NO_ITEMS} live={live.race} slots={0}
-          name={(_key, item) => (item && live.row(item)?.row.identity.name) ?? 'Country name unavailable'}
+          name={(_key, item) => (item && live.row(item)?.identity.name) ?? 'Country name unavailable'}
           countryFlag={(_key, item) => live.flag(item)}
-          tooltip={(_key, item) => { const found = live.row(item); return found ? fitTooltip([...gameScoreTooltips(found.reply, found.row)], viewport, { keep: SCORE_PARTS.length }) : null; }}
-          onContextMenu={(_key, x, y, item) => { const found = live.row(item); if (found) menu.open(x, y, [jumpItem(runtime, track.id, found.row.hour)]); }}
+          tooltip={(_key, item) => { const found = live.row(item); return found ? fitTooltip([...gameScoreTooltips(found)], viewport, { keep: SCORE_PARTS.length }) : null; }}
+          onContextMenu={(_key, x, y, item) => { const found = live.row(item); if (found) menu.open(x, y, [jumpItem(runtime, track.id, found.hour)]); }}
           formatTick={formatAxisValue} empty={EMPTY} hoursPerSecond={hoursPerSecond} active={active} resetKey={`${track.source.id}:${track.branch.id}`} />
       </div>
       {menu.menu}

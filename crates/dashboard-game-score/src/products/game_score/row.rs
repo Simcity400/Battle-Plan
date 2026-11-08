@@ -625,7 +625,6 @@ pub fn query(
                     countries,
                     multipliers,
                     reasons: reasons.entries,
-                    labels: score_labels(),
                     hints: metadata.hints,
                     warnings: metadata.content_warnings,
                     score_warnings: metadata.warnings,

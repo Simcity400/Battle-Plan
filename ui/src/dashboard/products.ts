@@ -294,7 +294,11 @@ function useRunWhileStarted(active: boolean, key: string | null) {
   return {
     wanted: active || (key !== null && running.current?.key === key),
     started: (at: string) => { const run = { key: at }; running.current = run; return run; },
-    settled: (run: { key: string }) => { if (running.current === run) running.current = null; },
+    // Settled in the frame its last reply renders in (frames run in order): a render before then
+    // would cancel the run and drop that reply.
+    settled: (run: { key: string }) => inFrame(() => { if (running.current === run) running.current = null; }),
+    // A cancelled run ends at once: a later ask of its key is a new run, wanted only while in view.
+    cancelled: (run: { key: string }) => { if (running.current === run) running.current = null; },
   };
 }
 const NO_ERRORS: readonly Failure[] = [];
@@ -340,7 +344,7 @@ export function useProducts<T>(client: DashboardClient, requests: readonly Produ
       void loadProduct<T>(client, request, controller.signal, validate, source, attempt > 0, publish).then(publish,
         error => { if (!controller.signal.aborted) { failures.set(index, asFailure(error)); commit(); } }).finally(settled);
     });
-    return () => controller.abort();
+    return () => { controller.abort(); run.cancelled(mine); };
     // The structured key names the requests and their order.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, key, run.wanted, attempt]);
@@ -376,7 +380,7 @@ export function useProduct<T>(client: DashboardClient, request: ProductRequest |
         data: previous?.client === client && previous.key === key ? previous.data : undefined,
         error: asFailure(error) }))),
     ).finally(() => run.settled(mine));
-    return () => controller.abort();
+    return () => { controller.abort(); run.cancelled(mine); };
     // The request object is recreated each render; its key is the identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.wanted, client, key, attempt]);

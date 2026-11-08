@@ -25,7 +25,7 @@ import { useParityRows } from '../../dashboard/parityRows';
 import { usePreparedScore } from './usePreparedScore';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { DEFAULT_SORT, OPTIONS } from './definition';
-import { BAR_PARTS, SCORE_PARTS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLabel, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue } from './gameScoreData';
+import { BAR_PARTS, SCORE_LABELS, SCORE_PARTS, formatScore, gameScoreCountryCell, gameScoreCountryKnown, gameScoreFaction, gameScoreLooks, gameScoreModel, gameScoreRace, gameScoreRow, gameScoreRows, gameScoreTooltips, scoreValue } from './gameScoreData';
 import type { ScoreRow } from './gameScoreData';
 
 const NO_WARNINGS: string[] = [];
@@ -33,6 +33,7 @@ const NO_ROWS: readonly ScoreRow[] = [];
 const NO_TAGS: readonly string[] = [];
 const rowKey = (row: ScoreRow) => row.key;
 const tieKey = (row: ScoreRow) => row.tag;
+const PARTS = BAR_PARTS.map(id => ({ id, label: SCORE_LABELS[id] }));
 
 export default function GameScoreWidget({ widget, runtime, active, onDiagnostics, setOption }: WidgetProps) {
   const hold = useRef<HourHold | null>(null);
@@ -82,22 +83,21 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
     .map(row => ({ hour: row.hour, tag: row.tag })), [view, raceRows, visible]);
   const flagReads = useCountryFlagsRead(runtime.client, track, wanted, active);
   const columns = useMemo<readonly TableColumn<ScoreRow>[]>(() => data ? [
-    { key: 'country', header: gameScoreLabel(data.labels, 'country'), label: gameScoreLabel(data.labels, 'country'), width: 'minmax(var(--table-country-min), 2fr)',
+    { key: 'country', header: SCORE_LABELS.country, label: SCORE_LABELS.country, width: 'minmax(var(--table-country-min), 2fr)',
       hint: data.hints.country,
       value: row => row.identity.name, renderMissing: true,
       render: row => {
         const cell = gameScoreCountryCell(row, (tag, at) => flagReads.get(nameKey(at, tag)));
         return cell ? <CountryCell {...cell} /> : row.identity.name ?? 'Country name unavailable';
       } },
-    ...SCORE_PARTS.map((part, index) => ({ key: part, header: gameScoreLabel(data.labels, part), label: gameScoreLabel(data.labels, part), numeric: true, width: 'max-content', bar: 'visible' as const,
+    ...SCORE_PARTS.map((part, index) => ({ key: part, header: SCORE_LABELS[part], label: SCORE_LABELS[part], numeric: true, width: 'max-content', bar: 'visible' as const,
       priority: index + 1, inTooltip: true,
       hint: data.hints[part],
       value: (row: ScoreRow) => scoreValue(row, part), render: (row: ScoreRow) => formatScore(row.cells[part].raw) })),
   ] : [], [data, flagReads]);
-  const tooltip = useCallback((row: ScoreRow) => fitTooltip(gameScoreTooltips(data!, row), viewport, { keep: SCORE_PARTS.length }), [data, viewport]);
+  const tooltip = useCallback((row: ScoreRow) => fitTooltip(gameScoreTooltips(row), viewport, { keep: SCORE_PARTS.length }), [viewport]);
   const split = options.split === true;
   const entries = useMemo(() => gameScoreRace(raceRows, split), [raceRows, split]);
-  const parts = useMemo(() => data ? BAR_PARTS.map(id => ({ id, label: gameScoreLabel(data.labels, id) })) : [], [data]);
   const looks = useMemo(() => gameScoreLooks(model, hour, (tag, at) => flagReads.get(nameKey(at, tag))), [model, hour, flagReads]);
   const raceTags = useMemo(() => entries.map(entry => entry.tag), [entries]);
   const countryColour = useCountryColours(raceTags, looks.color, tokens, looks);
@@ -130,11 +130,11 @@ export default function GameScoreWidget({ widget, runtime, active, onDiagnostics
   const groupNotice = grouped && groups.error && groups.data ? <WidgetState kind="error" failure={groups.error} onRetry={groups.retry} /> : null;
   if (view === 'race') return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<CountryRaceView runtime={runtime} track={track} active={active} state={state} options={options} view="race"
     extent={[track?.branch.firstHour ?? 0, track?.branch.lastHour ?? 1]} playhead={hour} moment={hour} slots={entries.length}
-    ranked={entries} lines={[]} parts={parts} raceLegendParts={split ? parts : []} partsLabel="Score parts" entityLooks={entityLooks}
+    ranked={entries} lines={[]} parts={PARTS} raceLegendParts={split ? PARTS : []} partsLabel="Score parts" entityLooks={entityLooks}
     presentation={{ exact: false, held: false, countryLooks: false, tooltipKeep: SCORE_PARTS.length }}
     label="Game score" empty={known ? 'Total scores unavailable at this time.' : MEMBERSHIP_PREPARING}
     formatValue={formatAxisValue}
-    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row && data ? gameScoreTooltips(data, row) : null; }} /></div>;
+    tooltip={(tag, atHour) => { const row = model && gameScoreRow(model, tag, Math.floor(atHour)); return row ? gameScoreTooltips(row) : null; }} /></div>;
   if (state) return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}{state}</div>;
   return <div ref={parityRoot} style={{ display: 'contents' }}>{failure}{groupNotice}<Table rowRevision={row => [row.identity, flagReads.get(nameKey(row.hour, row.tag)), ...SCORE_PARTS.map(part => row.cells[part].raw)]} key={JSON.stringify([track!.source.id, track!.source.revision, track!.branch.id])} label="Game score" rows={rows} columns={columns}
     rowKey={rowKey} tieKey={tieKey} sort={sort} setOption={setOption} sortOptionValue={tableSortToken} groupBy={options.factions === true ? gameScoreFaction : undefined}

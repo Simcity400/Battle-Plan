@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer } from 'vite';
-import { gameScoreModel, gameScoreRace, gameScoreRows, SCORE_PARTS, FALLBACK_LABELS } from './gameScoreData.ts';
+import { gameScoreModel, gameScoreRace, gameScoreRows, SCORE_PARTS } from './gameScoreData.ts';
 import type { GameScoreReply, GameScoreSeries } from '../../generated/dashboard';
 import type { DashboardClient, PreparedQueryOptions } from '../../dashboard/client';
 import type { BoundTrack } from '../../dashboard/model';
@@ -9,7 +9,7 @@ import type { BoundTrack } from '../../dashboard/model';
 const series = (): GameScoreSeries => Object.fromEntries(SCORE_PARTS.map(part => [part,
   [{ firstHour: 104, lastHour: 104, raw: part === 'total' ? '9007199254740993' : '-100001', readEachHour: true }]])) as GameScoreSeries;
 const reply = (count: number): GameScoreReply => ({ branchId: '1', scale: 100000, reads: [104], reasons: [], warnings: [], scoreWarnings: [],
-  labels: { ...FALLBACK_LABELS, faction: 'Faction' }, hints: {}, multipliers: series(), countries: Array.from({ length: count }, (_, index) => ({
+  hints: {}, multipliers: series(), countries: Array.from({ length: count }, (_, index) => ({
     tag: `tail only ${index}`, identity: [{ firstHour: 104, lastHour: 104, value: { canonicalSlot: index, nativeCountry: index + 10000,
       name: '', nameMissing: null, color: [17, 29, 0], colorMissing: null, faction: null, factionMissing: null } }], scores: series() })) });
 

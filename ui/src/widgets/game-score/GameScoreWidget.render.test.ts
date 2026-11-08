@@ -6,13 +6,13 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { assertNoMemberStates, BRANCH, gapGroups, humansBy, mountModule, pendingGroups } from '../../dashboard/pendingGroups.fixture.ts';
 import type { CountryGroupReply, GameScoreReply, GameScoreSeries } from '../../generated/dashboard';
-import { FALLBACK_LABELS, SCORE_PARTS } from './gameScoreData.ts';
+import { SCORE_PARTS } from './gameScoreData.ts';
 
 test('game scores of a group at an hour still being prepared are loading, not missing', async () => {
   const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
   const scores = Object.fromEntries(SCORE_PARTS.map(part => [part, [{ ...span, raw: '100000', readEachHour: true }]])) as GameScoreSeries;
   const reply: GameScoreReply = { branchId: BRANCH.id, scale: 100000, reads: [0], reasons: [], multipliers: scores, warnings: [], scoreWarnings: [],
-    labels: FALLBACK_LABELS, hints: {}, countries: [{ tag: 'GER', scores, identity: [{ ...span, value: { canonicalSlot: 1, nativeCountry: 101, name: 'GER',
+    hints: {}, countries: [{ tag: 'GER', scores, identity: [{ ...span, value: { canonicalSlot: 1, nativeCountry: 101, name: 'GER',
       nameMissing: null, color: null, colorMissing: null, faction: null, factionMissing: null } }] }] };
   const state = { groups: pendingGroups() as CountryGroupReply };
   const host = globalThis as typeof globalThis & { __scorePending?: typeof state }; host.__scorePending = state;
@@ -43,7 +43,7 @@ test('game scores of a group at an hour still being prepared are loading, not mi
 
 test('game scores of a group with no member found yet say what the hour was once read, and load until then', async () => {
   const empty: GameScoreReply = { branchId: BRANCH.id, scale: 100000, reads: [0], reasons: [], multipliers: {} as GameScoreSeries, warnings: [], scoreWarnings: [],
-    labels: FALLBACK_LABELS, hints: {}, countries: [] };
+    hints: {}, countries: [] };
   const state = { groups: gapGroups(), hour: 0, reply: empty };
   const host = globalThis as typeof globalThis & { __scoreGap?: typeof state }; host.__scoreGap = state;
   const { module, close } = await mountModule<{ default: (props: WidgetProps) => ReactElement }>('/ui/src/widgets/game-score/GameScoreWidget.tsx', {

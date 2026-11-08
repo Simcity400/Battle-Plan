@@ -1674,7 +1674,6 @@ fn game_score_sparse_five_year_campaign_for_seventy_countries_fits_and_round_tri
         countries,
         multipliers: multiplier_series,
         reasons: reasons.entries,
-        labels: score_labels(),
         hints: BTreeMap::new(),
         warnings: Vec::new(),
         score_warnings: Vec::new(),
@@ -1750,8 +1749,6 @@ fn game_score_plain_headers_keep_localised_sort_text_only_as_hints() {
     .collect();
     let mut warnings = BTreeMap::new();
     let hints = score_hints(Some(&localisation), &mut warnings);
-    assert_eq!(score_labels()["army"], "Army");
-    assert_eq!(score_labels()["total"], "Total score");
     assert_eq!(hints["army"], "Synthetic sort force tooltip");
     assert_eq!(hints["land"], "Synthetic sort land tooltip");
     assert!(!hints.contains_key("navy"));

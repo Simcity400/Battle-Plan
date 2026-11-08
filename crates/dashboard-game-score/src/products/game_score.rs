@@ -274,8 +274,6 @@ pub struct GameScoreReply {
     /// The same six native multipliers, globally, not per-country difficulty.
     pub multipliers: GameScoreSeries,
     pub reasons: Vec<GameScoreMissing>,
-    /// Plain UI column labels, as chosen by the user.
-    pub labels: BTreeMap<String, String>,
     /// Localised native sort-button tooltips, absent when content cannot supply them.
     pub hints: BTreeMap<String, String>,
     pub warnings: Vec<String>,
@@ -1196,7 +1194,6 @@ fn scan(
         countries: Vec::new(),
         multipliers: GameScoreSeries::default(),
         reasons: Vec::new(),
-        labels: score_labels(),
         hints: BTreeMap::new(),
         warnings: Vec::new(),
         score_warnings: Vec::new(),
@@ -2544,23 +2541,6 @@ pub fn check_content(catalogue: &catalogue::Catalogue) -> Vec<dashboard_core::fi
         }
     }
     findings
-}
-
-fn score_labels() -> BTreeMap<String, String> {
-    [
-        ("country", "Country"),
-        ("total", "Total score"),
-        ("army", "Army"),
-        ("navy", "Navy"),
-        ("air", "Air"),
-        ("industry", "Industry"),
-        ("land", "Land"),
-        ("faction", "Faction"),
-        ("multiplier", "Score multiplier"),
-    ]
-    .into_iter()
-    .map(|(field, label)| (field.to_owned(), label.to_owned()))
-    .collect()
 }
 
 fn score_hints(

@@ -4,7 +4,7 @@
 use super::emit::{DECIMALS, Detail, FAMILY, METADATA, Metadata, PART, PRESENT, kind};
 use super::{
     GameScoreAmount, GameScoreCountry, GameScoreReply, GameScoreRun, GameScoreSeries,
-    GameScoreValues, PARTS, Q, ReasonTable, score_labels,
+    GameScoreValues, PARTS, Q, ReasonTable,
 };
 use dashboard_base::prepared::{engine, series};
 use dashboard_core::protocol::validate_tag;
@@ -265,7 +265,6 @@ pub fn series<P: PageRead>(
                     countries,
                     multipliers,
                     reasons: reasons.entries,
-                    labels: score_labels(),
                     hints: metadata.hints,
                     warnings: metadata.content_warnings,
                     score_warnings: metadata.warnings,

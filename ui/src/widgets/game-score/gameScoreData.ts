@@ -19,13 +19,8 @@ import { int, object, unsigned32 } from '../../dashboard/validation.ts';
 export const SCORE_PARTS = ['total', 'army', 'navy', 'air', 'industry', 'land'] as const;
 export type ScorePart = typeof SCORE_PARTS[number];
 export const BAR_PARTS = ['army', 'navy', 'air'] as const;
-export const FALLBACK_LABELS = { country: 'Country', total: 'Total score', army: 'Army', navy: 'Navy', air: 'Air',
-  industry: 'Industry', land: 'Land', multiplier: 'Score multiplier' } as const;
-export function gameScoreLabel(labels: GameScoreReply['labels'], key: keyof typeof FALLBACK_LABELS | 'faction'): string {
-  const label = labels[key];
-  if (typeof label !== 'string') throw new Error('The game score reply is malformed.');
-  return label;
-}
+export const SCORE_LABELS = { country: 'Country', total: 'Total score', army: 'Army', navy: 'Navy', air: 'Air',
+  industry: 'Industry', land: 'Land', faction: 'Faction', multiplier: 'Score multiplier' } as const;
 const missing = (value: unknown): value is GameScoreMissing => object(value)
   && (value.kind === 'recording' || value.kind === 'content') && typeof value.reason === 'string';
 const nullableMissing = (value: unknown) => value === null || missing(value);
@@ -46,7 +41,6 @@ export function validateGameScoreReply(value: unknown): GameScoreReply {
     || !Array.isArray(value.reasons) || !value.reasons.every(missing) || !Array.isArray(value.countries)
     || !Array.isArray(value.warnings) || !value.warnings.every(warning => typeof warning === 'string')
     || !Array.isArray(value.scoreWarnings) || !value.scoreWarnings.every(warning => object(warning) && int(warning.observations) && warning.observations > 0 && missing(warning))
-    || !object(value.labels) || ![...Object.keys(FALLBACK_LABELS), 'faction'].every(key => typeof (value.labels as Record<string, unknown>)[key] === 'string')
     || !object(value.hints) || !Object.values(value.hints).every(hint => typeof hint === 'string')) throw new Error('The game score reply is malformed.');
   const reasonCount = value.reasons.length;
   const observed: Span[] = [];
@@ -227,16 +221,15 @@ export function gameScoreRace(rows: readonly ScoreRow[], split: boolean): Countr
 function cellRows(label: string, value: ScoreCell, digits = 0, strong = false): TooltipRow[] {
   return [{ label, value: value.raw === null ? 'Unavailable' : formatScore(value.raw, digits), strong }];
 }
-export function gameScoreTooltip(reply: GameScoreReply, row: ScoreRow): TooltipContent {
-  const labels = reply.labels;
+export function gameScoreTooltip(row: ScoreRow): TooltipContent {
   return { title: row.identity.name ?? 'Country name unavailable', subtitle: formatDateTime(row.hour),
-    rows: [{ label: gameScoreLabel(labels, 'faction'), value: gameScoreFaction(row).label },
-      ...SCORE_PARTS.flatMap(part => cellRows(gameScoreLabel(labels, part), row.cells[part], 0, part === 'total')),
-      { label: gameScoreLabel(labels, 'multiplier'), value: row.multipliers.total.raw === null ? 'Unavailable' : formatScore(row.multipliers.total.raw, 5), divider: true },
-      ...SCORE_PARTS.filter(part => part !== 'total').flatMap(part => cellRows(`${gameScoreLabel(labels, part)} multiplier`, row.multipliers[part], 5))] };
+    rows: [{ label: SCORE_LABELS.faction, value: gameScoreFaction(row).label },
+      ...SCORE_PARTS.flatMap(part => cellRows(SCORE_LABELS[part], row.cells[part], 0, part === 'total')),
+      { label: SCORE_LABELS.multiplier, value: row.multipliers.total.raw === null ? 'Unavailable' : formatScore(row.multipliers.total.raw, 5), divider: true },
+      ...SCORE_PARTS.filter(part => part !== 'total').flatMap(part => cellRows(`${SCORE_LABELS[part]} multiplier`, row.multipliers[part], 5))] };
 }
 
 /** Every score and multiplier appears once, without acquisition metadata. */
-export function* gameScoreTooltips(reply: GameScoreReply, row: ScoreRow): Generator<TooltipContent> {
-  yield gameScoreTooltip(reply, row);
+export function* gameScoreTooltips(row: ScoreRow): Generator<TooltipContent> {
+  yield gameScoreTooltip(row);
 }

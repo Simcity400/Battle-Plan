@@ -3,7 +3,7 @@ import test from 'node:test';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createServer } from 'vite';
-import { SCORE_PARTS, FALLBACK_LABELS, gameScoreModel, gameScoreRows } from './gameScoreData.ts';
+import { SCORE_PARTS, gameScoreModel, gameScoreRows } from './gameScoreData.ts';
 import type { GameScoreReply, GameScoreSeries } from '../../generated/dashboard';
 import type { WidgetProps } from '../../dashboard/definitions';
 import type { ScoreRow } from './gameScoreData';
@@ -11,7 +11,7 @@ import type { ScoreRow } from './gameScoreData';
 const series = (): GameScoreSeries => Object.fromEntries(SCORE_PARTS.map(part => [part,
   [{ firstHour: 104, lastHour: 104, raw: part === 'total' ? '9007199254740993' : '-100001', readEachHour: true }]])) as GameScoreSeries;
 const reply: GameScoreReply = { branchId: '1', scale: 100000, reads: [104], reasons: [], warnings: [], scoreWarnings: [],
-  labels: { ...FALLBACK_LABELS, faction: 'Faction' }, hints: {}, multipliers: series(), countries: [{ tag: 'opaque / alias',
+  hints: {}, multipliers: series(), countries: [{ tag: 'opaque / alias',
     identity: [{ firstHour: 104, lastHour: 104, value: { canonicalSlot: 17, nativeCountry: 29, name: '', nameMissing: null,
       color: [17, 29, 0], colorMissing: null, faction: null, factionMissing: null } }], scores: series() }] };
 

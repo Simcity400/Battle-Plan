@@ -2319,10 +2319,6 @@ reads: Array<number>, countries: Array<GameScoreCountry>,
  */
 multipliers: GameScoreSeries, reasons: Array<GameScoreMissing>,
 /**
- * Plain UI column labels, as chosen by the user.
- */
-labels: { [key in string]?: string },
-/**
  * Localised native sort-button tooltips, absent when content cannot supply them.
  */
 hints: { [key in string]?: string }, warnings: Array<string>, scoreWarnings: Array<GameScoreWarning>, };
