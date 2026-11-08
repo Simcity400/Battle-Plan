@@ -249,7 +249,8 @@ pub struct TagHistory {
 pub(crate) const SPENT_READER: usize = 0;
 pub(crate) const INVENTORY_READER: usize = 1;
 pub(crate) const ROWS_READER: usize = 2;
-const READERS: usize = 3;
+pub(crate) const HISTORY_READER: usize = 3;
+const READERS: usize = 4;
 /// A log longer than this is dropped, and every reader reads the inventories whole.
 const EDITS_HELD: usize = 1 << 12;
 
@@ -337,6 +338,8 @@ pub struct ScannedProduced {
     pub missed: usize,
     pub(crate) spending_tainted: BTreeMap<u32, (i32, ProductionSpendingUnknown)>,
     pub(crate) rocket: RocketProduced,
+    /// A prepared history's token class names, by id.
+    pub(crate) class_names: Vec<String>,
 }
 
 impl ScannedProduced {

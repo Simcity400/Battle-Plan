@@ -318,6 +318,8 @@ fn publication_parity(combats: u32) {
             &fixture.key,
             &flag,
         )
+        .unwrap()
+        .into_value()
         .unwrap();
         observer_tests::assert_reply_parity(&actual, &oracle.reply(&params, &windows).unwrap())
             .unwrap();
@@ -340,7 +342,9 @@ fn publication_parity(combats: u32) {
                 &fixture.key,
                 &flag,
             )
-            .unwrap();
+            .unwrap()
+        .into_value()
+        .unwrap();
             observer_tests::assert_reply_parity(&actual, &oracle.ranked(&params, &flag).unwrap())
                 .unwrap();
         }
@@ -358,6 +362,8 @@ fn publication_parity(combats: u32) {
             &fixture.key,
             &flag,
         )
+        .unwrap()
+        .into_value()
         .unwrap();
         observer_tests::assert_reply_parity(&actual, &oracle.course(&episode.id).unwrap()).unwrap();
     }

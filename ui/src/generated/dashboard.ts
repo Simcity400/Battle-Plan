@@ -3059,8 +3059,25 @@ export type LedgerCommandHolder = { id: string,
  * Recorded object domain, cause or writer site; never a guessed holder.
  */
 kind: string, name: string | null, amountRaw: string | null, };
-export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, recurring?: Array<LedgerRecurringSpend>, gains?: Array<LedgerGain>, recurringDays?: Array<LedgerMonthDays>, partSummaries?: Array<LedgerPartSummary>, governmentMarks?: MarkSummary, };
+export type PoliticsLedgerReply = { branchId: string, tag: string, decimals: number, governments?: Array<LedgerGovernment>, daily?: Array<LedgerDaily>, warnings: Array<string>, spending: Array<LedgerSpend>, spendItems: Array<LedgerSpendItem>, spendCategories: Array<LedgerSpendCategory>, spendingCoverage: Array<LedgerSpendCoverage>, ideaTooltips: LedgerIdeaTooltips | null, commandHolds: Array<LedgerCommandHold>, balanceChanges?: Array<LedgerBalanceChange>, recurring?: Array<LedgerRecurringSpend>,
+/**
+ * A totals reply's per-item subtotals, summed by the item each displays as.
+ */
+spendGroups?: Array<LedgerSpendGroup>, gains?: Array<LedgerGain>, recurringDays?: Array<LedgerMonthDays>, partSummaries?: Array<LedgerPartSummary>, governmentMarks?: MarkSummary, };
 export type LedgerRecurringSpend = { spend: LedgerSpend, firstHour: number, lastHour: number, days: number, count: number, knownRaw: string, knownCount: number, };
+export type LedgerSpendGroup = { spend: LedgerSpend, firstHour: number, lastHour: number,
+/**
+ * Payment rows the subtotals fold.
+ */
+count: number, occurrences: number, knownRaw: string, knownCount: number,
+/**
+ * Payments whose cost was not recorded, in subtotals whose charge is unknown.
+ */
+unknownCount: number,
+/**
+ * Whether a subtotal with a recorded charge was read while spending was not fully recorded.
+ */
+uncovered: boolean, };
 export type LedgerGain = { currency: string, gainedRaw: string, lostRaw: string, complete: boolean, };
 export type LedgerMonthDays = { currency: string, category: string, month: number | null, days: number, };
 export type LedgerPartSummary = { id: string, label: string, summary: ChartSummary, };
@@ -4151,7 +4168,12 @@ included: Array<string>,
 /**
  * Count ships refit lines deliver.
  */
-refits: boolean, };
+refits: boolean,
+/**
+ * The chart's view: only the samples it shows, and where they are denser than its width,
+ * each line as a summary on the shared chart grid; none, every sample.
+ */
+view?: SeriesView, };
 export type ProducedMeasure = "total" | "day" | "week" | "month";
 export type ProducedCount = "units" | "ic";
 export type ProducedGrouping = "type" | "variant" | "domain";
@@ -4222,7 +4244,18 @@ total: ProducedCoded | null,
  * For a top-N reply, the hours the country was among the top N, in order;
  * its samples are cut to them. Null for chosen countries.
  */
-membership: Array<HourSpan> | null, };
+membership: Array<HourSpan> | null,
+/**
+ * Where the view's samples are denser than its width: the total over the view on the
+ * shared chart grid, every sample's exact value held in its bucket; the samples are
+ * then the last one shown and the last with a known total alone.
+ */
+summary?: ChartSummary, };
+export type SeriesView = { from: number, to: number,
+/**
+ * The chart's plot width in pixels.
+ */
+width: number, };
 export type EquipmentProducedReply = { branchId: string, measure: ProducedMeasure, count: ProducedCount,
 /**
  * Fixed-point decimals of every value: 0 for units, 5 for IC.
@@ -5307,22 +5340,13 @@ identity: string, present: Array<HourSpan>,
  * Null means no ranking filter. Empty means never in the requested top N.
  */
 membership: Array<HourSpan> | null, };
-export type MilitaryAirLeaf = {
+export type MilitaryAirPart = { tag: string | null, identity: string | null, dealt: boolean, cause: number | null,
 /**
- * Null means the recording could not attribute this endpoint.
+ * Air losses: whether the opposite endpoint was resolved for every loss in it.
  */
-tag: string | null, identity: string | null, dealt: boolean,
+opponentKnown: boolean | null, buildingToken: string | null, buildingId: number | null, state: number | null,
 /**
- * Opposite endpoint from the native wrapper, resolved at the supplying read.
- * Accident losses are operational; a null opponent for another cause is unknown.
- */
-opponent: string | null, region: number | null, buildingToken: string | null, buildingId: number | null,
-/**
- * Zero is known absence of a containing state, not an inferred state.
- */
-state: number | null, cause: number,
-/**
- * Each point is `[hour, readHour, totalRaw]` ([`MilitaryAirPoint`]).
+ * Each point is `[hour, readHour, totalRaw]`, as [`MilitaryAirPoint`]: in read order.
  */
 points: Array<[number, number, string]>, };
 export type MilitaryAirName = { id: string, name: string | null, missing: string | null, };
@@ -5330,7 +5354,7 @@ export type MilitaryAirReply = { family: MilitaryAirFamily, firstHour: number, l
 /**
  * Reads containing a caller whose membership in aircraft bombing is unknown.
  */
-incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, leaves: Array<MilitaryAirLeaf>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, warnings: Array<string>, };
+incomplete: Array<HourSpan>, countries: Array<MilitaryAirCountry>, parts: Array<MilitaryAirPart>, regions: Array<MilitaryAirName>, buildings: Array<MilitaryAirName>, warnings: Array<string>, };
 export type ShipClassInfo = { token: number,
 /**
  * The recorded lexical token, resolved to the native sub-unit spelling.

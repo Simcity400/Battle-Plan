@@ -4,6 +4,7 @@
 //! and wrapping plane totals remain exact, even when the map hides an entry.
 //! Wings detail uses a reached-hour shared frame-cache read, not a branch walk.
 
+use dashboard_base::products::built::Built;
 use crate::shared::{self, Choice, TheatreChoice};
 use dashboard_base::{
     catalogue::{self, Catalogue, Refusals},
@@ -334,7 +335,7 @@ fn strip_in(catalogue: &Catalogue) -> Result<String, String> {
 }
 
 /// The selected country's missions from the family's native publication.
-pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(query: &Query<'_>) -> io::Result<Built> {
     answer(query, &|| query.open_native::<AirMissionsObserver>())
 }
 
@@ -345,7 +346,7 @@ pub(crate) type Open<'q, O> = dyn Fn() -> io::Result<Option<Opened<'q, O>>> + 'q
 pub(crate) fn answer<'q>(
     query: &'q Query<'_>,
     open: &Open<'q, AirMissionsObserver>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params = shared::params::<AirMissions>(query)?;
     if matches!(params.view, View::Wings) {
         return wings(query, &params, open);
@@ -443,7 +444,7 @@ fn wings<'q>(
     query: &'q Query<'_>,
     params: &Params,
     open: &Open<'q, AirMissionsObserver>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let hour = params.hour.expect("validated wings hour");
     let region = params.region.expect("validated wings region");
     let (first, last) = query.bounds()?;

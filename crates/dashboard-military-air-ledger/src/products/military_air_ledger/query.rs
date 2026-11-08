@@ -16,6 +16,7 @@ use dashboard_series::{
     Cell, EventOrder, EventQuery, PageRead, Selection, Snapshot, Span, codec::Binary,
     family::Directory, query::EventView,
 };
+use dashboard_base::products::built::Built;
 use serde_json::Value;
 use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
 
@@ -41,12 +42,12 @@ fn spans<P: PageRead>(
         .collect())
 }
 
-/// `family`'s census as the publication holds it, with its sums natively dated from `from`.
+/// `family`'s whole census as the publication holds it: a reply keeps the sums it asks for
+/// ([`super::family_reply`]).
 fn census<P: PageRead>(
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
     family: usize,
-    from: Option<i32>,
     cancelled: &AtomicBool,
 ) -> io::Result<FamilyScan> {
     let mut scan = FamilyScan {
@@ -102,7 +103,7 @@ fn census<P: PageRead>(
         return Ok(scan);
     };
     let accepted = snapshot.publication().accepted;
-    let native = Span::new(from.unwrap_or(i32::MIN).min(accepted.last), accepted.last)?;
+    let native = Span::new(i32::MIN, accepted.last)?;
     let selection = [Selection {
         key,
         membership: None,
@@ -144,9 +145,7 @@ fn census<P: PageRead>(
                 .cloned()
                 .ok_or_else(malformed)?;
             let read = event.read_hour.ok_or_else(malformed)?;
-            if from.is_none_or(|from| event.native_hour >= from) {
-                scan.add(leaf, event.native_hour, read, sum)?;
-            }
+            scan.add(leaf, event.native_hour, read, sum)?;
         }
         cursor = page.next;
         if cursor.is_none() {
@@ -156,16 +155,74 @@ fn census<P: PageRead>(
     Ok(scan)
 }
 
-/// A `military-air-ledger` request answered from the publication; `availability` asks only
-/// whether the family read any hour.
-pub fn reply<P: PageRead>(
+/// A `military-air-ledger` request answered from the publication `opened`, whose census of each
+/// family is read once; `availability` asks only whether the family read any hour.
+pub fn reply(
     source: &Source,
     context: &LoadContext,
-    mut params: Value,
+    params: Value,
+    opened: &dashboard_base::prepared::published::Opened,
+    cancelled: &AtomicBool,
+) -> io::Result<Built> {
+    respond(
+        source,
+        context,
+        params,
+        cancelled,
+        |family| {
+            opened.read(cancelled, |snapshot, directory| {
+                spans(snapshot, directory.key(FAMILY, OBSERVED + family as u64, None))
+            })
+        },
+        |family| {
+            opened.derived(
+                ["air ledger census: air losses", "air ledger census: bombing"][family],
+                cancelled,
+                |snapshot, directory| census(snapshot, directory, family, cancelled),
+            )
+        },
+    )
+}
+
+/// [`reply`] read from `snapshot`, its census read afresh.
+#[cfg(test)]
+pub(super) fn reply_of<P: PageRead>(
+    source: &Source,
+    context: &LoadContext,
+    params: Value,
     snapshot: &mut Snapshot<'_, P>,
     directory: &Directory,
     cancelled: &AtomicBool,
 ) -> io::Result<Value> {
+    let snapshot = std::cell::RefCell::new(snapshot);
+    respond(
+        source,
+        context,
+        params,
+        cancelled,
+        |family| {
+            spans(
+                &mut snapshot.borrow_mut(),
+                directory.key(FAMILY, OBSERVED + family as u64, None),
+            )
+        },
+        |family| {
+            census(&mut snapshot.borrow_mut(), directory, family, cancelled)
+                .map(std::sync::Arc::new)
+        },
+    )?
+    .into_value()
+}
+
+/// `params`' reply: whether its family was `observed` at any hour, or the reply from its `census`.
+fn respond(
+    source: &Source,
+    context: &LoadContext,
+    mut params: Value,
+    cancelled: &AtomicBool,
+    observed: impl FnOnce(usize) -> io::Result<Vec<HourSpan>>,
+    census: impl FnOnce(usize) -> io::Result<std::sync::Arc<FamilyScan>>,
+) -> io::Result<Built> {
     let availability = params
         .as_object_mut()
         .and_then(|params| params.remove("availability"))
@@ -183,11 +240,11 @@ pub fn reply<P: PageRead>(
         MilitaryAirFamily::Bombing => 1,
     };
     if availability {
-        let observed = spans(
-            snapshot,
-            directory.key(FAMILY, OBSERVED + family as u64, None),
-        )?;
-        return Ok(serde_json::json!({ "available": !observed.is_empty() }));
+        let observed = observed(family)?;
+        return Built::of(
+            &serde_json::json!({ "available": !observed.is_empty() }),
+            cancelled,
+        );
     }
     let branch: u64 = params.branch_id.parse().expect("validated branch");
     let declaration = source
@@ -197,19 +254,11 @@ pub fn reply<P: PageRead>(
         .find(|row| row.id == branch)
         .ok_or_else(|| invalid("Unknown branch"))?;
     let (first, last) = dashboard_text::metadata::branch_bounds(source.replay_ref(), declaration);
-    let held = census(snapshot, directory, family, params.from_hour, cancelled)?;
-    let mut scan = Scan {
-        first,
-        last,
-        ..Scan::default()
-    };
-    match params.family {
-        MilitaryAirFamily::AirLosses => scan.air = held,
-        MilitaryAirFamily::Bombing => scan.bombing = held,
-    }
-    Ok(serde_json::to_value(
-        scan.reply(source, &params, context, cancelled)?,
-    )?)
+    let held = census(family)?;
+    super::built(
+        &super::family_reply(&held, (first, last), source, &params, context, cancelled)?,
+        cancelled,
+    )
 }
 
 /// A cold ledger: no hour read, every recorded hour pending.
@@ -218,7 +267,7 @@ pub fn empty(
     context: &LoadContext,
     mut params: Value,
     cancelled: &AtomicBool,
-) -> io::Result<Value> {
+) -> io::Result<Built> {
     if let Some(value) = params
         .as_object_mut()
         .and_then(|params| params.remove("availability"))
@@ -227,7 +276,7 @@ pub fn empty(
             .as_bool()
             .ok_or_else(|| invalid("Invalid ledger availability request"))?;
         if asked {
-            return Ok(serde_json::json!({ "available": false }));
+            return Built::of(&serde_json::json!({ "available": false }), cancelled);
         }
     }
     let params: MilitaryAirParams = serde_json::from_value(params)?;
@@ -240,12 +289,13 @@ pub fn empty(
         .find(|row| row.id == branch)
         .ok_or_else(|| invalid("Unknown branch"))?;
     let (first, last) = dashboard_text::metadata::branch_bounds(source.replay_ref(), declaration);
-    Ok(serde_json::to_value(
-        Scan {
+    super::built(
+        &Scan {
             first,
             last,
             ..Scan::default()
         }
         .reply(source, &params, context, cancelled)?,
-    )?)
+        cancelled,
+    )
 }

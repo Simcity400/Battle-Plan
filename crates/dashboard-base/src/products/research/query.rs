@@ -256,9 +256,8 @@ pub fn history_page(
             None => (ResearchHistory::default(), 0),
         };
     let state = source.state::<State>();
-    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     let mut data = serde_json::to_value(super::present(
-        source, context, &mut state, history, unjoined, cancelled,
+        source, context, &state, history, unjoined, cancelled,
     )?)?;
     prefix.mark(&mut data)?;
     Ok(data)
@@ -444,11 +443,11 @@ pub fn state(
             });
         }
         let state = source.state::<State>();
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let data = super::present(source, context, &mut state, history, 0, cancelled)?;
+        let data = super::present(source, context, &state, history, 0, cancelled)?;
+        let art = super::artwork(source, context, &state).ok();
         let grants = match grants {
             Ok(inventory) => grants::localised(inventory, |token| {
-                state.artwork.as_mut().and_then(|art| art.localise(token))
+                art.as_ref().and_then(|art| art.localise(token))
             }),
             Err(reason) => GrantInventory::unavailable(reason),
         };

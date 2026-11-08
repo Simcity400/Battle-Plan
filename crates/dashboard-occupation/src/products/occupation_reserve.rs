@@ -13,7 +13,7 @@
 //! amounts alone determine race order; negatives stay signed.
 
 use dashboard_base::products::{
-    Product, check_reply_budget, country_groups::HourSpan, validate_tag,
+    Product, built::Built, country_groups::HourSpan, validate_tag,
 };
 use dashboard_keyed::{
     Observer as KeyedObserver, Values,
@@ -372,7 +372,7 @@ fn selected(part: &str, selectors: &[String]) -> bool {
 
 /// Read only the selected holders' prepared runs, from the family's native publication. `tag`
 /// may be `TAG@slot` to identify one holder; a bare tag retains distinct tag-reuse series.
-pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(query: &Query<'_>) -> io::Result<Built> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
     answer(query, || query.open_native::<OccupationReserveObserver>())
 }
@@ -381,7 +381,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
 fn answer<'q>(
     query: &'q Query<'_>,
     open: impl FnOnce() -> io::Result<Option<Opened<'q, OccupationReserveObserver>>>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params: OccupationReserveParams = serde_json::from_value(query.params.clone())
         .map_err(|error: serde_json::Error| dashboard_core::invalid(error.to_string()))?;
     OccupationReserve::validate(&params).map_err(dashboard_core::invalid)?;
@@ -394,8 +394,7 @@ fn answer<'q>(
         query.through(),
         query.cancelled,
     )?;
-    check_reply_budget(&reply)?;
-    serde_json::to_value(reply).map_err(io::Error::other)
+    Built::of(&reply, query.cancelled)
 }
 
 fn reply(

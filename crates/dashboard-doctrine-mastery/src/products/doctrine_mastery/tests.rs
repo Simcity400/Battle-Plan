@@ -121,7 +121,7 @@ fn ask(
         prefix,
         cancelled: &AtomicBool::new(false),
     };
-    answer(&query, || query.open::<DoctrineMasteryObserver>()).unwrap()
+    answer(&query, || query.open::<DoctrineMasteryObserver>()).unwrap().into_value().unwrap()
 }
 
 fn runs(window: &KeyedWindow, name: &str) -> Vec<(i32, i32, String, bool)> {

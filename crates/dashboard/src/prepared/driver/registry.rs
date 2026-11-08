@@ -273,20 +273,27 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
             "production-spending",
             "dockyard-spending",
             "military-factory-spending",
+            "equipment-produced",
             "scoreboard",
         ],
         gates: &[
             "production-select",
             "production-spending",
             "military-factory-spending",
+            "equipment-produced",
         ],
         sections: &[
             "production-spent",
             crate::prepared_production::FACTS,
+            crate::prepared_production::HISTORY,
             crate::prepared_production::STATE,
         ],
         // 10: an endpoint goes on past a flush, its continuation flagged.
-        version: 10,
+        // 12: every tag's samples and the totals that changed at them, stored as Equipment
+        // produced's reply reads them; 16: its totals whole and by class, as rankings read them,
+        // each tag's samples and Rocket output frames of their own, its units' and its applied
+        // IC's entries named apart.
+        version: 16,
         ..family("production")
     },
     Descriptor {

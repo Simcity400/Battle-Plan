@@ -22,7 +22,7 @@ mod tests;
 pub use content::description_tables;
 pub use observer::DoctrineMasteryObserver;
 
-use dashboard_base::products::{Product, check_reply_budget, validate_tag};
+use dashboard_base::products::{Product, built::Built, validate_tag};
 use dashboard_keyed::query::{KeyedSeries, KeyedWindow, Opened, Query};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, io};
@@ -140,7 +140,7 @@ impl Product for DoctrineMastery {
 
 /// The selected country's prepared window, from the family's native publication. Only an
 /// explicit `hour` asks the shared frame cache for reached description operands.
-pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(query: &Query<'_>) -> io::Result<Built> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
     answer(query, || query.open_native::<DoctrineMasteryObserver>())
 }
@@ -149,7 +149,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
 fn answer<'q>(
     query: &'q Query<'_>,
     open: impl FnOnce() -> io::Result<Option<Opened<'q, DoctrineMasteryObserver>>>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params: DoctrineMasteryParams = serde_json::from_value(query.params.clone())
         .map_err(|error| dashboard_core::invalid(error.to_string()))?;
     DoctrineMastery::validate(&params).map_err(dashboard_core::invalid)?;
@@ -184,8 +184,7 @@ fn answer<'q>(
         }
     }
     dashboard_text::metadata::check_cancel(query.cancelled)?;
-    check_reply_budget(&reply)?;
-    serde_json::to_value(reply).map_err(io::Error::other)
+    Built::of(&reply, query.cancelled)
 }
 
 fn selected(name: &str, tag: &str) -> bool {

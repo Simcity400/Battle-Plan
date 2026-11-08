@@ -37,8 +37,11 @@ function useProducedAt(runtime: WidgetRuntime, track: BoundTrack, tag: string, a
   const answered = !!page.data && page.hour === hour && (finalPreparedReply(page.data) || !approximateAt(preparedPrefix(page.data), hour))
     && !(page.data.totalCountries === 0 && !page.data.known) && page.data.countries.every(row => row.values.every(value => value.amount !== null));
   const history = alias !== null && (!prepared || page.unavailable === true || !!page.data && !page.pending && !answered);
+  // The table shows one hour: the history is asked for that hour's sample alone, and nothing
+  // of another hour is shown while it is read.
   const read = useProduct<EquipmentProducedReply>(runtime.client, history ? { sourceId: track.source.id, revision: track.source.revision,
-    product: 'equipment-produced', params: requestParams(params) } : null, active, validateProducedReply);
+    product: 'equipment-produced', params: { ...requestParams(params), view: { from: hour, to: hour, width: 1 } } } : null, active,
+    validateProducedReply, track.source);
   const endpoint = useMemo(() => answered && page.data && selection ? productionEndpointReply(page.data, selection) : undefined, [answered, page.data, selection]);
   return history ? read : { data: endpoint, error: page.error };
 }

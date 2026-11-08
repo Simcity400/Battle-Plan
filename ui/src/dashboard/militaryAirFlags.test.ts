@@ -11,6 +11,8 @@ import type { MilitaryAirReply } from '../generated/dashboard';
 import type { LedgerRow } from './militaryAirLedger';
 import { validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/bombing-damage/definition.ts';
+import { partOf } from './militaryAirParts.fixture.ts';
+import type { Leaf } from './militaryAirParts.fixture';
 
 type Item = ButterflyItem & { row: LedgerRow };
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
@@ -18,12 +20,12 @@ const data: MilitaryAirReply = { family: 'bombing', firstHour: 10, lastHour: 12,
   observed: [span(10, 12)], incomplete: [], countries: [
     { tag: 'OLD', identity: '3:9', present: [span(10)], membership: null },
     { tag: 'NEW', identity: '3:9', present: [span(11, 12)], membership: null },
-  ], leaves: [
+  ], parts: ([
     { tag: 'NEW', identity: '3:9', dealt: false, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 40001, cause: 0,
       points: [[10, 11, '50000000'], [11, 12, '-10000000']] },
     { tag: null, identity: null, dealt: true, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 40001, cause: 0,
       points: [[10, 11, '50000000']] },
-  ], regions: [], buildings: [], warnings: [] };
+  ] as Leaf[]).map(partOf), regions: [], buildings: [], warnings: [] };
 
 test('actual bombing adapter forwards dated native flag status without labelling an unknown attacker', async () => {
   validateMilitaryAirReply(data);

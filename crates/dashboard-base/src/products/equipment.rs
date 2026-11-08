@@ -1102,6 +1102,19 @@ impl VariantCatalogue {
             ..Self::seeded(versions)
         }
     }
+    /// [`Self::seeded`] with `refusals` too, by reason, which [`Self::warnings`] reports.
+    pub(crate) fn with_refusals(
+        versions: BTreeMap<u64, Vec<VariantVersion>>,
+        refusals: &BTreeMap<String, BTreeSet<u64>>,
+    ) -> Self {
+        let mut catalogue = Self::seeded(versions);
+        for (reason, variants) in refusals {
+            for variant in variants {
+                catalogue.refused.note(reason.as_str(), variant.to_string());
+            }
+        }
+        catalogue
+    }
     /// The last hour it observed.
     pub fn last_hour(&self) -> Option<i32> {
         self.last_hour

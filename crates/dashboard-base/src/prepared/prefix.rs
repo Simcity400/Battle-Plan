@@ -15,6 +15,7 @@
 //! branch-wide classifications. Such products mark their revisable hours
 //! approximate, or independently prove a closed window before claiming it exact.
 
+use crate::products::built::Fields;
 use super::coverage::{self, Coverage, Hole};
 use crate::{
     Source,
@@ -119,17 +120,14 @@ impl Prefix {
 
     /// Adds the prefix's fields to a reply's root object; null and other
     /// replies are left as they are.
-    pub fn mark(&self, data: &mut Value) -> io::Result<()> {
+    pub fn mark(&self, data: &mut impl Fields) -> io::Result<()> {
         self.mark_coverage(data, "coverage")
     }
 
     /// Marks preparation separately from a product's capture evidence.
-    pub fn mark_coverage(&self, data: &mut Value, field: &str) -> io::Result<()> {
-        if let Some(reply) = data.as_object_mut() {
-            reply.insert(field.into(), serde_json::to_value(&self.coverage)?);
-            reply.insert("pending".into(), serde_json::to_value(&self.pending)?);
-        }
-        Ok(())
+    pub fn mark_coverage(&self, data: &mut impl Fields, field: &str) -> io::Result<()> {
+        data.set_field(field, &self.coverage)?;
+        data.set_field("pending", &self.pending)
     }
 
     /// A later observation can revise any earlier value or classification.
@@ -148,15 +146,14 @@ impl Prefix {
         )
     }
 
-    pub fn mark_revisable(&self, source: &Source, branch: u64, data: &mut Value) -> io::Result<()> {
+    pub fn mark_revisable(
+        &self,
+        source: &Source,
+        branch: u64,
+        data: &mut impl Fields,
+    ) -> io::Result<()> {
         self.mark(data)?;
-        if let Some(reply) = data.as_object_mut() {
-            reply.insert(
-                "approximate".into(),
-                serde_json::to_value(self.revisable(source, branch))?,
-            );
-        }
-        Ok(())
+        data.set_field("approximate", &self.revisable(source, branch))
     }
 }
 
@@ -226,7 +223,7 @@ pub fn mark_unprepared(
     source: &Source,
     branch: u64,
     through: Option<i32>,
-    data: &mut Value,
+    data: &mut impl Fields,
 ) -> io::Result<()> {
     Prefix::new(source, branch, extent(source, branch, None)?, through).mark(data)
 }

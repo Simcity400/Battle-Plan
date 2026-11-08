@@ -8,6 +8,13 @@ use replay_data::rows::{
 use serde_json::{Value, json};
 use std::ops::RangeInclusive;
 
+/// A forward query's reply as the value it holds.
+macro_rules! forward_value {
+    ($($arg:expr),* $(,)?) => {
+        forward_query::query($($arg),*).and_then(|built| built.into_value())
+    };
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct Combat {
     pub(super) id: u64,
@@ -197,7 +204,7 @@ fn assert_forward(source: &Source, branch: u64) -> (Value, Value) {
     let manifest_params = LandBattlesManifestParams {
         branch_id: branch_id.clone(),
     };
-    let manifest = forward_query::query(
+    let manifest = forward_value!(
         source,
         "land-battles-manifest",
         serde_json::to_value(&manifest_params).unwrap(),
@@ -219,7 +226,7 @@ fn assert_forward(source: &Source, branch: u64) -> (Value, Value) {
             branch_id: branch_id.clone(),
             window,
         };
-        last = forward_query::query(
+        last = forward_value!(
             source,
             "land-battles",
             serde_json::to_value(&params).unwrap(),
@@ -705,7 +712,7 @@ fn loss_reads_name_designs_renamed_or_created_between_variant_reads() {
             .unwrap();
         writer.commit().unwrap();
     }
-    let course = forward_query::query(
+    let course = forward_value!(
         &source,
         "land-battle-course",
         json!({ "branchId": "1", "id": "1:1:118" }),
@@ -790,7 +797,7 @@ fn forward_pages_survive_an_unused_refusing_variant_name() {
             .unwrap();
         writer.commit().unwrap();
     }
-    let window = forward_query::query(
+    let window = forward_value!(
         &source,
         "land-battles",
         json!({"branchId":"1", "window":2}),

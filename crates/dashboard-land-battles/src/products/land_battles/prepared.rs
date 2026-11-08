@@ -2,6 +2,7 @@
 //! A block pages out the battles, open battles' runs and reads, and warnings
 //! before its ranking interval; only a finalizer whose coverage reaches back
 //! past them redraws a window from pages, a battle's slice at a time.
+use dashboard_base::products::built::Built;
 use super::*;
 use dashboard_base::prepared::series;
 use serde::de::DeserializeOwned;
@@ -938,6 +939,14 @@ pub fn prefix_query(
     Ok(Some(data))
 }
 
+/// `reply` written once, refused as the transport refuses a reply past its budget: what bounds a
+/// reply its own product leaves unbounded.
+fn transported(reply: &impl Serialize, cancelled: &AtomicBool) -> io::Result<Built> {
+    Built::within(reply, cancelled, dashboard_core::transport::MAX_REPLY_BYTES, || {
+        dashboard_core::invalid("Projected response exceeds the transport byte budget")
+    })
+}
+
 pub fn query(
     source: &Source,
     product: &str,
@@ -945,7 +954,7 @@ pub fn query(
     store: &store::Store,
     key: &store::SourceKey,
     cancelled: &AtomicBool,
-) -> io::Result<Value> {
+) -> io::Result<Built> {
     let id = params
         .get("branchId")
         .and_then(Value::as_str)
@@ -961,13 +970,17 @@ pub fn query(
                     dashboard_core::invalid("Prepared land battle availability is missing")
                 })?;
             let windows = windows(source.replay_ref(), branch);
-            serde_json::to_value(bounded(LandBattlesManifestReply {
-                windows,
-                available,
-                unavailable: (!available).then(|| "Not in this recording".into()),
-                content_warnings: Vec::new(),
-            })?)
-            .map_err(Into::into)
+            Built::within(
+                &LandBattlesManifestReply {
+                    windows,
+                    available,
+                    unavailable: (!available).then(|| "Not in this recording".into()),
+                    content_warnings: Vec::new(),
+                },
+                cancelled,
+                MAX_PRODUCT_REPLY_BYTES,
+                too_long,
+            )
         }
         "land-battle-course" => {
             let warnings: Vec<String> =
@@ -1008,7 +1021,7 @@ pub fn query(
                         dashboard_core::invalid("Prepared land battle course is missing")
                     })?;
             let reply = stored_course(store, key, branch, course, warnings, cancelled)?;
-            serde_json::to_value(reply).map_err(Into::into)
+            transported(&reply, cancelled)
         }
         "land-battles" => {
             let warnings: Vec<String> =
@@ -1026,7 +1039,7 @@ pub fn query(
             )?
             .ok_or_else(|| dashboard_core::invalid("Battle window not in this recording"))?;
             reply.content_warnings = warnings;
-            serde_json::to_value(bounded(reply)?).map_err(Into::into)
+            Built::within(&reply, cancelled, MAX_PRODUCT_REPLY_BYTES, too_long)
         }
         "land-battles-ranking" => {
             let warnings: Vec<String> =
@@ -1077,7 +1090,7 @@ pub fn query(
                 .into_iter()
                 .collect();
             census.content_warnings = warnings;
-            serde_json::to_value(census.ranked(&params, cancelled)?).map_err(Into::into)
+            transported(&census.ranked(&params, cancelled)?, cancelled)
         }
         _ => unreachable!(),
     }

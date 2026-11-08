@@ -311,7 +311,8 @@ impl Published {
         let mut snapshot =
             Snapshot::open(self.pages.clone(), self.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
-        let (scan, handles) = catalogued::<O>(&directory).unwrap();
+        let scan = catalogued::<O>(&directory).unwrap();
+        let handles = super::keys(&directory, &scan).unwrap();
         let keyed: Vec<(String, u64)> = scan
             .keyed()
             .map(|(name, key)| (name.to_owned(), key))
@@ -328,7 +329,8 @@ impl Published {
         let mut snapshot =
             Snapshot::open(self.pages.clone(), self.root, identity()).unwrap();
         let directory = Directory::read(&mut snapshot, SCHEMA).unwrap();
-        let (scan, handles) = catalogued::<O>(&directory).unwrap();
+        let scan = catalogued::<O>(&directory).unwrap();
+        let handles = super::keys(&directory, &scan).unwrap();
         let mut keys = vec![KNOWN, READ];
         keys.extend(scan.keyed().map(|(_, key)| key));
         let read = changes(&mut snapshot, &handles, &keys, hours).unwrap();
@@ -389,7 +391,10 @@ pub fn walked_bound<O: Observer>(
         .unwrap()
         .unwrap();
     let window = opened.window(from, to, None, |_| true).unwrap();
-    (opened.scan, window)
+    let scan = std::sync::Arc::try_unwrap(opened.scan)
+        .ok()
+        .expect("a walked scan has one holder");
+    (scan, window)
 }
 
 /// Holds the publication of `frames` — segments starting at each of `starts`, cut after each

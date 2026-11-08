@@ -4,6 +4,7 @@
 //! Queries return only the selected pair (`c<i>`, `c<i+12>`) and ring state.
 //! A known hour without a row is absent, not a recorded zero.
 
+use dashboard_base::products::built::Built;
 use crate::shared::{self, Choice, TheatreChoice};
 use dashboard_base::{
     catalogue::{self, Refusals},
@@ -114,7 +115,7 @@ pub fn divisor(channel: usize) -> i32 {
 }
 
 /// The selected country's statistics from the family's native publication.
-pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(query: &Query<'_>) -> io::Result<Built> {
     let opened = published::open(
         query.source,
         query.content,
@@ -175,7 +176,7 @@ fn selected(directory: &Directory, tag: &str, channel: u8) -> io::Result<Selecte
 pub(crate) fn answer(
     query: &Query<'_>,
     opened: Option<&published::Opened>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params = shared::params::<AirStatistics>(query)?;
     let (first, last) = query.window()?;
     let labels = shared::labels(query);

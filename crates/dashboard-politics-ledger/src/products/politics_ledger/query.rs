@@ -1814,6 +1814,9 @@ pub fn query<P: PageRead>(
         Default::default()
     };
     reply.gains = gains(&daily, held)?;
+    if rolled {
+        group_totals(&mut reply, to)?;
+    }
     reply.warnings = warnings(&mut reader, &keys, Some(&presentation))?;
     if view == LedgerView::Balance {
         reply.daily = daily;
@@ -1833,6 +1836,115 @@ pub fn query<P: PageRead>(
         ));
     }
     Ok(serde_json::to_value(reply)?)
+}
+
+/// A totals reply's per-item subtotals read by `to`, summed by the displayed item and currency
+/// ([`LedgerSpendGroup`]) in the order they came, each keeping its latest subtotal (by native
+/// hour, action sequence and ordinal, the first of equals); its items and tooltips only those its
+/// payments and groups show.
+fn group_totals(reply: &mut PoliticsLedgerReply, to: i32) -> io::Result<()> {
+    let malformed = || invalid("A politics ledger subtotal is malformed");
+    let group_of: HashMap<&str, &str> = reply
+        .spend_items
+        .iter()
+        .map(|item| (item.id.as_str(), item.group_id.as_str()))
+        .collect();
+    let mut order: Vec<(String, String)> = Vec::new();
+    let mut groups: HashMap<(String, String), (LedgerSpendGroup, i128)> = HashMap::new();
+    let latest = |spend: &LedgerSpend| -> io::Result<(i32, u64, u32)> {
+        Ok((
+            spend.hour,
+            spend.sequence.parse().map_err(|_| malformed())?,
+            spend.ordinal,
+        ))
+    };
+    for row in std::mem::take(&mut reply.recurring) {
+        let spend = &row.spend;
+        if spend.hour > to || spend.read_hour > to {
+            continue;
+        }
+        let group = group_of.get(spend.item_id.as_str()).ok_or_else(malformed)?;
+        let key = (spend.currency.clone(), (*group).to_owned());
+        let known: i128 = row.known_raw.parse().map_err(|_| malformed())?;
+        let unknown = if spend.charge_raw.is_none() {
+            spend
+                .occurrences
+                .checked_sub(row.known_count)
+                .ok_or_else(malformed)?
+        } else {
+            0
+        };
+        let uncovered = !spend.covered && spend.charge_raw.is_some();
+        match groups.get_mut(&key) {
+            None => {
+                order.push(key.clone());
+                groups.insert(
+                    key,
+                    (
+                        LedgerSpendGroup {
+                            first_hour: row.first_hour,
+                            last_hour: row.last_hour,
+                            count: row.count,
+                            occurrences: spend.occurrences,
+                            known_raw: String::new(),
+                            known_count: row.known_count,
+                            unknown_count: unknown,
+                            uncovered,
+                            spend: row.spend,
+                        },
+                        known,
+                    ),
+                );
+            }
+            Some((group, sum)) => {
+                let add = |a: u32, b: u32| a.checked_add(b).ok_or_else(malformed);
+                group.first_hour = group.first_hour.min(row.first_hour);
+                group.last_hour = group.last_hour.max(row.last_hour);
+                group.count = add(group.count, row.count)?;
+                group.occurrences = add(group.occurrences, spend.occurrences)?;
+                group.known_count = add(group.known_count, row.known_count)?;
+                group.unknown_count = add(group.unknown_count, unknown)?;
+                group.uncovered |= uncovered;
+                *sum = sum.checked_add(known).ok_or_else(malformed)?;
+                if latest(&row.spend)? > latest(&group.spend)? {
+                    group.spend = row.spend;
+                }
+            }
+        }
+    }
+    reply.spend_groups = order
+        .into_iter()
+        .map(|key| {
+            let (mut group, sum) = groups.remove(&key).expect("each key ordered once");
+            group.known_raw = sum.to_string();
+            group
+        })
+        .collect();
+    let shown: HashSet<&str> = reply
+        .spending
+        .iter()
+        .map(|spend| spend.item_id.as_str())
+        .chain(reply.spend_groups.iter().map(|group| group.spend.item_id.as_str()))
+        .collect();
+    let shown: HashSet<String> = shown.into_iter().map(str::to_owned).collect();
+    reply.spend_items.retain(|item| shown.contains(&item.id));
+    let tokens: HashSet<&str> = reply
+        .spend_items
+        .iter()
+        .filter_map(|item| item.tooltip_token.as_deref())
+        .collect();
+    if let Some(tooltips) = &mut reply.idea_tooltips {
+        tooltips.ideas.retain(|info| tokens.contains(info.token.as_str()));
+        tooltips.artwork.retain(|art| tokens.contains(art.token.as_str()));
+    }
+    if reply
+        .idea_tooltips
+        .as_ref()
+        .is_some_and(|tooltips| tooltips.ideas.is_empty() && tooltips.artwork.is_empty())
+    {
+        reply.idea_tooltips = None;
+    }
+    Ok(())
 }
 
 /// The native days a span cuts: a span's partial first and last day.

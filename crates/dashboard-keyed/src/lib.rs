@@ -115,7 +115,7 @@ impl Values {
 }
 
 /// One keyed family's observation of a frame.
-pub trait Observer: Default + Serialize + DeserializeOwned + Send + 'static {
+pub trait Observer: Default + Serialize + DeserializeOwned + Send + Sync + 'static {
     /// The family's store name: its catalogue is `{NAME}-{branch}-catalogue`
     /// and its series `{NAME}-series-{branch}`.
     const NAME: &'static str;

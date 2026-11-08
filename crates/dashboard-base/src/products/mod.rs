@@ -6,6 +6,7 @@ pub use product::*;
 
 pub mod artwork;
 pub mod battles;
+pub mod built;
 pub mod character_portraits;
 pub mod country_colours;
 pub mod country_experience;

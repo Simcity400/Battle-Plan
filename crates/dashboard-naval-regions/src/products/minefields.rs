@@ -5,6 +5,7 @@
 //! hour holds vectors for but cannot name. OWNER is TAG@slot.
 //! No amount below a witnessed extent proves zero; no extent proves nothing.
 //! Standing reports retain occurrences and never infer strike dates.
+use dashboard_base::products::built::Built;
 use crate::shared::{self, Choice};
 use dashboard_base::{
     catalogue::{self, Refusals},
@@ -518,13 +519,13 @@ impl MinefieldsObserver {
 const UNNAMED: &str = "?";
 
 /// The reply to `q` from the family's native publication.
-pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(q: &Query<'_>) -> io::Result<Built> {
     answer(q, || q.open_native::<MinefieldsObserver>())
 }
 
 /// The reply to `q` from the walk's pages.
 #[cfg(test)]
-pub(crate) fn row_query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+pub(crate) fn row_query(q: &Query<'_>) -> io::Result<Built> {
     answer(q, || q.open::<MinefieldsObserver>())
 }
 
@@ -532,7 +533,7 @@ pub(crate) fn row_query(q: &Query<'_>) -> io::Result<serde_json::Value> {
 pub(crate) fn answer<'q>(
     q: &'q Query<'_>,
     open: impl FnOnce() -> io::Result<Option<Opened<'q, MinefieldsObserver>>>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params = shared::params::<Minefields>(q)?;
     if matches!(params.view, View::Reports) {
         return reports(q, &params);
@@ -586,7 +587,7 @@ pub(crate) fn answer<'q>(
     )
 }
 
-fn reports(q: &Query<'_>, p: &Params) -> io::Result<serde_json::Value> {
+fn reports(q: &Query<'_>, p: &Params) -> io::Result<Built> {
     let hour = p.hour.expect("validated reports hour");
     let region = p.region.expect("validated reports region");
     let (first, last) = q.bounds()?;

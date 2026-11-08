@@ -1,6 +1,6 @@
 //! The military air ledger's served replies: for each family, whether it read any hour, every
-//! leaf over the branch and from its middle, a cause and region selection, and the top ranked
-//! countries by each metric.
+//! part over the branch and from its middle, a cause and region selection, and the top ranked
+//! countries by each metric. A bombing reply holds every country's building and state.
 
 use dashboard_base::prepared::served::{Ask, Plan};
 use serde_json::json;

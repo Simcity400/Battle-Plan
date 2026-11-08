@@ -22,6 +22,7 @@ use crate::{
     transport::{MAX_REPLY_BYTES, ProductRequest, bounded_json},
 };
 use dashboard_base::prepared::{gates, published};
+use dashboard_base::products::built::{Built, Data};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -102,6 +103,71 @@ struct Reply<'a> {
     holes: Option<&'a [super::coverage::Hole]>,
     /// Written after the rest, as the answer's text ([`served::Served::write`]).
     data: (),
+}
+
+/// What the latest computed answer of each lineage (its product, the route it took and its
+/// branch) decoded from the store: found again while kept, so the lineage's next ask, a seek of
+/// the same widget, reads none of it again. One set a lineage, replaced by its next.
+#[derive(Default)]
+struct Lineages(std::collections::BTreeMap<(String, u64), Arc<Decoded>>);
+
+/// The kind of request `request` is, routed as `name`: its product and route, the fields it names
+/// and the values of those that choose what it shows. Countries, hours and windows are not part
+/// of it, so one widget's seeks and selections continue one lineage, and the kinds are as many as
+/// the products' request types make.
+fn shape(request: &ProductRequest, name: &str) -> String {
+    const CHOOSING: [&str; 6] = ["view", "mode", "family", "show", "kind", "availability"];
+    let mut shape = format!("{}:{name}", request.product);
+    if let Value::Object(params) = &request.params {
+        let mut fields: Vec<_> = params
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .collect();
+        fields.sort_unstable_by_key(|(field, _)| field.as_str());
+        for (field, value) in fields {
+            shape.push('|');
+            shape.push_str(field);
+            // A chart's view object is hours and a width, as a seek is: one lineage continues.
+            if CHOOSING.contains(&field.as_str()) && !value.is_object() {
+                shape.push('=');
+                shape.push_str(&value.to_string());
+            }
+        }
+    }
+    shape
+}
+
+struct Decoded {
+    summaries: super::series::SummaryCache,
+    _held: dashboard_series::shared::Held,
+}
+
+impl Lineages {
+    fn kept(source: &Source, lineage: &(String, u64)) -> Option<Arc<Decoded>> {
+        let state = source.state::<Self>();
+        let kept = state.lock().unwrap_or_else(PoisonError::into_inner);
+        kept.0.get(lineage).cloned()
+    }
+
+    fn keep(
+        source: &Source,
+        lineage: &(String, u64),
+        summaries: super::series::SummaryCache,
+        held: dashboard_series::shared::Held,
+    ) {
+        let kept = Arc::new(Decoded {
+            summaries,
+            _held: held,
+        });
+        let state = source.state::<Self>();
+        let previous = state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .insert(lineage.clone(), kept);
+        // Let go of the previous set outside the lock.
+        drop(previous);
+    }
 }
 
 struct CachedQuery {
@@ -193,6 +259,7 @@ fn cache_product(product: &str) -> Option<&'static str> {
         "production-catalogue" => "queries:production-catalogue",
         "production-line-detail" => "queries:production-line-detail",
         "convoy-health" => "queries:convoy-health",
+        "equipment-produced" => "queries:equipment-produced",
         _ => return None,
     })
 }
@@ -252,26 +319,25 @@ fn all_careers(
 
 /// Whether a reply is pending (null) or partial (its coverage is missing or
 /// incomplete), so that its client re-asks as preparation goes on.
-fn waits(data: &Value) -> bool {
-    match data {
-        Value::Null => true,
-        Value::Object(reply)
-            if reply
-                .get("approximate")
-                .and_then(Value::as_array)
-                .is_some_and(|spans| !spans.is_empty()) =>
-        {
-            true
-        }
-        Value::Object(reply) => reply
-            .get("preparedCoverage")
-            .or_else(|| reply.get("coverage"))
-            .is_some_and(|coverage| {
-                coverage.is_null()
-                    || coverage.get("complete").and_then(Value::as_bool) != Some(true)
-            }),
-        _ => false,
+fn waits(data: &Data) -> io::Result<bool> {
+    if data.is_null() {
+        return Ok(true);
     }
+    if data
+        .field("approximate")?
+        .as_ref()
+        .and_then(Value::as_array)
+        .is_some_and(|spans| !spans.is_empty())
+    {
+        return Ok(true);
+    }
+    let coverage = match data.field("preparedCoverage")? {
+        Some(coverage) => Some(coverage),
+        None => data.field("coverage")?,
+    };
+    Ok(coverage.is_some_and(|coverage| {
+        coverage.is_null() || coverage.get("complete").and_then(Value::as_bool) != Some(true)
+    }))
 }
 
 /// Supply health's reply from its family's publication, joined with the identity histories;
@@ -688,7 +754,7 @@ fn division_equipment_reply(
     content: Option<&ContentOptions>,
     params: &Value,
     cancelled: &AtomicBool,
-) -> io::Result<Value> {
+) -> io::Result<Data> {
     use crate::products::division_equipment::history;
     let id = params
         .get("branchId")
@@ -703,16 +769,15 @@ fn division_equipment_reply(
         branch,
     )?
     else {
-        return Ok(Value::Null);
+        return Ok(Value::Null.into());
     };
     let reply = opened.read(cancelled, |snapshot, directory| {
         history::query::reply(source, content, params, snapshot, directory, cancelled)
     })?;
-    dashboard_base::products::check_reply_budget(&reply)?;
-    let mut data = serde_json::to_value(reply)?;
+    let mut data = Built::of(&reply, cancelled)?;
     super::prefix::read_or_empty(source, content, history::QUERY, branch, None, cancelled)?
         .mark(&mut data)?;
-    Ok(data)
+    Ok(data.into())
 }
 
 /// Volunteers and expeditionaries from the army family's publication through the gate's
@@ -1222,7 +1287,7 @@ fn air_ledger_reply(
     branch: u64,
     coverage: Option<&dashboard_base::prepared::coverage::Coverage>,
     cancelled: &AtomicBool,
-) -> io::Result<Value> {
+) -> io::Result<Built> {
     use crate::products::military_air_ledger;
     let opened = match coverage {
         Some(coverage) => published::open_through(
@@ -1236,11 +1301,9 @@ fn air_ledger_reply(
         None => None,
     };
     match opened {
-        Some(opened) => opened.read(cancelled, |snapshot, directory| {
-            military_air_ledger::query::reply(
-                source, context, params, snapshot, directory, cancelled,
-            )
-        }),
+        Some(opened) => {
+            military_air_ledger::query::reply(source, context, params, &opened, cancelled)
+        }
         None => military_air_ledger::query::empty(source, context, params, cancelled),
     }
 }
@@ -1998,6 +2061,7 @@ impl Hours {
             | "production-spending"
             | "dockyard-spending"
             | "military-factory-spending"
+            | "equipment-produced"
             | "wars"
             | "subjects"
             | "occupied-states-manifest"
@@ -2162,7 +2226,7 @@ fn admit(
     name: &str,
     published: &gates::Published,
     cancelled: &AtomicBool,
-) -> io::Result<Value> {
+) -> io::Result<Data> {
     let entry = super::pipeline::install_gates();
     let hours = Hours::of(request)?.resolve(source, branch);
     let through = hours.through(&request.params);
@@ -2215,7 +2279,7 @@ fn admit(
                 };
                 &clipped
             }
-            None => return Ok(Value::Null),
+            None => return Ok(Value::Null.into()),
         },
         None => request,
     };
@@ -2229,7 +2293,7 @@ fn admit(
                 };
                 request = &kept;
             }
-            None => return Ok(Value::Null),
+            None => return Ok(Value::Null.into()),
         }
     }
     let admitted = Admitted { request, ranges };
@@ -2320,7 +2384,7 @@ fn casualty_reads_through(params: &Value, prefix: &super::prefix::Prefix) -> Val
 }
 
 /// The query of a keyed family's product ([`dashboard_keyed`]).
-fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::Result<Value> {
+fn keyed_query(product: &str, query: &dashboard_keyed::query::Query<'_>) -> io::Result<Built> {
     use crate::products::{
         air_missions, air_statistics, doctrine_mastery, intel_coverage, minefields,
         naval_supremacy, occupation_reserve, regional_weather,
@@ -2589,7 +2653,149 @@ fn economy(
     Ok(data)
 }
 
+/// `admitted`'s reply data: built once by a product that writes its typed reply straight to
+/// text ([`Built`]), else the tree its reader assembles.
 fn query_data(
+    source: &Source,
+    admitted: &Admitted<'_>,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<Data> {
+    match built_data(source, admitted, content, cancelled)? {
+        Some(data) => Ok(data),
+        None => query_tree(source, admitted, content, cancelled).map(Data::Tree),
+    }
+}
+
+/// The reply data of the products that build theirs once ([`Built`]); None for the rest.
+fn built_data(
+    source: &Source,
+    admitted: &Admitted<'_>,
+    content: Option<&ContentOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<Option<Data>> {
+    let request = admitted.request;
+    let (store, key) = super::files(source, content)?;
+    Ok(Some(match request.product.as_str() {
+        product @ ("air-missions"
+        | "air-statistics"
+        | "regional-weather"
+        | "minefields"
+        | "naval-supremacy"
+        | "doctrine-mastery"
+        | "occupation-reserve-manpower"
+        | "intel-network-coverage") => {
+            dashboard_base::prepared::query::observations::bind(source, &key);
+            let id = request
+                .params
+                .get("branchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| crate::invalid("Missing prepared query branch"))?;
+            let branch = branch(source, id)?;
+            // Keyed families answer from their gate's accepted prefix; the hours
+            // after it are pending, never empty.
+            let prefix =
+                super::prefix::read_or_empty(source, content, product, branch, None, cancelled)?;
+            let query = dashboard_keyed::query::Query {
+                source,
+                params: &request.params,
+                content,
+                store: &store,
+                key: &key,
+                branch,
+                prefix: &prefix,
+                cancelled,
+            };
+            let mut data = keyed_query(product, &query)?;
+            prefix.mark(&mut data)?;
+            data.into()
+        }
+        "equipment-produced" => crate::products::equipment_produced::prepared::query(
+            source,
+            request.params.clone(),
+            content,
+            cancelled,
+        )?
+        .into(),
+        "military-air-ledger" => {
+            let branch = branch(
+                source,
+                request
+                    .params
+                    .get("branchId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| crate::invalid("Invalid ledger branch"))?,
+            )?;
+            let prefix =
+                super::prefix::read(source, content, &request.product, branch, None, cancelled)?;
+            let context = crate::products::LoadContext {
+                content: content.cloned(),
+            };
+            let mut data = air_ledger_reply(
+                source,
+                content,
+                &context,
+                request.params.clone(),
+                branch,
+                prefix.as_ref().map(|prefix| &prefix.coverage),
+                cancelled,
+            )?;
+            match prefix {
+                Some(prefix) => prefix.mark(&mut data)?,
+                None => super::prefix::mark_unprepared(source, branch, None, &mut data)?,
+            }
+            data.into()
+        }
+        product @ ("land-battles"
+        | "land-battles-manifest"
+        | "land-battles-ranking"
+        | "land-battle-course") => {
+            let id = request
+                .params
+                .get("branchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| crate::invalid("Invalid battle branch"))?;
+            let branch = branch(source, id)?;
+            if !coverage(
+                source,
+                content,
+                &request.product,
+                branch,
+                None,
+                true,
+                cancelled,
+            )? {
+                return Ok(Some(Data::Tree(crate::products::land_battles::prepared::prefix_query(
+                    source,
+                    product,
+                    &request.params,
+                    &crate::products::LoadContext {
+                        content: content.cloned(),
+                    },
+                    &store,
+                    &key,
+                    cancelled,
+                )?
+                .unwrap_or(Value::Null))));
+            }
+            crate::products::land_battles::prepared::query(
+                source,
+                product,
+                request.params.clone(),
+                &store,
+                &key,
+                cancelled,
+            )?
+            .into()
+        }
+        "division-equipment-history" => {
+            division_equipment_reply(source, content, &request.params, cancelled)?
+        }
+        _ => return Ok(None),
+    }))
+}
+
+fn query_tree(
     source: &Source,
     admitted: &Admitted<'_>,
     content: Option<&ContentOptions>,
@@ -2875,47 +3081,6 @@ fn query_data(
         }
         "place-names" => names_reply(source, content, &request.params, cancelled)?,
         "country-people" => people_reply(source, content, &request.params, cancelled)?,
-        product @ ("land-battles"
-        | "land-battles-manifest"
-        | "land-battles-ranking"
-        | "land-battle-course") => {
-            let id = request
-                .params
-                .get("branchId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::invalid("Invalid battle branch"))?;
-            let branch = branch(source, id)?;
-            if !coverage(
-                source,
-                content,
-                &request.product,
-                branch,
-                None,
-                true,
-                cancelled,
-            )? {
-                return Ok(crate::products::land_battles::prepared::prefix_query(
-                    source,
-                    product,
-                    &request.params,
-                    &crate::products::LoadContext {
-                        content: content.cloned(),
-                    },
-                    &store,
-                    &key,
-                    cancelled,
-                )?
-                .unwrap_or(Value::Null));
-            }
-            crate::products::land_battles::prepared::query(
-                source,
-                product,
-                request.params.clone(),
-                &store,
-                &key,
-                cancelled,
-            )?
-        }
         product @ ("naval-battles"
         | "naval-battles-manifest"
         | "naval-battles-ranking"
@@ -3095,9 +3260,6 @@ fn query_data(
         )?,
         "volunteers-expeditionaries" => {
             volunteers_reply(source, content, &request.params, cancelled)?
-        }
-        "division-equipment-history" => {
-            division_equipment_reply(source, content, &request.params, cancelled)?
         }
         "army-size" | "supply-health" => {
             let mut data = if request.product == "army-size" {
@@ -3320,38 +3482,6 @@ fn query_data(
                 cancelled,
             )?
         }
-        product @ ("air-missions"
-        | "air-statistics"
-        | "regional-weather"
-        | "minefields"
-        | "naval-supremacy"
-        | "doctrine-mastery"
-        | "occupation-reserve-manpower"
-        | "intel-network-coverage") => {
-            let id = request
-                .params
-                .get("branchId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| crate::invalid("Missing prepared query branch"))?;
-            let branch = branch(source, id)?;
-            // Keyed families answer from their gate's accepted prefix; the hours
-            // after it are pending, never empty.
-            let prefix =
-                super::prefix::read_or_empty(source, content, product, branch, None, cancelled)?;
-            let query = dashboard_keyed::query::Query {
-                source,
-                params: &request.params,
-                content,
-                store: &store,
-                key: &key,
-                branch,
-                prefix: &prefix,
-                cancelled,
-            };
-            let mut data = keyed_query(product, &query)?;
-            prefix.mark(&mut data)?;
-            data
-        }
         product @ ("naval-repairs" | "naval-refits") => {
             yards_reply(source, content, product, &request.params, cancelled)?
         }
@@ -3380,35 +3510,6 @@ fn query_data(
             },
             cancelled,
         )?,
-        "military-air-ledger" => {
-            let branch = branch(
-                source,
-                request
-                    .params
-                    .get("branchId")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| crate::invalid("Invalid ledger branch"))?,
-            )?;
-            let prefix =
-                super::prefix::read(source, content, &request.product, branch, None, cancelled)?;
-            let context = crate::products::LoadContext {
-                content: content.cloned(),
-            };
-            let mut data = air_ledger_reply(
-                source,
-                content,
-                &context,
-                request.params.clone(),
-                branch,
-                prefix.as_ref().map(|prefix| &prefix.coverage),
-                cancelled,
-            )?;
-            match prefix {
-                Some(prefix) => prefix.mark(&mut data)?,
-                None => super::prefix::mark_unprepared(source, branch, None, &mut data)?,
-            }
-            data
-        }
         product @ ("decryption"
         | "operative-placements"
         | "agency-comparison"
@@ -4867,13 +4968,20 @@ fn answer(
         replay_frame::cpu::scope_named("prepared query", &format!("{}:{name}", request.product))
     });
     let branch = asked_branch(source, request);
+    let lineage = branch.map(|branch| (shape(request, name), branch));
     // Null is a query result whose coverage has not been accepted yet. Clients
     // inspect real preparation status and retry; it is not an empty history.
     let read = |previous: Option<std::sync::Arc<CachedQuery>>| -> io::Result<CachedQuery> {
         #[cfg(test)]
         COMPUTED.with(|count| count.set(count.get() + 1));
-        let scope = cache_product(&request.product)
-            .map(|_| super::series::cache_scope(previous.as_ref().map(|reply| &reply.summaries)));
+        let kept = lineage.as_ref().and_then(|lineage| Lineages::kept(source, lineage));
+        let scope = super::series::cache_scope(
+            previous
+                .as_ref()
+                .map(|reply| &reply.summaries)
+                .or(kept.as_ref().map(|kept| &kept.summaries)),
+        );
+        let holding = dashboard_series::shared::holding();
         // The answer names its own refusals, with those the shared loads it reused noted, never
         // the session's: the same whichever answers ran before it.
         let mut noted = dashboard_text::catalogue::OwnRefusals::default();
@@ -4892,17 +5000,25 @@ fn answer(
         });
         let fallbacks = noted.fallbacks().clone();
         let data = data?;
+        let summaries = scope.finish();
+        if let Some(lineage) = &lineage {
+            Lineages::keep(source, lineage, summaries.clone(), holding.finish());
+        }
         Ok(CachedQuery {
-            waits: waits(&data),
+            waits: waits(&data)?,
             holes,
             data: served::Answer::new(
-                &data,
+                data,
                 content_warning_paths(&request.product, name),
                 request.product == crate::products::division_equipment::history::QUERY,
                 cancelled,
             )?,
             short,
-            summaries: scope.map(|scope| scope.finish()).unwrap_or_default(),
+            summaries: if cache_product(&request.product).is_some() {
+                summaries
+            } else {
+                Default::default()
+            },
             fallbacks,
             diagnostics: noted.diagnostics().clone(),
         })
@@ -4939,7 +5055,7 @@ fn answer(
                 branch,
                 &request.params,
                 &publication,
-                &name,
+                &shape(request, name),
                 cancelled,
                 read,
             )?

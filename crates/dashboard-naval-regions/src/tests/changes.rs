@@ -417,9 +417,9 @@ fn replies(
             cancelled: &flag,
         };
         replies.push(if std::ptr::eq(fixture, supremacy) {
-            naval_supremacy::row_query(&q).unwrap()
+            naval_supremacy::row_query(&q).unwrap().into_value().unwrap()
         } else {
-            minefields::row_query(&q).unwrap()
+            minefields::row_query(&q).unwrap().into_value().unwrap()
         });
     };
     for tag in tags {
@@ -633,7 +633,9 @@ fn minefield_native_replies_and_history_warnings_match_at_every_cut_after_resume
             json!({"branchId": "1", "firstHour": 8, "lastHour": 49}),
         ],
         |q, publication, _| {
-            minefields::answer(q, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+            minefields::answer(q, || Ok(Some(publication.open(q.cancelled))))
+                .and_then(|built| built.into_value())
+                .unwrap()
         },
     );
     let warning =
@@ -669,7 +671,9 @@ fn supremacy_native_replies_and_history_warnings_match_at_every_cut_after_resume
             } else {
                 naval_supremacy::sweep
             };
-            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled))))
+                .and_then(|built| built.into_value())
+                .unwrap()
         },
     );
     let warning = json!("1 naval observations refused: NavalSupremacy is not recorded");
@@ -721,7 +725,9 @@ fn unselected_restatements_do_not_repeat_refusals_after_resume() {
             } else {
                 naval_supremacy::sweep
             };
-            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled))))
+                .and_then(|built| built.into_value())
+                .unwrap()
         },
     );
     let warning = json!("1 naval observations refused: NavalSupremacy is not recorded");
@@ -763,7 +769,9 @@ fn changed_truncated_country_rows_keep_native_history_warnings_across_resume() {
         frames.clone(),
         &[json!({"branchId": "1"})],
         |q, publication, _| {
-            minefields::answer(q, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+            minefields::answer(q, || Ok(Some(publication.open(q.cancelled))))
+                .and_then(|built| built.into_value())
+                .unwrap()
         },
     );
     let supremacy = native_replies_at_cuts::<NavalSupremacyObserver>(
@@ -775,7 +783,9 @@ fn changed_truncated_country_rows_keep_native_history_warnings_across_resume() {
             } else {
                 naval_supremacy::sweep
             };
-            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled)))).unwrap()
+            naval_supremacy::reply(q, walk, || Ok(Some(publication.open(q.cancelled))))
+                .and_then(|built| built.into_value())
+                .unwrap()
         },
     );
     for (replies, reason) in [

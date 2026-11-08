@@ -181,13 +181,60 @@ pub fn present_icons(
             return draw_icons(data, |_| Ok(Err(reason.clone())));
         }
     };
+    let draw = |cat: &dashboard_base::catalogue::Catalogue, art: &LedgerArt| {
+        let content = if std::ptr::eq(cat, &*admitted.catalogue) {
+            &admitted
+        } else {
+            &recorded
+        };
+        draw_art(content, art)
+    };
     let state = source.state::<dashboard_base::catalogue::ByCatalogue<LedgerIcons>>();
+    // The recipes the memo lacks are drawn without holding it, so other replies go on meanwhile.
+    let missing = {
+        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+        let drawn = dashboard_base::catalogue::Redrawn::bind(
+            &mut state.of(&admitted.catalogue).0,
+            &admitted.catalogue,
+            &recorded.catalogue,
+        );
+        let mut missing = BTreeMap::new();
+        for recipe in data["spendItems"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| item.get("iconArt"))
+        {
+            // Keyed as the reply's drawing keys it: the recipe as its type spells it.
+            let art: LedgerArt = serde_json::from_value(recipe.clone())?;
+            let key = serde_json::to_string(&art)?;
+            if !drawn.drawn.contains_key(&key) {
+                missing.insert(key, art);
+            }
+        }
+        missing
+    };
+    let fresh: Vec<_> = missing
+        .into_iter()
+        .map(|(key, art)| {
+            let shown = dashboard_base::catalogue::present(
+                "politics ledger icon",
+                &admitted.catalogue,
+                &recorded.catalogue,
+                |cat| draw(cat, &art),
+            );
+            (key, shown)
+        })
+        .collect();
     let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
     let drawn = dashboard_base::catalogue::Redrawn::bind(
         &mut state.of(&admitted.catalogue).0,
         &admitted.catalogue,
         &recorded.catalogue,
     );
+    for (key, shown) in fresh {
+        drawn.drawn.entry(key).or_insert(shown);
+    }
     draw_icons(data, |art| {
         Ok(drawn
             .get(
@@ -675,7 +722,7 @@ pub(super) fn resolve(
         });
     let mut identity = row.item.clone();
     identity.action.clear();
-    item.group_id = serde_json::to_string(&(
+    item.group_id = identity_key(&(
         &category.0,
         &identity,
         &token,
@@ -684,12 +731,11 @@ pub(super) fn resolve(
         &item.target_tag,
         &item.target_name,
         &item.name,
-    ))
-    .expect("display identity serializes");
+    ));
     // Equal dated identity (including resolved name, description and portrait) shares one
     // tooltip and one artwork payload across repeated payments.
     if let Some(found) = info.as_mut() {
-        let tooltip = serde_json::to_string(&(
+        let tooltip = identity_key(&(
             &item.group_id,
             &item.name,
             &own.map(|own| format!("{:?}", own.naming)),
@@ -699,8 +745,7 @@ pub(super) fn resolve(
                 .text
                 .as_ref()
                 .and_then(|text| text.description.as_deref()),
-        ))
-        .expect("dated tooltip identity serializes");
+        ));
         found.token = tooltip.clone();
         item.tooltip_token = Some(tooltip);
     }
@@ -943,3 +988,14 @@ pub(super) fn holder_name(
 
 #[cfg(test)]
 mod tests;
+
+/// An opaque key naming `identity`: equal identities, equal keys, as short as a reply can send
+/// once per item.
+fn identity_key(identity: &impl Serialize) -> String {
+    let text = serde_json::to_vec(identity).expect("display identity serializes");
+    let hash = blake3::hash(&text);
+    hash.as_bytes()[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}

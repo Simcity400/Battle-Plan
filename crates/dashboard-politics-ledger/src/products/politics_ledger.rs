@@ -326,6 +326,10 @@ pub struct PoliticsLedgerReply {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<_>")]
     pub recurring: Vec<LedgerRecurringSpend>,
+    /// A totals reply's per-item subtotals, summed by the item each displays as.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<_>")]
+    pub spend_groups: Vec<LedgerSpendGroup>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<_>")]
     pub gains: Vec<LedgerGain>,
@@ -360,6 +364,25 @@ pub struct LedgerRecurringSpend {
     pub count: u32,
     pub known_raw: String,
     pub known_count: u32,
+}
+
+/// The per-item subtotals one displayed item ([`LedgerSpendItem::group_id`]) sums in a currency:
+/// the latest subtotal's spend, as its item and category show it, and what they add up to.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerSpendGroup {
+    pub spend: LedgerSpend,
+    pub first_hour: i32,
+    pub last_hour: i32,
+    /// Payment rows the subtotals fold.
+    pub count: u32,
+    pub occurrences: u32,
+    pub known_raw: String,
+    pub known_count: u32,
+    /// Payments whose cost was not recorded, in subtotals whose charge is unknown.
+    pub unknown_count: u32,
+    /// Whether a subtotal with a recorded charge was read while spending was not fully recorded.
+    pub uncovered: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -406,6 +429,7 @@ impl Product for PoliticsLedger {
             LedgerCommandHolder::decl(),
             PoliticsLedgerReply::decl(),
             LedgerRecurringSpend::decl(),
+            LedgerSpendGroup::decl(),
             LedgerGain::decl(),
             LedgerMonthDays::decl(),
             LedgerPartSummary::decl(),

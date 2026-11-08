@@ -16,6 +16,7 @@ use installed_content_core::province_geometry::ProvinceGeometry;
 use replay_data::rows::{TableId, tables};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeMap, io, sync::Arc};
+use dashboard_base::products::built::Built;
 
 // The shared at-frame place-name reader's selected inputs, plus province
 // weather. Campaign is included by the frame cache as well.
@@ -146,7 +147,7 @@ fn names(
 fn finish(
     query: &Query<'_>,
     reply: RegionalWeatherProvincesReply,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     keyed::finish(query, &RegionalWeatherResponse::Provinces(reply))
 }
 
@@ -160,7 +161,7 @@ fn retryable(error: &io::Error) -> bool {
 pub(super) fn query(
     query: &Query<'_>,
     params: &RegionalWeatherParams,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let hour = params.hour.expect("validated province hour");
     let region = params.region.as_ref().expect("validated province region");
     let (first, last) = query.bounds()?;
@@ -236,7 +237,7 @@ fn at_frame(
     frame: &DecodedFrame,
     members: &[u32],
     mut reply: RegionalWeatherProvincesReply,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let hour = frame.hour;
     let weather = frame.complete::<tables::WeatherProvinces>();
     if weather.is_ok() {

@@ -10,14 +10,16 @@ import { validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/bombing-damage/definition.ts';
 import { OPTIONS as AIR_OPTIONS } from '../widgets/air-kills-losses/definition.ts';
 import { BRANCH, humansBy, mountModule, pendingGroups } from './pendingGroups.fixture.ts';
+import { partOf } from './militaryAirParts.fixture.ts';
+import type { Leaf } from './militaryAirParts.fixture';
 
 test('a group counted at an hour still being prepared is loading, not a moment no chosen country was recorded', async () => {
   // ENG suffered damage throughout; GER, the human player, never did.
   const span = { firstHour: BRANCH.firstHour, lastHour: BRANCH.lastHour };
   const data: MilitaryAirReply = { family: 'bombing', ...span, available: true, observed: [span], incomplete: [],
     countries: [{ tag: 'ENG', identity: '1:102', present: [span], membership: null }],
-    leaves: [{ tag: 'ENG', identity: '1:102', dealt: false, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 1, cause: 0,
-      points: [[10, 11, '50000000']] }], regions: [], buildings: [], warnings: [] };
+    parts: ([{ tag: 'ENG', identity: '1:102', dealt: false, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 1, cause: 0,
+      points: [[10, 11, '50000000']] }] as Leaf[]).map(partOf), regions: [], buildings: [], warnings: [] };
   validateMilitaryAirReply(data);
   const track = { id: 'track', axisOffset: 0, source: { id: 'source', revision: 1, metadata: { countries: [], campaignKey: 'campaign' } }, branch: { ...BRANCH, gaps: [] } };
   const state = { data, track, groups: pendingGroups() as CountryGroupReply };

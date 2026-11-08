@@ -387,3 +387,18 @@ test('a new widget races the top 10 of all countries in units per day, date over
   assert.deepEqual(ranked.map(entry => entry.tag), ['GER']);
   assert.equal(mixCountry(widget.countries, null, ranked), 'GER');
 });
+
+test('a dense view draws each line from its exact summary and keeps its last sample', () => {
+  const view = { from: 0, to: 103, width: 2 };
+  const summary = { from: 0, to: 103, width: 2, approximate: [],
+    buckets: { slots: 2, skip: [0, 0], hours: [8, 47, 0, 0, 0, 1, 47, 0, 0, 0], values: [10, 10, 10, 10, 15, 15, 15, 15],
+      flags: [1, 0], totals: ['10', '15'] } };
+  const dense: EquipmentProducedReply = { ...REPLY, series: [{ ...REPLY.series[0], firstHours: [80], lastHours: [103], breaks: [],
+    values: [{ key: 0, values: c(0, [15]) }], total: c(0, [15]), summary: summary as never }] };
+  assert.equal(validateProducedReply(dense), dense);
+  const model = producedModel(dense);
+  assert.equal(model.series.get('GER')!.summary?.buckets.length, 2);
+  assert.equal(producedModel(REPLY).series.get('GER')!.summary, null);
+  assert.throws(() => validateProducedReply({ ...dense, series: [{ ...dense.series[0], summary: { ...summary, width: 0 } as never }] }));
+  assert.deepEqual(producedRequest('1', { tags: ['GER'] }, 'day', 'variant', [], false, 'units', view).view, view);
+});

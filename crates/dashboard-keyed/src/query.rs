@@ -8,7 +8,11 @@ use crate::{KNOWN, Observer, READ, Scan, native, series_section};
 use dashboard_base::prepared::series::{self, Reader, Run};
 use dashboard_base::products::country_groups::HourSpan;
 use serde::Serialize;
-use std::{collections::BTreeMap, io, sync::atomic::AtomicBool};
+use std::{
+    collections::BTreeMap,
+    io,
+    sync::{Arc, atomic::AtomicBool},
+};
 use ts_rs::TS;
 
 /// One run of exact values: its first and last hour, the value as decimal
@@ -166,7 +170,7 @@ pub(crate) fn windowed<K>(
 
 /// A keyed family's published catalogue and a reader of its series.
 pub struct Opened<'a, O> {
-    pub scan: Scan<O>,
+    pub scan: Arc<Scan<O>>,
     series: Series<'a>,
     cancelled: &'a AtomicBool,
 }
@@ -189,7 +193,7 @@ pub fn open<'a, O: Observer>(
     };
     let reader = Reader::new(store, key, series_section(O::NAME, branch), cancelled)?;
     Ok(Some(Opened {
-        scan,
+        scan: Arc::new(scan),
         series: Series::Pages(reader),
         cancelled,
     }))
@@ -259,11 +263,18 @@ impl<O: Observer> Opened<'_, O> {
     }
 }
 
+/// The family's publication as `opened` holds it: its catalogue is read once a publication and
+/// shared by every reply reading it ([`dashboard_base::prepared::published::Opened::derived`]).
 pub(crate) fn published<O: Observer>(
     opened: dashboard_base::prepared::published::Opened,
     cancelled: &AtomicBool,
 ) -> io::Result<Opened<'_, O>> {
-    let (scan, keys) = opened.read(cancelled, |_, directory| native::catalogued(directory))?;
+    let scan = opened.derived("keyed scan", cancelled, |_, directory| {
+        native::catalogued::<O>(directory)
+    })?;
+    let keys = opened.derived("keyed keys", cancelled, |_, directory| {
+        native::keys(directory, &scan)
+    })?;
     Ok(Opened {
         scan,
         series: Series::Native(native::Opened { opened, keys }),
@@ -385,11 +396,13 @@ pub fn empty(first: i32, last: i32) -> KeyedWindow {
     }
 }
 
-/// A reply within the transport budget, as JSON.
-pub fn finish(query: &Query<'_>, reply: &impl Serialize) -> io::Result<serde_json::Value> {
+/// A reply written once as JSON within the product budget.
+pub fn finish(
+    query: &Query<'_>,
+    reply: &impl Serialize,
+) -> io::Result<dashboard_base::products::built::Built> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
-    dashboard_base::products::check_reply_budget(reply)?;
-    Ok(serde_json::to_value(reply)?)
+    dashboard_base::products::built::Built::of(reply, query.cancelled)
 }
 
 /// Named refusals, counted: one warning line per reason.

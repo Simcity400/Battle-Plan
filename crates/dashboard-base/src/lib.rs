@@ -27,10 +27,12 @@ pub mod products;
 pub mod ranking;
 pub mod read_runs;
 pub mod research_dto;
+pub mod series_view;
 pub mod map_tables;
 pub mod source;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_fixtures;
+mod workers;
 
 pub use dashboard_core::invalid;
 pub use dashboard_core::{blocks, config, dto::*, findings, map_settings, protocol, transport};

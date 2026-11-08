@@ -414,7 +414,7 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
                 .unwrap(),
         )
         .unwrap();
-        let actual = super::query::reply(
+        let actual = super::query::reply_of(
             &source,
             &context,
             request.clone(),
@@ -426,7 +426,7 @@ fn check(built: &Built, frames: &[DecodedFrame], label: &str) {
         assert_eq!(actual, expected, "{label}: {request}");
     }
     for family in ["airLosses", "bombing"] {
-        let available = super::query::reply(
+        let available = super::query::reply_of(
             &source,
             &context,
             serde_json::json!({"branchId":"1","family":family,"availability":true}),
@@ -648,7 +648,7 @@ fn a_read_refused_after_a_gap_is_cut_through_the_hour_before() {
         requests(10)
             .into_iter()
             .map(|request| {
-                super::query::reply(
+                super::query::reply_of(
                     &source,
                     &context,
                     request,

@@ -9,7 +9,9 @@
 //! countries. Pair history keeps the same window shape and dated endpoints. Replies
 //! carry every measure but `coveredWorth`, which neither the matrix nor pair history draws.
 
-use dashboard_base::products::{Product, check_reply_budget, country_groups::HourSpan, validate_tag};
+use dashboard_base::products::{
+    Product, built::Built, country_groups::HourSpan, validate_tag,
+};
 use dashboard_keyed::{
     Observer as KeyedObserver, Values,
     countries::{self, Countries},
@@ -356,7 +358,7 @@ fn counterparties(
 }
 
 /// The reply from the family's native publication.
-pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(query: &Query<'_>) -> io::Result<Built> {
     dashboard_text::metadata::check_cancel(query.cancelled)?;
     answer(query, || query.open_native::<IntelCoverageObserver>())
 }
@@ -365,7 +367,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
 fn answer<'q>(
     query: &'q Query<'_>,
     open: impl FnOnce() -> io::Result<Option<Opened<'q, IntelCoverageObserver>>>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params: IntelCoverageParams = serde_json::from_value(query.params.clone())
         .map_err(|error: serde_json::Error| dashboard_core::invalid(error.to_string()))?;
     IntelCoverage::validate(&params).map_err(dashboard_core::invalid)?;
@@ -378,8 +380,7 @@ fn answer<'q>(
         query.through(),
         query.cancelled,
     )?;
-    check_reply_budget(&reply)?;
-    serde_json::to_value(reply).map_err(io::Error::other)
+    Built::of(&reply, query.cancelled)
 }
 
 fn reply(

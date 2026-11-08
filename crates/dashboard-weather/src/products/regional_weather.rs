@@ -13,6 +13,7 @@
 //! `view: "provinces"` reads one region's members at an exact recorded hour
 //! through the shared frame cache, independently of the history prefix.
 
+use dashboard_base::products::built::Built;
 use dashboard_base::{
     prepared::query::native,
     products::{Product, ReplyWarnings},
@@ -255,7 +256,7 @@ pub fn content_warnings(
 /// Prepared weather runs, restricted to the requested regions, from the family's native
 /// publication. A cold query returns the same reply contract with an empty window; the caller
 /// marks the accepted prefix and pending tail on the root object.
-pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(query: &Query<'_>) -> io::Result<Built> {
     respond(query, || query.open_native::<block::Observer>())
 }
 
@@ -263,7 +264,7 @@ pub fn query(query: &Query<'_>) -> io::Result<serde_json::Value> {
 fn respond<'q>(
     query: &'q Query<'_>,
     open: impl FnOnce() -> io::Result<Option<Opened<'q, block::Observer>>>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let params = keyed::params::<RegionalWeather>(query)?;
     if params.view == RegionalWeatherView::Provinces {
         return provinces::query(query, &params);

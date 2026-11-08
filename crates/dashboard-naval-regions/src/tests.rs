@@ -516,7 +516,7 @@ fn query_daily_rule_prefix_and_zero_vs_unknown() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let reply = naval_supremacy::row_query(&q).unwrap();
+    let reply = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
     assert_eq!(reply["dayHours"], 24);
     assert_eq!(
         reply["window"]["known"],
@@ -529,7 +529,7 @@ fn query_daily_rule_prefix_and_zero_vs_unknown() {
         key: &empty.key,
         ..q
     };
-    let cold = naval_supremacy::row_query(&q).unwrap();
+    let cold = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
     assert_eq!(cold["window"]["series"], json!([]));
 }
 
@@ -876,7 +876,7 @@ fn mod_replace_path_seas_names_terrain_and_defines_keep_raw_values() {
     assert_eq!(labels.sea_regions, Ok(BTreeSet::from([73])));
     assert_eq!(labels.minima[&73], Ok(700_000));
     assert_eq!(labels.ratio, Ok(70_000));
-    let reply = naval_supremacy::row_query(&q).unwrap();
+    let reply = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
     assert_eq!(reply["regions"][0]["name"], "Authored mod sea");
     let own = reply["window"]["series"]
         .as_array()
@@ -983,7 +983,7 @@ fn standing_report_query_is_independent_of_preparation_and_reuses_full_handle_fr
         prefix: &prefix,
         cancelled: &flag,
     };
-    let reply = minefields::row_query(&q).unwrap();
+    let reply = minefields::row_query(&q).unwrap().into_value().unwrap();
     assert_eq!(reply["hour"], 25);
     assert_eq!(reply["region"], 73);
     assert_eq!(reply["readHour"], 25);
@@ -1001,7 +1001,7 @@ fn standing_report_query_is_independent_of_preparation_and_reuses_full_handle_fr
     let reads = frames::reads(&source);
     let (again, decoded) = progressive::without_block_decodes(|| minefields::row_query(&q));
     assert!(!decoded);
-    assert_eq!(again.unwrap(), reply);
+    assert_eq!(again.unwrap().into_value().unwrap(), reply);
     assert_eq!(frames::reads(&source), reads);
     flag.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
@@ -1044,7 +1044,7 @@ fn whole_daily_query_refuses_unknown_endpoint_and_midnight_until_midday_refresh(
         prefix: &prefix,
         cancelled: &flag,
     };
-    let reply = naval_supremacy::row_query(&q).unwrap();
+    let reply = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
     assert_eq!(
         reply["window"]["known"],
         json!([{"firstHour":48,"lastHour":50}])
@@ -1239,7 +1239,7 @@ fn equal_fresh_read_at_midnight_renews_daily_query_without_changing_current() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let reply = naval_supremacy::row_query(&q).unwrap();
+    let reply = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
     assert_eq!(
         reply["window"]["known"],
         json!([{"firstHour":23,"lastHour":25}])
@@ -1287,7 +1287,7 @@ fn a_selected_country_query_keeps_owners_that_could_not_be_named() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let reply = minefields::row_query(&q).unwrap();
+    let reply = minefields::row_query(&q).unwrap().into_value().unwrap();
     let names: Vec<_> = reply["window"]["series"]
         .as_array()
         .unwrap()
@@ -1299,7 +1299,7 @@ fn a_selected_country_query_keeps_owners_that_could_not_be_named() {
     // Another selected country is filtered as before.
     let p = json!({"branchId":"1","view":"history","tags":["ITA"]});
     let q = Query { params: &p, ..q };
-    let reply = minefields::row_query(&q).unwrap();
+    let reply = minefields::row_query(&q).unwrap().into_value().unwrap();
     let names: Vec<_> = reply["window"]["series"]
         .as_array()
         .unwrap()
@@ -1416,10 +1416,12 @@ fn swept_days_reply_exactly_as_each_day_restored_whole() {
             prefix: &prefix,
             cancelled: &flag,
         };
-        let swept = naval_supremacy::row_query(&q).unwrap();
+        let swept = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
         let whole = naval_supremacy::reply(&q, naval_supremacy::lookup, || {
             q.open::<naval_supremacy::NavalSupremacyObserver>()
         })
+        .unwrap()
+        .into_value()
         .unwrap();
         assert_eq!(swept, whole);
         let own = swept["window"]["series"]
@@ -1490,10 +1492,12 @@ fn swept_backdated_currents_match_each_days_point_reads() {
             prefix: &prefix,
             cancelled: &flag,
         };
-        let swept = naval_supremacy::row_query(&q).unwrap();
+        let swept = naval_supremacy::row_query(&q).unwrap().into_value().unwrap();
         let whole = naval_supremacy::reply(&q, naval_supremacy::lookup, || {
             q.open::<NavalSupremacyObserver>()
         })
+        .unwrap()
+        .into_value()
         .unwrap();
         assert_eq!(swept, whole, "{params}");
         assert!(!swept["window"]["series"].as_array().unwrap().is_empty());

@@ -19,11 +19,11 @@ import NoMembersState from '../../dashboard/NoMembersState';
 import { resolveWindow } from '../../dashboard/model';
 import { contentKey, contentSet, resolveOptions, setToken } from '../../dashboard/options';
 import { usePlaybackHour } from '../../dashboard/playback';
-import { useProduct } from '../../dashboard/products';
+import { loadProduct, useFollowedProduct, useProduct } from '../../dashboard/products';
 import { useCountryGroups } from '../../dashboard/useCountryGroups';
 import { NumericReply } from '../../dashboard/numericReply';
 import { groupNumbers } from '../../dashboard/groupsReply';
-import type { CountryGroupReply, EquipmentProducedReply } from '../../generated/dashboard';
+import type { CountryGroupReply, EquipmentProducedReply, SeriesView } from '../../generated/dashboard';
 import { definition, OPTIONS } from './definition';
 import { countedSince, emptyRace, formatProduced, MEASURES, producedAt, producedModel, producedRequest, producedTooltips,
   raceEntries, rankProduced, requestParams, totalRuns, typeLabel, validateProducedReply } from './producedData.ts';
@@ -46,6 +46,14 @@ import { useParityRows } from '../../dashboard/parityRows';
  * widgets show per month instead of per day (the caption says so) until it is rebuilt. */
 const olderBridges = new WeakSet<object>();
 const olderBridge = (error: Failure | undefined) => !!error && /unknown (variant|field) `(day|count)`/.test(error.message);
+/** The plot width the lines are first read at, until the chart reports its own. */
+const FIRST_WIDTH = 640;
+
+/** Selection params as prepared pages read them: a page answers one hour, never a view. */
+function withoutView<P extends { view?: SeriesView }>(params: P): Omit<P, 'view'> {
+  const { view: _view, ...rest } = params;
+  return rest;
+}
 
 /** Equipment each country delivered: one type at a time in units, or the factory IC
  * put into equipment, as a race re-ranked every hour or as lines over time; a country's
@@ -84,18 +92,34 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   const resolved = useMemo(() => resolveCountries(widget.countries, fallback ? [fallback] : [], numericGroups, lastHour, definition.countries.max),
     [widget.countries, fallback, numericGroups, lastHour]);
   const asks = (params: { top: number | null; tags: readonly string[] } | null) => !!params && (params.top != null || params.tags.length > 0);
+  // Lines are read at the chart's view: its hours as panned and zoomed, and its plot width,
+  // each line as its exact summary where samples are denser than that. The race reads every
+  // sample, so its history names no view.
+  // A group counted at each hour cuts its lines here, so they come as every sample: a
+  // summary would hold the hours before a country joined.
+  const summarized = view === 'lines' && !resolved.membership;
+  // The view the chart reports for summaries: its hours, to the playhead, and its plot width.
+  const [chartView, setChartView] = useState<{ scope: string; view: SeriesView } | null>(null);
+  const viewScope = JSON.stringify([track?.source.id, track?.branch.id, extent]);
+  const shownView: SeriesView | null = !summarized ? null : chartView?.scope === viewScope ? chartView.view
+    : { from: Math.floor(extent[0]), to: Math.floor(playhead ?? extent[1]), width: FIRST_WIDTH };
+  const onChartView = useCallback((next: { from: number; to: number; width: number }) => setChartView(held => held?.scope === viewScope
+    && held.view.from === next.from && held.view.to === next.to && held.view.width === next.width ? held : { scope: viewScope, view: next }), [viewScope]);
   const productRequest = (params: ReturnType<typeof producedRequest> | null) => track && params && asks(params)
     ? { sourceId: track.source.id, revision: track.source.revision, product: 'equipment-produced', params: requestParams(params) } : null;
 
   // In units, until a type is chosen, the type the countries shown delivered most.
   const pickingDefault = count === 'units' && !included.length;
-  const defaultParams = track && pickingDefault ? producedRequest(track.branch.id, resolved, 'total', 'type', [], refits) : null;
+  // The type is chosen from every country's latest sample in the branch, read at a fixed width
+  // so zooming keeps it; each country's latest sample, which the choice reads, comes whole.
+  const defaultParams = track && pickingDefault ? producedRequest(track.branch.id, resolved, 'total', 'type', [], refits, 'units',
+    view === 'lines' ? { from: Math.floor(track.branch.firstHour), to: Math.floor(track.branch.lastHour), width: FIRST_WIDTH } : null) : null;
   const prefixDefault = usePreparedProduction(runtime.client, track?.source, defaultParams && track && props.prepared ? {
-    hour: track.branch.lastHour, selection: defaultParams, offset: '0', limit: 0, ranked: false,
+    hour: track.branch.lastHour, selection: withoutView(defaultParams), offset: '0', limit: 0, ranked: false,
   } : null, active);
   // Prepared totals choose the type; the history product only where they cannot.
   const preparedDefault = props.prepared === true && !prefixDefault.unavailable;
-  const defaults = useProduct<EquipmentProducedReply>(runtime.client, productRequest(preparedDefault ? null : defaultParams), active, validateProducedReply);
+  const defaults = useProduct<EquipmentProducedReply>(runtime.client, productRequest(preparedDefault ? null : defaultParams), active, validateProducedReply, track?.source);
   // Kept while a refresh of the same countries is pending, so the race stays drawn.
   const retainedDefaults = useMemo(() => new NumericReply<EquipmentProducedReply>(), [runtime.client]);
   const defaultScope = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, refits, pickingDefault]);
@@ -110,15 +134,15 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   const preparedChoice = !preparedDefault ? null : freshChoice ?? (retainedChoice.current?.scope === defaultScope ? retainedChoice.current : null);
   const mostType = useMemo(() => defaultReply ? mostDelivered(producedModel(defaultReply)) : preparedChoice?.type ?? null,
     [defaultReply, preparedChoice?.type]); // eslint-disable-line react-hooks/exhaustive-deps
-  const defaultFinal = preparedDefault ? preparedChoice?.final === true : !!defaultReply;
+  const defaultFinal = preparedDefault ? preparedChoice?.final === true : finalPreparedReply(defaultReply);
   const defaultError = preparedDefault ? prefixDefault.error : defaults.error;
   const provisionalChoice = pickingDefault && !defaultFinal && !!mostType;
   const shownTypes = useMemo(() => pickingDefault ? mostType ? [mostType] : [] : included, [pickingDefault, mostType, included]);
   // A type's own models name its tooltip rows; all equipment in IC is split by type.
   const grouping = count === 'ic' && !shownTypes.length ? 'type' : 'variant';
-  const params = track && !(pickingDefault && !mostType) ? producedRequest(track.branch.id, resolved, measure, grouping, shownTypes, refits, count) : null;
+  const params = track && !(pickingDefault && !mostType) ? producedRequest(track.branch.id, resolved, measure, grouping, shownTypes, refits, count, shownView) : null;
   const request = productRequest(params);
-  const endpointParams = useMemo(() => params && props.prepared ? { ...params,
+  const endpointParams = useMemo(() => params && props.prepared ? { ...withoutView(params),
     tags: params.top === null ? rankedCandidates(resolved, wantedMoment, params.tags) : params.tags } : null,
   [params, props.prepared, resolved, wantedMoment]);
   const endpoint = usePreparedProducedView(runtime.client, track?.source, endpointParams, wantedMoment, active);
@@ -126,7 +150,8 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   // otherwise the history product tells whether production is in the recording at all.
   const preparedView = props.prepared === true && !endpoint.unavailable
     && !(endpoint.page?.totalCountries === 0 && !endpoint.page.known && !endpoint.page.recorded);
-  const history = useProduct<EquipmentProducedReply>(runtime.client, preparedView ? null : request, active, validateProducedReply);
+  // A moved view does not cancel the read in flight: the last lines stay drawn meanwhile.
+  const history = useFollowedProduct<EquipmentProducedReply>(runtime.client, preparedView ? null : request, ['view'], active, validateProducedReply, track?.source);
   const moment = preparedView ? endpoint.hour ?? wantedMoment : wantedMoment;
   const data = preparedView ? endpoint.reply : history.data;
   const error = preparedView ? endpoint.error : history.error;
@@ -166,10 +191,58 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   // A top-N reply's samples are already cut to its hours; a group's are cut here.
   const cutTo = (tag: string): readonly Span[] | null => resolved.membership?.get(tag) ?? null;
   const range = useMemo(() => ({ firstHour: extent[0], lastHour: extent[1] }), [extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A dense view's lines draw from their exact summaries; every other line from its samples.
+  const lineSummaries = useMemo(() => new Map(view !== 'lines' || !model ? [] : [...model.series.values()]
+    .flatMap(series => series.summary ? [[series.tag, series.summary] as const] : [])), [model, view]);
+  const dense = lineSummaries.size > 0;
+  const viewed = shownView !== null;
+  // A line the reply holds stays drawn where its view holds no sample, so a zoom into a gap
+  // keeps the chart to move back from.
   const lines = useMemo(() => !model || view !== 'lines' ? [] : lineTags.flatMap(tag => {
     const runs = totalRuns(model, tag, cutTo(tag), range, decimals);
+    return runs.length || lineSummaries.has(tag) || (viewed && model.series.has(tag)) ? [{ tag, runs }] : [];
+  }), [model, view, lineTags, resolved.membership, range, decimals, lineSummaries, viewed]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A dense chart draws its summaries at once; every sample follows, as the lines were read
+  // before, and serves its hovers and picks at once. Until then a hovered hour is read alone.
+  const fullRequest = dense && params ? productRequest(withoutView(params)) : null;
+  const full = useProduct<EquipmentProducedReply>(runtime.client, fullRequest, active, validateProducedReply, track?.source);
+  const fullModel = useMemo(() => dense && full.data ? producedModel(full.data) : null, [dense, full.data]);
+  // Tooltips over a dense chart read the hovered hour exactly: the same countries and
+  // measure, every value they held then.
+  const [hover, setHover] = useState<{ scope: string; hour: number } | null>(null);
+  const hoverScope = JSON.stringify([track?.source.id, track?.branch.id, params && withoutView(params)]);
+  const onReachHour = useCallback((hour: number | null) => setHover(held => {
+    if (hour == null) return held === null ? held : null;
+    const at = Math.floor(hour);
+    return held?.scope === hoverScope && held.hour === at ? held : { scope: hoverScope, hour: at };
+  }), [hoverScope]);
+  const hovered = dense && hover?.scope === hoverScope ? hover.hour : null;
+  const hoverRequest = hovered == null || !params || fullModel ? null
+    : productRequest({ ...params, view: { from: hovered, to: hovered, width: 1 } });
+  const hoverRead = useProduct<EquipmentProducedReply>(runtime.client, hoverRequest, active, validateProducedReply, track?.source);
+  const hoverModel = useMemo(() => fullModel ?? (dense && hoverRead.data ? producedModel(hoverRead.data) : null), [fullModel, dense, hoverRead.data]);
+  // A dense chart's keyboard stops: every hour production was read in the view, as its samples give them.
+  const denseHours = useMemo(() => dense && shownReply ? shownReply.reads.filter(hour => hour >= extent[0] && hour <= extent[1]) : undefined,
+    [dense, shownReply, extent[0], extent[1]]); // eslint-disable-line react-hooks/exhaustive-deps
+  const hoverLines = useMemo(() => !hoverModel ? [] : lineTags.flatMap(tag => {
+    const runs = totalRuns(hoverModel, tag, cutTo(tag), range, decimals);
     return runs.length ? [{ tag, runs }] : [];
-  }), [model, view, lineTags, resolved.membership, range, decimals]); // eslint-disable-line react-hooks/exhaustive-deps
+  }), [hoverModel, lineTags, resolved.membership, range, decimals]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The countries a dense chart shows a value for at an hour, as an exact read of it gives them.
+  const valuedAt = (exact: ReturnType<typeof producedModel>, hour: number) => lineTags.filter(tag =>
+    isMember(membershipOf(tag) ?? undefined, hour) && producedAt(exact, tag, Math.floor(hour))?.total != null);
+  // A dense chart's pick reads its hour exactly, as its tooltip does; a failed read picks nothing,
+  // and the hover read shows the failure.
+  const exactLineTags = async (hour: number) => {
+    if (fullModel) return valuedAt(fullModel, hour);
+    const exactRequest = params ? productRequest({ ...params, view: { from: Math.floor(hour), to: Math.floor(hour), width: 1 } }) : null;
+    if (!exactRequest) return null;
+    try {
+      return valuedAt(producedModel(await loadProduct(runtime.client, exactRequest, new AbortController().signal, validateProducedReply, track?.source)), hour);
+    } catch {
+      return null;
+    }
+  };
 
   // What is counted, in words: the pill names the equipment, the caption the window and date.
   const types = useProducedTypeList(runtime, track, active);
@@ -227,9 +300,11 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
   // `name` names the country as recorded at the hour the tooltip is about.
   const tooltipAt = (tag: string, hour: number, name: string) => {
     if (preparedView) return endpoint.tooltip(tag, hour, name, what, since);
-    if (!model) return null;
-    const at = isMember(membershipOf(tag) ?? undefined, hour) ? producedAt(model, tag, hour) : null;
-    return at ? producedTooltips(model, tag, name, at, hour, dayLabel(hour), [], what, decimals) : null;
+    // A dense chart's tooltips wait for the hovered hour's exact read.
+    const shown = dense ? hoverModel : model;
+    if (!shown) return null;
+    const at = isMember(membershipOf(tag) ?? undefined, hour) ? producedAt(shown, tag, hour) : null;
+    return at ? producedTooltips(shown, tag, name, at, hour, dayLabel(hour), [], what, decimals) : null;
   };
   const nothingYet = produced && model && emptyRace(model, moment) === 'nothing'
     ? measure === 'total' ? `No production by ${dayLabel(moment)}.` : measure === 'day' ? `No production on ${dayLabel(moment)}.` : 'No production in the previous month.'
@@ -273,7 +348,15 @@ export function HistoryEquipmentProducedWidget(props: WidgetProps & { prepared?:
         remoteRows={preparedView ? endpoint.remoteRows : undefined}
         moment={moment} slots={slots} ranked={entries} lines={lines} countryTags={shownTags} partsLabel="Equipment"
         label={`${equipment}: ${caption}`} empty={nothingYet} formatValue={value => formatProduced(value, decimals)} tooltip={tooltipAt}
-        lineTooltip={(hour, _tags, labelAt, country) => [linesTooltip(hour, lines, labelAt, country, dayLabel(hour), what, value => formatProduced(value, decimals))]}
+        lineTooltip={(hour, _tags, labelAt, country) => [dense && !hoverModel
+          ? { title: dayLabel(hour), subtitle: what, rows: [{ label: hoverRead.error
+            ? `This hour could not be read: ${hoverRead.error.message}` : 'Reading this hour…', tone: 'muted' as const }] }
+          : linesTooltip(hour, dense ? hoverLines : lines, labelAt, country, dayLabel(hour), what, value => formatProduced(value, decimals))]}
+        keyHours={denseHours}
+        lineSummaries={dense ? lineSummaries : undefined} onReachHour={dense ? onReachHour : undefined}
+        exactLineTags={dense ? exactLineTags : undefined}
+        tooltipTags={dense ? hour => hoverModel ? valuedAt(hoverModel, hour) : [] : undefined}
+        onSummaryView={view === 'lines' ? onChartView : undefined}
         labels={{ race: `${equipment}: ${caption}`, lines: `${equipment}: ${caption}`, actions: 'Equipment produced actions' }}
         presentation={{ exact: false, held: false, raceEmptyState: false, linePadding: CHART_LAYOUT.countryEndLabels, resetTimeView: true }}
         pickOwner={pickOwner} lineEmpty={{ icon: 'layers', message: resolved.known(extent[0], extent[1]) ? 'No countries to draw. Choose countries in the widget settings.' : MEMBERSHIP_PREPARING }}

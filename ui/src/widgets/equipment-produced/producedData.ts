@@ -14,9 +14,11 @@ import { formatAmount, formatRate } from '../../charts/valueAxis.ts';
 import { formatDateTime } from '../../dashboard/calendar.ts';
 import { domainName, variantNameAt } from '../../dashboard/equipment.ts';
 import { readAt } from '../../dashboard/reads.ts';
+import { chartSummaryFrom } from '../../charts/chartSummary.ts';
+import type { ChartSummary } from '../../charts/chartSummary';
 import { compareTags } from '../../dashboard/tagOrder.ts';
 import { validCountryIdentityRuns } from '../../dashboard/countryIdentity.ts';
-import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCoded, ProducedCount, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams } from '../../generated/dashboard';
+import type { CountryIdentityRun, EquipmentProducedReply, HourSpan, ProducedCoded, ProducedCount, ProducedGrouping, ProducedKey, ProducedMeasure, ProducedParams, SeriesView } from '../../generated/dashboard';
 
 export type Measure = ProducedMeasure;
 export type Grouping = ProducedGrouping;
@@ -72,7 +74,8 @@ export function validateProducedReply(data: unknown): EquipmentProducedReply {
           && coded(values.values) && (values.equipmentValues === undefined || coded(values.equipmentValues)))
         && new Set(series.values.map(values => values.key)).size === series.values.length
         && (series.total === null || coded(series.total))
-        && (series.membership === null || (Array.isArray(series.membership) && spans(series.membership)));
+        && (series.membership === null || (Array.isArray(series.membership) && spans(series.membership)))
+        && (series.summary === undefined || chartSummaryFrom(series.summary) !== null);
     })
     && new Set(reply.series.map(series => series.tag)).size === reply.series.length
     && Array.isArray(reply.known) && spans(reply.known)
@@ -83,10 +86,11 @@ export function validateProducedReply(data: unknown): EquipmentProducedReply {
 }
 
 /** What the widget asks the product for: the top N by the measure shown of the
- * included types, or the chosen countries. */
+ * included types, or the chosen countries; with a chart's `view`, the samples it shows,
+ * each line as its exact summary where they are denser than its width. */
 export function producedRequest(branchId: string, resolved: { tags: readonly string[]; top?: number }, measure: Measure, grouping: Grouping,
-  included: readonly string[], refits: boolean, count: ProducedCount = 'units'): ProducedParams {
-  const common = { branchId, measure, count, grouping, included: [...included], refits };
+  included: readonly string[], refits: boolean, count: ProducedCount = 'units', view?: SeriesView | null): ProducedParams {
+  const common = { branchId, measure, count, grouping, included: [...included], refits, ...(view ? { view } : {}) };
   return resolved.top != null ? { ...common, tags: [], top: resolved.top } : { ...common, tags: [...resolved.tags], top: null };
 }
 
@@ -147,6 +151,8 @@ export interface ProducedSeriesModel {
   total: Column | null;
   membership: readonly HourSpan[] | null;
   identities: readonly CountryIdentityRun[];
+  /** A dense view's exact summary of the total, drawn in place of its samples. */
+  summary: ChartSummary | null;
 }
 
 /** A reply ready for lookups, built once per reply. */
@@ -185,7 +191,7 @@ export function producedModel(reply: EquipmentProducedReply): ProducedModel {
     const values = new Map(item.values.map(entry => [entry.key, column(entry.values)] as const));
     const equipmentValues = new Map(item.values.flatMap(entry => entry.equipmentValues === undefined ? [] : [[entry.key, column(entry.equipmentValues)] as const]));
     return [item.tag, { tag: item.tag, samples, stretch: stretchStarts(samples), values, equipmentValues, total: item.total ? column(item.total) : null,
-      membership: item.membership, identities: item.identities ?? [] }] as const;
+      membership: item.membership, identities: item.identities ?? [], summary: item.summary ? chartSummaryFrom(item.summary) : null }] as const;
   }));
   return { reply, series, tags: reply.series.map(item => item.tag) };
 }

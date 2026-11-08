@@ -787,7 +787,7 @@ fn production_spent_reopens_equal_amounts_after_an_unknown_interval() {
         // The production observer versions each change to the cost inventory.
         track.cost_taken.as_mut().unwrap().1 += 1;
         state
-            .observe_holders(hour, Samples::default(), true, true)
+            .observe_holders(hour, Samples::default(), true, true, hour.checked_sub(1))
             .unwrap();
     }
     let fixture = Fixture::new();
@@ -826,6 +826,7 @@ fn params() -> ProducedParams {
         grouping: ProducedGrouping::Type,
         included: Vec::new(),
         refits: false,
+        view: None,
     }
 }
 fn amount(variant: u64, units: i128, exact: bool, purpose: Purpose) -> Amount {

@@ -738,7 +738,7 @@ fn restore_comparison(bytes: &[u8], fields: u64) -> io::Result<TableView> {
 
 /// Each key `scan` numbered, as `directory` holds it, READ and KNOWN first: as far as it holds
 /// them, for a scan whose last cut wrote none of the later ones.
-fn keys<O: Observer, B: Batch>(
+pub(crate) fn keys<O: Observer, B: Batch>(
     directory: &Directory,
     scan: &Scan<O, B>,
 ) -> io::Result<Vec<KeyHandle>> {
@@ -765,13 +765,11 @@ fn keys<O: Observer, B: Batch>(
 pub(crate) struct Opened {
     pub(crate) opened: published::Opened,
     /// Each scan key's series key, by scan key.
-    pub(crate) keys: Vec<KeyHandle>,
+    pub(crate) keys: std::sync::Arc<Vec<KeyHandle>>,
 }
 
-/// The scan `directory` catalogues, its observer and names alone, and each of its keys.
-pub(crate) fn catalogued<O: Observer>(
-    directory: &Directory,
-) -> io::Result<(Scan<O>, Vec<KeyHandle>)> {
+/// The scan `directory` catalogues, its observer and names alone.
+pub(crate) fn catalogued<O: Observer>(directory: &Directory) -> io::Result<Scan<O>> {
     let observer = match directory.scalar(OBSERVER).and_then(|scalar| scalar.text()) {
         Some(json) => serde_json::from_slice(json)?,
         None => O::default(),
@@ -783,9 +781,7 @@ pub(crate) fn catalogued<O: Observer>(
             String::from_utf8(actor.name.to_vec()).map_err(|_| invalid("A keyed name is not text"))
         })
         .collect::<io::Result<_>>()?;
-    let scan = Scan::<O>::catalogued(observer, names);
-    let keys = keys(directory, &scan)?;
-    Ok((scan, keys))
+    Ok(Scan::<O>::catalogued(observer, names))
 }
 
 /// Each of scan keys `keys`' runs over `from..=to`, clipped to it, as the walk's pages hold

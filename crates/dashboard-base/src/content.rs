@@ -84,6 +84,19 @@ pub(crate) fn localisation_in(
     Ok(localisation)
 }
 
+/// The replay's shared setup under `content`: its prepared store bound to the content's
+/// inputs, the localisation, the presented catalogue and the equipment types products name
+/// things with, each done once per open replay into the source's shared state, so no product's
+/// first ask does them. A failure is left for the product that needs the part to report with
+/// its reason.
+pub fn warm(source: &Source, content: &ContentOptions) {
+    let _ = crate::prepared::files(source, Some(content));
+    let _ = localisation(source, content);
+    if let Ok(catalogue) = crate::catalogue::catalogue(source, content) {
+        let _ = crate::products::equipment::units(source, &catalogue);
+    }
+}
+
 /// [`localisation`] for naming countries, or the warning that says why names show tags.
 pub fn name_localisation(
     source: &Source,

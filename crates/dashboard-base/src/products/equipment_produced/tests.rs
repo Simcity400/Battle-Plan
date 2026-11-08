@@ -441,14 +441,14 @@ fn produced_selections_follow_the_recorded_countries_and_types() {
     long_key.included = vec!["equipment_type_".repeat(30)];
     assert!(EquipmentProduced::validate(&long_key).is_ok());
     let groups = grouped(&scanned, &types, Named::default(), &params);
-    let requested = requested(&scanned, &groups, &params, &AtomicBool::new(false)).unwrap();
+    let requested = requested(&scanned, &groups, &params, None, None, &AtomicBool::new(false)).unwrap();
     assert_eq!(requested.series.len(), scanned.tags.len());
     assert_eq!(requested.keys.len(), types.len());
     params.tags.clear();
     params.top = Some(scanned.tags.len() as u32);
     assert!(EquipmentProduced::validate(&params).is_ok());
     assert_eq!(
-        super::requested(&scanned, &groups, &params, &AtomicBool::new(false))
+        super::requested(&scanned, &groups, &params, None, None, &AtomicBool::new(false))
             .unwrap()
             .series
             .len(),
@@ -598,7 +598,7 @@ fn produced_reply_propagates_group_and_total_codec_refusals() {
         };
         zero_rocket_scope(&mut scanned);
         let groups = grouped(&scanned, &types, Named::default(), &params);
-        let error = requested(&scanned, &groups, &params, &AtomicBool::new(false))
+        let error = requested(&scanned, &groups, &params, None, None, &AtomicBool::new(false))
             .err()
             .expect("an unsafe group or total must refuse the reply");
         assert_eq!(error.to_string(), reason);
@@ -699,7 +699,7 @@ fn clipped_pieces_keep_a_break_only_where_they_start() {
         sample,
     };
     let clipped = clip(
-        &[piece(0, 23, true, 0), piece(24, 47, false, 1)],
+        &units(&[piece(0, 23, true, 0), piece(24, 47, false, 1)], None),
         &[
             HourSpan {
                 first_hour: 10,
@@ -713,7 +713,7 @@ fn clipped_pieces_keep_a_break_only_where_they_start() {
     );
     let shape: Vec<_> = clipped
         .iter()
-        .map(|piece| (piece.first, piece.last, piece.starts, piece.sample))
+        .map(|unit| (unit.first, unit.last, unit.starts, unit.pieces.start))
         .collect();
     assert_eq!(
         shape,
@@ -976,6 +976,7 @@ fn produced_params(
         grouping,
         included: Vec::new(),
         refits: false,
+        view: None,
     }
 }
 
@@ -2135,15 +2136,18 @@ fn coverage_merges_overlaps_and_subtracts_unknown_spans_without_walking_hours() 
         (i32::MAX - 2, i32::MAX, Some(0)),
         (i32::MAX, i32::MAX, None),
     ] {
-        coverage.record(
-            &Piece {
-                first,
-                last,
-                starts: false,
-                sample: 0,
-            },
-            total,
-        );
+        let span = vec![(first, last)];
+        coverage.take(if total.is_some() {
+            Spans {
+                exact: span,
+                unknown: Vec::new(),
+            }
+        } else {
+            Spans {
+                exact: Vec::new(),
+                unknown: span,
+            }
+        });
     }
     let spans: Vec<_> = coverage
         .known()

@@ -21,18 +21,20 @@ import type { MilitaryAirReply } from '../generated/dashboard';
 import type { SunburstProps } from '../charts/sunburst/Sunburst';
 import { militaryAirIndex, validateMilitaryAirReply } from './militaryAirLedger.ts';
 import { OPTIONS } from '../widgets/air-kills-losses/definition.ts';
+import { partOf } from './militaryAirParts.fixture.ts';
+import type { Leaf } from './militaryAirParts.fixture';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 const data = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: ['A', 'B', 'C'].map((tag, id) => ({ tag, identity: `${id}:9`,
-    present: [span(10, 16), span(18, 20)], membership: tag === 'A' ? [span(10, 16), span(18, 20)] : tag === 'B' ? [span(10, 12)] : [span(13, 16), span(18, 20)] })), leaves: [
+    present: [span(10, 16), span(18, 20)], membership: tag === 'A' ? [span(10, 16), span(18, 20)] : tag === 'B' ? [span(10, 12)] : [span(13, 16), span(18, 20)] })), parts: ([
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 1, buildingToken: null, buildingId: null, state: null,
       points: [[11, 16, '900719925474099300000'], [12, 18, '900719925474099200000']] },
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 3, buildingToken: null, buildingId: null, state: null,
       points: [[11, 16, '-100000']] },
     ...(['A', 'C'] as const).map(tag => ({ tag, identity: tag === 'A' ? '0:9' : '2:9', dealt: true, opponent: null, region: 40001, cause: 1,
       buildingToken: null, buildingId: null, state: null, points: [[11, tag === 'A' ? 11 : 13, tag === 'A' ? '200000' : '100000'] as [number, number, string]] })),
-  ], regions: [], buildings: [], warnings: [] });
+  ] as Leaf[]).map(partOf), regions: [], buildings: [], warnings: [] });
 
 // Only these components' hooks retain state between SSR draws. The real reducer,
 // holder joins, numeric owners, callbacks and Pin producer remain under test.
@@ -85,7 +87,7 @@ test('bombing breakdown keeps damage amounts and uses readable missing-content l
   host.__airDrill = state;
   const reply = data(); reply.family = 'bombing';
   reply.buildings = [{id: 'synthetic-private-token', name: null, missing: 'Synthetic raw building lookup refusal'}];
-  reply.leaves = reply.leaves.map(leaf => ({...leaf, buildingToken: 'synthetic-private-token', state: 0}));
+  reply.parts = reply.parts.map(part => ({...part, opponentKnown: null, buildingToken: 'synthetic-private-token', buildingId: 1, state: 0}));
   const vite = await server({...common,
     '/dashboard/products.ts': 'export const useProduct = () => ({error: new Error("Synthetic raw place-name failure")}); export const useFollowedProduct = (client, request, moving, ...rest) => ({ ...useProduct(client, request, ...rest), moment: request ? JSON.stringify(moving.map(name => request.params?.[name])) : undefined });',
     '/charts/sunburst/Sunburst.tsx': 'export default props => {globalThis.__bombingBreakdown = props; return null;};',
@@ -213,7 +215,7 @@ test('actual cause producer keeps exact negative rows, positive geometry and nat
   try {
     const Drill = (await vite.ssrLoadModule('/ui/src/dashboard/AirLossDrill.tsx')).default as typeof AirLossDrill;
     const picked: number[] = [];
-    const props = { index: militaryAirIndex(state.data, { regions: new Set(), causes: new Set() }), track: state.track,
+    const props = { index: militaryAirIndex(state.data), track: state.track,
       runtime: { client: {}, clock: {} }, tag: 'B', identity: '1:9', from: 10, hour: 16, end: 20, dealt: false,
       active: true, afterPlayhead: false, onPick: (at: number) => picked.push(at), pickOwner: {} } as unknown as ComponentProps<typeof AirLossDrill>;
     const findReset = (node: unknown): (() => void) | undefined => {
@@ -292,8 +294,8 @@ test('actual cause producer keeps exact negative rows, positive geometry and nat
   } finally { await vite.close(); delete globals.__airDrill; }
 });
 
-const bombingData = (): MilitaryAirReply => ({ ...data(), family: 'bombing', leaves: data().leaves.map((leaf, i) => ({ ...leaf,
-  region: null, cause: 1, buildingToken: i === 1 ? 'correction' : 'factory', buildingId: i === 1 ? 2 : 1, state: 7 })),
+const bombingData = (): MilitaryAirReply => ({ ...data(), family: 'bombing', parts: data().parts.map((part, i) => ({ ...part,
+  opponentKnown: null, cause: 1, buildingToken: i === 1 ? 'correction' : 'factory', buildingId: i === 1 ? 2 : 1, state: 7 })),
   buildings: [{ id: 'factory', name: 'Factory', missing: null }, { id: 'correction', name: 'Corrected building', missing: null }] });
 
 test('bombing parts retain exact corrections, selectable positive history and controls at unavailable dates', async () => {

@@ -260,7 +260,7 @@ pub(crate) fn write_raw(raw: &RawVariant, out: &mut Out) -> io::Result<()> {
     Ok(())
 }
 
-fn read_raw(input: &mut In<'_>) -> io::Result<RawVariant> {
+pub(crate) fn read_raw(input: &mut In<'_>) -> io::Result<RawVariant> {
     let id = input.u64()?;
     let token = input.str()?;
     let display_name = input.str()?;

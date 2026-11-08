@@ -35,7 +35,7 @@ const ledger: MilitaryAirReply = { family: 'airLosses', firstHour: 0, lastHour: 
     { tag: 'X', identity: 'B', present: [span(10, 14)], membership: null },
     { tag: 'X', identity: 'C', present: [span(15, 20)], membership: null },
     { tag: 'Y', identity: 'B', present: [span(15, 20)], membership: null }],
-  leaves: [], regions: [], buildings: [], warnings: [] };
+  parts: [], regions: [], buildings: [], warnings: [] };
 
 test('registered saved native-actor bodies supply country headers at their displayed date', async () => {
   const state = { hour: 12, pending: false, error: undefined as Error | undefined, content: 0,

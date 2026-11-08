@@ -29,40 +29,89 @@ struct Field {
     end: usize,
     before: bool,
     after: bool,
+    /// Whether the range is the field's value alone, its key kept.
+    #[serde(default)]
+    value_only: bool,
 }
 
 impl Answer {
     /// `data` as JSON within the reply budget, stopping once `cancelled`, marking the values
     /// `paths` reach and, when `served`, where a root `served` field goes.
     pub(super) fn new(
-        data: &Value,
+        data: Data,
         paths: &[&[&str]],
         served: bool,
         cancelled: &AtomicBool,
     ) -> io::Result<Self> {
-        let mut writer = Writer {
-            text: Vec::new(),
-            cancelled,
-            reached: Vec::new(),
-            served: None,
+        let (text, reached, served) = match data {
+            Data::Tree(data) => {
+                let mut writer = Writer {
+                    text: Vec::new(),
+                    cancelled,
+                    reached: Vec::new(),
+                    served: None,
+                };
+                let active: Vec<(usize, &[&str])> = paths.iter().copied().enumerate().collect();
+                if let Err(error) = writer.value(&data, &active, served) {
+                    // A cancelled write stops as every cancelled request does.
+                    check_cancel(cancelled)?;
+                    return Err(error);
+                }
+                let text = String::from_utf8(writer.text).map_err(io::Error::other)?;
+                (text, writer.reached, writer.served)
+            }
+            Data::Built(built) => {
+                let text = built.finish()?;
+                if text.len() > MAX_REPLY_BYTES {
+                    return Err(crate::invalid(
+                        "Projected response exceeds the transport byte budget",
+                    ));
+                }
+                check_cancel(cancelled)?;
+                // The written text is scanned once for what replies change, never parsed whole.
+                let mut reached: Vec<_> = dashboard_base::products::built::reach(&text, paths)?
+                    .into_iter()
+                    .map(|(path, range, list)| (path, range.start, range.end, list))
+                    .collect();
+                reached.sort_by_key(|&(_, start, ..)| start);
+                let served = if served {
+                    let field = dashboard_base::products::built::reach(&text, &[&["served"]])?
+                        .first()
+                        .map(|(_, range, _)| range.clone());
+                    match field {
+                        // The value is replaced; its key stays.
+                        Some(range) => Some(Field {
+                            start: range.start,
+                            end: range.end,
+                            before: false,
+                            after: false,
+                            value_only: true,
+                        }),
+                        None => dashboard_base::products::built::root_close(&text)?.map(
+                            |(close, fields)| Field {
+                                start: close,
+                                end: close,
+                                before: fields,
+                                after: false,
+                                value_only: false,
+                            },
+                        ),
+                    }
+                } else {
+                    None
+                };
+                (text, reached, served)
+            }
         };
-        let active: Vec<(usize, &[&str])> = paths.iter().copied().enumerate().collect();
-        if let Err(error) = writer.value(data, &active, served) {
-            // A cancelled write stops as every cancelled request does.
-            check_cancel(cancelled)?;
-            return Err(error);
-        }
         let first = (0..paths.len()).find_map(|path| {
-            writer
-                .reached
+            reached
                 .iter()
                 .filter(|reached| reached.0 == path)
                 .map(|&(_, start, end, list)| (start, end, list))
                 .min()
         });
         // Only a list is replaced.
-        let mut lists: Vec<_> = writer
-            .reached
+        let mut lists: Vec<_> = reached
             .iter()
             .filter(|reached| reached.3)
             .map(|&(_, start, end, _)| (start, end))
@@ -81,13 +130,12 @@ impl Answer {
         let first = first
             .filter(|&(_, _, list)| list)
             .and_then(|(start, end, _)| lists.iter().position(|&list| list == (start, end)));
-        let text = String::from_utf8(writer.text).map_err(io::Error::other)?;
         Ok(Self {
             text: Arc::new(text),
             marks: Marks {
                 lists,
                 first,
-                served: writer.served,
+                served,
             },
         })
     }
@@ -155,6 +203,7 @@ impl Writer<'_> {
                             end: at,
                             before: false,
                             after: true,
+                            value_only: false,
                         });
                     }
                     serde_json::to_writer(&mut *self, key)?;
@@ -166,6 +215,7 @@ impl Writer<'_> {
                             end: self.text.len(),
                             before: false,
                             after: false,
+                            value_only: false,
                         });
                     }
                 }
@@ -176,6 +226,7 @@ impl Writer<'_> {
                         end: at,
                         before: !fields.is_empty(),
                         after: false,
+                        value_only: false,
                     });
                 }
                 self.write_all(b"}")?;
@@ -310,10 +361,11 @@ impl<'a> Served<'a> {
             .collect();
         if let (Some(field), Some(served)) = (marks.served, &self.served) {
             let comma = |needed: bool| if needed { "," } else { "" };
+            let key = if field.value_only { "" } else { "\"served\":" };
             splices.push((
                 field.start,
                 field.end,
-                [comma(field.before), "\"served\":", served.as_str(), comma(field.after)],
+                [comma(field.before), key, served.as_str(), comma(field.after)],
             ));
             splices.sort_by_key(|&(start, ..)| start);
         }

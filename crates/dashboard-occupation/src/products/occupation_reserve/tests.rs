@@ -474,12 +474,12 @@ fn occupation_reserve_public_query_shape_and_cancellation() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let cold = super::answer(&query, || query.open::<OccupationReserveObserver>()).unwrap();
+    let cold = super::answer(&query, || query.open::<OccupationReserveObserver>()).unwrap().into_value().unwrap();
     assert!(cold["window"]["series"].as_array().unwrap().is_empty());
     let mut scan = Scan::<OccupationReserveObserver>::default();
     observe(&mut scan, &frame);
     publish(&mut scan, &fixture);
-    let value = super::answer(&query, || query.open::<OccupationReserveObserver>()).unwrap();
+    let value = super::answer(&query, || query.open::<OccupationReserveObserver>()).unwrap().into_value().unwrap();
     assert!(!value["window"]["series"].as_array().unwrap().is_empty());
     let decoded: std::collections::BTreeSet<_> = value
         .as_object()
@@ -495,7 +495,7 @@ fn occupation_reserve_public_query_shape_and_cancellation() {
     );
     flag.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
-        super::query(&query).unwrap_err().kind(),
+        super::query(&query).err().unwrap().kind(),
         std::io::ErrorKind::Interrupted
     );
 }

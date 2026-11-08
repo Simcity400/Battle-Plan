@@ -1314,6 +1314,8 @@ fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
             &fixture.key,
             &flag,
         )
+        .unwrap()
+        .into_value()
         .unwrap();
         assert_eq!(
             actual,
@@ -1342,7 +1344,9 @@ fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
                 &fixture.key,
                 &flag,
             )
-            .unwrap();
+            .unwrap()
+        .into_value()
+        .unwrap();
             assert_eq!(
                 actual,
                 serde_json::to_value(oracle.ranked(&params, &flag).unwrap()).unwrap()
@@ -1362,6 +1366,8 @@ fn prepared_land_matches_oracle_across_commits_resume_append_and_census() {
             &fixture.key,
             &flag,
         )
+        .unwrap()
+        .into_value()
         .unwrap();
         assert_eq!(
             actual,
@@ -1453,6 +1459,8 @@ fn prepared_land_ranking_keeps_gap_endings_and_census_reads_in_unrecorded_window
             &fixture.key,
             &flag,
         )
+        .unwrap()
+        .into_value()
         .unwrap();
         assert_eq!(
             actual,

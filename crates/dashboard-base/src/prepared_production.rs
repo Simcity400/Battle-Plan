@@ -5,6 +5,7 @@
 pub mod columnar;
 pub(crate) mod facts;
 pub(crate) mod fold;
+pub(crate) mod history;
 mod holders;
 pub(crate) mod input;
 pub(crate) mod read;
@@ -13,6 +14,7 @@ pub(crate) mod served;
 mod shards;
 
 pub use facts::FACTS;
+pub use history::HISTORY;
 pub use select::{SelectedCountry, SelectedValue, SelectionPage, empty_selection, select_at};
 
 use crate::metadata::{TaggedCountry, slot_read};
@@ -156,7 +158,7 @@ impl Current {
 }
 
 /// Prepared state's layout; another is refused rather than read.
-pub const SCHEMA: u32 = 10;
+pub const SCHEMA: u32 = 16;
 
 #[derive(Default, Deserialize, Serialize)]
 pub struct ProductionAccumulator {
@@ -247,6 +249,14 @@ pub struct ProductionAccumulator {
     present_holders: BTreeSet<u32>,
     #[serde(skip)]
     batch: Batch,
+    /// What the history appends at the next flush besides the holders' events.
+    #[serde(skip)]
+    history: history::Batch,
+    /// Every variant's names as the history records them.
+    #[serde(default)]
+    history_names: history::Names,
+    #[serde(default)]
+    history_classes: history::Classes,
     #[serde(skip)]
     scratch: Box<Scratch>,
     #[serde(skip)]
@@ -1038,7 +1048,15 @@ impl ProductionAccumulator {
     }
 
     pub fn buffered_bytes(&self) -> usize {
-        self.spent.bytes() + self.batch.bytes
+        self.spent.bytes()
+            + self.batch.bytes
+            + self
+                .holders
+                .values()
+                .flat_map(|holder| &holder.history)
+                .map(history::Log::bytes)
+                .sum::<usize>()
+            + self.history_names.bytes()
     }
 
     /// Carries only projections current at the old frontier across certified unchanged hours:
@@ -1082,13 +1100,15 @@ impl ProductionAccumulator {
             first_hour,
             ProductionSpendingUnknown::RecordingGap,
         );
+        let before = self.last_frame;
         for holder in self.holders.values_mut() {
-            holder.end(0);
-            holder.end(1);
+            holder.end(0, before);
+            holder.end(1, before);
         }
     }
 
     fn forget_names(&mut self, hour: i32) {
+        self.history_names.forget(hour);
         self.variants.classified.clear();
         self.variants.known = None;
         for (&variant, kind) in &mut self.classifications {
@@ -1158,6 +1178,7 @@ impl ProductionAccumulator {
         equipment_changed: bool,
         rocket_changed: bool,
         consecutive: bool,
+        before: Option<i32>,
     ) -> io::Result<Samples> {
         let hour = input.hour;
         let complete = input.complete;
@@ -1171,16 +1192,28 @@ impl ProductionAccumulator {
                 complete: complete.countries && complete.links && complete.rocket,
                 rows: input.rocket,
             };
-            match self.result.rocket.fold(&read, self.countries.as_deref())? {
+            let held = (
+                self.result.rocket.reads.len(),
+                self.result.rocket.observations.len(),
+            );
+            let folded = self.result.rocket.fold(&read, self.countries.as_deref())?;
+            let rocket = &self.result.rocket;
+            self.history
+                .rocket_reads
+                .extend_from_slice(rocket.reads.get(held.0..).unwrap_or_default());
+            self.history
+                .rocket_observations
+                .extend_from_slice(rocket.observations.get(held.1..).unwrap_or_default());
+            match folded {
                 RocketFold::Ended => {
                     for holder in self.holders.values_mut() {
-                        holder.end(1);
+                        holder.end(1, before);
                     }
                 }
                 RocketFold::Carried => {
                     let observation = self.result.rocket.observation();
                     for holder in self.holders.values_mut() {
-                        holder.carry(1, observation, consecutive);
+                        holder.carry(1, observation, consecutive, before);
                     }
                 }
                 RocketFold::Read(totals) => samples.rocket = Some(totals),
@@ -1220,7 +1253,7 @@ impl ProductionAccumulator {
                 }
             }
             for holder in self.holders.values_mut() {
-                holder.end(0);
+                holder.end(0, before);
             }
             return Ok(samples);
         }
@@ -1234,18 +1267,23 @@ impl ProductionAccumulator {
             // Carried: the last read still holds, only for the same identity.
             let observation = self.observation;
             for holder in self.holders.values_mut() {
-                holder.carry(0, observation, consecutive);
+                holder.carry(0, observation, consecutive, before);
             }
             return Ok(samples);
         }
         self.result.reads.push(hour);
+        self.history.reads.push(hour);
         // A new observation restarts every count; totals never cross it.
         let mut restart = false;
         if let Some(since) = self.fold.since() {
             match self.result.observations.last() {
-                None => self.result.observations.push(since),
+                None => {
+                    self.result.observations.push(since);
+                    self.history.observations.push(since);
+                }
                 Some(current) if *current != since => {
                     self.result.observations.push(since);
+                    self.history.observations.push(since);
                     self.observation += 1;
                     restart = true;
                 }
@@ -1326,6 +1364,7 @@ impl ProductionAccumulator {
         samples: Samples,
         moved: bool,
         consecutive: bool,
+        before: Option<i32>,
     ) -> io::Result<()> {
         self.spent.advance(hour)?;
         let carried = self.spent_hour.and_then(|at| at.checked_add(1)) == Some(hour);
@@ -1394,6 +1433,7 @@ impl ProductionAccumulator {
         };
         let shared = holders::Shared {
             hour,
+            before,
             consecutive,
             equipment,
             rocket,
@@ -2672,10 +2712,12 @@ impl ProductionAccumulator {
             self.forget_names(at);
         }
         let diagnostics_before = self.diagnostic_counts();
-        let consecutive = self.last_frame.and_then(|last| last.checked_add(1)) == Some(at);
+        let before = self.last_frame;
+        let consecutive = before.and_then(|last| last.checked_add(1)) == Some(at);
         drop(cpu);
         let cpu = ::replay_frame::cpu::scope_phase("production:observe_apply");
-        let samples = self.observe_rows(&hour, equipment_changed, rocket_changed, consecutive)?;
+        let samples =
+            self.observe_rows(&hour, equipment_changed, rocket_changed, consecutive, before)?;
         for (values, origin, restart) in [
             (
                 &self.result.observations,
@@ -2703,7 +2745,7 @@ impl ProductionAccumulator {
         // Where no track or country moved and no reason is dated at this hour, every
         // holder's spending, inventory and row holds as it was.
         let moved = equipment_changed || rocket_changed || !self.steady_at(at);
-        self.observe_holders(at, samples, moved, consecutive)?;
+        self.observe_holders(at, samples, moved, consecutive, before)?;
         drop(cpu);
         let numeric_read = hour.reads.output || hour.reads.rocket;
         let names_moved =
@@ -2731,11 +2773,52 @@ impl ProductionAccumulator {
         if complete_names {
             self.variants
                 .read(at, hour.variants, &mut self.variant_refusals);
+            let Self {
+                variants,
+                tables,
+                history_names,
+                ..
+            } = self;
+            let raw_of = |tables: &mut Tables, id: u64, raw: &RawVariant| (id, tables.raw(raw), raw.token.clone());
+            let read: Vec<(u64, u32, String)> = variants
+                .changed
+                .iter()
+                .filter_map(|&id| variants.catalogue.current(id).map(|raw| raw_of(tables, id, raw)))
+                .collect();
+            let live: Vec<(u64, u32, String)> = if history_names.forgotten() {
+                variants
+                    .catalogue
+                    .versions
+                    .iter()
+                    .filter_map(|(&id, versions)| versions.last()?.raw.as_ref().map(|raw| raw_of(tables, id, raw)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            history_names.read(at, read, live);
             self.names_dirty = false;
             self.variants.known.get_or_insert(at);
             if hour.reads.variants {
                 self.names_hour = Some(at);
             }
+        } else if before.is_none()
+            && named
+            && complete.definitions
+            && let Variants::Read(pending) = &hour.variants
+        {
+            // The branch's first hour holds every definition: its names are known from it, as a
+            // scan of the recording reads them at its first frame.
+            let Self {
+                tables,
+                history_names,
+                ..
+            } = self;
+            let read: Vec<(u64, u32, String)> = pending
+                .built
+                .iter()
+                .map(|(&id, raw)| (id, tables.raw(raw), raw.token.clone()))
+                .collect();
+            history_names.read(at, read, Vec::new());
         }
         let rows_moved = self.present(
             at,
@@ -4006,6 +4089,36 @@ impl ProductionAccumulator {
                 writer.write(&section, head.as_slice())?;
             }
         }
+        let result = &self.result;
+        let range = history::range(
+            history::Flush {
+                batch: &mut self.history,
+                names: &mut self.history_names,
+                classes: &mut self.history_classes,
+                raws: &self.tables.raws,
+            },
+            &history::Counts {
+                last_hour: self.last_frame,
+                unattributed: result.unattributed,
+                inexact: result.inexact,
+                lost: result.lost,
+                unlisted: self.fold.unlisted(),
+                unread: result.unread,
+                unread_reason: result.unread_reason.as_deref(),
+                unnamed: result.unnamed,
+                missed: result.missed,
+                tainted: &result.tainted,
+                spending_tainted: &result.spending_tainted,
+                rocket_unread: result.rocket.unread,
+                rocket_unattributed: result.rocket.unattributed,
+                rocket_inconsistent: result.rocket.inconsistent,
+                refusals: &self.final_counts.refusals,
+            },
+            self.holders
+                .iter_mut()
+                .map(|(tag, holder)| (tag.as_str(), &mut holder.history)),
+        )?;
+        writer.write(&history::section_of(self.branch), range.as_slice())?;
         Ok(())
     }
 

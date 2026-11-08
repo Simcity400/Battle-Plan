@@ -433,12 +433,12 @@ fn intel_coverage_public_query_shape_and_cancellation() {
         prefix: &prefix,
         cancelled: &flag,
     };
-    let cold = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
+    let cold = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap().into_value().unwrap();
     assert!(cold["window"]["series"].as_array().unwrap().is_empty());
     let mut scan = Scan::<IntelCoverageObserver>::default();
     observe(&mut scan, &frame);
     publish(&mut scan, &fixture);
-    let value = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
+    let value = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap().into_value().unwrap();
     assert!(!value["window"]["series"].as_array().unwrap().is_empty());
     let decoded: std::collections::BTreeSet<_> = value
         .as_object()
@@ -449,7 +449,7 @@ fn intel_coverage_public_query_shape_and_cancellation() {
     assert_eq!(decoded, ["window", "warnings"].into_iter().collect());
     flag.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
-        super::query(&query).unwrap_err().kind(),
+        super::query(&query).err().unwrap().kind(),
         std::io::ErrorKind::Interrupted
     );
 }
@@ -887,7 +887,7 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
         prefix: &prefix,
         cancelled: &flag,
     };
-    let cold = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
+    let cold = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap().into_value().unwrap();
     assert_eq!(
         cold,
         serde_json::json!({"window":{"firstHour":100,"lastHour":101,"known":[],"reads":[],"series":[]},"warnings":[]})
@@ -897,7 +897,7 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
         observe(&mut scan, frame);
     }
     publish(&mut scan, &fixture);
-    let value = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap();
+    let value = super::answer(&query, || query.open::<IntelCoverageObserver>()).unwrap().into_value().unwrap();
     assert_eq!(
         value
             .as_object()
@@ -938,7 +938,7 @@ fn intel_coverage_r1_cold_and_public_queries_use_only_the_dated_window_contract(
     }
     flag.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
-        super::query(&query).unwrap_err().kind(),
+        super::query(&query).err().unwrap().kind(),
         io::ErrorKind::Interrupted
     );
 }

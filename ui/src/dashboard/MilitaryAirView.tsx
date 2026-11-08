@@ -40,7 +40,6 @@ import { useParityRows } from './parityRows';
 import './militaryAirLedger.css';
 
 const NO_WARNINGS: string[] = [];
-const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
 const airOperands = (reply: MilitaryAirReply): MilitaryAirReply => ({ ...reply, regions: [], buildings: [], warnings: [] });
 type Item = ButterflyItem & { row: LedgerRow };
 /** A native holder's item id, made once per series rather than each played hour. */
@@ -67,7 +66,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const hour = window?.lastHour ?? 0;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;
   const end = widget.time.mode === 'range' ? hour : track?.branch.lastHour ?? hour;
-  const index = useMemo(() => data ? militaryAirIndex(data, NO_FILTERS) : null, [data]);
+  const index = useMemo(() => data ? militaryAirIndex(data) : null, [data]);
   const rows = useMemo(() => index ? militaryAirAt(index, from, hour) : [], [index, from, hour]);
   const fallback = selectedTags(widget.countries, track), fallbackKey = JSON.stringify(fallback);
   const lastHour = track?.branch.lastHour ?? hour;
@@ -114,7 +113,7 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
     complete: !!data && !error && (!grouped || !!groups.data), total: selected.rows.length, from, hour,
     rows: selected.rows.map(row => ({ tag: row.tag, identity: row.identity, segment: row.segment,
       dealt: row.dealt.toString(), taken: row.taken.toString(), complete: row.complete })),
-    countries: data?.countries ?? [], leaves: data?.leaves ?? [], observed: data?.observed ?? [], incomplete: data?.incomplete ?? [],
+    countries: data?.countries ?? [], parts: data?.parts ?? [], observed: data?.observed ?? [], incomplete: data?.incomplete ?? [],
   }));
   const airKey = JSON.stringify([track?.source.id, track?.branch.id, widget.countries, widget.time, from,
     options.regions, options.causes, options.measure, options.view, options.show]);
@@ -143,6 +142,8 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
   const airFollowing = airState.breakdown == null ? pinnedAir && widget.time.mode === 'follow' : airState.follow;
   const [bombingDrill, setDrill] = useState<{ owner: typeof airScope; tag: string; identity: string; dealt: boolean; hour: number | null } | null>(null);
   const drill = bombingDrill?.owner === airScope ? bombingDrill : null;
+  // The drilled country's damage by building and state is in the ledger loaded, as it opens at once.
+  const detail = { data, error, retry };
   const bombingPlaybackHour = usePlaybackHour(runtime.clock, active && !air && !!drill && drill.hour === null);
   const bombingHour = track ? Math.floor(bombingPlaybackHour) + track.axisOffset : null;
   const bombingLive = bombingHour != null && track && bombingHour >= track.branch.firstHour && bombingHour <= track.branch.lastHour ? bombingHour : null;
@@ -267,9 +268,11 @@ export default function MilitaryAirView({ widget, runtime, active, countrySlot =
           contentScale: widget.contentScale, options: { direction: drill.dealt ? 'dealt' : 'taken',
             holder: JSON.stringify([track.source.metadata.campaignKey, track.branch.id, pinnedTag, drill.identity]) } });
       } : undefined} main={main}>
-      {drill && <BombingDrill data={data} runtime={runtime} track={track} tag={drill.tag} identity={drill.identity} from={from} hour={shown} end={end} dealt={drill.dealt} active={active}
-        pickOwner={airPickOwner} onPick={at => { if (active && airPickRef.current === airPickOwner)
-          setDrill(before => before?.owner === airScope ? { ...before, hour: Math.floor(at) } : before); }} />}
+      {drill && (detail.error ? <WidgetState kind="error" failure={detail.error} onRetry={detail.retry} />
+        : !detail.data ? <WidgetState kind="loading" label="Loading bombing damage breakdown…" />
+          : <BombingDrill data={detail.data} runtime={runtime} track={track} tag={drill.tag} identity={drill.identity} from={from} hour={shown} end={end} dealt={drill.dealt} active={active}
+            pickOwner={airPickOwner} onPick={at => { if (active && airPickRef.current === airPickOwner)
+              setDrill(before => before?.owner === airScope ? { ...before, hour: Math.floor(at) } : before); }} />)}
     </DrillHost>
   </div>;
 }

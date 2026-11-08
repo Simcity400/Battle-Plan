@@ -15,8 +15,10 @@ const NO_WARNINGS: string[] = [];
 export default function BombingDamageBreakdownWidget({ widget, runtime, active, countrySlot = null, onDiagnostics }: WidgetProps) {
   const playbackHour = usePlaybackHour(runtime.clock, active && widget.time.mode === 'follow');
   const options = resolveOptions(OPTIONS, widget.options);
-  const { track, data, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active);
+  const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const tag = widget.countries.kind === 'tags' ? widget.countries.tags[0] : defaultCountryTag(track);
+  // The country's damage alone is broken down by building and state.
+  const { data, error, retry } = useMilitaryAirLedger(widget, runtime, 'bombing', active, { metric: 'total' });
   const window = track && resolveWindow(widget, track, runtime.tracks, playbackHour);
   const hour = window?.lastHour ?? 0;
   const from = widget.time.mode === 'range' ? window?.firstHour ?? hour : data?.observed[0]?.firstHour ?? track?.branch.firstHour ?? hour;

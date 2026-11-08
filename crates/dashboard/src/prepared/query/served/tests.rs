@@ -41,7 +41,7 @@ fn check(data: Value, product: &str, name: &str) {
     let lines = vec!["presented".into(), "presented".into(), "kept".into()];
     let old = expected(&data, product, name, lines.clone());
     let answer = Answer::new(
-        &data,
+        Data::Tree(data.clone()),
         content_warning_paths(product, name),
         false,
         &AtomicBool::new(false),
@@ -49,7 +49,20 @@ fn check(data: Value, product: &str, name: &str) {
     .unwrap();
     assert_eq!(*answer.text, serde_json::to_string(&data).unwrap());
     assert_eq!(
-        serve(&answer, lines, refresh),
+        serve(&answer, lines.clone(), refresh),
+        serde_json::to_string(&old).unwrap()
+    );
+    // Written once and scanned, it serves the same reply.
+    let built = Answer::new(
+        Data::Built(Built::of(&data, &AtomicBool::new(false)).unwrap()),
+        content_warning_paths(product, name),
+        false,
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    assert_eq!(*built.text, *answer.text);
+    assert_eq!(
+        serve(&built, lines, refresh),
         serde_json::to_string(&old).unwrap()
     );
 }
@@ -134,7 +147,7 @@ fn non_string_warnings_and_missing_arrays_keep_the_first_list_semantics() {
 fn a_reply_rewrites_only_the_warning_lists_and_copies_the_rest() {
     let data = json!({"warnings":["old"],"rows":(0..100_000).collect::<Vec<_>>()});
     let answer = Answer::new(
-        &data,
+        Data::Tree(data.clone()),
         content_warning_paths("army-size", "army-size"),
         false,
         &AtomicBool::new(false),
@@ -166,13 +179,13 @@ fn served_field_inserts_or_replaces_only_at_root_in_value_key_order() {
         old.as_object_mut()
             .unwrap()
             .insert("served".into(), json!(["fresh"]));
-        let answer = Answer::new(&data, &[&["warnings"]], true, &AtomicBool::new(false)).unwrap();
+        let answer = Answer::new(Data::Tree(data.clone()), &[&["warnings"]], true, &AtomicBool::new(false)).unwrap();
         let mut view = Served::decorate(&answer, vec![], |_| {});
         view.served = Some(json!(["fresh"]).to_string());
         assert_eq!(text(&view), serde_json::to_string(&old).unwrap());
     }
     // Only an object takes the field.
-    let answer = Answer::new(&json!([{"served":1}]), &[], true, &AtomicBool::new(false)).unwrap();
+    let answer = Answer::new(Data::Tree(json!([{"served":1}])), &[], true, &AtomicBool::new(false)).unwrap();
     assert!(answer.marks.served.is_none());
 }
 /// [`expected`] over `paths` rather than a product's.
@@ -213,7 +226,7 @@ fn a_list_below_a_reached_value_that_is_not_one_is_still_served() {
         json!({"outer":null}),
         json!({"outer":{"warnings":null}}),
     ] {
-        let answer = Answer::new(&data, paths, false, &AtomicBool::new(false)).unwrap();
+        let answer = Answer::new(Data::Tree(data.clone()), paths, false, &AtomicBool::new(false)).unwrap();
         assert_eq!(
             serve(&answer, vec!["added".into()], refresh),
             serde_json::to_string(&expected_at(&data, paths, vec!["added".into()])).unwrap()
@@ -224,7 +237,7 @@ fn a_list_below_a_reached_value_that_is_not_one_is_still_served() {
 fn a_key_named_like_the_wildcard_is_only_a_key() {
     let data = json!({"*":{"warnings":["stale: old"]},"items":[{"warnings":["stale: old"]}]});
     let paths: &[&[&str]] = &[&["*", "warnings"], &["items", "*", "warnings"]];
-    let answer = Answer::new(&data, paths, false, &AtomicBool::new(false)).unwrap();
+    let answer = Answer::new(Data::Tree(data.clone()), paths, false, &AtomicBool::new(false)).unwrap();
     assert_eq!(
         serve(&answer, vec![], refresh),
         serde_json::to_string(
@@ -241,7 +254,7 @@ fn refresh_line() -> String {
 #[test]
 fn writing_an_answer_stops_once_its_request_is_cancelled_or_its_text_passes_the_budget() {
     let data = json!({"warnings":[],"rows":[1,2,3]});
-    let error = Answer::new(&data, &[&["warnings"]], false, &AtomicBool::new(true))
+    let error = Answer::new(Data::Tree(data.clone()), &[&["warnings"]], false, &AtomicBool::new(true))
         .err()
         .unwrap();
     assert_eq!(
@@ -249,7 +262,7 @@ fn writing_an_answer_stops_once_its_request_is_cancelled_or_its_text_passes_the_
         check_cancel(&AtomicBool::new(true)).unwrap_err().to_string()
     );
     let long = json!({"warnings":[],"text":"x".repeat(MAX_REPLY_BYTES)});
-    let error = Answer::new(&long, &[&["warnings"]], false, &AtomicBool::new(false))
+    let error = Answer::new(Data::Tree(long.clone()), &[&["warnings"]], false, &AtomicBool::new(false))
         .err()
         .unwrap();
     assert!(error.to_string().contains("budget"), "{error}");

@@ -4,7 +4,7 @@ import { pinPartsRace } from '../charts/race/partsRaceDrill.ts';
 import type { BoundTrack, WidgetSpec } from './model';
 import { airCauseName, ledgerRuns, ledgerScale, ledgerTotals } from './militaryAirLedger.ts';
 import type { LedgerIndex } from './militaryAirLedger';
-import type { MilitaryAirLeaf } from '../generated/dashboard';
+import type { MilitaryAirPart } from '../generated/dashboard';
 
 /** A drawn tag is bound to its native holder at the picked, recorded hour. */
 export function airLossDrillActors(index: LedgerIndex, hour: number, tags: readonly string[]): string[] {
@@ -32,13 +32,14 @@ export function airLossDrillHistory(index: LedgerIndex, identity: string, from: 
     else present.push({ ...span });
   }
   const country = { ...aliases[0].country, present };
-  const causes = new Map<number, MilitaryAirLeaf[]>();
-  for (const leaf of aliases[0].leaves) {
-    const leaves = causes.get(leaf.cause) ?? [];
-    leaves.push(leaf); causes.set(leaf.cause, leaves);
+  const causes = new Map<number, MilitaryAirPart[]>();
+  for (const part of aliases[0].parts) {
+    if (part.cause === null) continue;
+    const parts = causes.get(part.cause) ?? [];
+    parts.push(part); causes.set(part.cause, parts);
   }
-  return [...causes].sort(([a], [b]) => a - b).map(([cause, leaves]) => ({ id: String(cause), cause, label: airCauseName(cause), leaves,
-    runs: ledgerRuns({ country, leaves, points: ledgerTotals(leaves) }, from, end, dealt, ledgerScale('airLosses')) }));
+  return [...causes].sort(([a], [b]) => a - b).map(([cause, parts]) => ({ id: String(cause), cause, label: airCauseName(cause), parts,
+    runs: ledgerRuns({ country, parts, points: ledgerTotals(parts) }, from, end, dealt, ledgerScale('airLosses')) }));
 }
 
 /** A range retains its native-date lower bound; a held moment uses branch offsets. */

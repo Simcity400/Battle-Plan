@@ -112,6 +112,7 @@ fn production_spending_reuses_endpoints_after_two_commits_resume_and_append_with
         grouping: ProducedGrouping::Variant,
         included: Vec::new(),
         refits: false,
+        view: None,
     };
     let produced_oracle = crate::products::equipment_produced::reply(
         &oracle,

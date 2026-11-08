@@ -124,6 +124,26 @@ pub struct MilitaryAirLeaf {
     pub points: Vec<MilitaryAirPoint>,
 }
 
+/// One running total a reply shows: a holder's, or the unattributed, on one side. Air losses
+/// keep each cause, and whether its opponents were recorded; bombing keeps each cause, building
+/// and state, so a holder's breakdown opens from the reply it is in.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct MilitaryAirPart {
+    pub tag: Option<String>,
+    pub identity: Option<String>,
+    pub dealt: bool,
+    pub cause: Option<u32>,
+    /// Air losses: whether the opposite endpoint was resolved for every loss in it.
+    pub opponent_known: Option<bool>,
+    pub building_token: Option<String>,
+    pub building_id: Option<u32>,
+    pub state: Option<u32>,
+    /// Each point is `[hour, readHour, totalRaw]`, as [`MilitaryAirPoint`]: in read order.
+    #[ts(type = "Array<[number, number, string]>")]
+    pub points: Vec<(i32, i32, String)>,
+}
+
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MilitaryAirName {
@@ -143,7 +163,7 @@ pub struct MilitaryAirReply {
     /// Reads containing a caller whose membership in aircraft bombing is unknown.
     pub incomplete: Vec<HourSpan>,
     pub countries: Vec<MilitaryAirCountry>,
-    pub leaves: Vec<MilitaryAirLeaf>,
+    pub parts: Vec<MilitaryAirPart>,
     pub regions: Vec<MilitaryAirName>,
     pub buildings: Vec<MilitaryAirName>,
     pub warnings: Vec<String>,
@@ -487,86 +507,9 @@ impl Scan {
             MilitaryAirFamily::AirLosses => &self.air,
             MilitaryAirFamily::Bombing => &self.bombing,
         };
-        let selected_leaves: Vec<_> = leaves(family, params.from_hour)?
-            .into_iter()
-            .filter(|leaf| {
-                (params.regions.is_empty()
-                    || leaf
-                        .region
-                        .is_some_and(|region| params.regions.contains(&region)))
-                    && (params.causes.is_empty() || params.causes.contains(&leaf.cause))
-            })
-            .collect();
-        let membership = params
-            .top
-            .as_ref()
-            .map(|top| {
-                ranked_membership(
-                    &family.countries,
-                    &selected_leaves,
-                    params.from_hour.unwrap_or_else(|| {
-                        family
-                            .observed
-                            .first()
-                            .map_or(self.first, |span| span.first_hour)
-                    }),
-                    top,
-                    cancelled,
-                )
-            })
-            .transpose()?;
-        let mut warnings: Vec<_> = family
-            .warnings
-            .iter()
-            .map(|(reason, count)| format!("{count} events: {reason}"))
-            .collect();
-        let (regions, buildings) = names(source, context, family, &mut warnings);
-        let countries = family
-            .countries
-            .iter()
-            .map(|((tag, identity), present)| {
-                let selected = membership
-                    .as_ref()
-                    .map(|membership| {
-                        let mut selected = Vec::new();
-                        ranking::for_each_piece(
-                            present,
-                            membership.get(tag).map_or(&[], Vec::as_slice),
-                            |span| (span.first_hour, span.last_hour),
-                            cancelled,
-                            |_, first_hour, last_hour| {
-                                selected.push(HourSpan {
-                                    first_hour,
-                                    last_hour,
-                                });
-                                Ok(())
-                            },
-                        )?;
-                        Ok::<_, io::Error>(selected)
-                    })
-                    .transpose()?;
-                Ok(MilitaryAirCountry {
-                    tag: tag.clone(),
-                    identity: identity.clone(),
-                    present: present.clone(),
-                    membership: selected,
-                })
-            })
-            .collect::<io::Result<Vec<_>>>()?;
-        let reply = MilitaryAirReply {
-            family: params.family,
-            first_hour: self.first,
-            last_hour: self.last,
-            available: family.available,
-            observed: family.observed.clone(),
-            incomplete: family.incomplete.clone(),
-            countries,
-            leaves: selected_leaves,
-            regions,
-            buildings,
-            warnings,
-        };
-        check_cancel(cancelled)?;
+        let reply =
+            family_reply(family, (self.first, self.last), source, params, context, cancelled)?;
+        // The product route bounds the reply as the served one does ([`built`]).
         dashboard_base::products::check_reply_budget(&reply).map_err(|_| {
             dashboard_core::invalid(
                 "Military air ledger reply exceeds transport budget; nothing was truncated",
@@ -574,6 +517,115 @@ impl Scan {
         })?;
         Ok(reply)
     }
+}
+
+/// `reply` written once, refused in the ledger's own words past the product reply budget.
+fn built(
+    reply: &MilitaryAirReply,
+    cancelled: &AtomicBool,
+) -> io::Result<dashboard_base::products::built::Built> {
+    dashboard_base::products::built::Built::within(
+        reply,
+        cancelled,
+        dashboard_base::products::MAX_PRODUCT_REPLY_BYTES,
+        || {
+            dashboard_core::invalid(
+                "Military air ledger reply exceeds transport budget; nothing was truncated",
+            )
+        },
+    )
+}
+
+/// `params`' reply from the census of its family, `family`, on a branch recorded over `first..=last`.
+fn family_reply(
+    family: &FamilyScan,
+    (first, last): (i32, i32),
+    source: &Source,
+    params: &MilitaryAirParams,
+    context: &LoadContext,
+    cancelled: &AtomicBool,
+) -> io::Result<MilitaryAirReply> {
+    let selected_leaves: Vec<_> = leaves(family, params.from_hour)?
+        .into_iter()
+        .filter(|leaf| {
+            (params.regions.is_empty()
+                || leaf
+                    .region
+                    .is_some_and(|region| params.regions.contains(&region)))
+                && (params.causes.is_empty() || params.causes.contains(&leaf.cause))
+        })
+        .collect();
+    let membership = params
+        .top
+        .as_ref()
+        .map(|top| {
+            ranked_membership(
+                &family.countries,
+                &selected_leaves,
+                params.from_hour.unwrap_or_else(|| {
+                    family
+                        .observed
+                        .first()
+                        .map_or(first, |span| span.first_hour)
+                }),
+                top,
+                cancelled,
+            )
+        })
+        .transpose()?;
+    let mut warnings: Vec<_> = family
+        .warnings
+        .iter()
+        .map(|(reason, count)| format!("{count} events: {reason}"))
+        .collect();
+    let (regions, buildings) = names(source, context, family, &mut warnings);
+    let countries = family
+        .countries
+        .iter()
+        .map(|((tag, identity), present)| {
+            let selected = membership
+                .as_ref()
+                .map(|membership| {
+                    let mut selected = Vec::new();
+                    ranking::for_each_piece(
+                        present,
+                        membership.get(tag).map_or(&[], Vec::as_slice),
+                        |span| (span.first_hour, span.last_hour),
+                        cancelled,
+                        |_, first_hour, last_hour| {
+                            selected.push(HourSpan {
+                                first_hour,
+                                last_hour,
+                            });
+                            Ok(())
+                        },
+                    )?;
+                    Ok::<_, io::Error>(selected)
+                })
+                .transpose()?;
+            Ok(MilitaryAirCountry {
+                tag: tag.clone(),
+                identity: identity.clone(),
+                present: present.clone(),
+                membership: selected,
+            })
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    let reply = MilitaryAirReply {
+        family: params.family,
+        first_hour: first,
+        last_hour: last,
+        available: family.available,
+        observed: family.observed.clone(),
+        incomplete: family.incomplete.clone(),
+        countries,
+        parts: parts(&selected_leaves, params)?,
+        regions,
+        buildings,
+        warnings,
+    };
+    check_cancel(cancelled)?;
+    Ok(reply)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -637,6 +689,58 @@ fn scanned(source: &Source, branch: u64, cancelled: &AtomicBool) -> io::Result<A
     state.insert(0, (branch, Arc::clone(&scan)));
     state.truncate(2); // Retained branches, never a recording/data count limit.
     Ok(scan)
+}
+
+/// `leaves` as the parts a reply shows ([`MilitaryAirPart`]): each part's points are its leaves'
+/// increments summed at each (read, native) hour and run on, so every total read from them is
+/// the sum of the leaves'.
+fn parts(leaves: &[MilitaryAirLeaf], params: &MilitaryAirParams) -> io::Result<Vec<MilitaryAirPart>> {
+    let air = params.family == MilitaryAirFamily::AirLosses;
+    let mut grouped = BTreeMap::<MilitaryAirPart, BTreeMap<(i32, i32), i128>>::new();
+    for leaf in leaves {
+        let detail = !air;
+        let part = MilitaryAirPart {
+            tag: leaf.tag.clone(),
+            identity: leaf.identity.clone(),
+            dealt: leaf.dealt,
+            cause: (air || detail).then_some(leaf.cause),
+            opponent_known: air.then_some(leaf.opponent.is_some()),
+            building_token: detail.then(|| leaf.building_token.clone()).flatten(),
+            building_id: detail.then_some(leaf.building_id).flatten(),
+            state: detail.then_some(leaf.state).flatten(),
+            points: Vec::new(),
+        };
+        let deltas = grouped.entry(part).or_default();
+        let mut before = 0_i128;
+        for point in &leaf.points {
+            let total: i128 = point
+                .total_raw
+                .parse()
+                .map_err(|_| dashboard_core::invalid("military air total is not exact"))?;
+            let delta = deltas.entry((point.read_hour, point.hour)).or_default();
+            *delta = total
+                .checked_sub(before)
+                .and_then(|step| delta.checked_add(step))
+                .ok_or_else(|| dashboard_core::invalid("military air prefix sum overflow"))?;
+            before = total;
+        }
+    }
+    grouped
+        .into_iter()
+        .map(|(mut part, deltas)| {
+            let mut total = 0_i128;
+            part.points = deltas
+                .into_iter()
+                .map(|((read, hour), delta)| {
+                    total = total.checked_add(delta).ok_or_else(|| {
+                        dashboard_core::invalid("military air prefix sum overflow")
+                    })?;
+                    Ok((hour, read, total.to_string()))
+                })
+                .collect::<io::Result<_>>()?;
+            Ok(part)
+        })
+        .collect()
 }
 
 fn leaves(scan: &FamilyScan, from_hour: Option<i32>) -> io::Result<Vec<MilitaryAirLeaf>> {
@@ -953,7 +1057,7 @@ impl Product for MilitaryAirLedger {
             MilitaryAirMetric::decl(),
             MilitaryAirTop::decl(),
             MilitaryAirCountry::decl(),
-            MilitaryAirLeaf::decl(),
+            MilitaryAirPart::decl(),
             MilitaryAirName::decl(),
             MilitaryAirReply::decl(),
         ]

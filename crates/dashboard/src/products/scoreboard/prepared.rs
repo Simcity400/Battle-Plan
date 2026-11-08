@@ -9,7 +9,7 @@ use dashboard_base::prepared::{engine, published};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    sync::PoisonError,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -208,6 +208,7 @@ fn cells(
             grouping: equipment_produced::ProducedGrouping::Variant,
             included: Vec::new(),
             refits: false,
+            view: None,
         };
         let mut page = crate::prepared_production::select_at(
             source,
@@ -333,7 +334,7 @@ fn cells(
 /// Each family publication's key reads at the hours the scoreboard asked, with the hours each
 /// reads the same ([`engine::held_at`]): an hour among them is answered without reading again.
 #[derive(Default)]
-struct HeldReads(HashMap<(u64, &'static str), FamilyReads>);
+struct HeldReads(HashMap<(u64, &'static str), Arc<Mutex<FamilyReads>>>);
 
 #[derive(Default)]
 struct FamilyReads {
@@ -358,10 +359,18 @@ fn held_cells<T>(
         &mut dyn FnMut(u64) -> io::Result<Option<i128>>,
     ) -> io::Result<T>,
 ) -> io::Result<T> {
-    let state = source.state::<HeldReads>();
-    // Held while it is read, so the requests asking at once read each key once.
-    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
-    let held = state.0.entry((branch, family)).or_default();
+    let slot = Arc::clone(
+        source
+            .state::<HeldReads>()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .entry((branch, family))
+            .or_default(),
+    );
+    // Held while it is read, so the requests asking one family at once read each key once.
+    let mut held = slot.lock().unwrap_or_else(PoisonError::into_inner);
+    let held = &mut *held;
     let stamp = (opened.stamp(), opened.through());
     if held.stamp != Some(stamp) {
         held.stamp = Some(stamp);

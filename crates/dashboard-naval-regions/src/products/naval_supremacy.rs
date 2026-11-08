@@ -2,6 +2,7 @@
 //! viewer-by-region cube. Reply names are `<regionId>|<measure>`, with measure
 //! control, friendly, enemy, share, shareNum, shareDen or own. Control and explanatory
 //! share have independent operands; raw current survives either refusal.
+use dashboard_base::products::built::Built;
 use crate::{
     operands,
     shared::{self, Choice, Labels},
@@ -723,7 +724,7 @@ pub(crate) fn project(
     result
 }
 /// The reply to `q` from the family's native publication.
-pub fn query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+pub fn query(q: &Query<'_>) -> io::Result<Built> {
     reply(q, sweep, || q.open_native::<NavalSupremacyObserver>())
 }
 
@@ -958,7 +959,7 @@ pub(crate) fn sweep(
 
 /// The reply to `q` from the walk's pages.
 #[cfg(test)]
-pub(crate) fn row_query(q: &Query<'_>) -> io::Result<serde_json::Value> {
+pub(crate) fn row_query(q: &Query<'_>) -> io::Result<Built> {
     reply(q, sweep, || q.open::<NavalSupremacyObserver>())
 }
 
@@ -967,7 +968,7 @@ pub(crate) fn reply<'q>(
     q: &'q Query<'_>,
     walk: Walk,
     open: impl FnOnce() -> io::Result<Option<Opened<'q, NavalSupremacyObserver>>>,
-) -> io::Result<serde_json::Value> {
+) -> io::Result<Built> {
     let p = shared::params::<NavalSupremacy>(q)?;
     let (first, last) = q.window()?;
     let labels = shared::labels(q);

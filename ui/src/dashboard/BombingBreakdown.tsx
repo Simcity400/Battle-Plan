@@ -18,12 +18,10 @@ import { useCountryLabelsAt } from './countryFlagsAt';
 import DatedCountryChip from './DatedCountryChip';
 import { validatePlaceNamesReply } from './placeNamesData';
 import { contentTitle, contentTitleHint } from './contentTitles';
-import { leafAmount, ledgerComplete, ledgerCountryAt, ledgerFormat, ledgerScale, militaryAirIndex } from './militaryAirLedger';
-
-const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
+import { ledgerComplete, ledgerCountryAt, ledgerFormat, ledgerScale, militaryAirIndex, partAmount } from './militaryAirLedger';
 const TEXT: SunburstText = { format: (_value, exact) => exact == null ? 'Not recorded' : ledgerFormat(exact, 'bombing'), unit: 'building levels', valueLabel: 'Damage', countLabel: 'Locations' };
 
-/** The same building → dated-state projection serves the separate widget and drill. */
+/** The same building → dated-state projection serves the separate widget and drill, from a reply breaking the holder down by building and state. */
 export default function BombingBreakdown({ data, runtime, track, tag, identity, countrySlot, headerSelection, from, hour, end, dealt, options, active }: {
   data: MilitaryAirReply; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity?: string; from: number; hour: number; end: number;
   countrySlot?: HTMLElement | null; headerSelection?: { tag: string; identity: string } | null;
@@ -31,7 +29,7 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
 }) {
   const hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Bombing damage breakdown actions');
-  const index = useMemo(() => militaryAirIndex(data, NO_FILTERS), [data]);
+  const index = useMemo(() => militaryAirIndex(data), [data]);
   const row = useMemo(() => ledgerCountryAt(index, tag, from, hour, identity), [index, from, hour, tag, identity]);
   // Without a pinned holder the header names the country shown: the dashboard's or the one chosen.
   const headerRow = countrySlot && row && (!headerSelection || headerSelection.identity === identity
@@ -42,16 +40,16 @@ export default function BombingBreakdown({ data, runtime, track, tag, identity, 
   const labels = useCountryLabelsAt(runtime.client, track, wanted, active && !!countrySlot);
   const header = countrySlot && createPortal(<DatedCountryChip label={headerRow ? labels.labelAt(hour)(headerRow.tag) : null} hour={hour}
     reason={!headerRow ? 'Country unavailable at this time.' : null} />, countrySlot);
-  const leaves = row?.series.leaves.filter(leaf => leaf.dealt === dealt) ?? [];
-  const stateIds = [...new Set(leaves.flatMap(leaf => leaf.state ? [leaf.state] : []))].sort((a, b) => a - b);
+  const parts = row?.series.parts.filter(part => part.dealt === dealt && part.buildingId !== null) ?? [];
+  const stateIds = [...new Set(parts.flatMap(part => part.state ? [part.state] : []))].sort((a, b) => a - b);
   const request = stateIds.length ? { sourceId: track.source.id, revision: track.source.revision, product: 'place-names',
     params: { branchId: track.branch.id, places: [], states: stateIds.map(stateId => ({ stateId, hour })) } } : null;
   const states = useProduct<PlaceNamesReply>(runtime.client, request, active, validatePlaceNamesReply);
   const items = useMemo<SunburstItem[]>(() => {
     const buildings = new Map(data.buildings.map(item => [item.id, item]));
     const names = new Map(states.data?.states.map(item => [item.stateId, item]) ?? []);
-    return (row?.series.leaves ?? []).filter(leaf => leaf.dealt === dealt).map(leaf => {
-      const exact = leafAmount(leaf, from, hour), final = leafAmount(leaf, from, end);
+    return (row?.series.parts ?? []).filter(leaf => leaf.dealt === dealt && leaf.buildingId !== null).map(leaf => {
+      const exact = partAmount(leaf, from, hour), final = partAmount(leaf, from, end);
       const building = leaf.buildingToken == null ? null : buildings.get(leaf.buildingToken);
       const state = leaf.state == null || leaf.state === 0 ? null : names.get(leaf.state);
       const buildingLabel = contentTitle(building?.name, leaf.buildingToken, leaf.buildingToken == null ? 'Building type not recorded' : 'Building name unavailable');

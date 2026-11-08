@@ -1086,8 +1086,12 @@ impl Inner {
     /// unverified choice, cache folder, saved map settings) is still the one it was derived
     /// from; otherwise it is derived again, so the newest configuration always wins. A change
     /// advances the presentation generation, which clients refetch on.
-    pub(super) fn rebind(&self, source: &Source, cancelled: &AtomicBool) -> Result<(), String> {
+    /// Binds `source` to the configuration as it is now. A binding that changed, its first at
+    /// open included, retires what the one before it held and starts the replay's shared setup
+    /// under the new one, off every widget's first ask.
+    pub(super) fn rebind(&self, source: &Arc<Source>, cancelled: &AtomicBool) -> Result<(), String> {
         use crate::presentation::Presentation;
+        let moved = std::cell::Cell::new(false);
         let result = crate::presentation::rebind(
             &self.content,
             cancelled,
@@ -1139,6 +1143,7 @@ impl Inner {
                     .map(|content| (&content.options, content.allow_unverified));
                 if source.bind(bound, identity.unwrap_or_default()) {
                     self.presentation_generation.fetch_add(1, Ordering::AcqRel);
+                    moved.set(true);
                 }
             },
         );
@@ -1146,8 +1151,25 @@ impl Inner {
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
                 Err("Cancelled".into())
             }
-            result => result.map_err(|error| error.to_string()),
+            result => {
+                result.map_err(|error| error.to_string())?;
+                if moved.get() {
+                    self.warm(source);
+                }
+                Ok(())
+            }
         }
+    }
+
+    /// Starts the replay's shared setup under `source`'s binding now, on its own thread.
+    fn warm(&self, source: &Arc<Source>) {
+        let Some(content) = self.content_for(source, crate::source::Work::Recorded) else {
+            return;
+        };
+        let warming = Arc::clone(source);
+        job_priority::spawn(move || {
+            warming.in_scope(|| dashboard_base::content::warm(&warming, &content));
+        });
     }
 
     /// Reads the game's own settings from the user folder configured now into the map settings,

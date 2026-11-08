@@ -1386,6 +1386,36 @@ impl Served {
 
     /// `product`'s reply to `params`, as the app serves it.
     pub fn serve(&self, product: &str, params: &Value) -> Reply {
+        match self.serve_text(product, params) {
+            Ok(text) => match serde_json::from_str::<Value>(&text) {
+                Ok(Value::Object(mut reply)) => {
+                    for echo in ["sourceId", "revision", "product"] {
+                        reply.remove(echo);
+                    }
+                    Reply::Answered(Value::Object(reply))
+                }
+                Ok(_) => Reply::Refused("The reply is not an object".into()),
+                Err(error) => Reply::Refused(format!("The reply is not JSON: {error}")),
+            },
+            Err(refused) => Reply::Refused(refused),
+        }
+    }
+
+    /// `product`'s reply text to `params`, as the app sends it; why not, when refused.
+    /// The replay's shared setup, as the service starts it when a replay opens.
+    pub fn warm(&self) {
+        if let Some(content) = &self.content {
+            self.source
+                .in_scope(|| dashboard_base::content::warm(&self.source, content));
+        }
+    }
+
+    pub fn serve_text(&self, product: &str, params: &Value) -> Result<String, String> {
+        self.serve_routed(product, params, false)
+    }
+
+    /// [`Self::serve_text`], through the product's own route wherever it has one when `own`.
+    pub fn serve_routed(&self, product: &str, params: &Value, own: bool) -> Result<String, String> {
         let request = ProductRequest {
             source_id: SOURCE.into(),
             revision: self.source.key().revision.clone(),
@@ -1394,7 +1424,8 @@ impl Served {
         };
         let cancelled = AtomicBool::new(false);
         let _scope = replay_frame::cpu::scope_named("query", product);
-        let routed = crate::products::find(product).filter(|_| !super::query::answers(product));
+        let routed =
+            crate::products::find(product).filter(|_| own || !super::query::answers(product));
         // The recording's own executable tables answer it, never the installed game's.
         let answered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.source.in_scope(|| match routed {
@@ -1412,18 +1443,9 @@ impl Served {
             })
         }));
         match answered {
-            Ok(Ok(text)) => match serde_json::from_str::<Value>(&text) {
-                Ok(Value::Object(mut reply)) => {
-                    for echo in ["sourceId", "revision", "product"] {
-                        reply.remove(echo);
-                    }
-                    Reply::Answered(Value::Object(reply))
-                }
-                Ok(_) => Reply::Refused("The reply is not an object".into()),
-                Err(error) => Reply::Refused(format!("The reply is not JSON: {error}")),
-            },
-            Ok(Err(error)) => Reply::Refused(error.to_string()),
-            Err(panic) => Reply::Refused(format!(
+            Ok(Ok(text)) => Ok(text),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(panic) => Err(format!(
                 "The query panicked: {}",
                 panic
                     .downcast_ref::<&str>()

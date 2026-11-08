@@ -17,37 +17,35 @@ import { contentTitle } from './contentTitles';
 import type { WidgetRuntime } from './definitions';
 import type { BoundTrack } from './model';
 import { usePlaybackMotion } from './playback';
-import { BOMBING_GAP_NOTE, leafAmount, ledgerCountryAt, ledgerFormat, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex } from './militaryAirLedger';
-import type { MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
+import { BOMBING_GAP_NOTE, ledgerCountryAt, ledgerFormat, ledgerRuns, ledgerScale, ledgerShare, ledgerTotals, militaryAirIndex, partAmount } from './militaryAirLedger';
+import type { MilitaryAirPart, MilitaryAirReply } from '../generated/dashboard';
 
-const NO_FILTERS = { regions: new Set<number>(), causes: new Set<number>() };
-
-/** The approved parts-and-history drill, sharing the sunburst widget's event scan. */
+/** The approved parts-and-history drill, from a reply breaking the holder's damage down by building and state. */
 export default function BombingDrill({ data, runtime, track, tag, identity, from, hour, end, dealt, active, onPick, pickOwner }: {
   data: MilitaryAirReply; runtime: WidgetRuntime; track: BoundTrack; tag: string; identity: string; from: number; hour: number; end: number;
   dealt: boolean; active: boolean; onPick: (hour: number) => void; pickOwner: unknown;
 }) {
   const tokens = useChartTokens(), hoursPerSecond = usePlaybackMotion(runtime.clock);
   const menu = useContextMenu('Bombing damage history actions');
-  const index = useMemo(() => militaryAirIndex(data, NO_FILTERS), [data]);
+  const index = useMemo(() => militaryAirIndex(data), [data]);
   const row = hour >= from && hour <= end ? ledgerCountryAt(index, tag, from, hour, identity) : null;
   const model = useMemo(() => {
     const aliases = index.series.filter(series => series.country.identity === identity);
     if (!aliases.length) return [];
     const present = aliases.flatMap(series => series.country.present).sort((a, b) => a.firstHour - b.firstHour);
     const country = { ...aliases[0].country, present };
-    const groups = new Map<string, MilitaryAirLeaf[]>();
-    for (const leaf of aliases[0].leaves) {
-      if (leaf.dealt !== dealt) continue;
-      const key = leaf.buildingToken ?? String(leaf.buildingId), leaves = groups.get(key) ?? [];
-      leaves.push(leaf); groups.set(key, leaves);
+    const groups = new Map<string, MilitaryAirPart[]>();
+    for (const part of aliases[0].parts) {
+      if (part.dealt !== dealt || part.buildingId === null) continue;
+      const key = part.buildingToken ?? String(part.buildingId), parts = groups.get(key) ?? [];
+      parts.push(part); groups.set(key, parts);
     }
     const named = new Map(data.buildings.map(item => [item.id, contentTitle(item.name, item.id, 'Building name unavailable')]));
-    const groupsByFinal = [...groups].map(([key, leaves]) => ({ key, leaves, final: leaves.reduce((sum, leaf) => sum + leafAmount(leaf, from, end), 0n) }))
+    const groupsByFinal = [...groups].map(([key, parts]) => ({ key, parts, final: parts.reduce((sum, part) => sum + partAmount(part, from, end), 0n) }))
       .sort((a, b) => a.final === b.final ? a.key < b.key ? -1 : a.key > b.key ? 1 : 0 : a.final > b.final ? -1 : 1);
     const styles = lineStyles(groupsByFinal.map(({ key }, preferred) => ({ key, preferred })), tokens.categories);
-    return groupsByFinal.map(({ key, leaves }) => ({ key, leaves, label: named.get(key) ?? 'Building type not recorded', ...styles.get(key)!,
-      runs: ledgerRuns({ country, leaves, points: ledgerTotals(leaves) }, from, end, dealt, ledgerScale('bombing')) }));
+    return groupsByFinal.map(({ key, parts }) => ({ key, parts, label: named.get(key) ?? 'Building type not recorded', ...styles.get(key)!,
+      runs: ledgerRuns({ country, parts, points: ledgerTotals(parts) }, from, end, dealt, ledgerScale('bombing')) }));
   }, [data, index, identity, dealt, from, end, tokens]);
   const selectionOwner = useMemo(() => ({ pickOwner, client: runtime.client, identity, dealt }), [pickOwner, runtime.client, identity, dealt]);
   const ownerRef = useRef({ owner: selectionOwner, active });
@@ -73,7 +71,7 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
     if (at >= from && at <= end) onPick(at);
   };
   const parts = model.map(part => {
-    const raw = row ? part.leaves.reduce((sum, leaf) => sum + leafAmount(leaf, from, hour), 0n) : null;
+    const raw = row ? part.parts.reduce((sum, item) => sum + partAmount(item, from, hour), 0n) : null;
     return { id: part.key, label: part.label, color: part.color, raw, value: raw == null ? null : Number(raw) / ledgerScale('bombing'),
       text: ledgerFormat(raw, 'bombing'), shareText: raw == null || total == null ? undefined : ledgerShare(raw, total) };
   });
@@ -100,7 +98,7 @@ export default function BombingDrill({ data, runtime, track, tag, identity, from
         const current = ledgerCountryAt(index, tag, from, at, identity);
         if (at < from || at > until || !current) return null;
         return { title: formatDateTime(at), rows: shown.map(part => ({ label: part.label, swatch: part.color,
-          value: runAt(part.runs, at) ? ledgerFormat(part.leaves.reduce((sum, leaf) => sum + leafAmount(leaf, from, at), 0n), 'bombing') : 'Not recorded' })),
+          value: runAt(part.runs, at) ? ledgerFormat(part.parts.reduce((sum, item) => sum + partAmount(item, from, at), 0n), 'bombing') : 'Not recorded' })),
           note: current.complete ? undefined : BOMBING_GAP_NOTE };
       }} />
     <p className="chart-line-key">Areas show positive amounts; correction rows and totals retain their signs. {row?.complete ? '' : BOMBING_GAP_NOTE}</p>

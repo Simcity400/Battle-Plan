@@ -1,3 +1,4 @@
+use dashboard_base::products::built::Built;
 use crate::products::{
     air_missions::{self, AirMissions, AirMissionsObserver},
     air_statistics::{self, AirStatistics},
@@ -114,7 +115,7 @@ fn replied(
     frames: Vec<DecodedFrame>,
     params: Value,
     through: Option<i32>,
-    reply: impl FnOnce(&Query<'_>) -> std::io::Result<Value>,
+    reply: impl FnOnce(&Query<'_>) -> std::io::Result<Built>,
 ) -> Value {
     let source = source(frames);
     let bounds = &source.metadata().unwrap().branches[0];
@@ -140,7 +141,7 @@ fn replied(
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    reply(&query).unwrap()
+    reply(&query).unwrap().into_value().unwrap()
 }
 fn answer(
     fixture: &Fixture,
@@ -321,9 +322,9 @@ fn reached_wings_use_shared_frame_cache_preserve_handles_order_and_counted_refus
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let first = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
+    let first = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap().into_value().unwrap();
     let reads = dashboard_base::prepared::query::frames::reads(&source);
-    let second = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
+    let second = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap().into_value().unwrap();
     assert_eq!(
         dashboard_base::prepared::query::frames::reads(&source),
         reads
@@ -539,7 +540,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let stats = air_statistics::answer(&query, Some(&stored.open())).unwrap();
+    let stats = air_statistics::answer(&query, Some(&stored.open())).unwrap().into_value().unwrap();
     assert_eq!(stats["regions"][0]["name"], "Authored region");
     assert_eq!(stats["channels"][2]["ours"], "Authored channel 3");
     assert_eq!(stats["channels"][2]["enemy"], "Authored channel 15");
@@ -547,7 +548,7 @@ fn mod_replace_path_regions_and_localisation_name_both_products_without_changing
     assert_eq!(runs(&stats, "GER@7|3|c2"), &json!([[100, 101, "37", true]]));
     let params = json!({"branchId":"1","tag":"GER"});
     query.params = &params;
-    let missions = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
+    let missions = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap().into_value().unwrap();
     assert_eq!(missions["missions"][0]["name"], "Authored mission");
     // Mission bit 0 is the strip's first frame, through the mod's GUI.
     assert_eq!(
@@ -739,7 +740,7 @@ fn reached_wing_efficiency_matches_viewer_for_sorties_overrides_and_missing_fuel
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    let reply = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap();
+    let reply = air_missions::answer(&query, &|| query.open::<AirMissionsObserver>()).unwrap().into_value().unwrap();
     for (wing, expected) in reply["wings"].as_array().unwrap().iter().zip(expected) {
         match expected {
             Ok(value) => assert_eq!(wing["efficiency"], value.to_string()),

@@ -170,13 +170,17 @@ fn branch_sums(
     cancelled: &AtomicBool,
 ) -> io::Result<Arc<Branch>> {
     let publication = (groups, measured);
+    // Each measure and membership keeps its own latest sums: a dashboard's faction widgets of
+    // different measures do not displace each other's.
+    let lineage = (&params.source, params.membership);
     crate::prepared::query::observations::scope(source, "faction-totals:branch", Some(key))
-        .get_entry(
+        .continue_entry(
             branch,
-            &(&params.source, params.membership),
+            &lineage,
             &publication,
+            &lineage,
             cancelled,
-            || {
+            |_| {
                 let window = HourSpan {
                     first_hour: i32::MIN + 1,
                     last_hour: history.last_hour,

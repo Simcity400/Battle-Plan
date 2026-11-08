@@ -1065,6 +1065,45 @@ thread_local! {
     static SCOPES: std::cell::RefCell<Vec<Session>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The sessions installed on the thread that took them, to read through on another: a query's
+/// workers read its one publication as it does.
+#[derive(Clone)]
+pub struct Scopes(Vec<Session>);
+
+impl Scopes {
+    /// This thread's installed sessions.
+    pub fn current() -> Self {
+        Self(SCOPES.with(|scopes| scopes.borrow().clone()))
+    }
+
+    /// Installs them on this thread until the guard drops.
+    pub fn enter(&self) -> EnteredScopes {
+        let count = self.0.len();
+        SCOPES.with(|scopes| scopes.borrow_mut().extend(self.0.iter().cloned()));
+        EnteredScopes {
+            count,
+            _thread: std::marker::PhantomData,
+        }
+    }
+}
+
+/// Keeps [`Scopes::enter`]'s sessions installed on this thread until dropped.
+#[must_use]
+pub struct EnteredScopes {
+    count: usize,
+    _thread: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for EnteredScopes {
+    fn drop(&mut self) {
+        SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+            let kept = scopes.len().saturating_sub(self.count);
+            scopes.truncate(kept);
+        });
+    }
+}
+
 /// The identity [`lookup`] opens `section`'s range `range` under, without opening its pack.
 fn listed(catalog: &Catalog, section: &str, range: u64) -> io::Result<Option<RangeId>> {
     let Some(index) = catalog

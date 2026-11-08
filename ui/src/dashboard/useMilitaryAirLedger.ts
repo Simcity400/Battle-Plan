@@ -21,6 +21,7 @@ export function useAirLossChoices(widget: WidgetSpec, runtime: WidgetRuntime): O
   const { data } = useMilitaryAirLedger(widget, runtime, 'airLosses', true);
   return {
     regions: (data?.regions ?? []).map(region => ({ value: region.id, label: region.name ?? `Region ${region.id} (name not recorded)` })),
-    causes: [...new Set(data?.leaves.map(leaf => leaf.cause) ?? [])].sort((a, b) => a - b).map(cause => ({ value: String(cause), label: airCauseName(cause) })),
+    causes: [...new Set(data?.parts.flatMap(part => part.cause === null ? [] : [part.cause]) ?? [])].sort((a, b) => a - b)
+      .map(cause => ({ value: String(cause), label: airCauseName(cause) })),
   };
 }

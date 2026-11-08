@@ -1170,6 +1170,7 @@ fn params(
         grouping,
         included: included.iter().map(|key| (*key).to_owned()).collect(),
         refits,
+        view: None,
     }
 }
 
@@ -1461,4 +1462,286 @@ fn equipment_produced_validation_still_refuses_both_tags_and_top() {
     )
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
+
+/// One history's samples and changes, as a reply reads them.
+fn history_of(
+    track: &crate::products::equipment::production::TagHistory,
+) -> Value {
+    json!({
+        "hours": track.hours, "lastHours": track.last_hours, "starts": track.starts,
+        "identities": track.identities, "presence": track.presence,
+        "changes": track.changes.iter().map(|(entry, list)| (format!("{entry:?}"), list.iter().map(|(sample, total)| (*sample, total.units.to_string(), total.inexact)).collect::<Vec<_>>())).collect::<BTreeMap<_, _>>(),
+        "costs": track.cost_changes.iter().map(|(entry, list)| (format!("{entry:?}"), list.iter().map(|(sample, cost)| (*sample, cost.raw.to_string(), format!("{:?}", cost.reason), cost.unproven_raw.to_string())).collect::<Vec<_>>())).collect::<BTreeMap<_, _>>(),
+    })
+}
+
+/// The published history reads back as the branch's scan: every tag's samples, the hours each
+/// held, the totals that changed at them, the reads, observations, taints and counts, and every
+/// Equipment produced reply made from it. The campaign has a recording gap, a change of a
+/// country's identity, a lost Rocket coverage, an inexact row and two flushes with a resume.
+#[test]
+fn published_history_reads_as_the_scan() {
+    let flag = AtomicBool::new(false);
+    let prepared = prepare(&campaign(DAYS, 2));
+    let (store, key) = (&prepared.fixture.store, &prepared.fixture.key);
+    let count = store.range_count(key, &history::section_of(1)).unwrap().unwrap();
+    let ranges = history::stored(store, key, 1);
+    let base = history::Base::read(&ranges, count, &flag).unwrap();
+    let all: Vec<String> = base
+        .scanned
+        .tags
+        .keys()
+        .chain(base.scanned.rocket.tags.keys())
+        .cloned()
+        .collect();
+    let history = base.with_whole(&ranges, &all, &flag).unwrap();
+    // Replies read the light scan, the totals rankings count and the tags shown whole.
+    let read = Read {
+        base: &base,
+        ranges: history::stored(store, key, 1),
+        cancelled: &flag,
+    };
+    let scan = &prepared.scanned;
+    for (prepared, scanned) in [
+        (&history.tags, &scan.tags),
+        (&history.rocket.tags, &scan.rocket.tags),
+    ] {
+        assert_eq!(
+            prepared.keys().collect::<Vec<_>>(),
+            scanned.keys().collect::<Vec<_>>()
+        );
+        for (tag, track) in scanned {
+            assert_eq!(history_of(&prepared[tag]), history_of(track), "{tag}");
+        }
+    }
+    assert_eq!(history.reads, scan.reads);
+    assert_eq!(history.observations, scan.observations);
+    assert_eq!(history.tainted, scan.tainted);
+    assert_eq!(history.spending_tainted, scan.spending_tainted);
+    assert_eq!(history.rocket.reads, scan.rocket.reads);
+    assert_eq!(history.rocket.observations, scan.rocket.observations);
+    assert_eq!(
+        crate::products::equipment_produced::recording_warnings(&history),
+        crate::products::equipment_produced::recording_warnings(scan)
+    );
+    let mut compared = 0;
+    for (tags, top) in [
+        (vec!["GER", "ITA", "SOV", "XYZ"], None),
+        (vec!["SOV"], None),
+        (Vec::new(), Some(2)),
+        (Vec::new(), None),
+    ] {
+        for measure in [
+            ProducedMeasure::Total,
+            ProducedMeasure::Day,
+            ProducedMeasure::Week,
+            ProducedMeasure::Month,
+        ] {
+            for count in [ProducedCount::Units, ProducedCount::Ic] {
+                for grouping in [
+                    ProducedGrouping::Type,
+                    ProducedGrouping::Variant,
+                    ProducedGrouping::Domain,
+                ] {
+                    for included in [&[][..], &["infantry_equipment"][..]] {
+                        for refits in [false, true] {
+                            let params = params(&tags, top, measure, count, grouping, included, refits);
+                            let reply = |scanned| {
+                                serde_json::to_value(
+                                    crate::products::equipment_produced::reply(
+                                        scanned,
+                                        &params,
+                                        Default::default(),
+                                        Vec::new(),
+                                        &flag,
+                                    )
+                                    .unwrap(),
+                                )
+                                .unwrap()
+                            };
+                            let expected = reply(scan);
+                            assert_eq!(reply(&history), expected, "{params:?}");
+                            let ranked = serde_json::to_value(
+                                crate::products::equipment_produced::reply_with(
+                                    &base.scanned,
+                                    &params,
+                                    Default::default(),
+                                    Vec::new(),
+                                    &flag,
+                                    Some(&read),
+                                )
+                                .unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(ranked, expected, "light {params:?}");
+                            compared += usize::from(
+                                expected["series"].as_array().is_some_and(|series| !series.is_empty()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(compared > 100, "the replies hold series: {compared}");
+}
+
+/// A published history as a reply reads it beyond its light scan.
+struct Read<'a> {
+    base: &'a history::Base,
+    ranges: history::Stored<'a>,
+    cancelled: &'a AtomicBool,
+}
+
+impl crate::products::equipment_produced::Prepared for Read<'_> {
+    fn counted(
+        &self,
+        plan: &history::CountPlan<'_>,
+    ) -> std::io::Result<(std::collections::BTreeMap<String, history::Counted>, Vec<String>)> {
+        self.base.counted(&self.ranges, plan, self.cancelled)
+    }
+
+    fn light(&self) -> std::io::Result<crate::products::equipment_produced::Histories> {
+        self.base.light(&self.ranges, self.cancelled)
+    }
+
+    fn whole(
+        &self,
+        tags: &[String],
+        light: Option<&crate::products::equipment_produced::Histories>,
+    ) -> std::io::Result<crate::products::equipment_produced::Histories> {
+        self.base.whole(&self.ranges, tags, light, self.cancelled)
+    }
+}
+
+/// A coded column's value at each of `count` samples, as the widget reads it.
+fn decoded(coded: Option<&crate::products::equipment_produced::ProducedCoded>, count: usize) -> Vec<Option<i64>> {
+    let Some(coded) = coded else {
+        return vec![Some(0); count];
+    };
+    let mut sum = 0i64;
+    (0..count)
+        .map(|index| {
+            let at = index.checked_sub(coded.from as usize);
+            if let Some(delta) = at.and_then(|at| coded.deltas.get(at)) {
+                sum += delta;
+            }
+            let unknown = coded
+                .unknown
+                .chunks(2)
+                .any(|range| (range[0] as usize..range[1] as usize).contains(&index));
+            (!unknown).then_some(if at.is_some() { sum } else { 0 })
+        })
+        .collect()
+}
+
+/// A view holds exactly what the chart drew from the hourly reply: a fine view the samples it
+/// shows, and a dense one each line's summary, whose every bucket holds the first, last, least
+/// and greatest known total among the samples in it, with nothing where none is known; its one
+/// sample is the last the hourly reply shows.
+#[test]
+fn a_view_holds_exactly_what_the_chart_drew() {
+    use crate::products::equipment_produced::{EquipmentProducedReply, reply};
+    use crate::series_view::SeriesView;
+    let flag = AtomicBool::new(false);
+    let prepared = prepare(&campaign(DAYS, 2));
+    let scan = &prepared.scanned;
+    let first = *scan.reads.first().unwrap();
+    let last = *scan.reads.last().unwrap() + 100;
+    let answer = |params: &ProducedParams| -> EquipmentProducedReply {
+        reply(scan, params, Default::default(), Vec::new(), &flag).unwrap()
+    };
+    let viewed = |params: &ProducedParams, from: i32, to: i32, width: u32| {
+        answer(&ProducedParams {
+            view: Some(SeriesView {
+                from: f64::from(from),
+                to: f64::from(to),
+                width,
+            }),
+            ..params.clone()
+        })
+    };
+    let mut buckets = 0;
+    for (tags, top) in [(vec!["GER", "ITA", "SOV"], None), (Vec::new(), Some(2))] {
+        for measure in [
+            ProducedMeasure::Total,
+            ProducedMeasure::Day,
+            ProducedMeasure::Week,
+            ProducedMeasure::Month,
+        ] {
+            for count in [ProducedCount::Units, ProducedCount::Ic] {
+                let hourly_params = params(&tags, top, measure, count, ProducedGrouping::Variant, &[], true);
+                let hourly = answer(&hourly_params);
+                let decimals = i32::from(hourly.decimals);
+                let fine = viewed(&hourly_params, first, last, 1_000_000);
+                assert_eq!(fine.series, hourly.series, "{measure:?} {count:?}");
+                let (from, to) = (first + 300, last - 300);
+                let narrow = viewed(&hourly_params, from, to, 1_000_000);
+                for (series, whole) in narrow.series.iter().zip(&hourly.series) {
+                    assert_eq!(series.tag, whole.tag);
+                    let shown: Vec<(i32, i32)> = whole
+                        .first_hours
+                        .iter()
+                        .zip(&whole.last_hours)
+                        .filter(|(first, last)| **last >= from && **first <= to)
+                        .map(|(first, last)| (*first, *last))
+                        .collect();
+                    let got: Vec<(i32, i32)> =
+                        series.first_hours.iter().copied().zip(series.last_hours.iter().copied()).collect();
+                    assert_eq!(got, shown, "{} {measure:?} {count:?}", series.tag);
+                }
+                let width = 7;
+                let dense = viewed(&hourly_params, first, last, width);
+                let bounds = (first, i32::MAX);
+                let (exact, bins) =
+                    crate::prepared::series::summary_bins(bounds, (f64::from(first), f64::from(last), width)).unwrap();
+                assert!(!exact);
+                assert_eq!(dense.series.len(), hourly.series.len());
+                for (series, whole) in dense.series.iter().zip(&hourly.series) {
+                    assert_eq!(series.tag, whole.tag);
+                    assert_eq!(series.membership, whole.membership);
+                    let summary = series.summary.as_ref().expect("a dense line's summary");
+                    let count = whole.first_hours.len();
+                    let totals = decoded(whole.total.as_ref(), count);
+                    // Its samples are the hourly reply's last, and its last with a known total:
+                    // the last alone where none is known.
+                    let last = count.checked_sub(1).expect("a line's samples");
+                    let known = (0..count).rev().find(|&sample| totals[sample].is_some());
+                    let kept: Vec<usize> = known
+                        .into_iter()
+                        .chain([last])
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect();
+                    let at = |hours: &[i32]| kept.iter().map(|&sample| hours[sample]).collect::<Vec<_>>();
+                    assert_eq!(series.first_hours, at(&whole.first_hours));
+                    assert_eq!(series.last_hours, at(&whole.last_hours));
+                    assert_eq!(
+                        decoded(series.total.as_ref(), kept.len()),
+                        kept.iter().map(|&sample| totals[sample]).collect::<Vec<_>>()
+                    );
+                    assert_eq!(summary.buckets.len(), bins.len());
+                    for (bucket, &(bin_first, bin_last)) in summary.buckets.iter().zip(&bins) {
+                        let held: Vec<f64> = (0..count)
+                            .filter(|&sample| whole.last_hours[sample] >= bin_first && whole.first_hours[sample] <= bin_last)
+                            .filter_map(|sample| totals[sample])
+                            .map(|value| value as f64 / 10f64.powi(decimals))
+                            .collect();
+                        match bucket {
+                            None => assert!(held.is_empty(), "{} {bin_first}..{bin_last}", series.tag),
+                            Some(bucket) => {
+                                assert_eq!(bucket.first_value, held[0]);
+                                assert_eq!(bucket.last_value, *held.last().unwrap());
+                                assert_eq!(bucket.min_value, held.iter().copied().fold(f64::INFINITY, f64::min));
+                                assert_eq!(bucket.max_value, held.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                                buckets += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(buckets > 50, "the summaries hold buckets: {buckets}");
 }

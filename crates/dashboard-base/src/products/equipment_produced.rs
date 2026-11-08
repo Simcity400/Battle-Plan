@@ -83,7 +83,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     io,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use ts_rs::TS;
 
@@ -95,9 +98,13 @@ pub use super::MAX_PRODUCT_REPLY_BYTES as MAX_REPLY_BYTES;
 /// JSON of one series and of one key's values besides their numbers.
 const SERIES_OVERHEAD: usize = 128;
 const VALUES_OVERHEAD: usize = 64;
+/// The bytes one summary bucket takes serialised, at most.
+const SUMMARY_BUCKET_BYTES: usize = 160;
 /// The largest magnitude a reply's numbers carry exactly (JavaScript's safe integers).
 const MAX_EXACT: i64 = (1 << 53) - 1;
 const DAY_HOURS: i32 = 24;
+/// Groups whose totals add up by sample in place rather than by sorted changes.
+const DENSE_GROUPS: usize = 2;
 const WEEK_HOURS: i32 = 7 * DAY_HOURS;
 
 /// Which window the values count (spec: per day by default in the widget).
@@ -153,6 +160,11 @@ pub struct ProducedParams {
     pub included: Vec<String>,
     /// Count ships refit lines deliver.
     pub refits: bool,
+    /// The chart's view: only the samples it shows, and where they are denser than its width,
+    /// each line as a summary on the shared chart grid; none, every sample.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub view: Option<SeriesView>,
 }
 
 /// An equipment type any country produced in the branch.
@@ -214,7 +226,7 @@ pub struct ProducedValues {
 
 /// One country's values: sample `i` holds from `first_hours[i]` to
 /// `last_hours[i]`; a key without values is 0 at every sample.
-#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq, TS)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProducedSeries {
     pub tag: String,
@@ -238,6 +250,12 @@ pub struct ProducedSeries {
     /// For a top-N reply, the hours the country was among the top N, in order;
     /// its samples are cut to them. Null for chosen countries.
     pub membership: Option<Vec<HourSpan>>,
+    /// Where the view's samples are denser than its width: the total over the view on the
+    /// shared chart grid, every sample's exact value held in its bucket; the samples are
+    /// then the last one shown and the last with a known total alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub summary: Option<ChartSummary>,
 }
 
 #[derive(Clone, Debug, Serialize, TS)]
@@ -270,6 +288,9 @@ pub struct EquipmentProducedReply {
 }
 
 use super::equipment::production::{Entry, Purpose, VariantType, variant_types_for};
+use crate::prepared_chart::ChartSummary;
+use crate::prepared_production::history::{CountPlan, Counted};
+use crate::series_view::SeriesView;
 pub use super::equipment::production::{Named, ScannedProduced, TagHistory, Total, scan};
 
 /// The hour one calendar month before `hour`: the same day and hour of the month
@@ -530,15 +551,64 @@ fn group_totals(
     group_of: impl Fn(&Entry) -> Option<usize>,
     groups: usize,
 ) -> io::Result<Vec<Vec<(u32, i128, bool)>>> {
-    let mut events: Vec<(u32, usize, &Entry, Total)> = Vec::new();
+    let overflow =
+        || io::Error::other("Produced equipment group exceeds its exact integer range");
+    // A few groups add up by sample in place; more sort their changes by sample.
+    let dense = groups <= DENSE_GROUPS;
+    let last = |lists: &mut dyn Iterator<Item = (&Entry, Option<u32>)>| {
+        lists
+            .filter(|(entry, _)| group_of(entry).is_some())
+            .filter_map(|(_, last)| last)
+            .max()
+    };
+    let samples = if !dense {
+        0
+    } else {
+        match count {
+            ProducedCount::Units => last(
+                &mut track
+                    .changes
+                    .iter()
+                    .map(|(entry, list)| (entry, list.last().map(|change| change.0))),
+            ),
+            ProducedCount::Ic => last(
+                &mut track
+                    .cost_changes
+                    .iter()
+                    .map(|(entry, list)| (entry, list.last().map(|change| change.0))),
+            ),
+        }
+        .map_or(0, |sample| sample as usize + 1)
+    };
+    let mut cells: Vec<(i128, i64, bool)> = if dense {
+        vec![(0, 0, false); groups * samples]
+    } else {
+        Vec::new()
+    };
+    // Each change as (sample, group, units, inexact rows) less its entry's total before it.
+    let mut events: Vec<(u32, usize, i128, i64)> = Vec::new();
+    let mut add = |group: usize, totals: &mut dyn Iterator<Item = (u32, Total)>| {
+        let mut before = Total::default();
+        for (sample, total) in totals {
+            let units = total.units.checked_sub(before.units).ok_or_else(overflow)?;
+            let inexact = i64::from(total.inexact) - i64::from(before.inexact);
+            if dense {
+                let cell = &mut cells[group * samples + sample as usize];
+                cell.0 = cell.0.checked_add(units).ok_or_else(overflow)?;
+                cell.1 += inexact;
+                cell.2 = true;
+            } else {
+                events.push((sample, group, units, inexact));
+            }
+            before = total;
+        }
+        io::Result::Ok(())
+    };
     match count {
         ProducedCount::Units => {
             for (entry, list) in &track.changes {
                 if let Some(group) = group_of(entry) {
-                    events.extend(
-                        list.iter()
-                            .map(|(sample, total)| (*sample, group, entry, *total)),
-                    );
+                    add(group, &mut list.iter().copied())?;
                 }
             }
         }
@@ -547,56 +617,64 @@ fn group_totals(
             // counting then, so it never stands as a partial sum.
             for (entry, list) in &track.cost_changes {
                 if let Some(group) = group_of(entry) {
-                    events.extend(list.iter().map(|(sample, cost)| {
-                        (
-                            *sample,
-                            group,
-                            entry,
-                            Total {
-                                units: cost.raw,
-                                inexact: u32::from(cost.reason.is_some()),
-                            },
-                        )
-                    }));
+                    add(
+                        group,
+                        &mut list.iter().map(|(sample, cost)| {
+                            (
+                                *sample,
+                                Total {
+                                    units: cost.raw,
+                                    inexact: u32::from(cost.reason.is_some()),
+                                },
+                            )
+                        }),
+                    )?;
                 }
             }
         }
     }
-    events.sort_by_key(|(sample, group, _, _)| (*sample, *group));
-    let mut current: HashMap<&Entry, Total> = HashMap::new();
-    let mut sums = vec![(0i128, 0u32); groups];
     let mut out: Vec<Vec<(u32, i128, bool)>> = vec![Vec::new(); groups];
-    let mut index = 0;
-    while index < events.len() {
-        let sample = events[index].0;
-        let mut touched = Vec::new();
-        while index < events.len() && events[index].0 == sample {
-            let (_, group, entry, total) = events[index];
-            let before = current.insert(entry, total).unwrap_or_default();
-            let sum = &mut sums[group];
-            sum.0 = total
-                .units
-                .checked_sub(before.units)
-                .and_then(|delta| sum.0.checked_add(delta))
-                .ok_or_else(|| {
-                    io::Error::other("Produced equipment group exceeds its exact integer range")
-                })?;
-            sum.1 = sum.1 + total.inexact - before.inexact;
-            touched.push(group);
-            index += 1;
+    let mut note = |group: usize, value: (u32, i128, bool)| {
+        let list: &mut Vec<(u32, i128, bool)> = &mut out[group];
+        if list
+            .last()
+            .is_none_or(|last| (last.1, last.2) != (value.1, value.2))
+        {
+            list.push(value);
         }
-        touched.dedup();
-        for group in touched {
-            let (units, inexact) = sums[group];
-            let value = (sample, units, inexact == 0);
-            let list = &mut out[group];
-            if list
-                .last()
-                .is_none_or(|last| (last.1, last.2) != (value.1, value.2))
+    };
+    if dense {
+        for group in 0..groups {
+            let mut sum = (0i128, 0i64);
+            for (sample, cell) in cells[group * samples..(group + 1) * samples]
+                .iter()
+                .enumerate()
             {
-                list.push(value);
+                if !cell.2 {
+                    continue;
+                }
+                sum.0 = sum.0.checked_add(cell.0).ok_or_else(overflow)?;
+                sum.1 += cell.1;
+                note(group, (sample as u32, sum.0, sum.1 == 0));
             }
         }
+        return Ok(out);
+    }
+    events.sort_unstable_by_key(|(sample, group, _, _)| (*sample, *group));
+    let mut sums = vec![(0i128, 0i64); groups];
+    let mut index = 0;
+    while index < events.len() {
+        let (sample, group, _, _) = events[index];
+        let sum = &mut sums[group];
+        while let Some(&(_, _, units, inexact)) = events
+            .get(index)
+            .filter(|event| (event.0, event.1) == (sample, group))
+        {
+            sum.0 = sum.0.checked_add(units).ok_or_else(overflow)?;
+            sum.1 += inexact;
+            index += 1;
+        }
+        note(group, (sample, sum.0, sum.1 == 0));
     }
     Ok(out)
 }
@@ -629,6 +707,8 @@ fn bases(
             Some(*count)
         })
         .collect();
+    // Hours rise, so each target is found on from the last; one behind it is searched for.
+    let mut cursor = 0usize;
     (0..track.hours.len())
         .map(|sample| {
             let identity = track.identities[sample];
@@ -644,8 +724,17 @@ fn bases(
                 ProducedMeasure::Week => track.hours[sample].checked_sub(WEEK_HOURS)?,
                 ProducedMeasure::Month => month_before(track.hours[sample])?,
             };
-            let base = track.hours.binary_search(&target).ok()?;
-            (track.identities[base] == identity && breaks[sample] == breaks[base]).then_some(base)
+            if cursor > 0 && track.hours[cursor - 1] >= target {
+                cursor = track.hours.partition_point(|hour| *hour < target);
+            }
+            while track.hours.get(cursor).is_some_and(|hour| *hour < target) {
+                cursor += 1;
+            }
+            let base = cursor;
+            (track.hours.get(base) == Some(&target)
+                && track.identities[base] == identity
+                && breaks[sample] == breaks[base])
+                .then_some(base)
         })
         .collect()
 }
@@ -702,29 +791,63 @@ fn pieces(track: &TagHistory, bases: &[Option<usize>]) -> Vec<Piece> {
     out
 }
 
-/// Pieces cut to spans: a piece keeps its line break only where it starts itself.
-fn clip(pieces: &[Piece], spans: &[HourSpan]) -> Vec<Piece> {
+/// What a series shows at one of its samples: its hours, whether it starts a line, and the
+/// piece it is.
+#[derive(Clone, Debug)]
+struct Unit {
+    first: i32,
+    last: i32,
+    starts: bool,
+    pieces: std::ops::Range<usize>,
+}
+
+/// The view a request's samples show in, on the shared chart grid from `bounds`, and whether
+/// they are denser than its width.
+#[derive(Clone, Copy)]
+struct Shown {
+    view: SeriesView,
+    bounds: (i32, i32),
+    dense: bool,
+}
+
+/// The units `pieces` show: each piece, those the view shows where there is one.
+fn units(pieces: &[Piece], shown: Option<Shown>) -> Vec<Unit> {
+    pieces
+        .iter()
+        .enumerate()
+        .filter(|(_, piece)| shown.is_none_or(|shown| shown.view.shows(piece.first, piece.last)))
+        .map(|(index, piece)| Unit {
+            first: piece.first,
+            last: piece.last,
+            starts: piece.starts,
+            pieces: index..index + 1,
+        })
+        .collect()
+}
+
+/// Units cut to spans: a unit keeps its line break only where it starts itself.
+fn clip(units: &[Unit], spans: &[HourSpan]) -> Vec<Unit> {
     let mut out = Vec::new();
     let mut start = 0;
     for span in spans {
-        while pieces
+        while units
             .get(start)
-            .is_some_and(|piece| piece.last < span.first_hour)
+            .is_some_and(|unit| unit.last < span.first_hour)
         {
             start += 1;
         }
-        for piece in pieces[start..]
+        for unit in units[start..]
             .iter()
-            .take_while(|piece| piece.first <= span.last_hour)
+            .take_while(|unit| unit.first <= span.last_hour)
         {
-            let first = piece.first.max(span.first_hour);
-            let last = piece.last.min(span.last_hour);
+            let first = unit.first.max(span.first_hour);
+            let last = unit.last.min(span.last_hour);
             if first <= last {
-                out.push(Piece {
+                out.push(Unit {
                     first,
                     last,
-                    starts: piece.starts && first == piece.first,
-                    sample: piece.sample,
+                    starts: unit.starts && first == unit.first,
+                    pieces: unit.pieces.clone(),
                 });
             }
         }
@@ -812,11 +935,12 @@ fn measured(
     counted: impl Fn(&Entry) -> bool,
 ) -> io::Result<Vec<Option<i64>>> {
     let sums = group_totals(track, count, |entry| counted(entry).then_some(0), 1)?;
+    let mut steps = Steps::new(&sums[0]);
     bases
         .iter()
         .enumerate()
         .map(|(sample, base)| match base {
-            Some(base) => measure_at(&sums[0], sample, *base, total),
+            Some(base) => steps.measure(sample, *base, total),
             None => Ok(None),
         })
         .collect()
@@ -849,6 +973,10 @@ struct Grouped {
     /// could hold a left-out unresolved variant (an unresolved type's group is its
     /// recorded token, so its membership is exact).
     includes_resolved: bool,
+    /// By token class of a prepared history: whether its type is counted, and whether it is
+    /// an unresolved type left out that could belong to an included one.
+    class_counted: Vec<bool>,
+    class_outside: Vec<bool>,
 }
 
 impl Grouped {
@@ -881,7 +1009,6 @@ fn grouped(
     named: Named,
     params: &ProducedParams,
 ) -> Grouped {
-    let texts = named.texts;
     let type_name = |key: &str| named.type_name(key);
     let entries: BTreeSet<Entry> =
         scanned
@@ -926,7 +1053,8 @@ fn grouped(
                     name: None,
                     type_key: Some(kind.key.clone()),
                     domain: kind.domain,
-                    names: scanned.variants.names(entry.0, texts),
+                    // Named once the reply keeps it.
+                    names: Vec::new(),
                 },
             ),
             ProducedGrouping::Domain => {
@@ -965,6 +1093,21 @@ fn grouped(
         .map(|(entry, sort)| (*entry, positions[sort]))
         .collect();
     let ambiguous = groups.keys().map(|sort| resolved[sort]).collect();
+    let includes_resolved = types
+        .values()
+        .any(|kind| kind.ordinal.is_some() && params.included.contains(&kind.key));
+    let (class_counted, class_outside) = scanned
+        .class_names
+        .iter()
+        .map(|name| {
+            let (kind, _) = match name.strip_prefix('#').and_then(|handle| handle.parse::<u64>().ok()) {
+                Some(handle) => super::equipment::production::variant_type("", handle, named),
+                None => super::equipment::production::variant_type(name, 0, named),
+            };
+            let counted = params.included.is_empty() || params.included.contains(&kind.key);
+            (counted, includes_resolved && kind.ordinal.is_none() && !counted)
+        })
+        .unzip();
     Grouped {
         keys: groups.into_values().collect(),
         of,
@@ -974,9 +1117,9 @@ fn grouped(
             .filter(|(_, kind)| kind.ordinal.is_none())
             .map(|(variant, _)| *variant)
             .collect(),
-        includes_resolved: types
-            .values()
-            .any(|kind| kind.ordinal.is_some() && params.included.contains(&kind.key)),
+        includes_resolved,
+        class_counted,
+        class_outside,
     }
 }
 
@@ -1023,17 +1166,32 @@ fn included_total(
     params: &ProducedParams,
 ) -> io::Result<Vec<Option<i64>>> {
     let total = params.measure == ProducedMeasure::Total;
-    let sums = measured(track, bases, total, params.count, |entry| {
-        grouped.of.contains_key(entry)
-    })?;
-    let outside = holding(&measured(track, bases, total, params.count, |entry| {
-        grouped.left_out(params, entry)
-    })?);
-    Ok(sums
-        .into_iter()
-        .zip(outside)
-        .map(|(sum, outside)| sum.filter(|_| !outside))
-        .collect())
+    // Counted entries and left-out ones are apart: an entry the grouping holds is not left out.
+    let sums = group_totals(
+        track,
+        params.count,
+        |entry| {
+            if grouped.of.contains_key(entry) {
+                Some(0)
+            } else {
+                grouped.left_out(params, entry).then_some(1)
+            }
+        },
+        2,
+    )?;
+    let (mut counted, mut outside) = (Steps::new(&sums[0]), Steps::new(&sums[1]));
+    bases
+        .iter()
+        .enumerate()
+        .map(|(sample, base)| match base {
+            Some(base) => {
+                let sum = counted.measure(sample, *base, total)?;
+                let outside = outside.measure(sample, *base, total)?;
+                Ok(sum.filter(|_| outside == Some(0)))
+            }
+            None => Ok(None),
+        })
+        .collect()
 }
 
 /// The series a request asks for and the keys they hold.
@@ -1067,12 +1225,15 @@ impl RocketMeasures {
     }
 }
 
+/// `groups`: whether each group's measure is read, or only the totals.
 fn rocket_measures(
     scanned: &ScannedProduced,
+    rockets: &BTreeMap<String, TagHistory>,
     tag: &str,
     equipment: &TagHistory,
     grouped: &Grouped,
     params: &ProducedParams,
+    groups: bool,
 ) -> io::Result<RocketMeasures> {
     let count = equipment.hours.len();
     let mut result = RocketMeasures {
@@ -1083,24 +1244,36 @@ fn rocket_measures(
         totals: Vec::new(),
         total: params.measure == ProducedMeasure::Total,
     };
-    let Some(rocket) = scanned.rocket.tags.get(tag) else {
+    let Some(rocket) = rockets.get(tag) else {
         return Ok(result);
     };
     let bases = bases(rocket, params.measure, &BTreeMap::new());
     let total = params.measure == ProducedMeasure::Total;
     let scope = measured(rocket, &bases, total, params.count, |entry| entry.0 == 0)?;
-    let sums = group_totals(
-        rocket,
-        params.count,
-        |entry| grouped.of.get(entry).copied(),
-        grouped.keys.len(),
-    )?;
-    let unsure = holding(&measured(rocket, &bases, total, params.count, |entry| {
-        grouped.could_belong(params, entry)
-    })?);
+    let (sums, unsure) = if groups {
+        (
+            group_totals(
+                rocket,
+                params.count,
+                |entry| grouped.of.get(entry).copied(),
+                grouped.keys.len(),
+            )?,
+            holding(&measured(rocket, &bases, total, params.count, |entry| {
+                grouped.could_belong(params, entry)
+            })?),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let totals = included_total(rocket, &bases, grouped, params)?;
+    let mut position = 0usize;
     for (sample, &hour) in equipment.hours.iter().enumerate() {
-        let position = rocket.hours.partition_point(|read| *read <= hour);
+        if position > 0 && rocket.hours[position - 1] > hour {
+            position = rocket.hours.partition_point(|read| *read <= hour);
+        }
+        while rocket.hours.get(position).is_some_and(|read| *read <= hour) {
+            position += 1;
+        }
         let Some(index) = position.checked_sub(1) else {
             continue;
         };
@@ -1167,57 +1340,279 @@ fn taints(scanned: &ScannedProduced, count: ProducedCount) -> BTreeMap<u32, i32>
     }
 }
 
+/// The top N's members and the hours each is one, and the coverage of every country's
+/// included total over the hours the view shows.
+pub(crate) struct Ranked {
+    members: BTreeMap<String, Vec<HourSpan>>,
+    coverage: Coverage,
+}
+
+/// [`included_total`] from a prepared history's counted totals.
+fn counted_total(
+    counted: &Counted,
+    bases: &[Option<usize>],
+    total: bool,
+) -> io::Result<Vec<Option<i64>>> {
+    let (mut sums, mut outside) = (Steps::new(&counted.sums), Steps::new(&counted.outside));
+    bases
+        .iter()
+        .enumerate()
+        .map(|(sample, base)| match base {
+            Some(base) => {
+                let sum = sums.measure(sample, *base, total)?;
+                let left = outside.measure(sample, *base, total)?;
+                Ok(sum.filter(|_| left == Some(0)))
+            }
+            None => Ok(None),
+        })
+        .collect()
+}
+
+/// A group's totals read at rising samples, as [`measure_at`] reads them: each change found on
+/// from the last read's.
+struct Steps<'a> {
+    changes: &'a [(u32, i128, bool)],
+    at: usize,
+    base: usize,
+}
+
+impl<'a> Steps<'a> {
+    fn new(changes: &'a [(u32, i128, bool)]) -> Self {
+        Self {
+            changes,
+            at: 0,
+            base: 0,
+        }
+    }
+
+    /// The changes at or before `sample`, found on from `from`.
+    fn seek(changes: &[(u32, i128, bool)], from: usize, sample: usize) -> usize {
+        let mut at = from;
+        if at > 0 && changes[at - 1].0 as usize > sample {
+            at = changes.partition_point(|(change, _, _)| (*change as usize) <= sample);
+        }
+        while changes.get(at).is_some_and(|(change, _, _)| *change as usize <= sample) {
+            at += 1;
+        }
+        at
+    }
+
+    fn total(&self, position: usize) -> (i128, bool) {
+        position
+            .checked_sub(1)
+            .map_or((0, true), |index| (self.changes[index].1, self.changes[index].2))
+    }
+
+    fn measure(&mut self, sample: usize, base: usize, total: bool) -> io::Result<Option<i64>> {
+        self.at = Self::seek(self.changes, self.at, sample);
+        let (units, exact) = self.total(self.at);
+        if !exact {
+            return Ok(None);
+        }
+        let value = if total {
+            units
+        } else {
+            self.base = Self::seek(self.changes, self.base, base);
+            units.checked_sub(self.total(self.base).0).ok_or_else(|| {
+                io::Error::other("Produced equipment range exceeds its exact integer range")
+            })?
+        };
+        i64::try_from(value)
+            .map(Some)
+            .map_err(|_| io::Error::other("Produced equipment units exceed their exact integer range"))
+    }
+}
+
+/// Every country's included total, ranked at every hour. A country ranks only once it has
+/// produced something (user decision, 29 Sep): a zero, like an unknown value, is not ranked.
+#[allow(clippy::too_many_arguments, reason = "A scan's countries or a prepared history's")]
+fn rank(
+    scanned: &ScannedProduced,
+    light: &BTreeMap<String, TagHistory>,
+    rockets: &BTreeMap<String, TagHistory>,
+    grouped: &Grouped,
+    params: &ProducedParams,
+    view: Option<Shown>,
+    prepared: Option<&Ranking>,
+    cancelled: &AtomicBool,
+) -> io::Result<Ranked> {
+    let count = params.top.unwrap_or_default();
+    let shows = |piece: &Piece| view.is_none_or(|shown| shown.view.shows(piece.first, piece.last));
+    let tainted = taints(scanned, params.count);
+    let total = params.measure == ProducedMeasure::Total;
+    let none = Ranking::default();
+    let Ranking { counted, whole } = prepared.unwrap_or(&none);
+    let tags: Vec<(&String, &TagHistory)> = light.iter().collect();
+    let ranked = crate::workers::map(&tags, "equipment produced ranking", |&(tag, track)| {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "Equipment produced request cancelled",
+            ));
+        }
+        let bases = bases(track, params.measure, &tainted);
+        let rocket = rocket_measures(scanned, rockets, tag, track, grouped, params, false)?;
+        let included = match (counted.get(tag), whole.get(tag)) {
+            (Some(counted), _) => counted_total(counted, &bases, total)?,
+            (None, Some(history)) => included_total(history, &bases, grouped, params)?,
+            (None, None) if prepared.is_some() => {
+                return Err(io::Error::other(format!(
+                    "{tag}: the prepared history holds no totals to rank it by"
+                )));
+            }
+            (None, None) => included_total(track, &bases, grouped, params)?,
+        };
+        let totals = included
+            .into_iter()
+            .enumerate()
+            .map(|(sample, e)| add_units(e, rocket.total_at(sample)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let pieces = pieces(track, &bases);
+        let mut spans = Spans::default();
+        for piece in pieces.iter().filter(|piece| shows(piece)) {
+            spans.record(piece, totals[piece.sample].is_some());
+        }
+        // Unranked runs are left out and equal adjacent ones joined: the membership is
+        // the same at every hour, and its spans join adjacent hours.
+        let mut runs: Vec<(i32, i32, Option<i64>)> = Vec::new();
+        for piece in &pieces {
+            let Some(value) = totals[piece.sample].filter(|value| *value != 0) else {
+                continue;
+            };
+            match runs.last_mut() {
+                Some(run) if run.2 == Some(value) && run.1.checked_add(1) == Some(piece.first) => {
+                    run.1 = piece.last;
+                }
+                _ => runs.push((piece.first, piece.last, Some(value))),
+            }
+        }
+        Ok((runs, spans))
+    })?;
+    let mut coverage = Coverage::default();
+    let mut series = BTreeMap::new();
+    for ((tag, _), (runs, spans)) in tags.iter().zip(ranked) {
+        coverage.take(spans);
+        series.insert((*tag).clone(), runs);
+    }
+    let members = top_in_parts(&series, count as usize, &scanned.reads, cancelled)?;
+    Ok(Ranked { members, coverage })
+}
+
+/// [`ranking::top_membership`] of `series` over parts of its hours at once: the membership at
+/// an hour is of the runs holding it alone, and each country's spans join across the parts.
+fn top_in_parts(
+    series: &BTreeMap<String, Vec<(i32, i32, Option<i64>)>>,
+    count: usize,
+    reads: &[i32],
+    cancelled: &AtomicBool,
+) -> io::Result<BTreeMap<String, Vec<HourSpan>>> {
+    let parts = std::thread::available_parallelism().map_or(1, |cores| (cores.get() / 2).max(1));
+    let mut ranges: Vec<(i32, i32)> = Vec::with_capacity(parts);
+    let mut low = i32::MIN;
+    for part in 1..parts {
+        if let Some(&bound) = reads.get(reads.len() * part / parts)
+            && bound > low
+        {
+            ranges.push((low, bound - 1));
+            low = bound;
+        }
+    }
+    ranges.push((low, i32::MAX));
+    let members = crate::workers::map(&ranges, "equipment produced ranking", |&(low, high)| {
+        let part: BTreeMap<String, Vec<(i32, i32, Option<i64>)>> = series
+            .iter()
+            .filter_map(|(tag, runs)| {
+                let start = runs.partition_point(|run| run.1 < low);
+                let clipped: Vec<_> = runs[start..]
+                    .iter()
+                    .take_while(|run| run.0 <= high)
+                    .map(|run| (run.0.max(low), run.1.min(high), run.2))
+                    .collect();
+                (!clipped.is_empty()).then(|| (tag.clone(), clipped))
+            })
+            .collect();
+        ranking::top_membership(&part, count, |run| (run.0, run.1), |run| run.2, cancelled)
+    })?;
+    let mut out: BTreeMap<String, Vec<HourSpan>> = BTreeMap::new();
+    for part in members {
+        for (tag, spans) in part {
+            let list = out.entry(tag).or_default();
+            for span in spans {
+                match list.last_mut() {
+                    Some(last) if last.last_hour.checked_add(1) == Some(span.first_hour) => {
+                        last.last_hour = span.last_hour;
+                    }
+                    _ => list.push(span),
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn requested(
     scanned: &ScannedProduced,
     grouped: &Grouped,
     params: &ProducedParams,
+    view: Option<Shown>,
+    ranked: Option<Ranked>,
+    cancelled: &AtomicBool,
+) -> io::Result<Requested> {
+    requested_in(
+        scanned,
+        &scanned.tags,
+        &scanned.rocket.tags,
+        grouped,
+        params,
+        view,
+        ranked,
+        cancelled,
+    )
+}
+
+/// [`requested`] with the shown countries' histories taken from `tags` and `rockets`.
+#[allow(clippy::too_many_arguments, reason = "A scan's countries or a prepared history's")]
+fn requested_in(
+    scanned: &ScannedProduced,
+    tags: &BTreeMap<String, TagHistory>,
+    rockets: &BTreeMap<String, TagHistory>,
+    grouped: &Grouped,
+    params: &ProducedParams,
+    view: Option<Shown>,
+    ranked: Option<Ranked>,
     cancelled: &AtomicBool,
 ) -> io::Result<Requested> {
     let total = params.measure == ProducedMeasure::Total;
+    let decimals = match params.count {
+        ProducedCount::Units => 0,
+        ProducedCount::Ic => equipment::EQUIPMENT_DECIMALS,
+    };
     let tainted = taints(scanned, params.count);
     let mut coverage = Coverage::default();
     // The countries and the hours each is shown.
     let shown: Vec<(&String, &TagHistory, Option<Vec<HourSpan>>)> = match params.top {
-        Some(count) => {
-            // Every country's included total, ranked at every hour. A country ranks
-            // only once it has produced something (user decision, 29 Sep): a zero, like
-            // an unknown value, is not ranked.
-            let ranked: BTreeMap<String, Vec<(i32, i32, Option<i64>)>> = scanned
-                .tags
-                .iter()
-                .map(|(tag, track)| {
-                    let bases = bases(track, params.measure, &tainted);
-                    let rocket = rocket_measures(scanned, tag, track, grouped, params)?;
-                    let totals = included_total(track, &bases, grouped, params)?
-                        .into_iter()
-                        .enumerate()
-                        .map(|(sample, e)| add_units(e, rocket.total_at(sample)))
-                        .collect::<io::Result<Vec<_>>>()?;
-                    let runs = pieces(track, &bases)
-                        .into_iter()
-                        .map(|piece| {
-                            let value = totals[piece.sample];
-                            coverage.record(&piece, value);
-                            let value = value.filter(|value| *value != 0);
-                            (piece.first, piece.last, value)
-                        })
-                        .collect();
-                    Ok((tag.clone(), runs))
-                })
-                .collect::<io::Result<_>>()?;
-            let members = ranking::top_membership(
-                &ranked,
-                count as usize,
-                |run| (run.0, run.1),
-                |run| run.2,
-                cancelled,
-            )?;
+        Some(_) => {
+            let Ranked {
+                members,
+                coverage: ranked_coverage,
+            } = match ranked {
+                Some(ranked) => ranked,
+                None => rank(
+                    scanned,
+                    &scanned.tags,
+                    &scanned.rocket.tags,
+                    grouped,
+                    params,
+                    view,
+                    None,
+                    cancelled,
+                )?,
+            };
+            coverage = ranked_coverage;
             members
                 .into_iter()
                 .filter_map(|(tag, spans)| {
-                    scanned
-                        .tags
-                        .get_key_value(&tag)
+                    tags.get_key_value(&tag)
                         .map(|(tag, track)| (tag, track, Some(spans)))
                 })
                 .collect()
@@ -1229,18 +1624,18 @@ fn requested(
                 .iter()
                 .filter(|tag| seen.insert(tag.as_str()))
                 .filter_map(|tag| {
-                    scanned
-                        .tags
-                        .get_key_value(tag)
+                    tags.get_key_value(tag)
                         .map(|(tag, track)| (tag, track, None))
                 })
                 .collect()
         }
     };
-    let mut used = vec![false; grouped.keys.len()];
-    let mut series = Vec::with_capacity(shown.len());
-    let mut bytes = 0usize;
-    for (tag, track, membership) in shown {
+    // Each country's series on its own, then the reply's budget over them in order.
+    let built = crate::workers::map(&shown, "equipment produced series", |(tag, track, membership)| {
+        let (tag, track, membership) = (*tag, *track, membership.clone());
+        let mut bytes = 0usize;
+        let mut used: Vec<usize> = Vec::new();
+        let mut spans = Spans::default();
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -1248,62 +1643,142 @@ fn requested(
             ));
         }
         let bases = bases(track, params.measure, &tainted);
-        let all = pieces(track, &bases);
-        let pieces = match &membership {
+        let pieces = pieces(track, &bases);
+        let all = units(&pieces, view);
+        let mut shown = match &membership {
             Some(spans) => clip(&all, spans),
             None => all,
         };
+        let sample_of = |index: usize| pieces[index].sample;
+        let rocket = rocket_measures(scanned, rockets, tag, track, grouped, params, true)?;
+        let totals = included_total(track, &bases, grouped, params)?
+            .into_iter()
+            .enumerate()
+            .map(|(sample, e)| add_units(e, rocket.total_at(sample)))
+            .collect::<io::Result<Vec<_>>>()?;
+        if membership.is_none() {
+            for unit in &shown {
+                spans.record(&pieces[unit.pieces.start], totals[sample_of(unit.pieces.start)].is_some());
+            }
+        }
+        // Denser than the view's width: the total goes as its summary, every known sample's
+        // exact value in its bucket, and the samples sent are the last shown and the last known.
+        // Every value is still worked out and checked at every sample, as were they all sent.
+        let mut kept: Option<Vec<usize>> = None;
+        let summary = match view.filter(|shown| shown.dense) {
+            Some(Shown { view, bounds, .. }) => {
+                let runs: Vec<crate::prepared::series::Run> = shown
+                    .iter()
+                    .filter_map(|unit| {
+                        totals[sample_of(unit.pieces.start)].map(|value| crate::prepared::series::Run {
+                            first_hour: unit.first,
+                            last_hour: unit.last,
+                            value: i128::from(value),
+                            break_before: unit.starts,
+                        })
+                    })
+                    .collect();
+                let mut summary = ChartSummary {
+                    from: view.from,
+                    to: view.to,
+                    width: view.width,
+                    buckets: Vec::new(),
+                    runs: None,
+                    approximate: Vec::new(),
+                };
+                crate::prepared::series::merge_tail(&mut summary, bounds, &runs, None, decimals, None)?;
+                // The last sample shown stays, as every line's latest, and the last with a known
+                // total, where the line's end label sits.
+                let last = shown.len().checked_sub(1);
+                let known = shown
+                    .iter()
+                    .rposition(|unit| totals[sample_of(unit.pieces.start)].is_some());
+                kept = Some(
+                    (0..shown.len())
+                        .filter(|index| Some(*index) == last || Some(*index) == known)
+                        .collect(),
+                );
+                bytes += SUMMARY_BUCKET_BYTES * summary.buckets.iter().flatten().count();
+                Some(summary)
+            }
+            None => None,
+        };
+        // The pieces the shown units hold, each once.
+        let mut held: Vec<usize> = shown.iter().flat_map(|unit| unit.pieces.clone()).collect();
+        held.dedup();
         let groups = group_totals(
             track,
             params.count,
             |entry| grouped.of.get(entry).copied(),
             grouped.keys.len(),
         )?;
-        let rocket = rocket_measures(scanned, tag, track, grouped, params)?;
         // Where a variant of an unresolved type holds anything: every resolved type or
         // arm it could belong to is unknown then.
         let unsure = holding(&measured(track, &bases, total, params.count, |entry| {
             grouped.could_belong(params, entry)
         })?);
-        let any_unsure = pieces.iter().any(|piece| unsure[piece.sample]);
+        let any_unsure = held.iter().any(|&index| unsure[sample_of(index)]);
+        // A group without Rocket sums reads 0 at a sample whose Rocket read is joined, and sure
+        // where the group is ambiguous: known once for every such group.
+        let unjoined = held
+            .iter()
+            .any(|&index| rocket.indices[sample_of(index)].is_none());
+        let unsure_joined = held.iter().any(|&index| {
+            rocket.indices[sample_of(index)].is_some_and(|joined| rocket.unsure[joined])
+        });
+        let rocket_zero = |key: usize| -> io::Result<bool> {
+            if rocket.sums[key].is_empty() {
+                return Ok(!unjoined && !(grouped.ambiguous[key] && unsure_joined));
+            }
+            let mut zero = true;
+            for &index in &held {
+                zero &= rocket.group_at(key, sample_of(index), grouped.ambiguous[key])? == Some(0);
+            }
+            Ok(zero)
+        };
         let mut values = Vec::new();
         for (key, changes) in groups.iter().enumerate() {
             let ambiguous = grouped.ambiguous[key] && any_unsure;
-            if changes.is_empty()
-                && !ambiguous
-                && pieces
-                    .iter()
-                    .map(|piece| rocket.group_at(key, piece.sample, grouped.ambiguous[key]))
-                    .collect::<io::Result<Vec<_>>>()?
-                    .iter()
-                    .all(|value| *value == Some(0))
-            {
+            if changes.is_empty() && !ambiguous && rocket_zero(key)? {
                 continue;
             }
-            let equipment_at: Vec<Option<i64>> = pieces
+            let equipment_of = |index: usize| {
+                let sample = sample_of(index);
+                if ambiguous && unsure[sample] {
+                    return Ok(None);
+                }
+                measure_at(changes, sample, bases[sample].unwrap_or(sample), total)
+            };
+            let equipment_at: Vec<Option<i64>> = shown
                 .iter()
-                .map(|piece| {
-                    if ambiguous && unsure[piece.sample] {
-                        return Ok(None);
-                    }
-                    measure_at(
-                        changes,
-                        piece.sample,
-                        bases[piece.sample].unwrap_or(piece.sample),
-                        total,
-                    )
-                })
+                .map(|unit| equipment_of(unit.pieces.start))
                 .collect::<io::Result<_>>()?;
-            let at: Vec<Option<i64>> = pieces
+            let at: Vec<Option<i64>> = shown
                 .iter()
                 .zip(&equipment_at)
-                .map(|(piece, &value)| {
+                .map(|(unit, &value)| {
                     add_units(
                         value,
-                        rocket.group_at(key, piece.sample, grouped.ambiguous[key])?,
+                        rocket.group_at(key, sample_of(unit.pieces.start), grouped.ambiguous[key])?,
                     )
                 })
                 .collect::<io::Result<_>>()?;
+            let (equipment_at, at) = match &kept {
+                Some(kept) => {
+                    // Refused where every sample's values would be, as were they all sent.
+                    encode(&at)?;
+                    if at
+                        .iter()
+                        .zip(&equipment_at)
+                        .any(|(combined, equipment)| combined.is_none() && equipment.is_some())
+                    {
+                        encode(&equipment_at)?;
+                    }
+                    let pick = |values: &[Option<i64>]| kept.iter().map(|&index| values[index]).collect::<Vec<_>>();
+                    (pick(&equipment_at), pick(&at))
+                }
+                None => (equipment_at, at),
+            };
             let equipment_values = if at
                 .iter()
                 .zip(&equipment_at)
@@ -1316,7 +1791,7 @@ fn requested(
                 None
             };
             if let Some(coded) = encode(&at)? {
-                used[key] = true;
+                used.push(key);
                 bytes += coded_bytes(&coded)
                     + equipment_values
                         .as_ref()
@@ -1328,33 +1803,36 @@ fn requested(
                 });
             }
         }
-        let totals = included_total(track, &bases, grouped, params)?
-            .into_iter()
-            .enumerate()
-            .map(|(sample, e)| add_units(e, rocket.total_at(sample)))
-            .collect::<io::Result<Vec<_>>>()?;
-        if membership.is_none() {
-            for piece in &pieces {
-                coverage.record(piece, totals[piece.sample]);
-            }
+        if let Some(kept) = kept {
+            encode(
+                &shown
+                    .iter()
+                    .map(|unit| totals[sample_of(unit.pieces.start)])
+                    .collect::<Vec<_>>(),
+            )?;
+            shown = kept.into_iter().map(|index| shown[index].clone()).collect();
         }
-        let total_at: Vec<Option<i64>> = pieces.iter().map(|piece| totals[piece.sample]).collect();
+        let total_at: Vec<Option<i64>> = shown
+            .iter()
+            .map(|unit| totals[sample_of(unit.pieces.start)])
+            .collect();
         let total_coded = encode(&total_at)?;
         bytes += total_coded.as_ref().map_or(0, coded_bytes);
         let item = ProducedSeries {
             tag: tag.clone(),
             identities: None,
-            first_hours: pieces.iter().map(|piece| piece.first).collect(),
-            last_hours: pieces.iter().map(|piece| piece.last).collect(),
-            breaks: pieces
+            first_hours: shown.iter().map(|unit| unit.first).collect(),
+            last_hours: shown.iter().map(|unit| unit.last).collect(),
+            breaks: shown
                 .iter()
                 .enumerate()
-                .filter(|(_, piece)| piece.starts)
+                .filter(|(_, unit)| unit.starts)
                 .map(|(index, _)| index as u32)
                 .collect(),
             values,
             total: total_coded,
             membership,
+            summary,
         };
         bytes += SERIES_OVERHEAD
             + item.tag.len()
@@ -1367,6 +1845,23 @@ fn requested(
             + item.breaks.iter().map(|index| digits(i64::from(*index))).sum::<usize>()
             // A span: its keys and braces, two hours of at most 11 characters.
             + item.membership.as_ref().map_or(0, |spans| spans.len() * 52);
+        if bytes > MAX_REPLY_BYTES {
+            return Err(io::Error::other(format!(
+                "These countries' production history takes more than one reply holds ({} MiB); choose fewer countries or group by type.",
+                MAX_REPLY_BYTES / (1024 * 1024)
+            )));
+        }
+        Ok((item, used, bytes, spans))
+    })?;
+    let mut used = vec![false; grouped.keys.len()];
+    let mut series = Vec::with_capacity(built.len());
+    let mut bytes = 0usize;
+    for (item, keys, size, spans) in built {
+        for key in keys {
+            used[key] = true;
+        }
+        coverage.take(spans);
+        bytes += size;
         if bytes > MAX_REPLY_BYTES {
             return Err(io::Error::other(format!(
                 "These countries' production history takes more than one reply holds ({} MiB); choose fewer countries or group by type.",
@@ -1425,17 +1920,38 @@ struct Coverage {
     unknown: BTreeMap<i32, i32>,
 }
 
-impl Coverage {
-    fn record(&mut self, piece: &Piece, total: Option<i64>) {
-        let spans = if total.is_some() {
+/// One country's shown pieces merged into spans, exact and unknown apart, which a [`Coverage`]
+/// takes whole.
+#[derive(Default)]
+struct Spans {
+    exact: Vec<(i32, i32)>,
+    unknown: Vec<(i32, i32)>,
+}
+
+impl Spans {
+    /// A piece after every one recorded.
+    fn record(&mut self, piece: &Piece, known: bool) {
+        let spans = if known {
             &mut self.exact
         } else {
             &mut self.unknown
         };
-        spans
-            .entry(piece.first)
-            .and_modify(|end| *end = (*end).max(piece.last))
-            .or_insert(piece.last);
+        match spans.last_mut() {
+            Some(last) if piece.first <= last.1.saturating_add(1) => last.1 = last.1.max(piece.last),
+            _ => spans.push((piece.first, piece.last)),
+        }
+    }
+}
+
+impl Coverage {
+    fn take(&mut self, spans: Spans) {
+        for (into, spans) in [(&mut self.exact, spans.exact), (&mut self.unknown, spans.unknown)] {
+            for (first, last) in spans {
+                into.entry(first)
+                    .and_modify(|end| *end = (*end).max(last))
+                    .or_insert(last);
+            }
+        }
     }
 
     fn known(self) -> Vec<HourSpan> {
@@ -1512,8 +2028,60 @@ pub fn reply(
     scanned: &ScannedProduced,
     params: &ProducedParams,
     named: Named,
+    warnings: Vec<String>,
+    cancelled: &AtomicBool,
+) -> io::Result<EquipmentProducedReply> {
+    reply_with(scanned, params, named, warnings, cancelled, None)
+}
+
+/// What a reply from a prepared history reads besides its light scan: the totals a ranking
+/// counts, and the countries it shows whole.
+pub(crate) trait Prepared: Sync {
+    /// Every country's totals a ranking by `plan` sums, and those it reads whole instead.
+    fn counted(&self, plan: &CountPlan<'_>) -> io::Result<(BTreeMap<String, Counted>, Vec<String>)>;
+    /// Every country's samples and Rocket output.
+    fn light(&self) -> io::Result<Histories>;
+    /// Some countries' histories whole, their samples and Rocket output taken from `light`
+    /// where it holds them.
+    fn whole(&self, tags: &[String], light: Option<&Histories>) -> io::Result<Histories>;
+}
+
+/// What a ranking reads of a prepared history beyond its countries' samples: each country's
+/// counted totals, but for the countries read whole, whose classes cannot stand for their
+/// designs.
+#[derive(Default)]
+pub(crate) struct Ranking {
+    counted: BTreeMap<String, Counted>,
+    whole: BTreeMap<String, TagHistory>,
+}
+
+impl Ranking {
+    fn read(prepared: &dyn Prepared, plan: &CountPlan<'_>) -> io::Result<Self> {
+        let (counted, moved) = prepared.counted(plan)?;
+        Ok(Self {
+            counted,
+            whole: prepared.whole(&moved, None)?.tags,
+        })
+    }
+}
+
+/// Countries' histories a reply reads beyond a prepared history's light scan: their equipment
+/// lines' and their Rocket output's.
+#[derive(Default)]
+pub(crate) struct Histories {
+    pub tags: BTreeMap<String, TagHistory>,
+    pub rockets: BTreeMap<String, TagHistory>,
+}
+
+/// [`reply`] from a prepared history's light scan, its countries' totals left to `prepared`: the
+/// top N ranked on the totals it counts, then the countries shown read whole.
+pub(crate) fn reply_with(
+    scanned: &ScannedProduced,
+    params: &ProducedParams,
+    named: Named,
     mut warnings: Vec<String>,
     cancelled: &AtomicBool,
+    prepared: Option<&dyn Prepared>,
 ) -> io::Result<EquipmentProducedReply> {
     let (types, untyped, unresolved) = variant_types_for(
         &scanned.variants,
@@ -1543,11 +2111,75 @@ pub fn reply(
         warnings.push(format!("{tag}: no recorded production in this branch"));
     }
     let grouped = grouped(scanned, &types, named, params);
-    let requested = if params.top.is_some() || !params.tags.is_empty() {
-        requested(scanned, &grouped, params, cancelled)?
+    let view = params
+        .view
+        .map(|view| {
+            let bounds = (scanned.reads.first().copied().unwrap_or(view.hours().0), i32::MAX);
+            let (exact, _) =
+                crate::prepared::series::summary_bins(bounds, (view.from, view.to, view.width))?;
+            io::Result::Ok(Shown {
+                view,
+                bounds,
+                dense: !exact,
+            })
+        })
+        .transpose()?;
+    let mut requested = if params.top.is_some() || !params.tags.is_empty() {
+        match prepared {
+            None => requested(scanned, &grouped, params, view, None, cancelled)?,
+            Some(prepared) => {
+                let mut light = None;
+                let (shown, ranked) = match params.top {
+                    Some(_) => {
+                        let light = light.insert(prepared.light()?);
+                        let ranking = Ranking::read(
+                            prepared,
+                            &CountPlan {
+                                costs: params.count == ProducedCount::Ic,
+                                refits: params.refits,
+                                counted: &grouped.class_counted,
+                                outside: &grouped.class_outside,
+                            },
+                        )?;
+                        let ranked = rank(
+                            scanned,
+                            &light.tags,
+                            &light.rockets,
+                            &grouped,
+                            params,
+                            view,
+                            Some(&ranking),
+                            cancelled,
+                        )?;
+                        (ranked.members.keys().cloned().collect::<Vec<_>>(), Some(ranked))
+                    }
+                    None => (params.tags.clone(), None),
+                };
+                let read = prepared.whole(&shown, light.as_ref())?;
+                requested_in(
+                    scanned,
+                    &read.tags,
+                    &read.rockets,
+                    &grouped,
+                    params,
+                    view,
+                    ranked,
+                    cancelled,
+                )?
+            }
+        }
     } else {
         Requested::default()
     };
+    if params.grouping == ProducedGrouping::Variant {
+        for key in &mut requested.keys {
+            let variant = key
+                .key
+                .parse()
+                .map_err(|_| io::Error::other("A variant key is not its handle"))?;
+            key.names = scanned.variants.names(variant, named.texts);
+        }
+    }
     Ok(EquipmentProducedReply {
         branch_id: params.branch_id.clone(),
         measure: params.measure,
@@ -1584,6 +2216,7 @@ impl Product for EquipmentProduced {
             ProducedCoded::decl(),
             ProducedValues::decl(),
             ProducedSeries::decl(),
+            SeriesView::decl(),
             EquipmentProducedReply::decl(),
         ]
     }
@@ -1603,6 +2236,9 @@ impl Product for EquipmentProduced {
         if params.included.iter().any(|key| key.is_empty()) {
             return Err("Invalid equipment types");
         }
+        if params.view.is_some_and(|view| !view.valid()) {
+            return Err("Invalid series view");
+        }
         Ok(())
     }
 
@@ -1614,74 +2250,15 @@ impl Product for EquipmentProduced {
     ) -> io::Result<Self::Reply> {
         let branch = params.branch_id.parse::<u64>().expect("validated branch");
         let scanned = equipment::production::scanned(source, branch, cancelled)?;
-        let mut warnings = Vec::new();
-        let (catalogue, units) = equipment::production::content(source, context, &mut warnings);
-        let named = Named {
-            units: units.as_deref(),
-            texts: catalogue
-                .as_ref()
-                .map(|catalogue| &**catalogue as &dyn Texts),
-        };
-        let mut projection = params.clone();
-        let histories = if params.top.is_none() && !params.tags.is_empty() {
-            let history =
-                super::country_history::branch_histories(source, branch, false, &[], cancelled)?;
-            projection.tags = super::country_history::selected_aliases(&history, &params.tags);
-            // Alias projection leaves out requested tags without a recorded holder.
-            let missing: BTreeSet<_> = params
-                .tags
-                .iter()
-                .filter(|tag| {
-                    !history.countries.contains_key(*tag) && !scanned.tags.contains_key(*tag)
-                })
-                .collect();
-            for tag in missing {
-                warnings.push(format!("{tag}: no recorded production in this branch"));
-            }
-            Some(history)
-        } else {
-            None
-        };
-        let mut reply = reply(&scanned, &projection, named, warnings, cancelled)?;
-        if let Some(history) = histories {
-            let metadata = projection
-                .tags
-                .iter()
-                .map(|tag| {
-                    128 + tag.len()
-                        + history
-                            .countries
-                            .get(tag)
-                            .map_or(0, |country| 24 + country.identities.len() * 128)
-                })
-                .sum::<usize>();
-            if crate::transport::json_len(&reply, MAX_REPLY_BYTES)
-                .is_none_or(|bytes| bytes.saturating_add(metadata) > MAX_REPLY_BYTES)
-            {
-                return Err(io::Error::other(
-                    "These countries' production identities and history exceed one reply",
-                ));
-            }
-            for tag in &projection.tags {
-                if !reply.series.iter().any(|item| item.tag == *tag) {
-                    reply.series.push(ProducedSeries {
-                        tag: tag.clone(),
-                        ..Default::default()
-                    });
-                }
-            }
-            for item in &mut reply.series {
-                item.identities = Some(
-                    history
-                        .countries
-                        .get(&item.tag)
-                        .map_or_else(Vec::new, |country| country.identities.as_ref().clone()),
-                );
-            }
-        }
-        if let Some(catalogue) = catalogue {
-            reply.warnings.extend(catalogue.refusal_lines());
-        }
+        let reply = answer(
+            source,
+            params,
+            context,
+            &scanned,
+            cancelled,
+            || super::country_history::branch_histories(source, branch, false, &[], cancelled),
+            None,
+        )?;
         super::check_reply_budget(&reply).map_err(|_| {
             io::Error::other("These countries' production history exceeds one exact reply")
         })?;
@@ -1689,11 +2266,91 @@ impl Product for EquipmentProduced {
     }
 }
 
+/// The reply to `params` from a branch's scan, its chosen countries' identities from
+/// `histories`, typed and named with the content `context` gives.
+pub(crate) fn answer(
+    source: &Source,
+    params: &ProducedParams,
+    context: &LoadContext,
+    scanned: &ScannedProduced,
+    cancelled: &AtomicBool,
+    histories: impl FnOnce() -> io::Result<Arc<super::country_history::RecordedHistories>>,
+    prepared: Option<&dyn Prepared>,
+) -> io::Result<EquipmentProducedReply> {
+    let mut warnings = Vec::new();
+    let (catalogue, units) = equipment::production::content(source, context, &mut warnings);
+    let named = Named {
+        units: units.as_deref(),
+        texts: catalogue
+            .as_ref()
+            .map(|catalogue| &**catalogue as &dyn Texts),
+    };
+    let mut projection = params.clone();
+    let histories = if params.top.is_none() && !params.tags.is_empty() {
+        let history = histories()?;
+        projection.tags = super::country_history::selected_aliases(&history, &params.tags);
+        // Alias projection leaves out requested tags without a recorded holder.
+        let missing: BTreeSet<_> = params
+            .tags
+            .iter()
+            .filter(|tag| {
+                !history.countries.contains_key(*tag) && !scanned.tags.contains_key(*tag)
+            })
+            .collect();
+        for tag in missing {
+            warnings.push(format!("{tag}: no recorded production in this branch"));
+        }
+        Some(history)
+    } else {
+        None
+    };
+    let mut reply = reply_with(scanned, &projection, named, warnings, cancelled, prepared)?;
+    if let Some(history) = histories {
+        let metadata = projection
+            .tags
+            .iter()
+            .map(|tag| {
+                128 + tag.len()
+                    + history
+                        .countries
+                        .get(tag)
+                        .map_or(0, |country| 24 + country.identities.len() * 128)
+            })
+            .sum::<usize>();
+        if crate::transport::json_len(&reply, MAX_REPLY_BYTES)
+            .is_none_or(|bytes| bytes.saturating_add(metadata) > MAX_REPLY_BYTES)
+        {
+            return Err(io::Error::other(
+                "These countries' production identities and history exceed one reply",
+            ));
+        }
+        for tag in &projection.tags {
+            if !reply.series.iter().any(|item| item.tag == *tag) {
+                reply.series.push(ProducedSeries {
+                    tag: tag.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        for item in &mut reply.series {
+            item.identities = Some(
+                history
+                    .countries
+                    .get(&item.tag)
+                    .map_or_else(Vec::new, |country| country.identities.as_ref().clone()),
+            );
+        }
+    }
+    if let Some(catalogue) = catalogue {
+        reply.warnings.extend(catalogue.refusal_lines());
+    }
+    Ok(reply)
+}
+
 #[cfg(test)]
 use replay_data::rows::TableId;
 #[cfg(test)]
 use replay_frame::frame::TableView;
-#[cfg(test)]
-use std::sync::Arc;
+pub mod prepared;
 #[cfg(test)]
 pub(crate) mod tests;

@@ -11,8 +11,8 @@ use super::{
 };
 use crate::prepared::series::Accumulator as Series;
 use crate::products::equipment::production::{
-    CostTotal, Edits, Entry, INVENTORY_READER, Identity, ProductionSpendingUnknown, Purpose,
-    RocketTotals, SPENT_READER, Total,
+    CostTotal, Edits, Entry, HISTORY_READER, INVENTORY_READER, Identity,
+    ProductionSpendingUnknown, Purpose, RocketTotals, SPENT_READER, Total,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -83,6 +83,9 @@ pub(super) struct Holder {
     pub bound: Option<super::RocketBound>,
     #[serde(skip)]
     pub keys: HashMap<(bool, u64), DesignKeys>,
+    /// Each source's history: what it recorded since the last flush, and what it holds.
+    #[serde(default)]
+    pub history: [super::history::Log; 2],
 }
 
 /// What steps counted, for tests' work bounds.
@@ -132,6 +135,8 @@ pub(super) struct SpendingRead<'a> {
 /// What every holder reads at an hour.
 pub(super) struct Shared<'a> {
     pub hour: i32,
+    /// The last hour taken before it.
+    pub before: Option<i32>,
     /// The hour follows the last the accumulator took.
     pub consecutive: bool,
     pub equipment: Option<EquipmentRead<'a>>,
@@ -532,6 +537,34 @@ fn project(
     Ok(Some((now, projection)))
 }
 
+/// A live track's sample stops holding after `before`.
+fn close(track: &mut Track, log: &mut super::history::Log, before: Option<i32>) {
+    if track.live.take().is_some()
+        && let Some(before) = before
+    {
+        log.close(before);
+    }
+}
+
+/// The track's new sample, with the totals that changed at it.
+fn record(track: &mut Track, log: &mut super::history::Log) {
+    let Some(sample) = track.sample else {
+        return;
+    };
+    let mut entries = std::mem::take(&mut log.scratch);
+    let whole = track.edits.take(HISTORY_READER, &mut entries);
+    log.sample(&super::history::Sampled {
+        hour: sample.hour,
+        starts: sample.starts,
+        identity: sample.identity,
+        presence: sample.presence,
+        entries: (!whole).then_some(&entries[..]),
+        units: &track.current,
+        costs: &track.cost_current,
+    });
+    log.scratch = entries;
+}
+
 impl Holder {
     /// Whether the countries name it, and how they resolve it.
     pub fn list(&mut self, country: Option<Option<(u32, u32)>>) {
@@ -547,21 +580,23 @@ impl Holder {
             .map(|(slot, id)| (slot, id, observation))
     }
 
-    /// Ends source `source`'s read.
-    pub fn end(&mut self, source: usize) {
+    /// Ends source `source`'s read; its sample held through `before`.
+    pub fn end(&mut self, source: usize, before: Option<i32>) {
         if let Some(track) = &mut self.tracks[source] {
-            track.live = None;
+            close(track, &mut self.history[source], before);
         }
     }
 
     /// Source `source`'s read goes on at an hour that reads nothing, while its identity in
-    /// `observation` holds and the hour follows the one before.
-    pub fn carry(&mut self, source: usize, observation: u32, consecutive: bool) {
+    /// `observation` holds and the hour follows `before`, the hour taken before it.
+    pub fn carry(&mut self, source: usize, observation: u32, consecutive: bool, before: Option<i32>) {
         let identity = self.identity(observation);
-        if let Some(track) = &mut self.tracks[source] {
-            track.live = track
+        if let Some(track) = &mut self.tracks[source]
+            && track
                 .live
-                .filter(|live| consecutive && Some(*live) == identity);
+                .is_some_and(|live| !consecutive || Some(live) != identity)
+        {
+            close(track, &mut self.history[source], before);
         }
     }
 
@@ -593,11 +628,12 @@ impl Holder {
 
     fn sample_equipment(&mut self, shared: &Shared<'_>, read: &EquipmentRead<'_>) {
         let Some(identity) = self.identity(read.observation) else {
-            self.end(0);
+            self.end(0, shared.before);
             return;
         };
         let track = self.tracks[0].get_or_insert_with(Track::default);
         let starts = !(shared.consecutive && track.live == Some(identity));
+        close(track, &mut self.history[0], shared.before);
         let totals = read.fold.totals(identity);
         let presence = if totals.is_some_and(|totals| totals.seen) {
             Some(true)
@@ -639,17 +675,19 @@ impl Holder {
             );
             track.taken = Some((identity, version));
         }
+        record(track, &mut self.history[0]);
     }
 
     fn sample_rocket(&mut self, shared: &Shared<'_>, read: &RocketSample<'_>) {
         let Some(identity) = self.identity(read.observation) else {
-            self.end(1);
+            self.end(1, shared.before);
             return;
         };
         let first = self.first_of_country;
         let track = self.tracks[1].get_or_insert_with(Track::default);
         let live = track.live.filter(|_| !read.totals.restarted);
         let starts = !(shared.consecutive && live == Some(identity));
+        close(track, &mut self.history[1], shared.before);
         let (units, costs) = read.totals.of(identity, first);
         track.sample = Some(Sample {
             hour: shared.hour,
@@ -693,6 +731,7 @@ impl Holder {
                 *taken = Some((identity, track.version));
             }
         }
+        record(track, &mut self.history[1]);
     }
 
     /// What source `source`'s spending projection reads at `hour`, or how it ends without one.

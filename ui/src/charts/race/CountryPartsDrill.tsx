@@ -73,7 +73,8 @@ export default function CountryPartsDrill<T>({ widget, runtime, active, countryS
   const request = track && tag ? { sourceId: track.source.id, revision: track.source.revision, product, params: params(tag) } : null;
   const prepared = usePreparedRace(runtime.client, track, product === 'country-factories' ? request : null, hour, active,
     validateFactoriesReply, mergeFactories, factoriesGeometry);
-  const oracle = useProduct(runtime.client, product === 'country-factories' && runtime.client.preparedQuery ? null : request, active, validate);
+  // A prepared recording's drill reads prepared data, as its widget does: never a scan of the recording.
+  const oracle = useProduct(runtime.client, product === 'country-factories' && runtime.client.preparedQuery ? null : request, active, validate, track?.source);
   const reply = product === 'country-factories' && runtime.client.preparedQuery ? { ...prepared, data: prepared.data as unknown as T | undefined } : oracle;
   const numeric = useMemo(() => new NumericReply<T>(), [runtime.client]);
   const pickScope = JSON.stringify([contextKey, product, 'mix', tag, originHour]);

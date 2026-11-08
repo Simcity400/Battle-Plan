@@ -28,6 +28,9 @@ export interface SpendAt {
   days?: number;
   firstHour?: number;
   lastHour?: number;
+  /** A totals group's payments whose cost wasn't recorded, and whether a priced one may be missing. */
+  unknownCount?: number;
+  uncovered?: boolean;
 }
 export interface SpendGap { from: number; through: number; readHour: number; reason: string; tag: string }
 export interface SpendingWindow { from: number | null; hour: number; end: number }
@@ -122,6 +125,15 @@ export function validatePoliticsSpending(data: unknown): PoliticsLedgerReply {
     }
     validatePoliticsSpending({ ...reply, recurring: undefined, spending: reply.recurring.map(row => row.spend) });
   }
+  if (reply.spendGroups !== undefined) {
+    if (!Array.isArray(reply.spendGroups) || !reply.spendGroups.every(row => object(row) && integer(row.firstHour) && integer(row.lastHour)
+      && row.firstHour <= row.lastHour && integer(row.count) && row.count > 0 && integer(row.occurrences) && row.occurrences > 0
+      && raw(row.knownRaw) && BigInt(row.knownRaw) >= 0n && integer(row.knownCount) && row.knownCount >= 0 && row.knownCount <= row.occurrences
+      && integer(row.unknownCount) && row.unknownCount >= 0 && row.unknownCount <= row.occurrences - row.knownCount && typeof row.uncovered === 'boolean')) {
+      throw new Error('The prepared spending totals are malformed.');
+    }
+    validatePoliticsSpending({ ...reply, spendGroups: undefined, spending: reply.spendGroups.map(row => row.spend) });
+  }
   if (reply.gains !== undefined && (!Array.isArray(reply.gains) || !reply.gains.every(row => object(row)
     && (row.currency === 'Political' || row.currency === 'Command') && raw(row.gainedRaw) && raw(row.lostRaw) && BigInt(row.lostRaw) >= 0n
     && typeof row.complete === 'boolean'))) throw new Error('The prepared power gains are malformed.');
@@ -199,6 +211,20 @@ export function spendingAt(replies: readonly PoliticsLedgerReply[], currency: Po
         occurrences: spend.occurrences, readHour: spend.readHour, covered: spend.covered, sequence: BigInt(spend.sequence),
         aggregateCount: row.count, days: row.days, firstHour: row.firstHour, lastHour: row.lastHour });
     }
+    // A totals reply's subtotals come summed by displayed item: each sums as its subtotals did.
+    for (const group of reply.spendGroups ?? []) {
+      const spend = group.spend;
+      if (spend.currency !== currency || spend.hour > hour || spend.readHour > hour) continue;
+      const item = items.get(spend.itemId)!;
+      const category = categories.get(spend.category)!;
+      const shownItem = item.tooltipToken ? { ...item, icon: artwork.get(item.tooltipToken) ?? item.icon } : item;
+      result.push({ spend, item: shownItem, category: category.name, identified: category.identified,
+        charge: group.unknownCount ? null : BigInt(group.knownRaw), realized: null,
+        recordedCharge: BigInt(group.knownRaw), knownCharges: group.knownCount, missingCharges: group.occurrences - group.knownCount,
+        occurrences: group.occurrences, readHour: spend.readHour, covered: spend.covered, sequence: BigInt(spend.sequence),
+        aggregateCount: group.count, firstHour: group.firstHour, lastHour: group.lastHour,
+        unknownCount: group.unknownCount, uncovered: group.uncovered });
+    }
   }
   return result;
 }
@@ -222,7 +248,7 @@ export function spendLabel(item: LedgerSpendItem, category: string): string {
 }
 
 /** Payments whose cost wasn't recorded. */
-export const unknownCosts = (at: SpendAt) => at.charge === null ? at.occurrences - at.knownCharges : 0;
+export const unknownCosts = (at: SpendAt) => at.unknownCount ?? (at.charge === null ? at.occurrences - at.knownCharges : 0);
 
 /** Unrecorded stretches, joined when they touch whatever the reason. No empty
  * batch proves that no power was spent, so each is named, never counted as zero. */
@@ -281,7 +307,7 @@ export function spendingSummary(spends: readonly SpendAt[]): SpendingSummary {
   for (const at of spends) {
     spent += at.recordedCharge;
     unknown += unknownCosts(at);
-    uncovered ||= !at.covered && at.charge !== null;
+    uncovered ||= at.uncovered ?? (!at.covered && at.charge !== null);
   }
   return { spent, unknownCosts: unknown, uncovered };
 }
@@ -448,7 +474,8 @@ export function spendingItems(replies: readonly PoliticsLedgerReply[], currency:
 
 /** Category chips: every category spent on in this currency, by its shown name. */
 export function categoryChoices(replies: readonly PoliticsLedgerReply[] | undefined, currency: PowerCurrency) {
-  const used = new Set((replies ?? []).flatMap(reply => [...reply.spending, ...(reply.recurring ?? []).map(row => row.spend)].filter(spend => spend.currency === currency).map(spend => spend.category)));
+  const used = new Set((replies ?? []).flatMap(reply => [...reply.spending, ...(reply.recurring ?? []).map(row => row.spend),
+    ...(reply.spendGroups ?? []).map(row => row.spend)].filter(spend => spend.currency === currency).map(spend => spend.category)));
   const categories = new Map((replies ?? []).flatMap(reply => reply.spendCategories.map(category => [category.id, category] as const)));
   return [...categories.values()].filter(category => used.has(category.id)).map(category => {
     const value = setToken(category.id);

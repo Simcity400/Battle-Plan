@@ -115,7 +115,7 @@ pub(super) fn answer(
         prefix: &prefix,
         cancelled: &cancelled,
     };
-    respond(&request, || request.open::<block::Observer>())
+    respond(&request, || request.open::<block::Observer>())?.into_value()
 }
 
 #[test]

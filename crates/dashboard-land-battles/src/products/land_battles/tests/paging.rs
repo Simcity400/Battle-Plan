@@ -9,6 +9,13 @@ use replay_data::rows::{
 };
 use serde_json::{Value, json};
 
+/// A forward query's reply as the value it holds.
+macro_rules! forward_value {
+    ($($arg:expr),* $(,)?) => {
+        forward_query::query($($arg),*).and_then(|built| built.into_value())
+    };
+}
+
 /// Prepares `branch` block by block, as forward preparation does, restoring
 /// the census from its saved state after every commit when `restore`. Returns
 /// the battles held in memory after each block.
@@ -72,7 +79,7 @@ fn ranges(windows: &[BattleWindow]) -> (i32, i32, usize) {
 fn served(source: &Source, branch: u64, fixture: &Fixture, ids: &[String]) -> Vec<Value> {
     let flag = AtomicBool::new(false);
     let query = |product: &str, params: Value| {
-        forward_query::query(source, product, params, &fixture.store, &fixture.key, &flag)
+        forward_value!(source, product, params, &fixture.store, &fixture.key, &flag)
             .unwrap_or_else(|error| panic!("{product}: {error}"))
     };
     let branch_id = branch.to_string();
@@ -379,7 +386,7 @@ fn paged_preparation_serves_what_kept_preparation_and_the_oracle_serve() {
         }
     }
     let late = |fixture: &Fixture| {
-        forward_query::query(
+        forward_value!(
             &source,
             "land-battles",
             json!({ "branchId": "1", "window": 1 }),
@@ -724,7 +731,7 @@ fn redraws_keep_a_read_appended_before_a_backdated_finalizer() {
         prepare(&source, 1, &fixture, keep, false);
         // Window 9's redrawn page and window 11's page, where the finalizer was read.
         for (first_hour, last_hour) in [(190, 199), (200, 219)] {
-            let ranking = forward_query::query(
+            let ranking = forward_value!(
                 &source,
                 "land-battles-ranking",
                 serde_json::to_value(LandBattlesRankingParams {
@@ -751,7 +758,7 @@ fn redraws_keep_a_read_appended_before_a_backdated_finalizer() {
             );
         }
         assert_eq!(served(&source, 1, &fixture, &ids), expected, "kept: {keep}");
-        let window = forward_query::query(
+        let window = forward_value!(
             &source,
             "land-battles",
             json!({ "branchId": "1", "window": 9 }),
@@ -802,7 +809,7 @@ fn repeated_finalizer_ids_answer_with_the_last_published_course() {
         .filter(|episode| episode.id == "1:5:result:9")
         .collect();
     assert_eq!(repeated.len(), 2);
-    let course = forward_query::query(
+    let course = forward_value!(
         &source,
         "land-battle-course",
         json!({ "branchId": "1", "id": "1:5:result:9" }),

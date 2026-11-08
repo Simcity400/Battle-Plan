@@ -301,6 +301,8 @@ fn missing_raw_mud_and_bad_witness_refuse_only_their_fields() {
             warnings: vec![],
         },
     )
+    .unwrap()
+    .into_value()
     .unwrap();
     assert_eq!(
         reply["provinces"][0],
@@ -474,7 +476,7 @@ fn validation_cancellation_and_retry() {
     );
     assert_eq!(frames::reads(&source), (0, 0));
     cancelled.store(false, Ordering::Relaxed);
-    let reply = crate::products::regional_weather::query(&request).unwrap();
+    let reply = crate::products::regional_weather::query(&request).unwrap().into_value().unwrap();
     assert_eq!(reply["provinces"], json!([]));
     assert!(warning(
         &reply,

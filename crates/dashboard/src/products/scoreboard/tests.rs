@@ -1119,6 +1119,7 @@ fn scoreboard_stability_war_support_nukes_and_equipment_match_public_products_an
             grouping: ProducedGrouping::Type,
             included: vec![],
             refits: false,
+            view: None,
         },
         &context,
         &cancel,

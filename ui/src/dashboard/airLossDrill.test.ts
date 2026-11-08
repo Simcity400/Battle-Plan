@@ -6,11 +6,12 @@ import { airLossParts, ledgerCountryAt, ledgerShare, militaryAirIndex, validateM
 import { airLossDrillActor, airLossDrillActors, airLossDrillHistory, pinAirLossDrill } from './airLossDrill.ts';
 import { runAt } from '../charts/series.ts';
 import { definition } from '../widgets/air-kills-losses/definition.ts';
-import type { MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
+import type { MilitaryAirReply } from '../generated/dashboard';
+import { partOf } from './militaryAirParts.fixture.ts';
+import type { Leaf } from './militaryAirParts.fixture';
 
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
-const noFilters = { regions: new Set<number>(), causes: new Set<number>() };
-const leaf = (extra: Partial<MilitaryAirLeaf>): MilitaryAirLeaf => ({ tag: 'renamed', identity: '7:91', dealt: false, opponent: null,
+const leaf = (extra: Partial<Leaf>): Leaf => ({ tag: 'renamed', identity: '7:91', dealt: false, opponent: null,
   region: 40001, buildingId: null, buildingToken: null, state: null, cause: 1,
   points: [[11, 16, '300000'], [12, 18, '200000']], ...extra });
 const reply = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
@@ -18,11 +19,11 @@ const reply = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, las
     { tag: 'old tag', identity: '7:91', present: [span(10, 14)], membership: [span(10, 14)] },
     { tag: 'renamed', identity: '7:91', present: [span(15, 16), span(18, 20)], membership: [] },
     { tag: 'old tag', identity: '8:99', present: [span(15, 16), span(18, 20)], membership: [] },
-  ], leaves: [leaf({}), leaf({ cause: 3, points: [[11, 16, '-100000']] }),
-    leaf({ dealt: true, opponent: 'opponent', points: [[11, 16, '700000']] })], regions: [], buildings: [], warnings: [] });
+  ], parts: [leaf({}), leaf({ cause: 3, points: [[11, 16, '-100000']] }),
+    leaf({ dealt: true, opponent: 'opponent', points: [[11, 16, '700000']] })].map(partOf), regions: [], buildings: [], warnings: [] });
 
 test('full cause histories wait for supplying reads, retain signed corrections, aliases and gaps outside top N', () => {
-  const index = militaryAirIndex(validateMilitaryAirReply(reply()), noFilters);
+  const index = militaryAirIndex(validateMilitaryAirReply(reply()));
   const history = airLossDrillHistory(index, '7:91', 10, 20, false);
   const at = (hour: number) => history.map(part => runAt(part.runs, hour)?.value ?? null);
   assert.deepEqual(at(14), [0, 0]);
@@ -43,8 +44,8 @@ test('full cause histories wait for supplying reads, retain signed corrections, 
 test('drawn candidates keep all 5,000 opaque tags and the supplying-hour holder without fallback', () => {
   const data = reply();
   data.countries = Array.from({ length: 5000 }, (_, id) => ({ tag: `authored Ω ${id}, separators|[]`, identity: `${id}:9`, present: [span(10, 16)], membership: [] }));
-  data.leaves = [];
-  const index = militaryAirIndex(validateMilitaryAirReply(data), noFilters);
+  data.parts = [];
+  const index = militaryAirIndex(validateMilitaryAirReply(data));
   const tags = data.countries.map(country => country.tag);
   const actors = airLossDrillActors(index, 12, [...tags, tags[0]]);
   assert.equal(actors.length, 5000);

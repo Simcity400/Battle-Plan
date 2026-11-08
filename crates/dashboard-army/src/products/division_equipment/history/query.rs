@@ -9,7 +9,6 @@ use super::emit::{
 use super::{
     DivisionEquipmentHistory, DivisionEquipmentHistoryParams, DivisionEquipmentHistoryReply,
     HistoryIcon, HistoryKind, HistoryName, HistoryRefusal, HistoryWarnings, KeptReason, answered,
-    at,
 };
 use crate::products::army_content::{self, Refusals, TemplateArtwork};
 use dashboard_base::{
@@ -443,7 +442,114 @@ fn keep<T>(value: Result<T, String>) -> (Option<T>, Option<String>) {
     }
 }
 
+/// What one series of `hours` reads at a run: the refusals its value counts and the fallbacks
+/// its artwork drew.
+#[derive(Default)]
+struct Counted {
+    refusals: Vec<(KeptReason, usize)>,
+    fallbacks: Vec<String>,
+}
+
+/// A series `hours` reads, by what its name says it holds.
+enum Read<'a> {
+    State,
+    Note(&'a str),
+    Held(&'a str),
+    Naming,
+    Artwork,
+    Design,
+}
+
+impl<'a> Read<'a> {
+    fn of(name: &'a str) -> Option<Self> {
+        let parts: Vec<&str> = name.split('|').collect();
+        Some(match parts.as_slice() {
+            ["state"] => Self::State,
+            ["note", note] => Self::Note(note),
+            ["type", kind, "held"] => Self::Held(kind),
+            ["type", _, "design", _] | ["stockDesign", _] => Self::Design,
+            ["template", _, "naming"] => Self::Naming,
+            ["template", _, "artwork"] => Self::Artwork,
+            _ => return None,
+        })
+    }
+
+    /// What it counts while it holds `value`.
+    fn counted(
+        &self,
+        value: &str,
+        operands: &Operands,
+        reply: &DivisionEquipmentHistoryReply,
+        drawn: &BTreeMap<String, BTreeSet<String>>,
+    ) -> io::Result<Counted> {
+        let mut counted = Counted::default();
+        let number = || {
+            value
+                .parse::<usize>()
+                .map_err(|_| io::Error::other("Invalid history operand"))
+        };
+        match *self {
+            Self::State => {}
+            Self::Note(note) => {
+                let id = note
+                    .parse::<usize>()
+                    .map_err(|_| io::Error::other("Invalid history note"))?;
+                let text = operands
+                    .notes
+                    .get(&id)
+                    .ok_or_else(|| io::Error::other("Unknown history note"))?;
+                counted.refusals.push((text.clone(), number()?));
+            }
+            Self::Held(kind) => {
+                if let Some(found) = reply.kinds.iter().find(|listed| listed.id == kind)
+                    && found.archetype.is_some()
+                    && let Some(missing) = &found.name_missing
+                {
+                    counted.refusals.push((KeptReason::literal(missing.clone()), 1));
+                }
+            }
+            Self::Naming => {
+                if let Some(missing) = reply
+                    .namings
+                    .get(&number()?.to_string())
+                    .and_then(|name| name.name_missing.as_ref())
+                {
+                    counted.refusals.push((missing.clone(), 1));
+                }
+            }
+            Self::Artwork => {
+                let id = number()?.to_string();
+                if let Some(missing) = reply
+                    .artworks
+                    .get(&id)
+                    .and_then(|icon| icon.icon_missing.as_ref())
+                {
+                    counted.refusals.push((missing.clone(), 1));
+                }
+                counted
+                    .fallbacks
+                    .extend(drawn.get(&id).into_iter().flatten().cloned());
+            }
+            Self::Design => {
+                if reply
+                    .designs
+                    .get(&number()?.to_string())
+                    .is_some_and(Option::is_none)
+                {
+                    counted
+                        .refusals
+                        .push((KeptReason::literal(army_content::UNNAMED_DESIGN), 1));
+                }
+            }
+        }
+        counted.refusals.retain(|&(_, times)| times > 0);
+        Ok(counted)
+    }
+}
+
 /// Each present hour's refusals, naming ones counted again as the reached product counts them.
+/// One sweep over the series' runs: each run's count is added where it starts and taken away
+/// where it ends, so each hour a run cuts costs what the counts it changes cost.
 fn hours(
     operands: &Operands,
     reply: &DivisionEquipmentHistoryReply,
@@ -451,127 +557,119 @@ fn hours(
     drawn: &BTreeMap<String, BTreeSet<String>>,
 ) -> io::Result<Vec<HistoryWarnings>> {
     let window = &reply.window;
-    let Some(state) = window.series.iter().find(|series| series.name == "state") else {
+    if !window.series.iter().any(|series| series.name == "state") {
         return Ok(Vec::new());
-    };
-    let read: Vec<&KeyedSeries> = window
+    }
+    let read: Vec<(Read<'_>, &[KeyedRun])> = window
         .series
         .iter()
-        .filter(|series| {
-            let parts: Vec<&str> = series.name.split('|').collect();
-            matches!(
-                parts.as_slice(),
-                ["state"]
-                    | ["note", _]
-                    | ["type", _, "held"]
-                    | ["type", _, "design", _]
-                    | ["template", _, "naming" | "artwork"]
-                    | ["stockDesign", _]
-            )
-        })
+        .filter_map(|series| Some((Read::of(&series.name)?, series.runs.as_slice())))
         .collect();
     let mut cuts = BTreeSet::new();
-    for series in &read {
+    // Where each run starts and, past its last hour, ends: (hour, ends, series, run).
+    let mut changes = Vec::new();
+    for (at, (kind, runs)) in read.iter().enumerate() {
         // A holding's warnings follow its presence, not its amount: runs that touch are one.
-        let held = series.name.ends_with("|held");
-        let touch = |before: &(i32, i32, String, bool), after: &(i32, i32, String, bool)| {
+        let held = matches!(kind, Read::Held(_));
+        let touch = |before: &KeyedRun, after: &KeyedRun| {
             held && before.1.checked_add(1) == Some(after.0)
         };
-        for (index, run) in series.runs.iter().enumerate() {
-            if index == 0 || !touch(&series.runs[index - 1], run) {
+        for (index, run) in runs.iter().enumerate() {
+            if index == 0 || !touch(&runs[index - 1], run) {
                 cuts.insert(run.0);
             }
-            let joined = series.runs.get(index + 1).is_some_and(|next| touch(run, next));
-            if !joined && let Some(after) = run.1.checked_add(1) {
-                cuts.insert(after);
+            changes.push((run.0, false, at, index));
+            if let Some(after) = run.1.checked_add(1) {
+                changes.push((after, true, at, index));
+                let joined = runs.get(index + 1).is_some_and(|next| touch(run, next));
+                if !joined {
+                    cuts.insert(after);
+                }
             }
         }
     }
+    changes.sort_unstable();
+    let mut base_counts = BTreeMap::<KeptReason, usize>::new();
+    for (reason, times) in base.clone().counted() {
+        if times > 0 {
+            *base_counts.entry(KeptReason::literal(reason)).or_default() += times;
+        }
+    }
+    // What the runs covering the hour count, and those whose value could not be read.
+    let mut counts = BTreeMap::<KeptReason, usize>::new();
+    let mut fallbacks = BTreeMap::<String, usize>::new();
+    let mut failed = BTreeMap::<(usize, usize), io::Error>::new();
+    let mut held_counts = std::collections::HashMap::<(usize, usize), Counted>::new();
+    let mut states = 0_usize;
+    let mut next_change = 0;
     let ends: Vec<i32> = cuts.iter().copied().collect();
     let mut spans: Vec<HistoryWarnings> = Vec::new();
     for (index, &start) in ends.iter().enumerate() {
+        while let Some(&(hour, ends, at, run)) = changes.get(next_change) {
+            if hour > start {
+                break;
+            }
+            next_change += 1;
+            let (kind, runs) = &read[at];
+            if matches!(kind, Read::State) {
+                states = if ends { states - 1 } else { states + 1 };
+                continue;
+            }
+            if ends {
+                failed.remove(&(at, run));
+                if let Some(counted) = held_counts.remove(&(at, run)) {
+                    for (reason, times) in counted.refusals {
+                        let count = counts.get_mut(&reason).expect("a held count is counted");
+                        *count -= times;
+                        if *count == 0 {
+                            counts.remove(&reason);
+                        }
+                    }
+                    for fallback in counted.fallbacks {
+                        let count = fallbacks.get_mut(&fallback).expect("a held fallback");
+                        *count -= 1;
+                        if *count == 0 {
+                            fallbacks.remove(&fallback);
+                        }
+                    }
+                }
+                continue;
+            }
+            match kind.counted(&runs[run].2, operands, reply, drawn) {
+                Ok(counted) => {
+                    for (reason, times) in &counted.refusals {
+                        *counts.entry(reason.clone()).or_default() += times;
+                    }
+                    for fallback in &counted.fallbacks {
+                        *fallbacks.entry(fallback.clone()).or_default() += 1;
+                    }
+                    held_counts.insert((at, run), counted);
+                }
+                Err(error) => {
+                    failed.insert((at, run), error);
+                }
+            }
+        }
         let Some(&next) = ends.get(index + 1) else {
             break;
         };
-        if at(&state.runs, start).is_none() {
+        if states == 0 {
             continue;
         }
-        let mut refusals = BTreeMap::<KeptReason, usize>::new();
-        let mut count = |reason: KeptReason, times: usize| {
-            if times > 0 {
-                *refusals.entry(reason).or_default() += times;
-            }
-        };
-        for (reason, times) in base.clone().counted() {
-            count(KeptReason::literal(reason), times);
+        // As read in series order: the first series whose value cannot be read fails the reply.
+        if let Some((_, error)) = failed.pop_first() {
+            return Err(error);
         }
-        let mut fallbacks = BTreeSet::new();
-        for series in &read {
-            let Some(value) = at(&series.runs, start) else {
-                continue;
-            };
-            let parts: Vec<&str> = series.name.split('|').collect();
-            let number = || {
-                value
-                    .parse::<usize>()
-                    .map_err(|_| io::Error::other("Invalid history operand"))
-            };
-            match parts.as_slice() {
-                ["note", note] => {
-                    let id = note
-                        .parse::<usize>()
-                        .map_err(|_| io::Error::other("Invalid history note"))?;
-                    let text = operands
-                        .notes
-                        .get(&id)
-                        .ok_or_else(|| io::Error::other("Unknown history note"))?;
-                    count(text.clone(), number()?);
-                }
-                ["type", kind, "held"] => {
-                    if let Some(found) = reply.kinds.iter().find(|listed| listed.id == *kind)
-                        && found.archetype.is_some()
-                        && let Some(missing) = &found.name_missing
-                    {
-                        count(KeptReason::literal(missing.clone()), 1);
-                    }
-                }
-                ["template", _, "naming"] => {
-                    if let Some(missing) = reply
-                        .namings
-                        .get(&number()?.to_string())
-                        .and_then(|name| name.name_missing.as_ref())
-                    {
-                        count(missing.clone(), 1);
-                    }
-                }
-                ["template", _, "artwork"] => {
-                    let id = number()?.to_string();
-                    if let Some(missing) = reply
-                        .artworks
-                        .get(&id)
-                        .and_then(|icon| icon.icon_missing.as_ref())
-                    {
-                        count(missing.clone(), 1);
-                    }
-                    fallbacks.extend(drawn.get(&id).into_iter().flatten().cloned());
-                }
-                ["type", _, "design", _] | ["stockDesign", _] => {
-                    if reply
-                        .designs
-                        .get(&number()?.to_string())
-                        .is_some_and(Option::is_none)
-                    {
-                        count(KeptReason::literal(army_content::UNNAMED_DESIGN), 1);
-                    }
-                }
-                _ => {}
-            }
+        let mut refusals = base_counts.clone();
+        for (reason, times) in &counts {
+            *refusals.entry(reason.clone()).or_default() += times;
         }
         let refusals: Vec<HistoryRefusal> = refusals
             .into_iter()
             .map(|(reason, times)| HistoryRefusal { reason, times })
             .collect();
-        let fallback = installed_content_core::content::overlay_refusal_line(&fallbacks);
+        let shown: BTreeSet<String> = fallbacks.keys().cloned().collect();
+        let fallback = installed_content_core::content::overlay_refusal_line(&shown);
         match spans.last_mut() {
             Some(span)
                 if (&span.refusals, &span.fallback) == (&refusals, &fallback)

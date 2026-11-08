@@ -313,7 +313,7 @@ pub struct Context {
     artwork_cache: BTreeMap<String, catalogue::Drawn<(Artwork, Vec<String>)>>,
     /// Each icon by the catalogue it was drawn through, the artwork mode it was drawn in and its
     /// sprite ([`IconKey`]).
-    icon_cache: std::cell::RefCell<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
+    icon_cache: std::sync::Mutex<BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>>,
     definitions: Arc<installed_content_focus::focus::Focuses>,
     focus_text_needs_frame: OnceLock<bool>,
     point_days: Option<f64>,
@@ -334,6 +334,26 @@ pub fn ensure<'a>(
     kind: Kind,
 ) -> io::Result<&'a mut Context> {
     ensure_in(slot, catalogue::catalogue(source, content)?, kind)
+}
+
+/// The source's artwork context for the configured folders, loaded on first use into `slot` and
+/// shared: its readers use it without holding the slot.
+pub fn shared(
+    slot: &mut Option<Arc<Context>>,
+    source: &Source,
+    content: &ContentOptions,
+    kind: Kind,
+) -> io::Result<Arc<Context>> {
+    let catalogue = catalogue::catalogue(source, content)?;
+    if !slot
+        .as_ref()
+        .is_some_and(|cached| cached.kind == kind && Arc::ptr_eq(&cached.catalogue, &catalogue))
+    {
+        *slot = Some(Arc::new(Context::load(catalogue, kind)?));
+    }
+    let context = Arc::clone(slot.as_ref().expect("artwork context loaded"));
+    catalogue::credit(&context.diagnostics);
+    Ok(context)
 }
 
 /// [`ensure`] over `catalogue`, which a request pins so each of its steps reads the same one.
@@ -1760,14 +1780,18 @@ impl Context {
             installed_content_core::content::artwork_mode(),
             name.to_owned(),
         );
-        if let Some(result) = self.icon_cache.borrow().get(&key) {
-            return result.get().clone().map_err(invalid);
+        let held = |cache: &BTreeMap<IconKey, catalogue::Drawn<Result<Option<String>, String>>>| {
+            cache.get(&key).map(|result| result.get().clone())
+        };
+        if let Some(result) = held(&self.icon_cache.lock().unwrap_or_else(|e| e.into_inner())) {
+            return result.map_err(invalid);
         }
+        // Drawn without the cache held, so other replies go on meanwhile.
         let drawn = catalogue::Drawn::new(|| {
             declared_icon_png(drawing, name).map_err(|error| error.to_string())
         });
-        let result = drawn.get().clone();
-        self.icon_cache.borrow_mut().insert(key, drawn);
+        let mut cache = self.icon_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let result = cache.entry(key).or_insert(drawn).get().clone();
         result.map_err(invalid)
     }
 
@@ -2066,7 +2090,7 @@ mod tests {
                 .iter()
                 .all(|(art, reason)| art.icon.is_none() && reason.is_none())
         );
-        assert!(text.icon_cache.borrow().is_empty());
+        assert!(text.icon_cache.lock().unwrap().is_empty());
         let (static_text, _) = text
             .text_catalogue(
                 BTreeSet::from(["mod_focus", "mod_empty"]),
@@ -2330,7 +2354,7 @@ mod tests {
             assert!(art.icon.is_none());
             assert!(reason.is_none(), "{reason:?}");
         }
-        assert!(context.icon_cache.borrow().is_empty());
+        assert!(context.icon_cache.lock().unwrap().is_empty());
         let displayed: Vec<_> =
             context.focus_display_at(&requests, &frame, |items| items.collect());
         for ((art, reason), expected) in displayed.iter().zip(expected) {

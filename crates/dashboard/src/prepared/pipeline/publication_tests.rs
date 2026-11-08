@@ -106,7 +106,7 @@ impl Fixture {
 
     fn weather(&self) -> Value {
         self.query(|query| {
-            let mut reply = regional_weather::query(query).unwrap();
+            let mut reply = regional_weather::query(query).unwrap().into_value().unwrap();
             query.prefix.mark(&mut reply).unwrap();
             reply
         })

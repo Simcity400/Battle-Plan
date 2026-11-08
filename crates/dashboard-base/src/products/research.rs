@@ -2088,9 +2088,10 @@ pub struct ResearchReply {
     pub definitions: Option<Vec<crate::ResearchDefinitionText>>,
 }
 
+/// The research artwork context, loaded once and shared: a reply holds the lock only to find it.
 #[derive(Default)]
 pub struct State {
-    artwork: Option<artwork::Context>,
+    artwork: Option<Arc<artwork::Context>>,
     #[cfg(test)]
     history: ResearchCache,
 }
@@ -2115,34 +2116,42 @@ impl Product for Research {
     ) -> io::Result<Self::Reply> {
         context.content()?;
         let state = source.state::<State>();
-        let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
-        let (history, unjoined) =
-            state
-                .history
-                .get(&source.replay(), params.branch(), &params.tag, cancelled)?;
-        present(source, context, &mut state, history, unjoined, cancelled)
+        let (history, unjoined) = state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .history
+            .get(&source.replay(), params.branch(), &params.tag, cancelled)?;
+        present(source, context, &state, history, unjoined, cancelled)
     }
+}
+
+/// The artwork context `state` shares for `context`'s content ([`artwork::shared`]).
+fn artwork(
+    source: &Source,
+    context: &LoadContext,
+    state: &std::sync::Mutex<State>,
+) -> io::Result<Arc<artwork::Context>> {
+    let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+    let art = context.content().and_then(|content| {
+        artwork::shared(&mut state.artwork, source, content, artwork::Kind::Technology)
+    });
+    if art.is_err() {
+        state.artwork = None;
+    }
+    art
 }
 
 fn present(
     source: &Source,
     context: &LoadContext,
-    state: &mut State,
+    state: &std::sync::Mutex<State>,
     mut history: ResearchHistory,
     unjoined: usize,
     cancelled: &AtomicBool,
 ) -> io::Result<ResearchReply> {
-    let art = match context.content().and_then(|content| {
-        artwork::ensure(
-            &mut state.artwork,
-            source,
-            content,
-            artwork::Kind::Technology,
-        )
-    }) {
+    let art = match artwork(source, context, state) {
         Ok(art) => art,
         Err(error) => {
-            state.artwork = None;
             return Ok(ResearchReply {
                 history,
                 artwork: Vec::new(),

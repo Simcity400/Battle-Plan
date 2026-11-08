@@ -15,6 +15,13 @@ use std::{
 
 /// Each open publication's directory, by root range, the generation read and schema.
 static DIRECTORIES: Shared<([u64; 3], u64, u64), Directory> = Shared::new();
+/// Each open publication's root and interior nodes, by root range and the generation read.
+static UPPERS: Shared<([u64; 3], u64), Pinned> = Shared::new();
+/// What readers derive from an open publication ([`Opened::derived`]), by its stamp, what
+/// derives it and its type.
+type Derived = Arc<dyn std::any::Any + Send + Sync>;
+static DERIVED: Shared<(([u64; 3], u64), &'static str, std::any::TypeId), Derived> =
+    Shared::new();
 
 /// A family's publication on a branch, as a query reads it.
 pub struct Opened {
@@ -22,7 +29,7 @@ pub struct Opened {
     section: String,
     /// The last hour before the query's first hole.
     through: Option<i32>,
-    pinned: Pinned,
+    pinned: Arc<Pinned>,
     directory: Arc<Directory>,
     /// The root's range and the generation read: equal stamps, equal publications.
     stamp: ([u64; 3], u64),
@@ -78,7 +85,7 @@ impl Opened {
         };
         let held = (range, series.publication().generation, schema);
         let directory = DIRECTORIES.get_or_make(held, || Directory::read(&mut series, schema))?;
-        let pinned = series.pin()?;
+        let pinned = UPPERS.get_or_make((held.0, held.1), || series.pin())?;
         drop(series);
         Ok(Some(Self {
             snapshot,
@@ -99,6 +106,22 @@ impl Opened {
     /// does not name.
     pub fn through(&self) -> Option<i32> {
         self.through
+    }
+
+    /// What `make` derives from the publication, named `what`: made once, and found again by
+    /// every reader while any holds it.
+    pub fn derived<T: Send + Sync + 'static>(
+        &self,
+        what: &'static str,
+        cancelled: &AtomicBool,
+        make: impl FnOnce(&mut Snapshot<'_, StoreRead<'_>>, &Directory) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let value = DERIVED.get_or_make((self.stamp, what, std::any::TypeId::of::<T>()), || {
+            Ok(Arc::new(self.read(cancelled, make)?) as Derived)
+        })?;
+        Arc::clone(&*value)
+            .downcast::<T>()
+            .map_err(|_| crate::invalid("A publication's derived view changed type"))
     }
 
     /// `read` of the publication pinned for this query and its directory.
