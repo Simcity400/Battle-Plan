@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useSyncExternalStore } from 'react';
 import { errorMessage } from '../shell/api';
 import type { MapBounds } from '../shell/api';
 import type { MapOptions } from '../shell/api';
@@ -53,6 +53,7 @@ export class MapViewsStore {
   private paintFrame = 0;
   private listeners = new Map<string, Set<() => void>>();
   private hidden = false;
+  private hiddenListeners = new Set<() => void>();
   private viewport: HTMLElement | null = null;
   private observer: ResizeObserver | null = null;
   private frame = 0;
@@ -213,7 +214,18 @@ export class MapViewsStore {
     };
   }
 
-  setHidden(hidden: boolean): void { if (hidden !== this.hidden) { this.hidden = hidden; this.retarget(); } }
+  setHidden(hidden: boolean): void {
+    if (hidden === this.hidden) return;
+    this.hidden = hidden;
+    this.retarget();
+    for (const listener of this.hiddenListeners) listener();
+  }
+  /** Whether every native map is hidden: by layout controls, or under an open menu that native windows would cover. */
+  isHidden = (): boolean => this.hidden;
+  subscribeHidden = (listener: () => void): (() => void) => {
+    this.hiddenListeners.add(listener);
+    return () => { this.hiddenListeners.delete(listener); };
+  };
   retry(id: string): void {
     this.states.delete(id);
     this.shown.delete(id);
@@ -350,6 +362,11 @@ export class MapViewsStore {
       }
     } finally { this.busy = false; }
   }
+}
+
+/** Whether the native maps are hidden ([`MapViewsStore.isHidden`]): a hidden map is not loading. */
+export function useMapsHidden(store: MapViewsStore): boolean {
+  return useSyncExternalStore(store.subscribeHidden, store.isHidden, store.isHidden);
 }
 
 /** What a map's widget shows of its acknowledged state ([`MapViewsStore.getState`]), as a transition. */

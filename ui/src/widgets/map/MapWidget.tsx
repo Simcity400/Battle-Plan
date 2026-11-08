@@ -3,7 +3,7 @@ import WidgetState from '../../components/WidgetState';
 import { Icon } from '../../components/Icons';
 import { formatDateTime } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
-import { useMapState } from '../../dashboard/geometry';
+import { useMapsHidden, useMapState } from '../../dashboard/geometry';
 import type { MapTarget } from '../../dashboard/geometry';
 import { resolveWindow } from '../../dashboard/model';
 import { usePlaybackHour } from '../../dashboard/playback';
@@ -29,6 +29,7 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
   }, [track, widget, runtime.tracks, staticSequence, mapOptions]);
   useLayoutEffect(() => body.current ? runtime.maps.register(widget.id, body.current, target) : undefined, [runtime.maps, widget.id, target]);
   const state = useMapState(runtime.maps, widget.id);
+  const hidden = useMapsHidden(runtime.maps);
   // The date of the frame drawn changes with every frame: painted, at most once a display frame.
   const shownDate = useRef<HTMLSpanElement>(null);
   const showsDate = runtime.client.nativeMaps !== false && state?.hour != null;
@@ -48,8 +49,9 @@ export default function MapWidget({ widget, runtime, active, mapOptions }: Widge
     <div className="dash-map-surface" ref={body}>
       <div className="dash-map-placeholder" role={state?.error ? undefined : 'status'}>{state?.error
         ? <WidgetState kind="error" failure={new Error(state.error)} onRetry={() => runtime.maps.retry(widget.id)} />
-        : <><span className="empty-icon">{state?.loading || (desired && !matched && !nativeUnavailable && !runtime.nativeHidden) ? <span className="spinner" /> : <Icon name="map" />}</span>
+        : <><span className="empty-icon">{!hidden && (state?.loading || (desired && !matched && !nativeUnavailable)) ? <span className="spinner" /> : <Icon name="map" />}</span>
         <strong>{nativeUnavailable ? 'Map available in the desktop app.' : runtime.nativeHidden ? 'Map hidden for layout controls'
+          : hidden ? 'Map hidden while a menu is open'
           : !track ? 'Load a campaign' : !desired ? 'No map at this time' : matched ? 'Campaign map' : 'Preparing this map…'}</strong>
         <p>{nativeUnavailable ? 'Open a recording in the desktop app to explore its campaign map.'
           : !desired && track ? 'Choose another time.' : null}</p></>}
