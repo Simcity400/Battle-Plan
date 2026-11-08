@@ -24,6 +24,17 @@ export class PlaybackIntervals<T> {
       end: Math.min(this.hours[low] ?? Infinity, bounds?.end ?? Infinity), value };
     return value;
   }
+
+  /** The hours, from `first` to before `end`, between the change hours around `hour`: what the value is
+   * read from stays the same there, whatever display `bounds` refresh within. */
+  span(hour: number): PlaybackBounds {
+    let low = 0, high = this.hours.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (this.hours[middle] <= hour) low = middle + 1; else high = middle;
+    }
+    return { first: this.hours[low - 1] ?? -Infinity, end: this.hours[low] ?? Infinity };
+  }
 }
 
 export function* spanChanges(spans: Iterable<Readonly<{ firstHour: number; lastHour: number }>>): Generator<number> {

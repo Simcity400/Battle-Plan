@@ -4,7 +4,7 @@ import type { LogPage } from '../../charts/log/logPages';
 import { LogPlayback } from '../../charts/log/logPlayback.ts';
 import { retainPlaybackMap } from '../../charts/playbackIntervals.ts';
 import type { LogRow } from '../../charts/log/logData';
-import { stableLogPages } from '../../charts/log/logPages';
+import { stableLogPages, useEstimatedPages, withContinuation } from '../../charts/log/logPages';
 import { useContentRevision } from '../../dashboard/contentRevision';
 import type { WidgetRuntime } from '../../dashboard/definitions';
 import type { BoundTrack } from '../../dashboard/model';
@@ -13,12 +13,17 @@ import { useFollowedProduct } from '../../dashboard/products';
 import { feedNotes, filteredEventRows, validateEventFeedPage } from './eventFeedData';
 import type { FeedEvent, FeedFilter, PreparedFeedPage } from './eventFeedData';
 
-interface PageInfo { cursor: string | null; start: number; end: number; count: number }
+/** `valid` is the span of hours over which `count` holds and `size` the page's rows at any hour,
+ * both from the page's last read; null until it is read. */
+interface PageInfo { cursor: string | null; start: number; end: number; count: number; valid: { first: number; end: number } | null; size: number | null }
 const NO_WARNINGS: string[] = [];
 const PAGE_SIZE = 256;
 /** The page a new hour asks first: more rows than a tall log shows, so the hour answers without
  * presenting rows nobody sees yet; older rows follow in whole pages as the log is scrolled. */
 const FIRST_PAGE_SIZE = 64;
+/** Whether a page's count holds at `hour`: never read (an estimate), or read at an hour its rows show the same at. */
+const counted = (info: PageInfo, hour: number | null) => info.size === null
+  || (info.valid !== null && hour !== null && info.valid.first <= hour && hour < info.valid.end);
 
 /** The first page a following feed holds: a whole page asked at an hour, and the rows read
  * after it, newest first, each a reply of its own whose items and texts its rows name. */
@@ -79,20 +84,24 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
   const owner = useMemo(() => ({ client: runtime.client, boundsKey, filter }), [runtime.client, boundsKey, filter]);
   const current = useRef(owner); current.current = owner;
   const [chain, setChain] = useState<{ owner: typeof owner; pages: PageInfo[]; error?: Failure }>({ owner, pages: [] });
-  const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0, count: FIRST_PAGE_SIZE };
-  const descriptors = chain.owner === owner && chain.pages.length ? chain.pages : [initial];
+  const initial: PageInfo = { cursor: null, start: Math.max(filter.firstHour ?? track?.branch.firstHour ?? 0, track?.branch.firstHour ?? 0), end: read ?? 0, count: FIRST_PAGE_SIZE, valid: null, size: null };
+  const stored = chain.owner === owner && chain.pages.length ? chain.pages : null;
+  // A page counted at an hour whose rows show otherwise is estimated by its rows until it is read again.
+  const described = useEstimatedPages(stored, info => counted(info, hour), info => ({ ...info, count: info.size! })) ?? [initial];
   const [wanted, setWanted] = useState<{ owner: typeof owner; pages: readonly string[] }>({ owner, pages: [] });
   const completeDemand = import.meta.env.MODE === 'parity' && prepareAll;
-  const chosen = completeDemand ? descriptors.map((_, index) => String(index))
+  const chosen = completeDemand ? described.map((_, index) => String(index))
     : wanted.owner === owner ? wanted.pages : ['0'];
   const indices = [...new Set(chosen.flatMap(page => Number.isInteger(Number(page)) && Number(page) > 0
-    && Number(page) < descriptors.length ? [Number(page)] : []))];
+    && Number(page) < described.length ? [Number(page)] : []))];
   const chunks = useProductWindows<PreparedFeedPage>(runtime.client, boundsKey,
-    index => request(descriptors[index].cursor, read), indices, active && !!base, validateEventFeedPage, track?.source);
+    index => request(described[index].cursor, read), indices, active && !!base, validateEventFeedPage, track?.source);
   const loaded = useMemo(() => new Map<number, PreparedFeedPage>([...chunks.data, ...(base ? [[0, base] as const] : [])]), [chunks.data, base]);
   const added = holding?.added;
   // The first page's rows: those read since it, newest first, before its own.
   const parts = useCallback((index: number, page: PreparedFeedPage) => index === 0 && added ? [...added, page] : [page], [added]);
+  const descriptors = withContinuation(described, loaded, (page, index) => ({ cursor: page.nextCursor, start: initial.start,
+    end: Math.min(...parts(index, page).flatMap(part => part.reply.rows.map(row => row.hour)), described[index].end), count: PAGE_SIZE, valid: null, size: null }));
   const playbacks = useMemo(() => new Map([...loaded].map(([index, page]) => [index, new LogPlayback(parts(index, page).flatMap(part => filteredEventRows(part.reply, filter))
     // Native ledgers can repeat an occurrence in different supplying rows/pages.
     // The log's owner is internal; the event's native ID remains unchanged.
@@ -118,15 +127,20 @@ export function useEventFeed(runtime: WidgetRuntime, track: BoundTrack | undefin
         const hours = parts(index, page).flatMap(part => part.reply.rows.map(row => row.hour));
         const start = Math.min(...hours, info.end);
         const end = Math.max(...hours, start);
-        if (info.count !== rows.length || info.start !== start || info.end !== end) {
-          pages[index] = { ...info, start, end, count: rows.length }; changed = true;
+        const playback = playbacks.get(index)!;
+        const valid = hour === null ? null : playback.span(hour);
+        if (info.count !== rows.length || info.start !== start || info.end !== end || info.size !== playback.size
+          || info.valid?.first !== valid?.first || info.valid?.end !== valid?.end) {
+          pages[index] = { ...info, start, end, count: rows.length, valid, size: playback.size }; changed = true;
         }
         if (index === pages.length - 1 && page.nextCursor !== null) {
-          pages.push({ cursor: page.nextCursor, start: initial.start, end: start, count: PAGE_SIZE }); changed = true;
+          pages.push({ cursor: page.nextCursor, start: initial.start, end: start, count: PAGE_SIZE, valid: null, size: null }); changed = true;
         }
       }
       return changed || previous.error !== error ? { owner, pages, error } : previous;
     });
+    // `hour` is read for each page's span only when its rows change, which is where a span ends.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owner, descriptors, loaded, parts, rendered, active, base]);
   const committedPages = useRef<{ owner: typeof owner; pages: readonly LogPage<FeedEvent>[] }>({ owner, pages: [] });
   const pages = useMemo(() => stableLogPages(committedPages.current.owner === owner ? committedPages.current.pages : [], !base ? []

@@ -40,3 +40,19 @@ test('unchanged empty rows and maps retain identity across irrelevant recorded c
   assert.equal(retainPlaybackMap(before, new Map([[1, rows]])), before);
   assert.notEqual(retainPlaybackMap(before, new Map([[1, [...rows]]])), before);
 });
+
+test('a count read at an hour holds over the span its rows show the same, and not past it', () => {
+  const rows = [10, 20, 30].map(hour => ({ key: String(hour), hour, item: hour }));
+  const log = new LogPlayback(rows);
+  assert.equal(log.size, 3);
+  assert.deepEqual(log.span(25), { first: 20, end: 30 });
+  assert.deepEqual(log.span(5), { first: -Infinity, end: 10 });
+  assert.deepEqual(log.span(40), { first: 30, end: Infinity });
+  const intervals = new PlaybackIntervals([10, 20, 30], hour => hour >= 20);
+  assert.deepEqual(intervals.span(25), { first: 20, end: 30 });
+  assert.deepEqual(intervals.span(5), { first: -Infinity, end: 10 });
+  // Display bounds (a daily wording refresh) end the held value, never the span of what it is read from.
+  const daily = new PlaybackIntervals([10, 20, 30], hour => hour >= 20, () => ({ first: 24, end: 26 }));
+  daily.at(25);
+  assert.deepEqual(daily.span(25), { first: 20, end: 30 });
+});

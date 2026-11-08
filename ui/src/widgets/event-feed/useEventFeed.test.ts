@@ -45,7 +45,10 @@ test('actual feed hook isolates filtered counts and wanted pages across identica
   const vite = await createServer({ configFile: false, mode: 'parity', optimizeDeps: { noDiscovery: true },
     server: { middlewareMode: true, watch: null, hmr: false, ws: false }, plugins: [{ name: 'event-feed-client-fixture', enforce: 'pre',
       transform(source, id) {
-        if (!id.replaceAll('\\', '/').endsWith('/widgets/event-feed/useEventFeed.ts')) return;
+        const path = id.replaceAll('\\', '/');
+        // The page estimates' hook runs in the feed's own render, so it shares the synthetic dispatcher.
+        if (path.endsWith('/charts/log/logPages.ts')) return source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__eventFeedHooks;');
+        if (!path.endsWith('/widgets/event-feed/useEventFeed.ts')) return;
         source = source.replace(/import \{ ([^}]+) \} from 'react';/, 'const { $1 } = globalThis.__eventFeedHooks;');
         for (const path of ['../../dashboard/contentRevision', '../../dashboard/productWindows', '../../dashboard/products'])
           source = source.replace(`from '${path}'`, "from 'event-feed-inputs'");

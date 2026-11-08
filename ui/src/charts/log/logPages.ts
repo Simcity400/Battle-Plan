@@ -1,5 +1,6 @@
 /** Server-paged logs keep the whole scrollbar without holding the whole product.
  * Unloaded windows are one item each, not a synthetic row for every event. */
+import { useRef } from 'react';
 import { logEntryItems, newestFirst, ROW_HEIGHT, visibleRange } from './logData.ts';
 import type { LogDensity, LogEntry, LogItem, LogPage, LogRow } from './logData';
 export type { LogPage } from './logData';
@@ -15,6 +16,29 @@ export function stableLogPages<T>(previous: readonly LogPage<T>[], next: readonl
       || before.rows !== after.rows || before.error !== after.error) return next;
   }
   return previous;
+}
+
+/** The pages described, with the continuation the last loaded one names described at once: until a
+ * chain stores it, a list whose loaded rows all fall after the hour shown holds no rows and nothing
+ * loading, which reads as none. A repeated cursor is the chain's own error, never described. */
+export function withContinuation<D extends { cursor: string | null }, P extends { nextCursor: string | null }>(
+  described: readonly D[], loaded: ReadonlyMap<number, P>, next: (page: P, index: number) => D): readonly D[] {
+  const last = described.length - 1;
+  const page = loaded.get(last);
+  if (!page || page.nextCursor === null || described.some(info => info.cursor === page.nextCursor)) return described;
+  return [...described, next(page, last)];
+}
+
+/** `stored` with each page whose measurement no longer `holds` replaced by its `estimate`: the same
+ * array while which pages hold is unchanged, so moving within every page's span redoes nothing. */
+export function useEstimatedPages<D>(stored: readonly D[] | null, holds: (info: D) => boolean, estimate: (info: D) => D): readonly D[] | null {
+  const kept = useRef<{ stored: readonly D[] | null; mask: string; pages: readonly D[] | null }>({ stored: null, mask: '', pages: null });
+  if (!stored) return null;
+  const mask = stored.map(info => holds(info) ? '1' : '0').join('');
+  if (kept.current.stored !== stored || kept.current.mask !== mask) {
+    kept.current = { stored, mask, pages: mask.includes('0') ? stored.map(info => holds(info) ? info : estimate(info)) : stored };
+  }
+  return kept.current.pages;
 }
 
 export function logPageItems<T>(pages: readonly LogPage<T>[], months: boolean): ReadonlyArray<LogItem<T>> {

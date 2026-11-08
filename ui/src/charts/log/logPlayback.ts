@@ -45,4 +45,11 @@ export class LogPlayback<T> {
   at(hour: number | null): ReadonlyArray<LogRow<T>> {
     return (this.held = logPlaybackAt(this.index, hour, this.held)).rows;
   }
+  /** Every row, shown or not. */
+  get size(): number { return this.index.rows.length; }
+  /** The hours, from `first` to before `end`, over which the rows shown at `hour` stay the same. */
+  span(hour: number): { first: number; end: number } {
+    const { count } = this.held = logPlaybackAt(this.index, hour, this.held);
+    return { first: count ? this.index.reads[count - 1] : -Infinity, end: this.index.reads[count] ?? Infinity };
+  }
 }
