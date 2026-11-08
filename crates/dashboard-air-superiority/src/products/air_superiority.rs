@@ -1341,11 +1341,9 @@ fn resolve_names(
     })();
     let language = &source.replay_ref().identity.language;
     let recorded_language = language.strip_prefix("l_").unwrap_or(language);
-    let viewer_language = context
-        .content
-        .as_ref()
-        .and_then(|options| content::language(&options.options).ok())
-        .unwrap_or_else(|| recorded_language.to_owned());
+    let (viewer_language, language_note) =
+        content::stored_name_language(source, context.content.as_ref());
+    warnings.extend(language_note);
     let mut stored_language = installed_content_localisation::localisation::Localisation::default();
     stored_language.language = viewer_language;
     if let AirReply::Choices(reply) = reply {

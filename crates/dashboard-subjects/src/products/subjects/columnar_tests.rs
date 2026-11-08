@@ -469,6 +469,7 @@ fn replies_name_levels_as_the_row_reply_with_and_without_content() {
         ),
         ("settings.txt", "language=\"l_english\""),
     ]);
+    dashboard_base::test_fixtures::declare_languages(&folder.0);
     let options = ContentOptions {
         options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),

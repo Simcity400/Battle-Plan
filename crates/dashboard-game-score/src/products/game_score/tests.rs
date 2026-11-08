@@ -74,7 +74,7 @@ fn scan_frames(frames: Vec<DecodedFrame>, localisation: Option<&Localisation>) -
         },
         localisation,
         Err("Faction content unavailable".into()),
-        None,
+        "english",
         &mut || content_multipliers(Err("Recorded content unavailable")),
         &AtomicBool::new(false),
     )
@@ -594,7 +594,7 @@ fn game_score_content_fallback_requires_disabled_capture() {
         },
         None,
         Err("Faction content unavailable".into()),
-        None,
+        "english",
         &mut old_defines,
         &AtomicBool::new(false),
     )
@@ -882,7 +882,7 @@ fn game_score_faction_names_share_literal_and_bound_template_rules_at_each_hour(
         },
         Some(&localisation),
         Ok(templates.as_ref()),
-        None,
+        "english",
         &mut || content_multipliers(Err("unused")),
         &AtomicBool::new(false),
     )
@@ -938,7 +938,7 @@ fn game_score_faction_names_preserve_known_empty_text() {
         },
         Some(&localisation),
         Ok(templates.as_ref()),
-        None,
+        "english",
         &mut || content_multipliers(Err("unused")),
         &AtomicBool::new(false),
     )
@@ -1015,7 +1015,7 @@ fn game_score_faction_name_failures_keep_stable_recording_and_content_reasons() 
         },
         Some(&localisation),
         Ok(templates_with_argument.as_ref()),
-        None,
+        "english",
         &mut || content_multipliers(Err("unused")),
         &AtomicBool::new(false),
     )
@@ -1093,7 +1093,8 @@ fn game_score_faction_literals_check_viewer_language_without_naming_content() {
         )],
     )
     .unwrap();
-    for (language, expected) in [(None, Some("Recorded literal")), (Some("french"), None)] {
+    // The recording's language shows the literal; another, or an unknown one, refuses it by name.
+    for (language, expected) in [("english", Some("Recorded literal")), ("french", None), ("", None)] {
         let reply = scan(
             &replay,
             &BranchParams {
@@ -1115,7 +1116,8 @@ fn game_score_faction_literals_check_viewer_language_without_naming_content() {
         if expected.is_none() {
             let missing = faction.name_missing.as_ref().unwrap();
             assert_eq!(missing.kind, GameScoreMissingKind::Content);
-            assert!(missing.reason.contains("viewer's language is french"));
+            let why = if language.is_empty() { "language it would be shown in is unknown" } else { "viewer's language is french" };
+            assert!(missing.reason.contains(why), "{}", missing.reason);
         }
     }
 }
@@ -1430,7 +1432,7 @@ fn game_score_disabled_across_block_boundaries_keeps_one_run_and_one_reason() {
         },
         None,
         Err("Faction content unavailable".into()),
-        None,
+        "english",
         &mut || fallback.clone(),
         &AtomicBool::new(false),
     )
@@ -1821,7 +1823,7 @@ fn game_score_oversized_reply_refuses_by_transport_budget_name() {
         },
         Some(&localisation),
         Err("Faction content unavailable".into()),
-        None,
+        "english",
         &mut || content_multipliers(Err("Recorded content unavailable")),
         &AtomicBool::new(false),
     )

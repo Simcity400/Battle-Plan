@@ -132,14 +132,14 @@ fn load_with(
     let language = &replay.identity.language;
     let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
     let presented = presented()?;
-    let mut warnings = Vec::new();
+    let warnings = Vec::new();
     let language = match settings {
         Ok((language, _)) => language.clone().map_err(io::Error::other)?,
         Err(why) => {
-            warnings.push(format!(
-                "Localisation uses the recorded language {recorded_language}: settings.txt is unavailable: {why}"
-            ));
-            recorded_language.clone()
+            return Err(io::Error::other(format!(
+                "No game language: {} could not be read: {why}",
+                options.options.user_dir.join("settings.txt").display()
+            )));
         }
     };
     let localisation = content::localisation_in(
@@ -148,7 +148,7 @@ fn load_with(
         (
             content::content_key(Some(options)).expect("content options given"),
             options.options.cache_dir.clone(),
-            Some(language),
+            language,
         ),
         &resolved,
     )?;
@@ -182,16 +182,17 @@ pub type Binding = (
 );
 type Cached = Option<(Binding, Arc<CachedResult<Catalogue>>)>;
 
-/// What a catalogue reads from the user folder's `settings.txt`: the game language (or why it is
-/// unusable) and `force_pow2_textures`; or why the file cannot be read.
-pub type Settings = Result<(Result<String, String>, bool), String>;
+/// What a catalogue reads from the user folder's `settings.txt`: the game language (`None` when
+/// it names none or is absent, or why it is unusable) and `force_pow2_textures`; or why the file
+/// cannot be read.
+pub type Settings = Result<(Result<Option<String>, String>, bool), String>;
 
 /// The [`Settings`] the user folder of `options` holds now.
 fn settings(options: &ContentOptions) -> Settings {
     installed_content_settings::settings::read_keys(&options.options.user_dir)
         .map(|keys| {
             (
-                keys.language().map_err(|why| why.to_string()),
+                Ok(keys.language()),
                 keys.force_pow2_textures(),
             )
         })
@@ -693,8 +694,11 @@ mod parity_tests;
 mod loader_tests {
     use super::*;
 
+    /// Without `settings.txt` the catalogue reads as the game does: its constructed settings and
+    /// the first language the mod stack declares. One that cannot be read leaves the language
+    /// unknown, refused by name.
     #[test]
-    fn missing_or_unreadable_settings_only_refuse_catalogue_artwork() {
+    fn missing_settings_read_as_the_game_and_unreadable_ones_refuse_by_name() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         use crate::test_fixtures::{CAMPAIGN, records, source};
@@ -713,6 +717,10 @@ mod loader_tests {
             (
                 "localisation/a_l_english.yml",
                 "\u{feff}l_english:\n NAME:0 \"Recorded name\"\n",
+            ),
+            (
+                "localisation/languages.yml",
+                "\u{feff}l_english:\n l_english: \"English\"\n",
             ),
         ]);
         let (options, identity) = crate::test_fixtures::content_identity(&folder.0);
@@ -737,46 +745,41 @@ mod loader_tests {
                 &AtomicBool::new(false),
             )
             .unwrap();
-            let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
-            assert_eq!(
-                catalogue
-                    .localised("NAME", crate::catalogue::View::Plain)
-                    .unwrap(),
-                "Recorded name"
-            );
-            assert!(
-                catalogue
-                    .gui_decode
-                    .as_ref()
-                    .unwrap_err()
-                    .contains("settings.txt")
-            );
-            assert!(
-                catalogue
-                    .warnings
-                    .iter()
-                    .any(|why| why.contains("recorded language"))
-            );
-            let cached = crate::catalogue::catalogue(&source, &options).unwrap();
-            assert!(Arc::ptr_eq(&catalogue, &cached));
             if unreadable {
+                let Err(why) = crate::catalogue::catalogue(&source, &options) else {
+                    panic!("an unreadable settings.txt leaves the language unknown");
+                };
+                let why = why.to_string();
+                assert!(
+                    why.contains("No game language") && why.contains("settings.txt"),
+                    "{why}"
+                );
                 std::fs::remove_dir(&settings).unwrap();
+            } else {
+                let catalogue = crate::catalogue::catalogue(&source, &options).unwrap();
+                assert_eq!(
+                    catalogue
+                        .localised("NAME", crate::catalogue::View::Plain)
+                        .unwrap(),
+                    "Recorded name"
+                );
+                assert!(
+                    catalogue
+                        .gui_decode
+                        .as_ref()
+                        .is_ok_and(|decode| !decode.force_pow2_textures)
+                );
+                let cached = crate::catalogue::catalogue(&source, &options).unwrap();
+                assert!(Arc::ptr_eq(&catalogue, &cached));
             }
             // Settings that change since are read again, with the catalogue bound to them.
             std::fs::write(&settings, "language=l_english force_pow2_textures=yes").unwrap();
             let changed = crate::catalogue::catalogue(&source, &options).unwrap();
-            assert!(!Arc::ptr_eq(&catalogue, &changed));
             assert!(
                 changed
                     .gui_decode
                     .as_ref()
                     .is_ok_and(|decode| decode.force_pow2_textures)
-            );
-            assert!(
-                changed
-                    .warnings
-                    .iter()
-                    .all(|why| !why.contains("recorded language"))
             );
             std::fs::remove_file(&settings).unwrap();
         }

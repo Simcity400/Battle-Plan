@@ -20,8 +20,8 @@ pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
 }
 
 /// Everything a source's localisation depends on besides the recording: the
-/// folders, the cache folder and the user's game language, or `None` for the language the
-/// recording carries when no user folder gives one.
+/// folders, the cache folder and the user's game language, or `None` when `settings.txt` names
+/// none, which takes the first language the mod stack's language list declares, as the game does.
 pub type LocalisationKey = (ContentKey, PathBuf, Option<String>);
 
 /// The key for these folders, reading the game language from the user folder.
@@ -29,7 +29,7 @@ pub fn localisation_key(content: &ContentOptions) -> io::Result<LocalisationKey>
     Ok((
         content_key(Some(content)).expect("content options given"),
         content.options.cache_dir.clone(),
-        language(&content.options).ok(),
+        language(&content.options)?,
     ))
 }
 
@@ -71,12 +71,7 @@ pub(crate) fn localisation_in(
         let mut warnings = Vec::new();
         check_replay(&source.replay(), content.allow_unverified, &mut warnings)?;
         let layers = resolved()?;
-        let language = match &key.2 {
-            Some(language) => language.clone(),
-            None => layers.layers.recorded_language().map(str::to_owned).ok_or_else(|| {
-                invalid("no game language: settings.txt is unavailable and the recording carries no text")
-            })?,
-        };
+        let language = chosen_language(&layers.layers, key.2.as_deref())?;
         installed_content_localisation::localisation::read_cached(
             &layers.layers,
             &language,
@@ -101,9 +96,74 @@ pub fn name_localisation(
     }
 }
 
-/// The user's game language from the configured user folder's `settings.txt`.
-pub fn language(options: &ResolveOptions) -> io::Result<String> {
-    installed_content_settings::settings::read_keys(&options.user_dir)?.language()
+/// The language the game prepares text in from `requested` (`settings.txt`'s): it when the mod
+/// stack's language list declares it, else the list's first; or why it cannot be known.
+fn chosen_language(
+    layers: &installed_content_core::ResolvedLayers,
+    requested: Option<&str>,
+) -> io::Result<String> {
+    installed_content_localisation::localisation::selected_language(layers, requested)
+        .map_err(|error| invalid(format!("No game language: {error}")))
+}
+
+/// The note a widget shows when names the recording stored are shown in its own language because
+/// no game folder is set.
+pub const RECORDED_LANGUAGE_NOTE: &str =
+    "Names stored in the recording are shown in the recording's language: no game folder is set.";
+
+/// The language the user's game prepares text in, as the game decides it: `settings.txt`'s, else
+/// the first language the recording's mod stack declares; `None` with no game folders chosen, or
+/// why it cannot be known.
+pub fn game_language(
+    source: &Source,
+    content: Option<&ContentOptions>,
+) -> Result<Option<String>, String> {
+    let Some(content) = content else {
+        return Ok(None);
+    };
+    let requested = language(&content.options).map_err(|error| error.to_string())?;
+    let layers = source
+        .content(&content.options)
+        .map_err(|error| format!("No game language: {error}"))?;
+    chosen_language(&layers.layers, requested.as_deref())
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+/// The language names the recording stored are checked against ([`game_language`]), and the
+/// note to show with it. With no game folders the recording's own language is used: a stored
+/// name is the game's own output in that language. When the game language cannot be known it is
+/// empty, so stored names are refused by name, and the note says why.
+pub fn stored_name_language(
+    source: &Source,
+    content: Option<&ContentOptions>,
+) -> (String, Option<String>) {
+    match game_language(source, content) {
+        Ok(Some(language)) => (language, None),
+        Ok(None) => {
+            let recorded = &source.replay_ref().identity.language;
+            (
+                recorded.strip_prefix("l_").unwrap_or(recorded).to_owned(),
+                Some(RECORDED_LANGUAGE_NOTE.to_owned()),
+            )
+        }
+        Err(why) => (String::new(), Some(why)),
+    }
+}
+
+/// The user's game language from the configured user folder's `settings.txt`; `None` when it
+/// names none or is absent. A file that cannot be read leaves the language unknown, refused by
+/// name.
+pub fn language(options: &ResolveOptions) -> io::Result<Option<String>> {
+    let path = options.user_dir.join("settings.txt");
+    installed_content_settings::settings::read_keys(&options.user_dir)
+        .map(|keys| keys.language())
+        .map_err(|error| {
+            invalid(format!(
+                "No game language: {} could not be read: {error}",
+                path.display()
+            ))
+        })
 }
 
 pub fn check_verification(

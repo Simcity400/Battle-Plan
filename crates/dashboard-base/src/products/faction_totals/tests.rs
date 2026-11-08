@@ -1961,6 +1961,7 @@ fn faction_totals_use_main_template_names_and_dated_refusal_reasons() {
         ),
         ("settings.txt", "language=\"l_english\""),
     ]);
+    crate::test_fixtures::declare_languages(&folder.0);
     let frames = [
         (100, "", "demo"),
         (101, "My literal", "demo"),

@@ -137,7 +137,7 @@ impl PickerState {
 }
 
 fn dump_toggles(document: &Document, options: &crate::Options) -> Toggles {
-    let settings = options.counter_settings(document.game_nato);
+    let settings = options.counter_settings(&document.game_options);
     Toggles {
         day_night: None,
         player_counters: Some(dashboard::map_display::option_defaults::PLAYER_COUNTERS),
@@ -797,6 +797,35 @@ mod tests {
             None,
             None,
         )
+    }
+
+    /// Every load path takes the recording's `settings.txt` options, the command line's first;
+    /// a host's settings own day/night and allied plans.
+    #[test]
+    fn a_loaded_recording_takes_settings_options_below_the_command_line() {
+        use installed_content_settings::settings::MapOptions;
+        use viewer_counters::map::counters::CounterColorMode;
+        let game = MapOptions {
+            day_night: false,
+            allied_plans: true,
+            country_counter_colours: true,
+            nato_counters: true,
+        };
+        let mut window = viewer();
+        window.take_game_options(&game);
+        assert!(!window.graphics.day_night && window.graphics.show_allied_plans);
+        assert_eq!(window.counter_view.settings.color_mode, CounterColorMode::Country);
+        assert!(window.counter_view.settings.nato);
+        let mut flagged = viewer();
+        flagged.options.day_night = Some(true);
+        flagged.options.allied_plans = Some(false);
+        flagged.take_game_options(&game);
+        assert!(flagged.graphics.day_night && !flagged.graphics.show_allied_plans);
+        let mut hosted = viewer();
+        hosted.host_graphics = true;
+        hosted.graphics.day_night = true;
+        hosted.take_game_options(&game);
+        assert!(hosted.graphics.day_night && !hosted.graphics.show_allied_plans);
     }
 
     fn toggles(viewer: &mut Viewer) -> Vec<dashboard::protocol::MapToggle> {

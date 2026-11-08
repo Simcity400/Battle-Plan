@@ -356,6 +356,7 @@ pub(crate) fn answer<'q>(
     let mut warnings = labels
         .as_ref()
         .map_or_else(|_| Vec::new(), |labels| labels.warnings.clone());
+    warnings.extend(shared::language_note(query));
     let window = match open()? {
         Some(mut opened) => {
             warnings.extend(shared::warnings(&opened.scan.observer.refusals));
@@ -680,5 +681,6 @@ fn wings<'q>(
         });
     }
     reply.warnings.extend(notes.lines("air wing fields are"));
+    reply.warnings.extend(shared::language_note(query));
     shared::finish(query, &reply)
 }

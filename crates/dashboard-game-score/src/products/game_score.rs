@@ -1042,18 +1042,15 @@ impl Naming {
                     .map_err(|error| format!("Faction naming content is unavailable: {error}"))
             })
             .and_then(|layers| layers.layers.faction_templates());
-        let viewer_language = context
-            .content
-            .as_ref()
-            .and_then(|options| content::language(&options.options).ok());
+        let (viewer_language, language_note) =
+            content::stored_name_language(source, context.content.as_ref());
+        naming_warnings.extend(language_note);
 
         if let Ok(templates) = &templates {
             naming_warnings.extend(templates.warnings.iter().cloned());
         }
-        let language = &source.replay_ref().identity.language;
         let mut fallback = Localisation::default();
-        fallback.language = viewer_language
-            .unwrap_or_else(|| language.strip_prefix("l_").unwrap_or(language).to_owned());
+        fallback.language = viewer_language;
         Self {
             localisation,
             templates,
@@ -1162,7 +1159,7 @@ impl Product for GameScore {
             params,
             naming.localisation.as_deref().ok(),
             naming.templates.as_deref().map_err(Clone::clone),
-            Some(&naming.fallback.language),
+            &naming.fallback.language,
             &mut read_old_multipliers,
             cancelled,
         )?;
@@ -1179,7 +1176,7 @@ fn scan(
     params: &BranchParams,
     localisation: Option<&Localisation>,
     templates: Result<&Catalog, String>,
-    viewer_language: Option<&str>,
+    viewer_language: &str,
     old_multipliers: &mut impl FnMut() -> GameScoreValues,
     cancelled: &AtomicBool,
 ) -> io::Result<GameScoreReply> {
@@ -1211,7 +1208,7 @@ fn scan(
     let language = &replay.identity.language;
     let recorded_language = language.strip_prefix("l_").unwrap_or(language);
     let mut empty_localisation = Localisation::default();
-    empty_localisation.language = viewer_language.unwrap_or(recorded_language).to_owned();
+    empty_localisation.language = viewer_language.to_owned();
     let mut observer = ScoreObserver::new(
         localisation,
         &empty_localisation,

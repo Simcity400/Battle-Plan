@@ -215,7 +215,7 @@ pub(crate) fn measure(
         Some((state.device.clone(), state.queue.clone())),
     );
     viewer.graphics.full_resolution = document.game_full_resolution;
-    viewer.counter_view = CounterView::new(options.counter_settings(document.game_nato));
+    viewer.take_game_options(&document.game_options);
     viewer.scene = Some(load_scene(
         &state.device,
         &state.queue,

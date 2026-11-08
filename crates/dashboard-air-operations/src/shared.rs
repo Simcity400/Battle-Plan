@@ -114,6 +114,12 @@ pub fn region_choices(
     dashboard_keyed::regions::choices(&names, ids, notes)
 }
 
+/// The note shown when stored names take the recording's language, or why they are refused
+/// ([`content::stored_name_language`]).
+pub fn language_note(query: &Query<'_>) -> Option<String> {
+    content::stored_name_language(query.source, query.content).1
+}
+
 pub fn stored(
     query: &Query<'_>,
     labels: &Result<Arc<Labels>, String>,
@@ -124,10 +130,7 @@ pub fn stored(
     let recorded = language.strip_prefix("l_").unwrap_or(language);
     // Stored names need the language guard, not a successful content database.
     let mut fallback = Localisation::default();
-    fallback.language = query
-        .content
-        .and_then(|options| content::language(&options.options).ok())
-        .unwrap_or_else(|| recorded.to_owned());
+    fallback.language = content::stored_name_language(query.source, query.content).0;
     let loc = labels
         .as_ref()
         .ok()

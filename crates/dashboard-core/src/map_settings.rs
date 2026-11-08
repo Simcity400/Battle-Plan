@@ -363,6 +363,17 @@ fn parse_game_graphics(bytes: &[u8]) -> io::Result<MapGraphics> {
 /// conversion that stores nothing keeps the field). Choices the file does not store keep
 /// their default.
 fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) -> io::Result<Game> {
+    // Without the file the game reads nothing: each choice keeps the default it keeps when a
+    // present file leaves it out.
+    if keys.is_absent() {
+        return Ok(Game {
+            graphics: MapGraphics {
+                nato_counters: Some(crate::map_display::option_defaults::NATO_COUNTERS),
+                ..MapGraphics::default()
+            },
+            audio: MapAudio::default(),
+        });
+    }
     if !keys.has(&["graphics"]) {
         return Err(crate::invalid("Missing graphics block in game settings"));
     }
@@ -376,8 +387,12 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
             .unwrap_or(fallback)
     };
     let mut result = MapGraphics::default();
-    result.nato_counters =
-        Some(installed_content_settings::settings::nato_counters(keys).map_err(crate::invalid)?);
+    // The map options the game saves; a line it cannot read keeps the game's value and is named
+    // in the map's limitations, which read the same file.
+    let (options, _) = installed_content_settings::settings::MapOptions::read(keys);
+    result.day_night = options.day_night;
+    result.show_allied_plans = options.allied_plans;
+    result.nato_counters = Some(options.nato_counters);
     result.full_resolution = map("draw_map_full_res", result.full_resolution);
     result.trees = map("draw_trees", result.trees);
     // Map shadows use the map-rendering option; the graphics shadows
@@ -393,7 +408,6 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
     result.units = map("draw_units", result.units);
     result.city_sprawl = map("draw_citysprawl", result.city_sprawl);
     result.weather = map("draw_weather_effects", result.weather);
-    // The map-mode buttons' choices are map options, which keep the app's defaults.
     if let Some(value) = keys.i32_at(&["graphics", "multi_sampling"]) {
         result.samples = u32::try_from(value)
             .map_err(|_| crate::invalid("Invalid game anti-aliasing"))?
@@ -597,9 +611,11 @@ mod tests {
         );
         store.game.graphics.trees = false;
         store.game.graphics.sky = false;
+        store.game.graphics.show_allied_plans = true;
         let campaign = store.get("campaign");
         assert!(campaign.graphics.trees);
         assert!(!campaign.graphics.sky);
+        assert!(campaign.graphics.show_allied_plans);
         store.game.graphics.sky = true;
         assert!(store.get("campaign").graphics.sky);
         // The stored form keeps its inheritance markers.
@@ -692,18 +708,17 @@ mod tests {
         assert!(
             parse_game_graphics(b"graphics={} mapRenderingOptions={texture_quality=9}").is_err()
         );
-        assert!(
-            parse_game_graphics(b"template_counter=invalid graphics={} mapRenderingOptions={}")
-                .is_err()
-        );
-        // Counter colours are a map option, never imported, so their value cannot refuse.
+        // A map option line the game cannot read keeps the game's value and refuses nothing.
+        let unread = parse_game_graphics(
+            b"template_counter=invalid counter_color_mode=yes hide_daynight_cycle=maybe graphics={} mapRenderingOptions={}",
+        )
+        .unwrap();
         assert_eq!(
-            parse_game_graphics(
-                b"counter_color_mode=yes template_counter=1 graphics={} mapRenderingOptions={}"
+            (unread.nato_counters, unread.day_night),
+            (
+                Some(crate::map_display::option_defaults::NATO_COUNTERS),
+                crate::map_display::option_defaults::DAY_NIGHT
             )
-            .unwrap()
-            .nato_counters,
-            Some(true)
         );
         assert!(
             parse_game_graphics(b"graphics={} mapRenderingOptions={draw_map_full_res=invalid}")
@@ -713,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_the_volumes_and_keeps_the_map_option_defaults() {
+    fn imports_the_map_mode_choices_and_volumes() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = parse_game(
@@ -722,13 +737,8 @@ mod tests {
               graphics={} mapRenderingOptions={}",
         )
         .unwrap();
-        assert_eq!(
-            (game.graphics.day_night, game.graphics.show_allied_plans),
-            (
-                crate::map_display::option_defaults::DAY_NIGHT,
-                crate::map_display::option_defaults::ALLIED_PLANS
-            )
-        );
+        assert!(!game.graphics.day_night);
+        assert!(!game.graphics.show_allied_plans);
         assert_eq!(
             [
                 game.audio.master,
@@ -751,12 +761,22 @@ mod tests {
             b"hide_daynight_cycle=no show_allied_plans=yes graphics={} mapRenderingOptions={}",
         )
         .unwrap();
-        assert_eq!(shown.graphics, game.graphics);
+        assert!(shown.graphics.day_night && shown.graphics.show_allied_plans);
+        // Unstored choices keep the game's defaults.
         let unstored = parse_game(b"graphics={} mapRenderingOptions={}").unwrap();
+        assert_eq!(
+            (unstored.graphics.day_night, unstored.graphics.show_allied_plans),
+            (
+                crate::map_display::option_defaults::DAY_NIGHT,
+                crate::map_display::option_defaults::ALLIED_PLANS
+            )
+        );
         assert_eq!(unstored.audio, MapAudio::default());
     }
 
     /// The values a fresh install writes on first launch (synthetic, the imported keys only).
+    /// It stores neither map-mode choice, so both keep the game's defaults: the cycle on and
+    /// allied plans off; the game stores `show_allied_plans` only once its button is used.
     #[test]
     fn a_fresh_install_imports_as_the_defaults() {
         engine_executable::executable_tables::initialize_for_tests()

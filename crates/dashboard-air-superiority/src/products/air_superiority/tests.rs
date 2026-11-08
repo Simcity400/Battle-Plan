@@ -1483,6 +1483,7 @@ fn recorded_content_stack_supports_extra_regions_and_overridden_mod_faction_name
             "\u{feff}l_english:\n changed_region:0 \"Modded region\"\n extra_region:0 \"Extra air region\"\n mod_pact:0 \"Modded coalition\"\n",
         ),
     ]);
+    dashboard_base::test_fixtures::declare_languages(&folder.0);
     let base = folder.0.join("base");
     let modification = folder.0.join("mod");
     let layers =
@@ -2339,6 +2340,7 @@ fn air_superiority_region_names_reuse_the_source_content_key_and_invalidate_on_l
         "settings.txt",
         "language=\"l_english\"",
     )]);
+    dashboard_base::test_fixtures::declare_languages(&folder.0);
     let content = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
             game_dir: folder.0.join("missing-game"),
@@ -2801,6 +2803,7 @@ fn air_superiority_faction_names_follow_native_operands_and_dictionary_reads() {
         ),
         ("settings.txt", "language=\"l_english\""),
     ]);
+    dashboard_base::test_fixtures::declare_languages(&folder.0);
     let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     let options = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
@@ -2907,6 +2910,7 @@ fn air_superiority_region_names_preserve_empty_results_and_distinguish_missing_k
         ),
         ("settings.txt", "language=\"l_english\""),
     ]);
+    dashboard_base::test_fixtures::declare_languages(&folder.0);
     let options = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),
@@ -2975,6 +2979,7 @@ fn air_superiority_theatre_names_preserve_raw_bytes_and_guard_the_recording_lang
         ),
         ("settings.txt", "language=\"l_english\""),
     ]);
+    dashboard_base::test_fixtures::declare_languages(&folder.0);
     let options = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
             game_dir: folder.0.clone(),

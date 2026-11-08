@@ -181,6 +181,7 @@ impl Product for GameWindow {
             .flatten()
             .map(|scroll| ((scroll.path.clone(), scroll.horizontal), scroll.offset))
             .collect();
+        let mut settings_notes = Vec::new();
         let bound = match &params.window {
             GameWindowTarget::MioPolicies { organisation } => crate::mio::bind(
                 source,
@@ -192,17 +193,21 @@ impl Product for GameWindow {
                 &scroll,
                 cancelled,
             )?,
-            GameWindowTarget::DivisionDesigner { template } => crate::designer::bind(
-                source,
-                &catalogue,
-                &shared,
-                branch,
-                params.hour,
-                template.parse().expect("validated template"),
-                nato(options)?,
-                &scroll,
-                cancelled,
-            )?,
+            GameWindowTarget::DivisionDesigner { template } => {
+                let (nato, notes) = nato_counters(options)?;
+                settings_notes = notes;
+                crate::designer::bind(
+                    source,
+                    &catalogue,
+                    &shared,
+                    branch,
+                    params.hour,
+                    template.parse().expect("validated template"),
+                    nato,
+                    &scroll,
+                    cancelled,
+                )?
+            }
         };
         let mut session = shared.lock().unwrap_or_else(|error| error.into_inner());
         let session = &mut *session;
@@ -218,6 +223,7 @@ impl Product for GameWindow {
             Err(refused) => (None, refused),
         };
         let mut warnings = bound.warnings;
+        warnings.extend(settings_notes);
         warnings.extend(session.notes.iter().cloned());
         warnings.extend(session.gui.uncovered_note("Game window"));
         let reply = GameWindowReply {
@@ -234,10 +240,16 @@ impl Product for GameWindow {
 }
 
 /// Whether the viewer's game shows NATO unit symbols (its `settings.txt`), which selects the
-/// unit glyphs' frame.
-fn nato(options: &ContentOptions) -> io::Result<bool> {
+/// unit glyphs' frame, and what a `template_counter` line the game cannot read means for it.
+fn nato_counters(options: &ContentOptions) -> io::Result<(bool, Vec<String>)> {
     let keys = installed_content_settings::settings::read_keys(&options.options.user_dir)?;
-    installed_content_settings::settings::nato_counters(&keys).map_err(invalid)
+    let (read, unread) = installed_content_settings::settings::MapOptions::read(&keys);
+    let notes = unread
+        .into_iter()
+        .filter(|line| line.starts_with("settings.txt template_counter "))
+        .map(|line| format!("Unit counters: {line}."))
+        .collect();
+    Ok((read.nato_counters, notes))
 }
 
 /// The stack identity of the content `options` bind: their folders and presentation.

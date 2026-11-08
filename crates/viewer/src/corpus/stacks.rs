@@ -228,10 +228,9 @@ pub fn user_folder(
 /// The real user folder's game language, written back as `gather` reads it
 /// from `settings.txt`.
 pub fn language(user: &Path) -> io::Result<String> {
-    Ok(format!(
-        "l_{}",
-        installed_content_settings::settings::read_keys(user)?.language()?
-    ))
+    installed_content_settings::settings::read_keys(user)?
+        .language()
+        .ok_or_else(|| io::Error::other("settings.txt names no game language"))
 }
 
 /// A descriptor as the launcher leaves it in `mod/`: every top-level field

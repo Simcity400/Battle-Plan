@@ -13,16 +13,22 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// What every map option is until the user chooses: the day/night cycle and fog of war on, every
-/// other option off. These are the app's own defaults; the game's settings never set them.
+/// What every map option is until the user chooses in the app. The options the game saves in
+/// `settings.txt` take the user's file ([`installed_content_settings::settings::MapOptions::read`]); these
+/// are the game's own defaults for them, kept when the file stores none or cannot be read. The
+/// rest are the app's own.
 pub mod option_defaults {
-    pub const DAY_NIGHT: bool = true;
-    pub const FOG: bool = true;
-    pub const ALLIED_PLANS: bool = false;
+    use installed_content_settings::settings::MapOptions;
+    pub const DAY_NIGHT: bool = MapOptions::DEFAULT.day_night;
+    pub const ALLIED_PLANS: bool = MapOptions::DEFAULT.allied_plans;
     /// Counters tinted by their owner's colour rather than by allegiance.
-    pub const COUNTRY_COUNTER_COLOURS: bool = false;
-    /// Only the viewing country's own counters.
+    pub const COUNTRY_COUNTER_COLOURS: bool = MapOptions::DEFAULT.country_counter_colours;
+    pub const NATO_COUNTERS: bool = MapOptions::DEFAULT.nato_counters;
+    /// Fog of war, which the game does not save: always on until chosen.
+    pub const FOG: bool = true;
+    /// Only the viewing country's own counters; not saved by the game.
     pub const PLAYER_COUNTERS: bool = false;
+    /// Rotating radar ranges; not saved by the game.
     pub const RADAR: bool = false;
 }
 

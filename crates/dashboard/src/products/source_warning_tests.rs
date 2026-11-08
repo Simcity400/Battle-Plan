@@ -94,6 +94,7 @@ impl DiagnosticFixture {
         let root =
             std::env::temp_dir().join(format!("content-diagnostics-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(root.join("outside_policy")).unwrap();
+        crate::test_fixtures::declare_languages(&root);
         for index in 0..2 {
             std::fs::write(
                 root.join(format!("outside_policy/{index}.bin")),

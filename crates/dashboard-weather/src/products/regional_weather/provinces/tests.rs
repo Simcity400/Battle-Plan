@@ -106,6 +106,7 @@ fn content_stack() -> Stack {
         "user/settings.txt",
         "language=l_english",
     );
+    dashboard_base::test_fixtures::declare_languages(&base);
     stack
 }
 

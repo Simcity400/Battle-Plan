@@ -1005,6 +1005,11 @@ fn file_value(
 /// on its line, escaped or not; no closing quote stores empty text. Lines
 /// never continue, and text after an opening quote has no comment tokens.
 pub fn parse_file(bytes: &[u8], language: &str) -> ParsedFile {
+    scan_file(bytes, language, &mut Vec::new())
+}
+
+/// [`parse_file`], also collecting every table header it reaches, in order.
+fn scan_file(bytes: &[u8], language: &str, headers: &mut Vec<String>) -> ParsedFile {
     let mut parsed = ParsedFile::default();
     // The folder wrappers do not call the reader for an empty file.
     if bytes.is_empty() {
@@ -1079,6 +1084,7 @@ pub fn parse_file(bytes: &[u8], language: &str) -> ParsedFile {
             value_start += 1;
         }
         if value_start == characters.len() {
+            headers.push(key.clone());
             current = Some(key);
             continue;
         }
@@ -1182,6 +1188,47 @@ pub fn read(layers: &ResolvedLayers, language: &str) -> io::Result<Localisation>
 
 /// The language text is read in: `language`, unless the recording played back carries
 /// another one only, whose text is then shown instead, said once.
+/// The languages the game's language list declares, without their `l_`, in order: every `l_`
+/// table header of `localisation/languages.yml`, read through the mod stack by the localisation
+/// file reader the game parses it with ([`parse_file`]: a file without its BOM, or a header
+/// past a syntax error, declares nothing).
+pub fn declared_languages(layers: &ResolvedLayers) -> io::Result<Vec<String>> {
+    let bytes = layers
+        .read(LANGUAGE_LIST)
+        .map_err(|error| io::Error::new(error.kind(), format!("{LANGUAGE_LIST}: {error}")))?;
+    let mut headers = Vec::new();
+    let parsed = scan_file(&bytes, "", &mut headers);
+    let mut declared: Vec<String> = Vec::new();
+    for header in headers {
+        if let Some(name) = header.strip_prefix("l_")
+            && !name.is_empty()
+            && !declared.iter().any(|known| known == name)
+        {
+            declared.push(name.to_owned());
+        }
+    }
+    if declared.is_empty() {
+        let why = parsed.logged.first().map_or(String::new(), |line| format!(" (line {line})"));
+        return Err(invalid(format!("{LANGUAGE_LIST} declares no language{why}")));
+    }
+    Ok(declared)
+}
+
+/// The language the game prepares text in, without its `l_`: the requested one (`settings.txt`'s
+/// stored text, such as `l_english`) when it is one of the language list's entries, else the
+/// list's first, as the game's localisation loader chooses.
+pub fn selected_language(layers: &ResolvedLayers, requested: Option<&str>) -> io::Result<String> {
+    let mut declared = declared_languages(layers)?;
+    let entry = |name: &str| requested.and_then(|wanted| wanted.strip_prefix("l_")) == Some(name);
+    Ok(match declared.iter().position(|name| entry(name)) {
+        Some(at) => declared.swap_remove(at),
+        None => declared.swap_remove(0),
+    })
+}
+
+/// The game's language list.
+const LANGUAGE_LIST: &str = "localisation/languages.yml";
+
 fn carried<'a>(layers: &'a ResolvedLayers, language: &'a str) -> &'a str {
     match layers.recorded_language() {
         Some(recorded) if recorded != language => {
@@ -1426,6 +1473,45 @@ fn decode_memo(
 
 #[cfg(test)]
 mod tests {
+    /// The language list follows the mod stack and the game's file reader: a requested language
+    /// the list declares is chosen, else the list's first; a list without its BOM, or one whose
+    /// header lacks its colon, declares nothing and is refused by name, as is a missing list.
+    #[test]
+    fn the_selected_language_follows_the_mod_stacks_language_list() {
+        let root = std::env::temp_dir().join(format!("language-list-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (base, addon) = (root.join("base"), root.join("mod"));
+        let write = |folder: &std::path::Path, text: &[u8]| {
+            std::fs::create_dir_all(folder.join("localisation")).unwrap();
+            std::fs::write(folder.join("localisation/languages.yml"), text).unwrap();
+        };
+        write(&base, "\u{feff}l_english:\n l_english: \"English\"\nl_french:\n l_english: \"English\"\n".as_bytes());
+        let vanilla = ResolvedLayers::from_folders(&[(&base, &[])]).unwrap();
+        assert_eq!(selected_language(&vanilla, None).unwrap(), "english");
+        assert_eq!(selected_language(&vanilla, Some("l_french")).unwrap(), "french");
+        write(&addon, "\u{feff}# list\nl_german:\n l_german: \"Deutsch\"\nl_english:\n".as_bytes());
+        let stack = || ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+        assert_eq!(declared_languages(&stack()).unwrap(), ["german", "english"]);
+        assert_eq!(selected_language(&stack(), None).unwrap(), "german");
+        assert_eq!(selected_language(&stack(), Some("l_english")).unwrap(), "english");
+        // A request that is none of the mod's list's entries takes its first, as the game does:
+        // an undeclared language, a bare name without its `l_`, or an empty one.
+        for unlisted in ["l_french", "english", "l_"] {
+            assert_eq!(selected_language(&stack(), Some(unlisted)).unwrap(), "german", "{unlisted}");
+        }
+        for unreadable in [&b"l_german:\n"[..], "\u{feff}l_german\n".as_bytes(), "\u{feff}# none\n".as_bytes()] {
+            write(&addon, unreadable);
+            let why = selected_language(&stack(), Some("l_english")).unwrap_err().to_string();
+            assert!(why.contains("localisation/languages.yml declares no language"), "{why}");
+        }
+        let bare = root.join("bare");
+        std::fs::create_dir_all(&bare).unwrap();
+        let missing = ResolvedLayers::from_folders(&[(&bare, &[])]).unwrap();
+        let why = selected_language(&missing, None).unwrap_err().to_string();
+        assert!(why.contains("localisation/languages.yml"), "{why}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
     use super::*;
 
     /// A warm read takes each file's parse from the memo and reads as a cold one; the memo is

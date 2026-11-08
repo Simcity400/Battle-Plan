@@ -203,7 +203,7 @@ pub struct Source {
 
 /// What country names are resolved for: the folders, and the user's game language they are in
 /// (or why it cannot be read).
-pub(crate) type NamesKey = (Option<ContentKey>, Option<Result<String, String>>);
+pub(crate) type NamesKey = (Option<ContentKey>, Option<Result<Option<String>, String>>);
 
 fn names_key(content: Option<&ContentOptions>) -> NamesKey {
     (

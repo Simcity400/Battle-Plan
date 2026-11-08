@@ -45,7 +45,25 @@ fn scalar<'a>(items: &'a [Item], key: &str) -> io::Result<&'a str> {
 /// Every consumer uses this walk
 /// ([`gui::native::persistent_keys`](crate::gui::native::persistent_keys)).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SettingsKeys(Vec<crate::gui::native::PersistentKey>);
+pub struct SettingsKeys(Vec<crate::gui::native::PersistentKey>, Absent);
+
+/// Whether the user folder holds no `settings.txt`. The game then reads nothing and starts from
+/// its constructed settings, saving the file only later.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Absent(bool);
+
+/// Values the game's settings start from before any `settings.txt` is read.
+pub mod constructed {
+    pub const CAMERA_TILT: f32 = 100.0;
+    pub const CAMERA_SPEED: f32 = 50.0;
+    pub const ZOOM_SPEED: f32 = 50.0;
+    pub const SCROLL_SPEED: f32 = 50.0;
+    pub const CORNER_SCROLLING: bool = true;
+    /// `graphics.gui_scale`.
+    pub const GUI_SCALE: f32 = 1.0;
+    /// `graphics.vsync`.
+    pub const VSYNC: bool = true;
+}
 
 /// Scalar fields consume only their stored value. Nested objects use their own
 /// field dispatch on the same reader; unhandled fields skip their whole block.
@@ -174,7 +192,28 @@ fn map_rendering_case(keyword: &str) -> Option<Case> {
 impl SettingsKeys {
     /// `settings.txt`'s bytes walked as the game walks them.
     pub fn read(bytes: &[u8]) -> Self {
-        Self(crate::gui::native::persistent_keys(bytes, settings_case))
+        Self(crate::gui::native::persistent_keys(bytes, settings_case), Absent(false))
+    }
+
+    /// The user folder holds no `settings.txt`: nothing is read.
+    pub fn absent() -> Self {
+        Self(Vec::new(), Absent(true))
+    }
+
+    /// Whether the user folder held no `settings.txt`, so every value is the game's constructed
+    /// one.
+    pub fn is_absent(&self) -> bool {
+        self.1.0
+    }
+
+    /// [`Self::f32_at`], or `constructed` when the file is absent.
+    pub fn f32_or_constructed(&self, path: &[&str], constructed: f32) -> Option<f32> {
+        self.f32_at(path).or(self.is_absent().then_some(constructed))
+    }
+
+    /// [`Self::bool_at`], or `constructed` when the file is absent.
+    pub fn bool_or_constructed(&self, path: &[&str], constructed: bool) -> Option<bool> {
+        self.bool_at(path).or(self.is_absent().then_some(constructed))
     }
 
     /// Every occurrence dispatched to the keyword's registered lowercased
@@ -268,19 +307,14 @@ impl SettingsKeys {
         }
     }
 
-    /// The `language` text as the bare name localisation files use after `l_`.
-    pub fn language(&self) -> io::Result<String> {
-        let text = self
-            .string_at(&["language"])
-            .ok_or_else(|| io::Error::other("Missing language in game settings"))?;
-        std::str::from_utf8(&text)
-            .ok()
-            .and_then(|text| text.strip_prefix("l_"))
-            .filter(|name| {
-                !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            })
-            .map(str::to_owned)
-            .ok_or_else(|| io::Error::other("Unsupported language in game settings"))
+    /// The `language` text as stored, which the game compares with its language list's entries
+    /// (`l_english`, ...); `None` when the file names none (or is absent). A request the list
+    /// does not hold, of any form, takes the list's first language
+    /// (`installed_content_localisation::localisation::selected_language`).
+    pub fn language(&self) -> Option<String> {
+        self.string_at(&["language"])
+            .filter(|text| !text.is_empty())
+            .map(|text| String::from_utf8_lossy(&text).into_owned())
     }
 }
 
@@ -322,7 +356,14 @@ fn point_in<'a>(
 
 /// The user folder's `settings.txt` through [`SettingsKeys`].
 pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
-    let bytes = bounded_read(&user.join("settings.txt"))?;
+    let bytes = match bounded_read(&user.join("settings.txt")) {
+        Ok(bytes) => bytes,
+        // The game reads nothing then and keeps its constructed settings.
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(SettingsKeys::absent());
+        }
+        Err(error) => return Err(error),
+    };
     // The game folds its keys through its keyword table: with none in scope it cannot be read.
     match engine_executable::executable_tables::current() {
         Some(tables) => drop(tables.keywords.as_ref().map_err(io::Error::from)?),
@@ -335,30 +376,86 @@ pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
     Ok(SettingsKeys::read(&bytes))
 }
 
-/// `template_counter`'s value when `settings.txt` stores none: the plain frame.
-pub const NATO_COUNTERS_DEFAULT: bool = false;
+/// The map options the game saves in `settings.txt`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MapOptions {
+    /// The day/night cycle, `hide_daynight_cycle` inverted.
+    pub day_night: bool,
+    /// `show_allied_plans`.
+    pub allied_plans: bool,
+    /// `counter_color_mode` 0: counters tinted by their owner's colour rather than by allegiance.
+    pub country_counter_colours: bool,
+    /// `template_counter` 1: the unit icons' NATO frame.
+    pub nato_counters: bool,
+}
 
-/// `template_counter`, whether the unit icons take the NATO frame, through [`SettingsKeys`]:
-/// bare keywords fold without case, quoted keys reach no case, and each occurrence is read in
-/// file order, the last winning. The signed integer scan ([`crate::crt::scan_i32`]) accepts C
-/// radix prefixes, accumulates in 64 bits and keeps the low 32 bits; a value is clamped to 0..=1
-/// and only 1 selects the frame. An omitted key keeps [`NATO_COUNTERS_DEFAULT`].
-///
-/// A scan converting nothing (a word, lone sign or brace) leaves an uninitialised stack value:
-/// the scan reports an error without storing anything, and recovery does not reset the field.
-/// `Err` names it.
-pub fn nato_counters(settings: &SettingsKeys) -> Result<bool, String> {
-    let mut nato = NATO_COUNTERS_DEFAULT;
-    for key in settings.assignments("template_counter") {
-        let value = crate::crt::scan_i32(&key.value).stored().ok_or_else(|| {
+impl MapOptions {
+    /// The game's own values when the file stores none: the cycle shown, allied plans hidden,
+    /// counters by allegiance and the plain frame.
+    pub const DEFAULT: Self = Self {
+        day_night: true,
+        allied_plans: false,
+        country_counter_colours: false,
+        nato_counters: false,
+    };
+
+    /// The options as the game reads them ([`SettingsKeys`]: any case, each occurrence in file
+    /// order).
+    ///
+    /// A `yes`/`no` the game cannot convert keeps the value before it. A counter option's `%i`
+    /// scan ([`crate::crt::scan_i32`]: C radix prefixes, low 32 bits, clamped to 0..=1) that
+    /// converts nothing leaves the game an uninitialised value until a later line stores one;
+    /// when the last line is such a scan the option keeps its default here. Every line that
+    /// could not be read is named in the second value, and none stops the read.
+    pub fn read(settings: &SettingsKeys) -> (Self, Vec<String>) {
+        let mut options = Self::DEFAULT;
+        let mut unread = Vec::new();
+        let note = |name: &str, value: &[u8], outcome: &str| {
             format!(
-                "settings.txt template_counter = {:?} is not an integer %i converts, so the                  game stores an uninitialised value because the integer scan stores nothing                  and recovery does not reset it",
-                String::from_utf8_lossy(&key.value)
+                "settings.txt {name} = {:?} could not be read: {outcome}",
+                String::from_utf8_lossy(value)
             )
-        })?;
-        nato = value.clamp(0, 1) == 1;
+        };
+        for (name, field, invert) in [
+            ("hide_daynight_cycle", &mut options.day_night, true),
+            ("show_allied_plans", &mut options.allied_plans, false),
+        ] {
+            for key in settings.assignments(name) {
+                match crate::gui::native::bool_of(&key.value) {
+                    Some(value) => *field = value != invert,
+                    None => unread.push(note(name, &key.value, "the game keeps the value before it")),
+                }
+            }
+        }
+        for (name, field, selects) in [
+            ("counter_color_mode", &mut options.country_counter_colours, 0),
+            ("template_counter", &mut options.nato_counters, 1),
+        ] {
+            let mut stored = Some(*field);
+            let mut unknown = None;
+            for key in settings.assignments(name) {
+                stored = crate::crt::scan_i32(&key.value)
+                    .stored()
+                    .map(|value| value.clamp(0, 1) == selects);
+                if stored.is_none() {
+                    if let Some(earlier) = unknown.replace(&key.value) {
+                        unread.push(note(name, earlier, "a later line sets it"));
+                    }
+                } else if let Some(earlier) = unknown.take() {
+                    unread.push(note(name, earlier, "a later line sets it"));
+                }
+            }
+            match stored {
+                Some(value) => *field = value,
+                None => unread.push(note(
+                    name,
+                    unknown.expect("an unknown value came from a line"),
+                    "the game holds an undefined value for it, so the map takes the game's starting value until the option is chosen",
+                )),
+            }
+        }
+        (options, unread)
     }
-    Ok(nato)
 }
 
 /// Reads the user folder's `pdx_settings.txt`, the launcher's display
@@ -482,7 +579,7 @@ const GUI_SCALE_MIN: f32 = 0.5;
 /// desktop.
 const CONSTRUCTED_MIN_GUI: [u32; 2] = [1280, 720];
 /// Initial interface scale.
-const CONSTRUCTED_GUI_SCALE: f32 = 1.0;
+const CONSTRUCTED_GUI_SCALE: f32 = constructed::GUI_SCALE;
 
 impl Display {
     /// Reads `settings.txt`'s `graphics` sub-object ([`SettingsKeys`]: bare
@@ -496,7 +593,8 @@ impl Display {
     /// blocks; every block ends with its own clamp ([`Clamp`]).
     pub fn read(settings: &SettingsKeys, pdx: Option<&[Item]>) -> io::Result<Self> {
         let blocks = settings.assignments_at(&["graphics"]);
-        if blocks.is_empty() {
+        // Without the file the game reads no block: every field keeps its constructed value.
+        if blocks.is_empty() && !settings.is_absent() {
             return Err(io::Error::other("Missing graphics block in game settings"));
         }
         let pair = |key: &str, point: [Option<i32>; 2], constructed: Option<[u32; 2]>| {
@@ -873,54 +971,120 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nato_counters_clamp_as_the_game_reads_them_and_default_to_its_constructor() {
+    fn map_options_read_as_the_game_reads_them_and_default_to_its_constructor() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let read = |text: &str| nato_counters(&SettingsKeys::read(text.as_bytes()));
-        assert_eq!(read(""), Ok(NATO_COUNTERS_DEFAULT));
-        assert_eq!(read("template_counter=1"), Ok(true));
-        assert_eq!(read("template_counter=7"), Ok(true));
-        assert_eq!(read("template_counter=-3"), Ok(false));
-        // `%i` reads a C hexadecimal prefix, and keeps the low 32 bits: 2^32 stores 0.
-        assert_eq!(read("template_counter=0x1"), Ok(true));
-        assert_eq!(read("template_counter=4294967296"), Ok(false));
-        // Ordered writes: the last occurrence wins.
-        assert_eq!(read("template_counter=1
-template_counter=0"), Ok(false));
-        // Bare keywords fold without case; quoted keys are strings and reach no case.
-        assert_eq!(read("Template_Counter=1"), Ok(true));
-        assert_eq!(read("template_counter=1
-TEMPLATE_counter=0"), Ok(false));
-        assert_eq!(read(r#""template_counter"=1"#), Ok(NATO_COUNTERS_DEFAULT));
-        // A quoted value is converted like a bare one.
-        assert_eq!(read(r#"template_counter="1""#), Ok(true));
-        // Counter colours are a map option, never read here, so their value cannot refuse.
-        assert_eq!(read("counter_color_mode=yes
-template_counter=1"), Ok(true));
-        // A value `%i` converts nothing from is the game's undefined read, named.
-        for bad in ["template_counter=-", "template_counter={ 1 }", "template_counter=yes"] {
-            let why = read(bad).unwrap_err();
-            assert!(
-                why.contains("integer scan stores nothing")
-                    && why.contains("recovery does not reset it"),
-                "{bad}: {why}"
-            );
-        }
+        let read = |text: &str| MapOptions::read(&SettingsKeys::read(text.as_bytes()));
+        assert_eq!(read(""), (MapOptions::DEFAULT, Vec::new()));
+        let (stored, unread) = read(
+            "hide_daynight_cycle=yes
+show_allied_plans=yes
+counter_color_mode=0
+template_counter=1",
+        );
+        assert!(unread.is_empty());
+        assert_eq!(
+            stored,
+            MapOptions {
+                day_night: false,
+                allied_plans: true,
+                country_counter_colours: true,
+                nato_counters: true,
+            }
+        );
+        let counters = |text: &str| {
+            let options = read(text).0;
+            (options.country_counter_colours, options.nato_counters)
+        };
+        // `%i` clamps to 0..=1, reads a C hexadecimal prefix and keeps the low 32 bits.
+        assert_eq!(counters("counter_color_mode=-3
+template_counter=7"), (true, true));
+        assert_eq!(counters("template_counter=0x1"), (false, true));
+        assert_eq!(counters("template_counter=4294967296"), (false, false));
+        // Ordered writes: the last occurrence wins; bare keywords fold without case, quoted
+        // keys reach no case, and a quoted value converts like a bare one.
+        assert_eq!(counters("template_counter=1
+TEMPLATE_counter=0"), (false, false));
+        assert_eq!(counters("Template_Counter=1"), (false, true));
+        assert_eq!(counters(r#""template_counter"=1"#), (false, false));
+        assert_eq!(counters(r#"template_counter="1""#), (false, true));
+    }
+
+    /// A line the game cannot convert never stops the read: the option keeps the value the game
+    /// would have before it (a `yes`/`no`) or its default (an integer scan storing nothing,
+    /// unless a later line stores one), and the line is named.
+    #[test]
+    fn unreadable_map_option_lines_keep_the_games_value_and_are_named() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let read = |text: &str| MapOptions::read(&SettingsKeys::read(text.as_bytes()));
+        let (options, unread) = read(
+            "hide_daynight_cycle=yes
+hide_daynight_cycle=maybe
+show_allied_plans={ 1 }
+             counter_color_mode=yes
+template_counter=1",
+        );
+        assert_eq!(
+            options,
+            MapOptions {
+                day_night: false,
+                nato_counters: true,
+                ..MapOptions::DEFAULT
+            }
+        );
+        let named = |option: &str| unread.iter().any(|line| line.contains(option));
+        assert!(named("hide_daynight_cycle") && named("show_allied_plans"));
+        assert!(named("counter_color_mode") && !named("template_counter"), "{unread:?}");
+        // A later stored scan replaces the unknown value.
+        let (options, unread) = read("template_counter=-
+template_counter=1");
+        assert!(options.nato_counters);
+        assert_eq!(unread.len(), 1);
+        let (options, _) = read("template_counter=1
+template_counter=-");
+        assert_eq!(options.nato_counters, MapOptions::DEFAULT.nato_counters);
     }
 
     #[test]
-    fn language_is_the_bare_name_and_refuses_other_forms() {
+    fn language_is_the_stored_request() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
         let language = |text: &str| SettingsKeys::read(text.as_bytes()).language();
-        assert_eq!(language(r#"language="l_english""#).unwrap(), "english");
-        assert_eq!(language("language=l_braz_por").unwrap(), "braz_por");
-        for bad in [
-            r#"language="english""#,
-            r#"language="l_""#,
-            r#"language="l_../x""#,
-            "",
-        ] {
-            assert!(language(bad).is_err(), "{bad}");
-        }
+        assert_eq!(language(r#"language="l_english""#).as_deref(), Some("l_english"));
+        assert_eq!(language("language=l_braz_por").as_deref(), Some("l_braz_por"));
+        // Any other form is still a request: the game's list decides it.
+        assert_eq!(language(r#"language="english""#).as_deref(), Some("english"));
+        assert_eq!(language(r#"language="l_""#).as_deref(), Some("l_"));
+        // None named, or an empty one: the game prepares its first declared language.
+        assert_eq!(language(""), None);
+        assert_eq!(language(r#"language="""#), None);
+    }
+
+    /// A user folder without `settings.txt` reads as the game's constructed settings, never an
+    /// error: the game reads nothing then.
+    #[test]
+    fn an_absent_settings_file_reads_as_the_constructed_settings() {
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let folder = std::env::temp_dir().join(format!("absent-settings-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let keys = read_keys(&folder).unwrap();
+        assert!(keys.is_absent());
+        assert_eq!(keys.language(), None);
+        assert_eq!(MapOptions::read(&keys), (MapOptions::DEFAULT, Vec::new()));
+        assert_eq!(
+            keys.f32_or_constructed(&["camera_tilt"], constructed::CAMERA_TILT),
+            Some(100.0)
+        );
+        assert_eq!(keys.f32_at(&["camera_tilt"]), None);
+        // The display keeps its constructed fields: no block clamps the scale.
+        let display = Display::read(&keys, None).unwrap();
+        assert!(display.clamps.is_empty() && display.size.is_none());
+        assert_eq!(display.min_gui, CONSTRUCTED_MIN_GUI);
+        assert_eq!(display.mode, DisplayMode::Borderless);
+        assert!(Display::read(&SettingsKeys::read(b""), None).is_err());
+        // A present file never takes the constructed values for what it leaves out.
+        let present = SettingsKeys::read(b"");
+        assert!(!present.is_absent());
+        assert_eq!(present.f32_or_constructed(&["camera_tilt"], 100.0), None);
+        std::fs::remove_dir(&folder).unwrap();
     }
 
     /// Two display files and a 2560x1440 monitor at 125%.
@@ -1355,7 +1519,7 @@ template_counter=1"), Ok(true));
             SettingsKeys::read(b"LANGUAGE=\"l_german\"")
                 .language()
                 .unwrap(),
-            "german"
+            "l_german"
         );
     }
 }

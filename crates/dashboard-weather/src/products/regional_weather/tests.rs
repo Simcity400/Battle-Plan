@@ -939,6 +939,7 @@ fn mod_replace_paths_region_names_empty_titles_and_recorded_modifier_labels() {
         "\u{feff}l_english:\n MOD_TITLE:0 \"Overlay region\"\n EMPTY:0 \"\"\n weather_snow:0 \"Synthetic frozen condition\"\n MOD_AIR_TITLE:0 \"Synthetic $ARG$ modifier\"\n",
     );
     write(root, "user/settings.txt", "language=l_english");
+    dashboard_base::test_fixtures::declare_languages(&base);
     let options = dashboard_core::config::ContentOptions {
         options: installed_content_core::ResolveOptions {
             game_dir: base.clone(),

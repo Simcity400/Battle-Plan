@@ -268,8 +268,9 @@ pub struct Content {
     /// The user's `settings.txt` display facts that size the game's interface
     /// on screen, or why they could not be read; see [`crate::map::ui_scale`].
     pub game_display: Result<installed_content_settings::settings::Display, String>,
-    /// The user's `settings.txt` NATO counter frame (`template_counter`).
-    pub game_nato: bool,
+    /// The map options the user's `settings.txt` saves, which the window, a dump and the picker
+    /// start from; a line the game could not read is in [`Self::warnings`].
+    pub game_options: installed_content_settings::settings::MapOptions,
     /// The configured user folder's local world target size; no recorder UI state.
     pub game_full_resolution: bool,
     /// Local show-all strategic names preference; never read from the recording.
@@ -1613,7 +1614,10 @@ impl Document {
         let settings = installed_content_settings::settings::read_keys(&options.user_dir)?;
         let camera_tilt = viewer_foundation::map::camera::stored_tilt(
             settings
-                .f32_at(&["camera_tilt"])
+                .f32_or_constructed(
+                    &["camera_tilt"],
+                    installed_content_settings::settings::constructed::CAMERA_TILT,
+                )
                 .ok_or_else(|| invalid("settings.txt camera_tilt is not a number"))?,
         );
         // The local graphics preference defaults on when no boolean value is stored.
@@ -1641,9 +1645,25 @@ impl Document {
         // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
         // pads every texture file the passes load and sets their global defines.
         let decode = settings.texture_decode();
-        // Text is read in the user's game language, not the recording's.
-        let language = settings.language()?;
-        let game_nato = installed_content_settings::settings::nato_counters(&settings).map_err(invalid)?;
+        // Text is read in the user's game language, not the recording's: settings.txt's when the
+        // mod stack's language list declares it, else the list's first, as the game chooses.
+        let language = installed_content_localisation::localisation::selected_language(
+            &content.layers,
+            settings.language().as_deref(),
+        )
+        .map_err(|error| invalid(format!("No game language: {error}")))?;
+        if settings.is_absent() {
+            warnings.push(format!(
+                "settings.txt is not in {}: the map uses the game's own starting settings, as the game does until it first saves them, with text in {language}, the first language localisation/languages.yml declares.",
+                options.user_dir.display()
+            ));
+        }
+        let (game_options, unread) = installed_content_settings::settings::MapOptions::read(&settings);
+        warnings.extend(
+            unread
+                .into_iter()
+                .map(|line| format!("Map options: {line}.")),
+        );
         // Only the interface scale's default needs these; without them it falls
         // back to 1.0 and says so, rather than refusing the recording.
         let game_display = installed_content_settings::settings::read_pdx(&options.user_dir)
@@ -2731,7 +2751,7 @@ impl Document {
             camera_law,
             game_speeds,
             game_display,
-            game_nato,
+            game_options,
             game_full_resolution,
             game_strategic_names,
             game_audio,

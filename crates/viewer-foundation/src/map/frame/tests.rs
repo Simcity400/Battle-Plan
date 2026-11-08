@@ -388,3 +388,46 @@ fn a_hidden_cycle_fades_out_rather_than_snapping() {
     assert!((first - 0.8).abs() < 1e-6, "{first}");
     assert_eq!(clock.update(30, hidden, 1.0, 1.0).strength, 0.0);
 }
+
+/// The speeds come from the recorded mod stack's defines: a mod that slows the game's fourth
+/// speed moves the replay rate where the cycle hides, and a mod value the game cannot read as a
+/// number is refused by name, never replaced by another table.
+#[test]
+fn a_mods_game_speeds_move_where_the_cycle_hides() {
+    use installed_content_core::ResolvedLayers;
+    let root = std::env::temp_dir().join(format!("mod-game-speeds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let (base, addon) = (root.join("base"), root.join("mod"));
+    let write = |folder: &std::path::Path, text: &str| {
+        std::fs::create_dir_all(folder.join("common/defines")).unwrap();
+        std::fs::write(folder.join("common/defines/speeds.lua"), text).unwrap();
+    };
+    write(
+        &base,
+        "NDefines = { NGame = { GAME_SPEED_SECONDS = { 2.0, 0.5, 0.2, 0.1, 0.0 } } }",
+    );
+    let speeds = |layers: &ResolvedLayers| {
+        GameSpeeds::load(&installed_content_core::defines::read(layers).unwrap())
+    };
+    let vanilla = speeds(&ResolvedLayers::from_folders(&[(&base, &[])]).unwrap()).unwrap();
+    assert!(!vanilla.shows_cycle(true, 24.0));
+    std::fs::create_dir_all(addon.join("common/defines")).unwrap();
+    std::fs::write(
+        addon.join("common/defines/zz_speeds.lua"),
+        "NDefines.NGame.GAME_SPEED_SECONDS = { 2.0, 0.5, 0.2, 0.01, 0.0 }",
+    )
+    .unwrap();
+    let modded = ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+    let modded = speeds(&modded).unwrap();
+    assert_eq!(modded.level(24.0), 3);
+    assert!(modded.shows_cycle(true, 24.0));
+    std::fs::write(
+        addon.join("common/defines/zz_speeds.lua"),
+        r#"NDefines.NGame.GAME_SPEED_SECONDS = { 2.0, "fast", 0.2, 0.1, 0.0 }"#,
+    )
+    .unwrap();
+    let unreadable = ResolvedLayers::from_folders(&[(&base, &[]), (&addon, &[])]).unwrap();
+    let why = speeds(&unreadable).unwrap_err();
+    assert!(why.contains("NDefines.NGame.GAME_SPEED_SECONDS"), "{why}");
+    std::fs::remove_dir_all(&root).unwrap();
+}

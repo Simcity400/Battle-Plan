@@ -94,20 +94,24 @@ impl CameraLaw {
         defines: &installed_content_core::defines::Defines,
         settings: &installed_content_settings::settings::SettingsKeys,
     ) -> io::Result<Self> {
-        let setting = |key: &str| -> io::Result<f32> {
+        use installed_content_settings::settings::constructed;
+        // An absent file reads as the game's constructed settings.
+        let setting = |key: &str, constructed: f32| -> io::Result<f32> {
             settings
-                .f32_at(&[key])
+                .f32_or_constructed(&[key], constructed)
                 .ok_or_else(|| invalid(format!("settings.txt {key} is not a number")))
         };
         Ok(Self::new(
             Self::content_defines(defines)?,
             Speeds {
-                zoom_speed: setting("zoom_speed")?,
-                camera_speed: setting("camera_speed")?,
-                scroll_speed: setting("scroll_speed")?,
-                edge_scrolling: settings.bool_at(&["corner_scrolling"]).ok_or_else(|| {
-                    invalid("settings.txt corner_scrolling is not yes or no".to_owned())
-                })?,
+                zoom_speed: setting("zoom_speed", constructed::ZOOM_SPEED)?,
+                camera_speed: setting("camera_speed", constructed::CAMERA_SPEED)?,
+                scroll_speed: setting("scroll_speed", constructed::SCROLL_SPEED)?,
+                edge_scrolling: settings
+                    .bool_or_constructed(&["corner_scrolling"], constructed::CORNER_SCROLLING)
+                    .ok_or_else(|| {
+                        invalid("settings.txt corner_scrolling is not yes or no".to_owned())
+                    })?,
             },
         ))
     }

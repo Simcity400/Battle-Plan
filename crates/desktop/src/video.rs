@@ -204,16 +204,18 @@ fn game_map_ui_scale() -> Option<f64> {
 fn parse_game_display(
     keys: &installed_content_settings::settings::SettingsKeys,
 ) -> Result<VideoSettings, String> {
-    if !keys.has(&["graphics"]) {
+    use installed_content_settings::settings::constructed;
+    // Without the file the game reads nothing and keeps its constructed settings.
+    if !keys.is_absent() && !keys.has(&["graphics"]) {
         return Err("Missing graphics block in game settings".to_owned());
     }
     let scale = f64::from(
-        keys.f32_at(&["graphics", "gui_scale"])
+        keys.f32_or_constructed(&["graphics", "gui_scale"], constructed::GUI_SCALE)
             .filter(|scale| scale.is_finite())
             .ok_or("Invalid game UI scale")?,
     );
     let vsync = keys
-        .bool_at(&["graphics", "vsync"])
+        .bool_or_constructed(&["graphics", "vsync"], constructed::VSYNC)
         .ok_or("Missing vsync in game settings")?;
     let settings = VideoSettings {
         use_game_settings: true,

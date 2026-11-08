@@ -1534,9 +1534,9 @@ impl Viewer {
         // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
-        // Replaced with the document's `settings.txt` NATO frame when one loads.
+        // Replaced with the document's `settings.txt` options when one loads.
         let counter_view = CounterView::new(
-            options.counter_settings(installed_content_settings::settings::NATO_COUNTERS_DEFAULT),
+            options.counter_settings(&installed_content_settings::settings::MapOptions::DEFAULT),
         );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
         // The monitors are read off the UI thread; start before the first map.
@@ -1605,8 +1605,8 @@ impl Viewer {
             // colour: `--postfx off` reaches the window too, so a window and a
             // dump of the same state can be the same frame.
             postfx: options.postfx,
-            // A host's maps take its graphics preferences when their recording
-            // opens; a `--window-dump` keeps the dump's options.
+            // A host's maps take its graphics preferences; a window without one takes
+            // `settings.txt`'s choices when its recording opens (`install_map`).
             graphics: dashboard::protocol::MapGraphics {
                 day_night: options.day_night.unwrap_or(option_defaults::DAY_NIGHT),
                 show_allied_plans: options.allied_plans.unwrap_or(option_defaults::ALLIED_PLANS),
@@ -1732,11 +1732,21 @@ impl Viewer {
         viewer
     }
 
+    /// The recording's `settings.txt` map options, the command line's first; a host's settings
+    /// replace day/night and allied plans whenever they arrive.
+    fn take_game_options(&mut self, game: &installed_content_settings::settings::MapOptions) {
+        self.counter_view = CounterView::new(self.options.counter_settings(game));
+        if !self.host_graphics {
+            self.graphics.day_night = self.options.day_night.unwrap_or(game.day_night);
+            self.graphics.show_allied_plans = self.options.allied_plans.unwrap_or(game.allied_plans);
+        }
+    }
+
     pub(crate) fn install_map(&mut self, document: Document, scene: Scene, revision: String) {
         self.clock_anchor = None;
         self.playhead = None;
         self.day_night = Default::default();
-        self.counter_view = CounterView::new(self.options.counter_settings(document.game_nato));
+        self.take_game_options(&document.game_options);
         self.unit_selection = Default::default();
         self.air_selection = Default::default();
         self.fleet_selection = Default::default();
@@ -1863,7 +1873,7 @@ impl Viewer {
         if let Some(document) = &self.document {
             self.counter_view.settings.nato = graphics
                 .nato_counters
-                .unwrap_or_else(|| self.options.counter_settings(document.game_nato).nato);
+                .unwrap_or_else(|| self.options.counter_settings(&document.game_options).nato);
         }
     }
 
@@ -2723,8 +2733,7 @@ impl Viewer {
                     self.clock_anchor = held.anchor;
                     self.last_step = now;
                 }
-                self.counter_view =
-                    CounterView::new(self.options.counter_settings(document.game_nato));
+                self.take_game_options(&document.game_options);
                 if self.embedded.is_none() {
                     self.graphics.full_resolution = document.game_full_resolution;
                     self.volumes = document.game_audio;

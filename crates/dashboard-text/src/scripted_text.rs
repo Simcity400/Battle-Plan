@@ -640,6 +640,12 @@ pub fn stored_text(
     bytes: &[u8],
     what: &str,
 ) -> Result<String, String> {
+    if !bytes.is_empty() && localisation.language.is_empty() {
+        return Err(format!(
+            "{what} is text the game stored in {recorded} without its key, and the game language \
+             it would be shown in is unknown"
+        ));
+    }
     if !bytes.is_empty() && recorded != localisation.language {
         return Err(format!(
             "{what} is text the game stored in {recorded} without its key, and the viewer's language is {}",
@@ -915,7 +921,7 @@ impl<'a> ScriptedText<'a> {
             frame,
             reserved_tag: std::sync::OnceLock::new(),
             root,
-            nato_counters: installed_content_settings::settings::NATO_COUNTERS_DEFAULT,
+            nato_counters: installed_content_settings::settings::MapOptions::DEFAULT.nato_counters,
             lexicon: None,
             world: std::sync::OnceLock::new(),
         }

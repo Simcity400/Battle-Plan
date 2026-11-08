@@ -1812,19 +1812,24 @@ pub struct CounterSettings {
 impl CounterColorMode {
     /// The map option's default ([`dashboard_core::map_display::option_defaults`]).
     pub const DEFAULT: Self =
-        if dashboard_core::map_display::option_defaults::COUNTRY_COUNTER_COLOURS {
+        Self::of(dashboard_core::map_display::option_defaults::COUNTRY_COUNTER_COLOURS);
+
+    /// The mode the country-colour option selects.
+    pub const fn of(country_colours: bool) -> Self {
+        if country_colours {
             Self::Country
         } else {
             Self::Allegiance
-        };
+        }
+    }
 }
 
 impl Default for CounterSettings {
-    /// The map option's colours and `settings.txt`'s unstored NATO frame.
+    /// The map options' defaults ([`dashboard_core::map_display::option_defaults`]).
     fn default() -> Self {
         Self {
             color_mode: CounterColorMode::DEFAULT,
-            nato: installed_content_settings::settings::NATO_COUNTERS_DEFAULT,
+            nato: dashboard_core::map_display::option_defaults::NATO_COUNTERS,
         }
     }
 }

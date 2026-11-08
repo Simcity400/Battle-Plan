@@ -183,6 +183,7 @@ pub(crate) fn answer(
     let mut warnings = labels
         .as_ref()
         .map_or_else(|_| Vec::new(), |labels| labels.warnings.clone());
+    warnings.extend(shared::language_note(query));
     let window = match opened {
         Some(opened) => {
             let (refusals, own, keyed) = opened.read(query.cancelled, |_, directory| {

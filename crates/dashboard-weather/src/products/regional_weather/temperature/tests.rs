@@ -158,6 +158,7 @@ fn all_provinces_known_average_is_signed_wide_fixed5_and_never_an_empty_zero() {
 fn mod_overrides_and_replace_path_supply_native_membership_without_backlink_inversion() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let stack = installed_content_core::test_support::Stack::new("weather-temperature-membership");
+    dashboard_base::test_fixtures::declare_languages(&stack.base());
     let base = stack.base();
     let overlay = stack.addon();
     write(
@@ -554,6 +555,7 @@ fn bmp() -> Vec<u8> {
 fn bind_reads_recorded_layered_temperature_content_once_and_refuses_unverified_source() {
     engine_executable::executable_tables::initialize_for_tests().unwrap();
     let stack = installed_content_core::test_support::Stack::new("weather-temperature-content-binding");
+    dashboard_base::test_fixtures::declare_languages(&stack.base());
     let base = stack.base();
     let overlay = stack.addon();
     write(

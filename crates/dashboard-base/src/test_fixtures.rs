@@ -24,6 +24,20 @@ pub fn file_source(replay: replay::campaign::Replay) -> (crate::Source, std::pat
     (source, root)
 }
 
+/// Writes a synthetic language list into the game folder `root`, English then French, unless it
+/// already holds one: every language the game prepares text in is chosen from that list.
+pub fn declare_languages(root: &std::path::Path) {
+    let list = root.join("localisation/languages.yml");
+    if !list.exists() {
+        std::fs::create_dir_all(list.parent().unwrap()).unwrap();
+        std::fs::write(
+            list,
+            "\u{feff}l_english:\n l_english: \"English\"\nl_french:\n l_english: \"French\"\n",
+        )
+        .unwrap();
+    }
+}
+
 /// Gather a synthetic content root whose executable contains `test`.
 pub fn content_identity(
     root: &std::path::Path,
@@ -41,6 +55,7 @@ pub fn content_identity(
         presentation: Default::default(),
     };
     std::fs::create_dir_all(root.join("dlc")).unwrap();
+    declare_languages(root);
     let gathered = installed_content_core::gather(&installed_content_core::GatherOptions {
         game_dir: options.options.game_dir.clone(),
         user_dir: options.options.user_dir.clone(),

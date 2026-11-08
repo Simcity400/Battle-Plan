@@ -677,10 +677,12 @@ fn country_groups_faction_names_use_mod_localisation_override() {
             "\u{feff}l_english:\n DEMO_NAME:0 \"Original Pact\"\n",
         ),
     ]);
+    crate::test_fixtures::declare_languages(&vanilla.0);
     let (_, modded) = crate::catalogue::tests::folder_catalogue(&[(
         "localisation/demo_l_english.yml",
         "\u{feff}l_english:\n DEMO_NAME:0 \"Modded Pact\"\n",
     )]);
+    crate::test_fixtures::declare_languages(&modded.0);
     let layers = installed_content_core::ResolvedLayers::from_folders(&[
         (&vanilla.0, &[][..]),
         (&modded.0, &[][..]),
@@ -1509,11 +1511,12 @@ fn faction_source(frame: DecodedFrame) -> crate::Source {
 }
 
 #[test]
-fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language() {
+fn country_groups_literal_names_need_no_templates_but_check_the_game_language() {
     engine_executable::executable_tables::initialize_for_tests()
         .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
     use crate::products::{ContentOptions, LoadContext, Product};
     let (_, folder) = crate::catalogue::tests::folder_catalogue(&[]);
+    crate::test_fixtures::declare_languages(&folder.0);
     std::fs::write(folder.0.join("settings.txt"), "language=\"l_french\"").unwrap();
     let context = LoadContext {
         content: Some(ContentOptions {
@@ -1527,6 +1530,16 @@ fn country_groups_literal_names_do_not_resolve_content_but_check_viewer_language
         }),
     };
     let source = faction_source(template_frame(100, "My Pact", None));
+    // The game language is chosen from the mod stack's language list, read through the content.
+    source.set_test_content(
+        context.content.as_ref().unwrap().options.clone(),
+        std::sync::Arc::new(installed_content_core::content::ResolvedContent {
+            layers: installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap(),
+            stats: Default::default(),
+            changed: Vec::new(),
+            notes: Vec::new(),
+        }),
+    );
     let reply = super::CountryGroups::load(
         &source,
         &super::CountryGroupParams {
@@ -1579,6 +1592,7 @@ fn country_groups_template_names_ignore_gfx_failures_and_unrelated_warnings() {
         ("interface/test.gfx", "spriteTypes={}"),
         ("settings.txt", "language=\"l_english\""),
     ]);
+    crate::test_fixtures::declare_languages(&folder.0);
     let layers = installed_content_core::ResolvedLayers::from_folders(&[(&folder.0, &[][..])]).unwrap();
     let content = Arc::new(installed_content_core::content::ResolvedContent {
         layers,

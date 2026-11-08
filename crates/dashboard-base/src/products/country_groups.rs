@@ -443,12 +443,10 @@ fn faction_naming(
 ) -> FactionNaming {
     let language = &source.replay_ref().identity.language;
     let recorded_language = language.strip_prefix("l_").unwrap_or(language);
-    // Stored literals need only the selected language, not game assets.
-    let viewer_language = context
-        .content
-        .as_ref()
-        .and_then(|options| content::language(&options.options).ok())
-        .unwrap_or_else(|| recorded_language.to_owned());
+    // Stored literals need only the game language, not game assets.
+    let (viewer_language, language_note) =
+        content::stored_name_language(source, context.content.as_ref());
+    warnings.extend(language_note);
     let naming = context
         .content
         .as_ref()
@@ -456,15 +454,7 @@ fn faction_naming(
         .map(|options| {
             content::check_replay(source.replay_ref(), options.allow_unverified, warnings)?;
             let layers = source.content(&options.options)?;
-            let localisation = content::localisation_with_key(
-                source,
-                options,
-                (
-                    content::content_key(Some(options)).expect("content options given"),
-                    options.options.cache_dir.clone(),
-                    Some(viewer_language.clone()),
-                ),
-            )?;
+            let localisation = content::localisation(source, options)?;
             Ok::<_, io::Error>((layers.layers.faction_templates(), localisation))
         });
     let mut stored_language = Localisation::default();
