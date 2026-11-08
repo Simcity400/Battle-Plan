@@ -222,6 +222,13 @@ impl Pool {
     }
 }
 
+/// Runs `job` for each index below `count` on the rayon threads of the pool it is called on:
+/// a spread for a walker with the threads to itself ([`Walker::decode_apart`]).
+pub fn on_rayon(count: usize, job: &(dyn Fn(usize) + Sync)) {
+    use rayon::prelude::*;
+    (0..count).into_par_iter().for_each(job);
+}
+
 /// `work`, its rayon work on `pool`'s threads when given, else on rayon's.
 pub(crate) fn on_pool<R: Send>(pool: Option<&Pool>, work: impl FnOnce() -> R + Send) -> R {
     match pool {

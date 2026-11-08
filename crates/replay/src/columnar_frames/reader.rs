@@ -4,7 +4,7 @@
 
 use super::{
     Segment, columns_at, withheld_at,
-    input::{Decoder, Held, Source},
+    input::{Decoder, Held, Source, check, chunk_places},
     invalid, schema,
 };
 use crate::rows::{TABLE_COUNT, TableId};
@@ -25,6 +25,7 @@ use std::{
     fmt,
     fs::File,
     io,
+    mem::MaybeUninit,
     ops::Range,
     path::Path,
     sync::{Arc, Mutex, PoisonError, Weak},
@@ -449,7 +450,7 @@ impl RootFile {
     }
 }
 
-/// A columnar recording (`H4COLUMN` version 4), read from its file or memory: its root, every
+/// A columnar recording ([`replay_columnar::envelope`]), read from its file or memory: its root, every
 /// run's directory and the restarts of every page, held from open. A run directory or page
 /// that cannot be read refuses only what it covers ([`Self::damage`]); the rest stays
 /// readable.
@@ -691,26 +692,30 @@ impl Recording {
             || self.selects(extent.stream as usize)
     }
 
-    /// The decoded bytes of `page`'s units that walks decode, and the stored bytes of those within the recording's extents together,
-    /// but for the units of the tables `lost` names: each one's raw length as `length` finds
-    /// it from its place among the page's units, one whose length is damage going to
-    /// `damaged`, counted as none.
+    /// The decoded and stored bytes of `page`'s units that walks decode together, but for the
+    /// units of the tables `lost` names, each unit's raw length as its chunks' frames declare
+    /// it, read from `gathered`'s bytes where it gathered them: one whose length is damage goes
+    /// to `damaged`, counted as none.
     fn unit_lengths(
         &self,
         page: &IndexPage,
         lost: &[(usize, io::Error)],
         damaged: &mut Vec<(Extent, io::Error)>,
-        length: impl Fn(usize, &Extent) -> io::Result<usize>,
+        gathered: Option<(&Decoder, &[usize])>,
     ) -> io::Result<(usize, usize)> {
         let (mut raw, mut stored) = (0_usize, 0_usize);
-        for (slot, extent) in units(page).enumerate() {
+        for (slot, (extent, chunks)) in page.units().enumerate() {
             if !self.decodes(extent) || gone(lost, extent) {
                 continue;
             }
             if let Ok(placed) = self.source.place(extent) {
                 stored = stored.checked_add(placed).ok_or_else(engine_allocation::oom)?;
             }
-            let length = match length(slot, extent) {
+            let held = match gathered.and_then(|(decoder, starts)| Some((decoder, *starts.get(slot)?))) {
+                Some((decoder, at)) if at != usize::MAX => Some(decoder.gathered(extent, at)),
+                _ => self.source.memory_stored(extent).ok(),
+            };
+            let length = match self.source.unit_length(extent, chunks, held) {
                 Ok(length) => length,
                 Err(error) => {
                     let error = Damage::wrap(DamageScope::Extent(*extent), error);
@@ -921,40 +926,19 @@ impl Recording {
         Ok(self.root_extent.digest)
     }
 
-    /// Every table's block of run `run`'s page `at`, raw: each read through the pages before it
-    /// back to the segment's first, the blocks a chained block changes.
-    pub fn page_blocks(&self, run: u32, at: usize) -> io::Result<Vec<(u32, Vec<u8>)>> {
-        let held = self.run(run)?;
-        let from = held
-            .restarts
-            .iter()
-            .filter(|restart| restart.page < at)
-            .map(|restart| restart.page + 1)
-            .last()
-            .unwrap_or(0);
+    /// Run `run`'s page `at`'s units, raw: its hour records, then each table's block.
+    pub fn page_units(&self, run: u32, at: usize) -> io::Result<Vec<(Extent, Vec<u8>)>> {
         let mut decoder = Decoder::new()?;
-        let mut previous: Vec<(u32, Vec<u8>)> = Vec::new();
-        for page in from..=at {
-            let page = self.read_page(run, page, &mut decoder, &mut Vec::new())?;
-            let mut blocks = engine_allocation::vec(page.tables.len())?;
-            for extent in &page.tables {
-                let base = if page.chained.get(extent.stream) {
-                    let at = previous
-                        .binary_search_by_key(&extent.stream, |(table, _)| *table)
-                        .map_err(|_| Damage::wrap(DamageScope::Extent(*extent), invalid("changes a block its page before does not hold")))?;
-                    Some(previous[at].1.as_slice())
-                } else {
-                    None
-                };
-                let mut raw = Vec::new();
-                decoder
-                    .append_with(&self.source, extent, base, &mut raw)
-                    .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
-                blocks.push((extent.stream, raw));
-            }
-            previous = blocks;
+        let page = self.read_page(run, at, &mut decoder, &mut Vec::new())?;
+        let mut units = engine_allocation::vec(1 + page.tables.len())?;
+        for (extent, chunks) in page.units() {
+            let mut raw = Vec::new();
+            decoder
+                .append_unit(&self.source, extent, chunks, &mut raw)
+                .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
+            units.push((*extent, raw));
         }
-        Ok(previous)
+        Ok(units)
     }
 
     /// `out.len()` stored bytes of `extent` from `at` within it; its digest is the caller's to
@@ -1057,8 +1041,11 @@ impl Recording {
         raw.ok_or_else(|| invalid("A restart chain holds no restart"))
     }
 
-    /// `extent`, one of a block's or its restart's, decoded.
+    /// `extent`, one stored as one frame, decoded: any but a page's units ([`Self::page_units`]).
     pub fn extent_bytes(&self, extent: &Extent) -> io::Result<Vec<u8>> {
+        if matches!(extent.kind, envelope::Kind::Records | envelope::Kind::Block) {
+            return Err(invalid("A page's unit is read in its page's chunks"));
+        }
         let mut raw = Vec::new();
         Decoder::new()?
             .append(&self.source, extent, &mut raw)
@@ -1161,11 +1148,6 @@ impl Reads {
     }
 }
 
-/// A page's records, then its tables' blocks.
-fn units(page: &IndexPage) -> impl Iterator<Item = &Extent> {
-    std::iter::once(&page.records).chain(&page.tables)
-}
-
 /// The stored bytes of `run`'s page `at`'s index.
 fn index_bytes(run: &Run, at: usize) -> io::Result<usize> {
     usize::try_from(run.pages[at].stored).map_err(|_| engine_allocation::oom())
@@ -1215,8 +1197,19 @@ fn skipped(recording: &Recording, lost: &[(usize, io::Error)]) -> [bool; TABLE_C
 pub(crate) type Spread<'s> = dyn Fn(usize, &(dyn Fn(usize) + Sync)) + 's;
 
 thread_local! {
-    /// The zstd context a thread decodes restart tables apart with, kept between restores.
-    static RESTORING: std::cell::RefCell<Option<Decoder>> = const { std::cell::RefCell::new(None) };
+    /// The zstd context a thread decodes restart tables and chunks apart with, kept between them.
+    static APART: std::cell::RefCell<Option<Decoder>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `decode` with this thread's own decoder.
+fn apart<T>(decode: impl FnOnce(&mut Decoder) -> io::Result<T>) -> io::Result<T> {
+    APART.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        if cell.is_none() {
+            *cell = Some(Decoder::new()?);
+        }
+        decode(cell.as_mut().ok_or_else(|| invalid("No decoder apart"))?)
+    })
 }
 
 /// `job` of each index below `count`, run on `spread`, each in its place.
@@ -1333,13 +1326,9 @@ pub struct Walker<'r> {
     /// page's units), and where each one's stored bytes begin in its decoder's buffer.
     spans: Vec<(u64, usize, usize)>,
     starts: Vec<usize>,
-    /// The page before's arena and units: what its next page's chained blocks change.
-    previous: Vec<u8>,
-    previous_units: Vec<Option<Range<usize>>>,
-    /// The page before's units in their place while a checkpoint shares them.
-    prior: Option<Arc<Units>>,
-    /// Where restores decode their tables apart; none decodes them in turn.
-    restore_spread: Option<fn(usize, &(dyn Fn(usize) + Sync))>,
+    /// Where restores decode their tables, and walks with no spread of their own a page's
+    /// chunks, apart; none decodes them in turn.
+    spread: Option<fn(usize, &(dyn Fn(usize) + Sync))>,
     /// Tables an isolating walk lost to damage of their own since it began, with the damage.
     lost: Vec<(usize, io::Error)>,
     /// The walk its buffers are sized for ([`Self::hold`]), and what it counts of them.
@@ -1367,10 +1356,7 @@ impl<'r> Walker<'r> {
             units: engine_allocation::collect_vec((0..=TABLE_COUNT).map(|_| None))?,
             spans: Vec::new(),
             starts: Vec::new(),
-            previous: Vec::new(),
-            previous_units: engine_allocation::collect_vec((0..=TABLE_COUNT).map(|_| None))?,
-            prior: None,
-            restore_spread: None,
+            spread: None,
             lost: Vec::new(),
             reads: None,
             tally: None,
@@ -1397,24 +1383,15 @@ impl<'r> Walker<'r> {
     /// Sizes it for a walk reading `reads`: its buffers are made to fit as the walk starts.
     pub(crate) fn hold(&mut self, reads: Reads) -> bool {
         self.reads = Some(reads);
-        // The page before's blocks stay beside the page's for the chained ones.
         let bytes = [reads.raw, reads.stored, self.decoder.context()]
             .into_iter()
-            .fold(reads.raw, usize::saturating_add);
+            .fold(0, usize::saturating_add);
         self.count(self.counted.max(bytes));
         true
     }
 
     /// Gives back its buffers, and the walk it was sized for.
     pub fn park(&mut self) {
-        self.previous = Vec::new();
-        self.previous_units.fill(None);
-        self.prior = None;
-        self.release();
-    }
-
-    /// Gives back its buffers but the page before's, and the walk it was sized for.
-    fn release(&mut self) {
         self.arena = Vec::new();
         self.decoder.release();
         self.reads = None;
@@ -1433,9 +1410,6 @@ impl<'r> Walker<'r> {
         self.raw = Vec::new();
         self.arena = Vec::new();
         self.units.fill(None);
-        self.previous = Vec::new();
-        self.previous_units.fill(None);
-        self.prior = None;
         self.lost.clear();
         Ok(())
     }
@@ -1528,9 +1502,7 @@ impl<'r> Walker<'r> {
                 Err(error) if Damage::of(&error).is_some() => continue,
                 Err(error) => return Err(error),
             };
-            let (raw, stored) = recording.unit_lengths(&page, &[], &mut damaged, |_, extent| {
-                recording.source.raw_length(extent)
-            })?;
+            let (raw, stored) = recording.unit_lengths(&page, &[], &mut damaged, None)?;
             damaged.clear();
             reads = reads.max(Reads { raw, stored });
         }
@@ -1594,7 +1566,7 @@ impl<'r> Walker<'r> {
         self.spans.clear();
         self.starts.clear();
         engine_allocation::resize(&mut self.starts, 1 + page.tables.len(), usize::MAX)?;
-        for (slot, extent) in units(page).enumerate() {
+        for (slot, (extent, _)) in page.units().enumerate() {
             if !recording.decodes(extent) || gone(&self.lost, extent) {
                 continue;
             }
@@ -1608,83 +1580,181 @@ impl<'r> Walker<'r> {
     }
 
     /// Decodes `page`'s records and the blocks of the tables the walk reads into the arena,
-    /// sized by their frames' lengths; a walk that `isolate`s damage leaves out a table whose
-    /// block it cannot read, and every later block of a table it lost.
-    fn load(&mut self, page: &IndexPage, isolate: bool) -> io::Result<()> {
+    /// sized by their declared lengths, their chunks apart on `spread` when given; a walk that
+    /// `isolate`s damage leaves out a table whose block it cannot read, and every later block of
+    /// a table it lost.
+    fn load(&mut self, page: &IndexPage, isolate: bool, spread: Option<&Spread<'_>>) -> io::Result<()> {
         let recording = self.recording;
         let source = &recording.source;
         // A gather that cannot be read leaves each unit to be read alone, as it refuses.
         let gathered = source.reads_file() && self.gather(page).is_ok();
         let mut damaged = Vec::new();
-        let (raw, stored) = {
-            let (decoder, starts) = (&self.decoder, &self.starts);
-            recording.unit_lengths(page, &self.lost, &mut damaged, |slot, extent| {
-                match starts.get(slot) {
-                    Some(&start) if gathered && start != usize::MAX => {
-                        decoder.gathered_length(extent, start)
-                    }
-                    _ => source.raw_length(extent),
-                }
-            })?
-        };
+        let (raw, stored) = recording.unit_lengths(
+            page,
+            &self.lost,
+            &mut damaged,
+            gathered.then_some((&self.decoder, &self.starts[..])),
+        )?;
         for (extent, error) in damaged {
             self.lose(&extent, error, isolate)?;
-        }
-        // A chained page's blocks change the page before's, which stays beside it.
-        let prior = self.prior.take();
-        if page.chained.count() != 0 && prior.is_none() {
-            std::mem::swap(&mut self.arena, &mut self.previous);
-            std::mem::swap(&mut self.units, &mut self.previous_units);
         }
         self.admit(raw, if gathered { 0 } else { stored })?;
         self.arena.clear();
         self.units.fill(None);
-        for (slot, extent) in units(page).enumerate() {
+        match spread {
+            Some(spread) if gathered || !source.reads_file() => {
+                self.load_apart(page, isolate, gathered, spread)
+            }
+            _ => self.load_in_turn(page, isolate, gathered),
+        }
+    }
+
+    /// [`Self::load`]'s units decoded one after another on its own decoder.
+    fn load_in_turn(&mut self, page: &IndexPage, isolate: bool, gathered: bool) -> io::Result<()> {
+        let recording = self.recording;
+        for (slot, (extent, chunks)) in page.units().enumerate() {
             if !recording.decodes(extent) || gone(&self.lost, extent) {
                 continue;
             }
             let start = self.arena.len();
-            let chained = extent.kind == envelope::Kind::Block && page.chained.get(extent.stream);
-            let base = match chained {
-                false => Ok(None),
-                true => match &prior {
-                    Some(prior) => prior.at[extent.stream as usize + 1]
-                        .clone()
-                        .map(|range| Some(&prior.arena[range])),
-                    None => self.previous_units[extent.stream as usize + 1]
-                        .clone()
-                        .map(|range| Some(&self.previous[range])),
-                }
-                .ok_or_else(|| invalid("changes a block the walk did not read")),
-            };
-            let decoded = base.and_then(|base| match self.starts.get(slot) {
+            let decoded = match self.starts.get(slot) {
                 Some(&at) if gathered && at != usize::MAX => {
-                    self.decoder.append_gathered(extent, at, base, &mut self.arena)
+                    self.decoder.append_unit_gathered(extent, chunks, at, &mut self.arena)
                 }
-                _ => self.decoder.append_with(source, extent, base, &mut self.arena),
-            });
+                _ => self.decoder.append_unit(&recording.source, extent, chunks, &mut self.arena),
+            };
             if let Err(error) = decoded {
                 self.arena.truncate(start);
                 let error = Damage::wrap(DamageScope::Extent(*extent), error);
                 self.lose(extent, error, isolate)?;
                 continue;
             }
-            let unit = match extent.kind {
-                envelope::Kind::Records => 0,
-                _ => extent.stream as usize + 1,
-            };
-            self.units[unit] = Some(start..self.arena.len());
+            self.units[unit_place(extent)] = Some(start..self.arena.len());
         }
         Ok(())
+    }
+
+    /// [`Self::load`]'s units, each gathered or in memory: every one's digest checked and every
+    /// chunk decoded into its place in the arena, all apart on `spread`.
+    fn load_apart(
+        &mut self,
+        page: &IndexPage,
+        isolate: bool,
+        gathered: bool,
+        spread: &Spread<'_>,
+    ) -> io::Result<()> {
+        let recording = self.recording;
+        let (decoder, starts, arena) = (&self.decoder, &self.starts, &mut self.arena);
+        // Each unit: its envelope, chunks, stored bytes and place in the arena, and its failure.
+        let mut wanted = Vec::new();
+        let mut total = 0_usize;
+        for (slot, (extent, chunks)) in page.units().enumerate() {
+            if !recording.decodes(extent) || gone(&self.lost, extent) {
+                continue;
+            }
+            let stored = match starts.get(slot) {
+                Some(&at) if gathered && at != usize::MAX => Ok(decoder.gathered(extent, at)),
+                _ => recording.source.memory_stored(extent),
+            };
+            let held = chunks.iter().map(|&chunk| chunk as usize).sum::<usize>();
+            let (stored, failure) = match stored {
+                Ok(stored) if chunks.len() as u64 == envelope::chunk_count(extent.raw) && held == stored.len() => {
+                    (stored, None)
+                }
+                Ok(_) => (&[][..], Some(invalid("differs from its chunks"))),
+                Err(error) => (&[][..], Some(error)),
+            };
+            let raw = usize::try_from(extent.raw).map_err(|_| engine_allocation::oom())?;
+            let end = total.checked_add(raw).ok_or_else(engine_allocation::oom)?;
+            engine_allocation::reserve(&mut wanted, 1)?;
+            wanted.push((extent, chunks, stored, total..end, failure));
+            total = end;
+        }
+        engine_allocation::reserve(arena, total)?;
+        let mut spare = &mut arena.spare_capacity_mut()[..total];
+        // A digest check (no place) or a chunk: its unit, stored bytes, place and outcome.
+        let mut jobs = Vec::new();
+        for (unit, (extent, chunks, stored, place, failure)) in wanted.iter().enumerate() {
+            let stored: &[u8] = stored;
+            let (mut into, rest) = std::mem::take(&mut spare).split_at_mut(place.len());
+            spare = rest;
+            if failure.is_some() {
+                into.fill(MaybeUninit::new(0));
+                continue;
+            }
+            engine_allocation::reserve(&mut jobs, 1 + chunks.len())?;
+            jobs.push(Mutex::new((unit, stored, None, None)));
+            for (stored_at, raw_at) in chunk_places(extent.raw, chunks) {
+                let (chunk, rest) = std::mem::take(&mut into).split_at_mut(raw_at.len());
+                into = rest;
+                jobs.push(Mutex::new((unit, &stored[stored_at], Some(chunk), None)));
+            }
+        }
+        spread(jobs.len(), &|at| {
+            let mut job = jobs[at].lock().unwrap_or_else(PoisonError::into_inner);
+            let (unit, stored, into, outcome) = &mut *job;
+            *outcome = Some(match into {
+                Some(into) => apart(|decoder| decoder.decode_chunk(stored, into)),
+                None => check(wanted[*unit].0, stored),
+            });
+        });
+        let mut decoded = engine_allocation::vec(jobs.len())?;
+        for job in jobs {
+            let (unit, _, into, outcome) = job.into_inner().unwrap_or_else(PoisonError::into_inner);
+            let outcome = outcome.unwrap_or_else(|| Err(io::Error::other("A chunk was never decoded")));
+            if let Err(error) = outcome
+                && wanted[unit].4.is_none()
+            {
+                wanted[unit].4 = Some(error);
+            }
+            decoded.push((unit, into));
+        }
+        // A unit that failed holds bytes no frame wrote: they are made defined, then let go.
+        for (unit, into) in decoded {
+            if let Some(into) = into
+                && wanted[unit].4.is_some()
+            {
+                into.fill(MaybeUninit::new(0));
+            }
+        }
+        // SAFETY: every unit's place is written whole: by its every chunk, else filled above.
+        unsafe { arena.set_len(total) };
+        let mut outcomes = engine_allocation::vec(wanted.len())?;
+        for (extent, _, _, place, failure) in wanted {
+            outcomes.push((*extent, place, failure));
+        }
+        for (extent, place, failure) in outcomes {
+            match failure {
+                None => self.units[unit_place(&extent)] = Some(place),
+                Some(error) => {
+                    let error = Damage::wrap(DamageScope::Extent(extent), error);
+                    self.lose(&extent, error, isolate)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The bytes of the unit at `place` ([`unit_place`]) of the page it loaded last.
+    #[cfg(test)]
+    pub(crate) fn loaded(&self, place: usize) -> Option<&[u8]> {
+        self.units.get(place)?.clone().map(|range| &self.arena[range])
+    }
+
+    /// Decodes page `at` of run `run`'s units the walk reads into its buffers alone, as a walk
+    /// opening the page does, their chunks apart where restores decode apart
+    /// ([`Self::decode_apart`]): no other page is read. The bytes decoded.
+    pub fn load_page(&mut self, run: u32, at: usize) -> io::Result<usize> {
+        let page = self.recording.read_page(run, at, &mut self.decoder, &mut self.raw)?;
+        let own = self.spread;
+        self.load(&page, false, own.as_ref().map(|spread| spread as &Spread<'_>))?;
+        Ok(self.arena.len())
     }
 
     /// Puts into `state` what `segment`'s first hour applies to: its restart's tables, or
     /// empty tables at its run's start.
     pub fn begin(&mut self, segment: &Segment, state: &mut State) -> io::Result<()> {
         self.fit()?;
-        // A segment's first page changes no block before it.
-        self.previous_units.fill(None);
-        self.prior = None;
         self.lose_withheld()?;
         let Some(at) = segment.restart else {
             let recording = self.recording;
@@ -1780,7 +1850,7 @@ impl<'r> Walker<'r> {
                 }
             }
         }
-        let made = match self.restore_spread {
+        let made = match self.spread {
             Some(spread) => {
                 let state = &*state;
                 restore_apart(&spread, wanted.len(), |at| {
@@ -1788,12 +1858,7 @@ impl<'r> Walker<'r> {
                         engine_allocation::labels::Kind::WalkerTables,
                     );
                     let table = wanted[at].0;
-                    RESTORING.with(|cell| {
-                        let mut cell = cell.borrow_mut();
-                        if cell.is_none() {
-                            *cell = Some(Decoder::new()?);
-                        }
-                        let decoder = cell.as_mut().ok_or_else(|| invalid("No restart decoder"))?;
+                    apart(|decoder| {
                         let raw = recording.restart_table(run, &chain, table.table, decoder)?;
                         state.decode_with(table.table as usize, &raw, &mut Scratch::default())
                     })
@@ -1926,6 +1991,8 @@ impl<'r> Walker<'r> {
         let mut chain = self.chain_before(segment)?;
         let mut first = true;
         for at in run.pages_of(segment) {
+            let own = self.spread;
+            let decoding = spread.or(own.as_ref().map(|own| own as &Spread<'_>));
             let mut page = self.open_page(
                 segment.run,
                 at,
@@ -1934,6 +2001,7 @@ impl<'r> Walker<'r> {
                 &mut chain,
                 state,
                 isolate,
+                decoding,
             )?;
             while !page.done() {
                 self.page_hour(&mut page, state, isolate, spread)?;
@@ -1971,7 +2039,8 @@ impl<'r> Walker<'r> {
     /// checked against its ordinals and its chain against `chain`, the chain through the page
     /// before, which then holds its own; its units decoded into the arena, which the page
     /// holds until it is closed ([`Self::close_page`]) or left ([`Self::leave`]). Its hours
-    /// read as `branch`'s, through ordinal `last` at most.
+    /// read as `branch`'s, through ordinal `last` at most; its chunks decoded apart on `spread`
+    /// when given.
     #[allow(clippy::too_many_arguments)]
     fn open_page(
         &mut self,
@@ -1982,6 +2051,7 @@ impl<'r> Walker<'r> {
         chain: &mut [u8; 32],
         state: &mut State,
         isolate: bool,
+        spread: Option<&Spread<'_>>,
     ) -> io::Result<Page> {
         let recording = self.recording;
         let held = recording.run(run)?;
@@ -2002,7 +2072,7 @@ impl<'r> Walker<'r> {
         *chain = next;
         let mut clock = self.timed.then(Instant::now);
         let losing = self.lost.len();
-        self.load(&page, isolate)?;
+        self.load(&page, isolate, spread)?;
         if self.lost.len() != losing {
             state.skip(&skipped(recording, &self.lost))?;
         }
@@ -2195,17 +2265,13 @@ impl<'r> Walker<'r> {
         self.hand_back(page.decoding.into_owner());
     }
 
-    /// Takes back a closed page's units as its arena and their places, or, while a checkpoint
-    /// shares them, holds them for the next page's chained blocks.
+    /// Takes back a closed page's units as its arena and their places, unless a checkpoint
+    /// shares them.
     fn hand_back(&mut self, units: Arc<Units>) {
-        match Arc::try_unwrap(units) {
-            Ok(units) => {
-                // A checkpoint's page may not be the page the walker loaded last.
-                self.units = units.at;
-                self.arena = units.arena;
-                self.prior = None;
-            }
-            Err(shared) => self.prior = Some(shared),
+        if let Ok(units) = Arc::try_unwrap(units) {
+            // A checkpoint's page may not be the page the walker loaded last.
+            self.units = units.at;
+            self.arena = units.arena;
         }
     }
 
@@ -2221,20 +2287,18 @@ impl<'r> Walker<'r> {
         })
     }
 
-    /// Restores decode their tables apart on `spread`: for a walker that has the threads to
-    /// itself.
-    pub(crate) fn restore_apart(&mut self, spread: fn(usize, &(dyn Fn(usize) + Sync))) {
-        self.restore_spread = Some(spread);
+    /// Restores decode their tables, and walks given no spread of their own a page's chunks,
+    /// apart on `spread`, which runs `job` for each index below `count`, on any threads, every
+    /// one before it returns: for a walker that has the threads to itself.
+    pub fn decode_apart(&mut self, spread: fn(usize, &(dyn Fn(usize) + Sync))) {
+        self.spread = Some(spread);
     }
 
     /// Readies it for steps forked from a checkpoint ([`Steps::fork`]), its state shared from
     /// the checkpoint's.
     pub(crate) fn take_up(&mut self) -> io::Result<()> {
         self.fit()?;
-        self.lose_withheld()?;
-        self.previous_units.fill(None);
-        self.prior = None;
-        Ok(())
+        self.lose_withheld()
     }
 
     /// Applies the hours of `steps` up to ordinal `until` (past the next) within its page to
@@ -2271,8 +2335,10 @@ impl<'r> Walker<'r> {
                     .checked_sub(1)
                     .filter(|&at| run.pages[at].first == steps.next)
                     .ok_or_else(|| invalid("A step starts inside a page it did not walk"))?;
-                // Steps walk on through their run's later segments.
-                self.open_page(steps.run, at, steps.branch, u32::MAX, &mut steps.chain, state, false)?
+                // Steps walk on through their run's later segments; a walker that decodes apart
+                // decodes a page's chunks on the hours' spread.
+                let decoding = self.spread.is_some().then_some(spread);
+                self.open_page(steps.run, at, steps.branch, u32::MAX, &mut steps.chain, state, false, decoding)?
             }
         };
         let hours = (page.through - page.next).min(u64::from(until.saturating_sub(steps.next)).max(1));
@@ -2420,6 +2486,14 @@ impl<'r> Walker<'r> {
     }
 }
 
+/// The place among a walker's units of `extent`'s: the records first, then each table's block.
+fn unit_place(extent: &Extent) -> usize {
+    match extent.kind {
+        envelope::Kind::Records => 0,
+        _ => extent.stream as usize + 1,
+    }
+}
+
 /// The damage scope of `page`.
 fn page_scope(page: &IndexPage) -> DamageScope {
     DamageScope::Page {
@@ -2552,18 +2626,15 @@ impl Steps {
     }
 
     /// A copy where it stands, sharing the units of the page under way, for a walk to go on
-    /// from later ([`Walker::take_up`]); none between pages, where the page before is not held.
-    pub(crate) fn fork(&self) -> io::Result<Option<Self>> {
-        let Some(page) = &self.page else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
+    /// from later ([`Walker::take_up`]).
+    pub(crate) fn fork(&self) -> io::Result<Self> {
+        Ok(Self {
             run: self.run,
             branch: self.branch,
             next: self.next,
             chain: self.chain,
-            page: Some(page.fork()?),
-        }))
+            page: self.page.as_ref().map(Page::fork).transpose()?,
+        })
     }
 
     /// The bytes its decoders hold of their own, the units they read aside.

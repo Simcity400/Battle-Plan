@@ -921,39 +921,66 @@ fn selected_units_always_check_their_digest_and_range() {
     }
 }
 
-/// A unit or restart table whose envelope declares another raw length than its frame is
-/// refused as its own damage before any buffer is sized by what it declares, from a file and
-/// from memory.
+/// A unit whose envelope declares another raw length than its chunks' frames is refused as its
+/// own damage, from a file and from memory, and one declaring more chunks than its page lists
+/// refuses the page, before any buffer is sized by it; a restart table declaring another raw
+/// length than its frame is refused as its own damage before any buffer is sized by it.
 #[test]
 fn declared_raw_lengths_are_checked_against_their_frames_before_buffers_are_sized() {
     let countries = TableId::Countries.index() as u32;
+    let walked = |file: &Recording| {
+        let mut state = State::new(schema().unwrap()).unwrap();
+        file.walk(&mut state, |_, _, _| Ok(true)).unwrap_err()
+    };
+    let longer = fixtures::native_recording(1, move |page| {
+        for block in &mut page.tables {
+            block.raw += 1;
+        }
+    });
+    // More chunks than its frames: each listed chunk's frame header declares its raw bytes.
+    let split = fixtures::native_recording(1, move |page| {
+        let mut chunks = vec![page.chunks[0]];
+        for (at, block) in page.tables.iter_mut().enumerate() {
+            let stored = page.chunks[1 + at];
+            block.raw = 3 * envelope::CHUNK_BYTES;
+            chunks.extend([stored - 2, 1, 1]);
+        }
+        page.chunks = chunks;
+    });
+    let (disk, split_disk) = (Saved::new(&longer), Saved::new(&split));
+    for file in [opened(longer.clone()), disk.open(), opened(split.clone()), split_disk.open()] {
+        let refused = walked(&file);
+        assert!(
+            matches!(
+                Damage::of(&refused).unwrap().scope,
+                DamageScope::Extent(extent) if extent.kind == Kind::Block
+            ),
+            "{refused}"
+        );
+        assert!(refused.to_string().ends_with("differs from its chunk's frame length"), "{refused}");
+    }
     // No allocation could hold either: a refusal for lack of memory names no damage.
     for raw in [1 << 40, u64::MAX] {
-        let bytes = fixtures::native_recording(1, move |page| {
+        let unlisted = fixtures::native_recording(1, move |page| {
             for block in &mut page.tables {
                 block.raw = raw;
             }
+        });
+        let restart = fixtures::native_recording(1, move |page| {
             page.restart.as_mut().unwrap().tables[countries as usize]
                 .extent
                 .raw = raw;
         });
-        let disk = Saved::new(&bytes);
-        for file in [opened(bytes.clone()), disk.open()] {
+        let (unlisted_disk, restart_disk) = (Saved::new(&unlisted), Saved::new(&restart));
+        for file in [opened(unlisted.clone()), unlisted_disk.open()] {
+            let refused = walked(&file);
+            assert!(
+                matches!(Damage::of(&refused).unwrap().scope, DamageScope::Page { run: 0, first: 0, .. }),
+                "{refused}"
+            );
+        }
+        for file in [opened(restart.clone()), restart_disk.open()] {
             let mut state = State::new(schema().unwrap()).unwrap();
-            let refused = file.walk(&mut state, |_, _, _| Ok(true)).unwrap_err();
-            assert!(
-                matches!(
-                    Damage::of(&refused).unwrap().scope,
-                    DamageScope::Extent(extent) if extent.stream == countries && extent.raw == raw
-                ),
-                "{refused}"
-            );
-            assert!(
-                refused
-                    .to_string()
-                    .ends_with("differs from its frame's length"),
-                "{refused}"
-            );
             let refused = file.restore(0, 0, &mut state).unwrap_err();
             assert_eq!(
                 Damage::of(&refused).unwrap().scope,
@@ -964,6 +991,7 @@ fn declared_raw_lengths_are_checked_against_their_frames_before_buffers_are_size
                 },
                 "{refused}"
             );
+            assert!(refused.to_string().ends_with("differs from its frame's length"), "{refused}");
         }
     }
 }
@@ -1358,4 +1386,98 @@ fn format_136_columns_are_this_builds_but_the_appended() {
         replay_columnar::envelope::schema_digest_prefix(&schema, &columns),
         Some(replay_columnar::envelope::schema_digest(&schema))
     );
+}
+
+/// A unit past one chunk reads back whole, its chunks decoded in turn or apart, from memory and
+/// from a file; chunks listed out of place refuse their unit by name.
+#[test]
+fn units_past_one_chunk_read_back_whole_in_turn_and_apart() {
+    use crate::columnar_file::{Block, FileWriter, Settings};
+    let made = |seed: u64, length: usize| -> Vec<u8> {
+        (0..length as u64)
+            .map(|at| ((at.wrapping_mul(2_654_435_761) ^ seed) >> 7) as u8)
+            .collect()
+    };
+    let records = made(1, 300);
+    let table = TableId::Countries.index() as u32;
+    let payload = made(2, (envelope::CHUNK_BYTES * 5 / 2) as usize);
+    let written = |parallel: bool, swap: bool| {
+        let identity = envelope::Identity {
+            schema: envelope::schema_digest(&schema().unwrap()),
+            campaign: b"chunks".to_vec(),
+            content: Vec::new(),
+            capture_mode: CaptureMode::Full.byte(),
+        };
+        let settings = Settings { level: 1, parallel };
+        let none = vec![0_u64; TABLE_COUNT.div_ceil(64)];
+        let tables = [(table, payload.clone())];
+        let mut file = FileWriter::create(std::io::Cursor::new(Vec::new()), identity, TABLE_COUNT, settings)
+            .unwrap()
+            .with_tamper(move |page| {
+                if swap {
+                    assert_ne!(page.chunks[2], page.chunks[3]);
+                    page.chunks.swap(2, 3);
+                }
+            });
+        file.start_run(1, envelope::epoch::START, 1).unwrap();
+        file.block(Block {
+            first_hour: 1,
+            last_hour: 10,
+            hours: 10,
+            records: &records,
+            tables: &tables,
+            sectioned: &none,
+            read: &none,
+            status_changed: &none,
+            restart: None,
+        })
+        .unwrap();
+        file.finish(|_| Ok(())).unwrap().file.into_inner()
+    };
+    let spread = |count: usize, job: &(dyn Fn(usize) + Sync)| {
+        use rayon::prelude::*;
+        (0..count).into_par_iter().for_each(job);
+    };
+    for (parallel, swap) in [(false, false), (true, false), (false, true)] {
+        let bytes = written(parallel, swap);
+        let disk = Saved::new(&bytes);
+        for recording in [opened(bytes.clone()), disk.open()] {
+            let page = recording.page(0, 0).unwrap();
+            let counts: Vec<usize> = page.units().map(|(_, chunks)| chunks.len()).collect();
+            assert_eq!(counts, [1, 3]);
+            let units = recording.page_units(0, 0);
+            for apart in [false, true] {
+                let mut walker = Walker::new(&recording).unwrap();
+                if apart {
+                    walker.decode_apart(spread);
+                }
+                let loaded = walker.load_page(0, 0);
+                if swap {
+                    let refused = loaded.unwrap_err();
+                    assert!(
+                        matches!(
+                            Damage::of(&refused).unwrap().scope,
+                            DamageScope::Extent(extent) if extent.kind == Kind::Block && extent.stream == table
+                        ),
+                        "{refused}"
+                    );
+                    continue;
+                }
+                assert_eq!(loaded.unwrap(), records.len() + payload.len());
+                assert_eq!(walker.loaded(0), Some(&records[..]));
+                assert_eq!(walker.loaded(table as usize + 1), Some(&payload[..]));
+            }
+            match units {
+                Ok(units) => {
+                    assert!(!swap);
+                    let raw: Vec<Vec<u8>> = units.into_iter().map(|(_, raw)| raw).collect();
+                    assert_eq!(raw, [records.clone(), payload.clone()]);
+                }
+                Err(refused) => {
+                    assert!(swap);
+                    assert!(matches!(Damage::of(&refused).unwrap().scope, DamageScope::Extent(_)));
+                }
+            }
+        }
+    }
 }

@@ -105,6 +105,10 @@ pub const BLOCK_RECORDINGS_FORMAT: u16 = 139;
 /// from its LandCombatDivisions row. The relaid tables' tombstones go, and older recordings
 /// refuse them by name.
 pub const STORED_ONCE_FORMAT: u16 = 140;
+/// Owner-approved: a columnar page's units each decode alone, in chunks of 2 MB raw compressed
+/// apart (H4COLUMN version 8, which refuses earlier columnar recordings by name). Row tables and
+/// frames are unchanged.
+pub const STANDALONE_UNITS_FORMAT: u16 = 141;
 /// The tables [`STORED_ONCE_FORMAT`] relays.
 pub const STORED_ONCE_TABLES: [TableId; 5] = [
     TableId::DivisionStatus,
@@ -5140,7 +5144,7 @@ mod tests {
             ],
         );
         assert_eq!(PLAYER_COMMANDS_FORMAT, 131);
-        assert_eq!(FORMAT_VERSION, STORED_ONCE_FORMAT);
+        assert_eq!(FORMAT_VERSION, STANDALONE_UNITS_FORMAT);
         let change = TableId::RaidPathDistances.last_change();
         assert_eq!(change.format, RAID_DISPATCHERS_FORMAT);
         assert_eq!(change.kind, ChangeKind::Layout);

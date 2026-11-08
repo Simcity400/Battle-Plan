@@ -234,11 +234,10 @@ fn segments_read_back(recording: &Recording, frames: &[DecodedFrame]) {
     }
 }
 
-/// Between restarts, each table's block is a change from its block before, and every hour
-/// still reads back; restarts past the first are changes from the one before, and every
-/// keyframe-th is stored whole.
+/// Every page's units stand alone, listed chunk by chunk, and every hour reads back; restarts
+/// past the first are changes from the one before, and every keyframe-th is stored whole.
 #[test]
-fn chained_blocks_and_restart_deltas_read_back_from_every_segment() {
+fn standalone_units_and_restart_deltas_read_back_from_every_segment() {
     let blocks = envelope::KEYFRAME_RESTARTS * 2 + 3;
     let hours = (blocks * envelope::UNIT_ORDINALS) as i32;
     let (bytes, frames) = written(hours, 2);
@@ -248,7 +247,11 @@ fn chained_blocks_and_restart_deltas_read_back_from_every_segment() {
     let mut restarts = 0;
     for at in 0..recording.run(0).unwrap().pages() {
         let page = recording.page(0, at).unwrap();
-        assert_eq!(page.chained.ones().next().is_some(), at % 2 == 1, "page {at}");
+        for (unit, chunks) in page.units() {
+            assert_eq!(chunks.len() as u64, envelope::chunk_count(unit.raw), "page {at}");
+        }
+        let units = recording.page_units(0, at).unwrap();
+        assert_eq!(units.len(), 1 + page.tables.len(), "page {at}");
         if let Some(restart) = &page.restart {
             assert_eq!(restart.ordinal, restarts);
             let whole = restarts % envelope::KEYFRAME_RESTARTS == 0;
@@ -490,9 +493,13 @@ fn written_runs(runs: &[(u64, i32, i32)], capture: &Capture) -> Vec<u8> {
 }
 
 /// Run `run`'s page `at` as its file holds it: its records and every table's block, raw.
-fn blocks_of(recording: &Recording, run: u32, at: usize) -> (Vec<u8>, Vec<(u32, Vec<u8>)>) {
-    let page = recording.page(run, at).unwrap();
-    (recording.extent_bytes(&page.records).unwrap(), recording.page_blocks(run, at).unwrap())
+fn blocks_of(recording: &Recording, run: u32, at: usize) -> Vec<(u32, Vec<u8>)> {
+    recording
+        .page_units(run, at)
+        .unwrap()
+        .into_iter()
+        .map(|(extent, raw)| (extent.stream, raw))
+        .collect()
 }
 
 /// Keeping some branches rewrites their runs hour for hour, restarts and all, each chained from

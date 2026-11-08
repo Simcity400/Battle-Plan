@@ -4,7 +4,7 @@
 use super::invalid;
 use engine_allocation::zstd::{Decompressor, Error, Holder};
 use replay_columnar::envelope::{self, Extent, Kind};
-use std::{fs::File, io};
+use std::{fs::File, io, mem::MaybeUninit, ops::Range};
 use zstd::zstd_safe;
 
 /// The blocks a footer is searched for and a file's root hashed in.
@@ -205,6 +205,25 @@ impl Source {
         frame_length(extent, header)
     }
 
+    /// A page unit's raw length once its place is checked and each of its `chunks`' frame headers
+    /// declares that chunk's: what buffers are sized by before it decodes. The headers are read
+    /// from `stored`, its stored bytes, when given.
+    pub(super) fn unit_length(&self, extent: &Extent, chunks: &[u32], stored: Option<&[u8]>) -> io::Result<usize> {
+        self.place(extent)?;
+        let mut at = 0_u64;
+        for (index, &length) in (0_u64..).zip(chunks) {
+            let mut header = [0; FRAME_HEADER];
+            let header = &mut header[..(length as usize).min(FRAME_HEADER)];
+            match stored {
+                Some(stored) => header.copy_from_slice(&stored[at as usize..][..header.len()]),
+                None => self.held.read(extent.offset + at, header)?,
+            }
+            chunk_header(header, envelope::chunk_raw(extent.raw, index))?;
+            at += u64::from(length);
+        }
+        usize::try_from(extent.raw).map_err(|_| engine_allocation::oom())
+    }
+
     /// `out.len()` stored bytes of `extent` from `at` within it, once its place is checked; the
     /// digest is not: the caller checks the extent whole once.
     pub(super) fn stored_at(&self, extent: &Extent, at: u64, out: &mut [u8]) -> io::Result<()> {
@@ -222,6 +241,15 @@ impl Source {
         let stored = self.stored(extent, buffer)?;
         check(extent, stored)?;
         Ok(stored)
+    }
+
+    /// `extent`'s stored bytes in memory once their place is checked; a file's are not read.
+    pub(super) fn memory_stored(&self, extent: &Extent) -> io::Result<&[u8]> {
+        let length = self.place(extent)?;
+        match &self.held {
+            Held::Memory(bytes) => Ok(&bytes[extent.offset as usize..][..length]),
+            Held::File(_) => Err(io::Error::other("A unit of a file was not gathered")),
+        }
     }
 
     /// `extent`'s stored bytes once their place is checked; a file's are read into `buffer`.
@@ -255,7 +283,7 @@ fn frame_length(extent: &Extent, frame: &[u8]) -> io::Result<usize> {
 pub(super) const TRAILING: &str = "holds bytes past its frame";
 
 /// Refuses `stored`, `extent`'s bytes, unless they hold its digest.
-fn check(extent: &Extent, stored: &[u8]) -> io::Result<()> {
+pub(super) fn check(extent: &Extent, stored: &[u8]) -> io::Result<()> {
     if envelope::digest(stored) != extent.digest {
         return Err(invalid("differs from its digest"));
     }
@@ -355,24 +383,101 @@ impl Decoder {
         Ok(())
     }
 
-    /// The raw length of `extent`, gathered from `start`: as [`Source::raw_length`] reads it.
-    pub(super) fn gathered_length(&self, extent: &Extent, start: usize) -> io::Result<usize> {
-        let stored = extent.stored as usize;
-        frame_length(extent, &self.stored[start..][..stored.min(FRAME_HEADER)])
+    /// The stored bytes of `extent`, gathered from `start`.
+    pub(super) fn gathered(&self, extent: &Extent, start: usize) -> &[u8] {
+        &self.stored[start..][..extent.stored as usize]
     }
 
-    /// Appends the raw bytes of `extent`, gathered from `start`, to `out`: as
-    /// [`Self::append_with`] decodes it.
-    pub(super) fn append_gathered(
+    /// Appends page unit `extent`'s raw bytes, stored as `chunks`, to `out`: its place and digest
+    /// checked, then each chunk decoded in turn.
+    pub(super) fn append_unit(
+        &mut self,
+        source: &Source,
+        extent: &Extent,
+        chunks: &[u32],
+        out: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let stored = source.stored(extent, &mut self.stored)?;
+        decode_unit(&mut self.context, extent, stored, chunks, out)
+    }
+
+    /// [`Self::append_unit`] of a unit gathered from `start`.
+    pub(super) fn append_unit_gathered(
         &mut self,
         extent: &Extent,
+        chunks: &[u32],
         start: usize,
-        base: Option<&[u8]>,
         out: &mut Vec<u8>,
     ) -> io::Result<()> {
         let stored = &self.stored[start..][..extent.stored as usize];
-        decode(&mut self.context, extent, stored, base, out)
+        decode_unit(&mut self.context, extent, stored, chunks, out)
     }
+
+    /// Decodes one chunk, `stored`, into `out`, which its frame fills exactly.
+    pub(super) fn decode_chunk(&mut self, stored: &[u8], out: &mut [MaybeUninit<u8>]) -> io::Result<()> {
+        decode_chunk(&mut self.context, stored, out)
+    }
+}
+
+/// Each chunk of a unit of `raw` bytes stored as `chunks`: where its stored bytes and its raw
+/// bytes sit within the unit's.
+pub(super) fn chunk_places(raw: u64, chunks: &[u32]) -> impl Iterator<Item = (Range<usize>, Range<usize>)> + '_ {
+    let mut stored = 0;
+    (0_u64..).zip(chunks).map(move |(at, &length)| {
+        let from = stored;
+        stored += length as usize;
+        let start = (at * envelope::CHUNK_BYTES) as usize;
+        (from..stored, start..start + envelope::chunk_raw(raw, at) as usize)
+    })
+}
+
+/// Appends `stored`, unit `extent`'s bytes as `chunks`, decoded to `out`, its digest checked
+/// first.
+fn decode_unit(
+    context: &mut Decompressor,
+    extent: &Extent,
+    stored: &[u8],
+    chunks: &[u32],
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    check(extent, stored)?;
+    let raw = usize::try_from(extent.raw).map_err(|_| engine_allocation::oom())?;
+    let held = chunks.iter().map(|&chunk| chunk as usize).sum::<usize>();
+    if chunks.len() as u64 != envelope::chunk_count(extent.raw) || held != stored.len() {
+        return Err(invalid("differs from its chunks"));
+    }
+    for (stored_at, raw_at) in chunk_places(extent.raw, chunks) {
+        chunk_header(&stored[stored_at], raw_at.len() as u64)?;
+    }
+    engine_allocation::reserve(out, raw)?;
+    let spare = &mut out.spare_capacity_mut()[..raw];
+    for (stored_at, raw_at) in chunk_places(extent.raw, chunks) {
+        decode_chunk(context, &stored[stored_at], &mut spare[raw_at])?;
+    }
+    // SAFETY: the chunks cover the unit's raw bytes, and each decoded fills its own.
+    unsafe { out.set_len(out.len() + raw) };
+    Ok(())
+}
+
+/// Refuses `header`, the start of one chunk's frame, unless it declares `raw` bytes.
+fn chunk_header(header: &[u8], raw: u64) -> io::Result<()> {
+    match zstd_safe::get_frame_content_size(header) {
+        Ok(Some(declared)) if declared == raw => Ok(()),
+        _ => Err(invalid("differs from its chunk's frame length")),
+    }
+}
+
+/// Decodes `stored`, one chunk's frame, into `out`, which it fills exactly.
+fn decode_chunk(context: &mut Decompressor, stored: &[u8], out: &mut [MaybeUninit<u8>]) -> io::Result<()> {
+    chunk_header(stored, out.len() as u64)?;
+    if zstd_safe::find_frame_compressed_size(stored).ok() != Some(stored.len()) {
+        return Err(invalid(TRAILING));
+    }
+    let written = context.decompress_into(out, stored).map_err(Error::invalid)?;
+    if written != out.len() {
+        return Err(invalid("decompresses to another length"));
+    }
+    Ok(())
 }
 
 /// Appends `stored`, `extent`'s bytes, decoded to `out` with `base` as its prefix when it was

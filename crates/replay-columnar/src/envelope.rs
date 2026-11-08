@@ -1,4 +1,4 @@
-//! A recording's saved-file envelope (`H4COLUMN` version 7): one campaign, every session in it.
+//! A recording's saved-file envelope (`H4COLUMN` version 8): one campaign, every session in it.
 //!
 //! The file is append-only: zstd extents in any order, then a [`Root`] extent, then a
 //! fixed [`FOOTER_BYTES`] footer naming the root. A writer appends extents, syncs, appends
@@ -13,9 +13,9 @@
 //! per block names its hour records ([`crate::records`]) and each table's block
 //! ([`crate::block`]) for the tables with hours in it, the restart that may end it (one extent
 //! per table and the run's dictionary chunk, under one ordinal barrier), which tables the block
-//! touched, and the chain after it. A table's block may be stored as a change from its block
-//! of the page before ([`IndexPage::chained`]), never past a restart, which walks start from.
-//! A restart's table is stored as a change from the run's
+//! touched, and the chain after it. A page's records and blocks (its units) each decode alone,
+//! stored as frames of [`CHUNK_BYTES`] raw bytes each compressed apart ([`IndexPage::chunks`]),
+//! so one unit decodes on many threads. A restart's table is stored as a change from the run's
 //! previous restart's ([`RestartTable::base`]), every [`KEYFRAME_RESTARTS`]th whole. Dictionary
 //! ids are run-local. Each run's pages are listed by its own [`RunDirectory`] extent, the
 //! campaign's records by [`Kind::Controls`] extents and its game facts by [`Kind::Facts`]
@@ -34,10 +34,10 @@ use std::io;
 mod tests;
 
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
-/// 7: a whole restart every 16th ([`KEYFRAME_RESTARTS`]); 6: a whole campaign in one file, its
-/// records and game facts in the root; 5: each table's hours stored once per block of
-/// [`UNIT_ORDINALS`].
-pub const VERSION: u32 = 7;
+/// 8: a page's units decode alone, in chunks ([`CHUNK_BYTES`]); 7: a whole restart every 16th
+/// ([`KEYFRAME_RESTARTS`]); 6: a whole campaign in one file, its records and game facts in the
+/// root; 5: each table's hours stored once per block of [`UNIT_ORDINALS`].
+pub const VERSION: u32 = 8;
 pub const HEADER_BYTES: usize = 12;
 pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
@@ -50,6 +50,8 @@ pub const RESTART_BLOCKS: u32 = 3;
 /// restart before them. Opening a walk at a restart decodes up to this many restarts, and a
 /// damaged restart costs the walks of the restarts after it up to the next whole one.
 pub const KEYFRAME_RESTARTS: u32 = 16;
+/// Raw bytes per chunk of a page's unit; only a unit's last chunk may hold fewer.
+pub const CHUNK_BYTES: u64 = 2 << 20;
 /// The fewest bytes an [`Extent`] envelope encodes in: its kind, seven varints, its digest.
 const EXTENT_BYTES: usize = 1 + 7 + 16;
 
@@ -295,9 +297,10 @@ pub struct IndexPage {
     pub records: Extent,
     /// The block of each table with hours in it, ascending by table.
     pub tables: Vec<Extent>,
-    /// The tables whose block is zstd with their block of the page before, raw, as its
-    /// dictionary; never in a run's first page or the page after a restart.
-    pub chained: Bits,
+    /// Each unit's chunks' stored lengths, the records' then each table's block's, in order: a
+    /// unit of `raw` bytes is [`chunk_count`] zstd frames, each of [`CHUNK_BYTES`] raw bytes but
+    /// its last, compressed apart and stored end to end.
+    pub chunks: Vec<u32>,
     pub restart: Option<RestartDirectory>,
     /// Tables some hour of the position has a section for.
     pub sectioned: Bits,
@@ -307,6 +310,17 @@ pub struct IndexPage {
     pub status_changed: Bits,
     /// The chain after the block ([`chain_block`]).
     pub chain: [u8; 32],
+}
+
+/// The chunks a unit of `raw` bytes is stored in: one at least.
+pub const fn chunk_count(raw: u64) -> u64 {
+    if raw == 0 { 1 } else { raw.div_ceil(CHUNK_BYTES) }
+}
+
+/// The raw bytes of chunk `at` of a unit of `raw` bytes.
+pub const fn chunk_raw(raw: u64, at: u64) -> u64 {
+    let start = at * CHUNK_BYTES;
+    if raw - start < CHUNK_BYTES { raw - start } else { CHUNK_BYTES }
 }
 
 fn zigzag(value: i32) -> u64 {
@@ -355,6 +369,10 @@ impl IndexPage {
         for table in &self.tables {
             table.write(&mut writer)?;
         }
+        writer.varint(self.chunks.len() as u64)?;
+        for &chunk in &self.chunks {
+            writer.varint(u64::from(chunk))?;
+        }
         match &self.restart {
             None => writer.u8(0)?,
             Some(restart) => {
@@ -377,7 +395,6 @@ impl IndexPage {
                 }
             }
         }
-        write_bits(&mut writer, &self.chained)?;
         write_bits(&mut writer, &self.sectioned)?;
         write_bits(&mut writer, &self.read)?;
         write_bits(&mut writer, &self.status_changed)?;
@@ -399,6 +416,11 @@ impl IndexPage {
         let mut blocks = engine_allocation::vec(count)?;
         for _ in 0..count {
             blocks.push(Extent::read(&mut reader)?);
+        }
+        let count = bounded(reader.count()?, usize::MAX, bytes, 1)?;
+        let mut chunks = engine_allocation::vec(count)?;
+        for _ in 0..count {
+            chunks.push(reader.varint_u32()?);
         }
         let restart = match reader.u8()? {
             0 => None,
@@ -444,7 +466,6 @@ impl IndexPage {
             }
             _ => return Err(invalid("A page's restart marker is malformed")),
         };
-        let chained = read_bits(&mut reader, tables)?;
         let sectioned = read_bits(&mut reader, tables)?;
         let read = read_bits(&mut reader, tables)?;
         let status_changed = read_bits(&mut reader, tables)?;
@@ -458,7 +479,7 @@ impl IndexPage {
             last_hour,
             records,
             tables: blocks,
-            chained,
+            chunks,
             restart,
             sectioned,
             read,
@@ -470,6 +491,18 @@ impl IndexPage {
         }
         page_read.validate(tables)?;
         Ok(page_read)
+    }
+
+    /// Its units, the records then each table's block, each with its chunks' stored lengths.
+    pub fn units(&self) -> impl Iterator<Item = (&Extent, &[u32])> {
+        let mut rest = self.chunks.as_slice();
+        std::iter::once(&self.records).chain(&self.tables).map(move |unit| {
+            // A page read is validated: its chunks list each unit's.
+            let count = (chunk_count(unit.raw) as usize).min(rest.len());
+            let (chunks, after) = rest.split_at(count);
+            rest = after;
+            (unit, chunks)
+        })
     }
 
     /// Table `table`'s block, when it has hours in this one.
@@ -508,11 +541,23 @@ impl IndexPage {
             }
             previous = Some(block.stream);
         }
-        if self.chained.ones().any(|table| self.table(table).is_none()) {
-            return Err(invalid("A page chains a table it holds no block of"));
+        let mut rest = self.chunks.as_slice();
+        for unit in std::iter::once(&self.records).chain(&self.tables) {
+            let count = usize::try_from(chunk_count(unit.raw))
+                .ok()
+                .filter(|&count| count <= rest.len())
+                .ok_or_else(|| unit.damaged("has more chunks than its page lists"))?;
+            let (chunks, after) = rest.split_at(count);
+            rest = after;
+            let stored = chunks
+                .iter()
+                .try_fold(0_u64, |stored, &chunk| stored.checked_add(u64::from(chunk)));
+            if stored != Some(unit.stored) || chunks.contains(&0) {
+                return Err(unit.damaged("differs from its chunks' stored lengths"));
+            }
         }
-        if self.first == 0 && self.chained.count() != 0 {
-            return Err(invalid("A run's first page chains a block"));
+        if !rest.is_empty() {
+            return Err(invalid("A page lists chunks of no unit"));
         }
         if let Some(restart) = &self.restart {
             restart.chunk.expect(Kind::DictionaryChunk, self.run)?;
@@ -781,7 +826,7 @@ pub fn check_header(header: &[u8]) -> io::Result<()> {
     match version.cmp(&VERSION) {
         std::cmp::Ordering::Equal => Ok(()),
         std::cmp::Ordering::Less => Err(invalid(format!(
-            "An H4COLUMN version {version} recording, older than this build's version {VERSION};              this build reads version {VERSION} only and has no upgrader for it"
+            "An H4COLUMN version {version} recording, older than this build's version {VERSION}; this build reads version {VERSION} only and has no upgrader for it"
         ))),
         std::cmp::Ordering::Greater => Err(invalid(format!(
             "An H4COLUMN version {version} recording, newer than this build's version {VERSION}"

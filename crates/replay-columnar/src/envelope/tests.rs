@@ -36,7 +36,7 @@ fn page(first: u32, hours: u32, restart: bool) -> IndexPage {
             extent(Kind::Block, 1, 0, first, hours),
             extent(Kind::Block, 1, 2, first, hours),
         ],
-        chained: bits(if first == 0 { &[] } else { &[2] }),
+        chunks: vec![10; 3],
         restart: restart.then(|| RestartDirectory {
             after: first + hours - 1,
             hour: 7,
@@ -93,13 +93,27 @@ fn pages_refuse_blocks_and_restarts_off_their_block() {
     let mut past_schema = page(0, UNIT_ORDINALS, false);
     past_schema.tables[1].stream = TABLES as u32;
     assert!(reads(&past_schema).is_err());
-    // A chained table holds a block, and a run's first page chains none.
-    let mut unheld = page(UNIT_ORDINALS, UNIT_ORDINALS, false);
-    unheld.chained = bits(&[1]);
-    assert!(reads(&unheld).is_err());
-    let mut first = page(0, UNIT_ORDINALS, false);
-    first.chained = bits(&[2]);
-    assert!(reads(&first).is_err());
+    // Each unit's chunks are listed once, their stored lengths its own.
+    let mut unlisted = page(0, UNIT_ORDINALS, false);
+    unlisted.chunks.pop();
+    assert!(reads(&unlisted).is_err());
+    let mut extra = page(0, UNIT_ORDINALS, false);
+    extra.chunks.push(1);
+    assert!(reads(&extra).is_err());
+    let mut longer = page(0, UNIT_ORDINALS, false);
+    longer.chunks[1] = 11;
+    assert!(reads(&longer).is_err());
+    let mut split = page(0, UNIT_ORDINALS, false);
+    split.tables[0].raw = CHUNK_BYTES + 1;
+    assert!(reads(&split).is_err());
+    split.chunks = vec![10, 4, 6, 10];
+    assert_eq!(reads(&split).unwrap(), split);
+    let units: Vec<_> = split.units().map(|(unit, chunks)| (unit.stream, chunks.to_vec())).collect();
+    assert_eq!(units, [(0, vec![10]), (0, vec![4, 6]), (2, vec![10])]);
+    let mut empty = page(0, UNIT_ORDINALS, false);
+    empty.chunks[2] = 0;
+    empty.tables[1].stored = 0;
+    assert!(reads(&empty).is_err());
     let mut missing = page(0, UNIT_ORDINALS, true);
     missing.restart.as_mut().unwrap().tables.pop();
     assert!(reads(&missing).is_err());
@@ -280,4 +294,15 @@ fn the_chain_follows_every_block_extent_of_a_run() {
     let mut moved = tables;
     moved[1].stream = 3;
     assert_ne!(block, chain_block(&start, &records, &moved));
+}
+
+#[test]
+fn a_unit_is_whole_chunks_but_its_last() {
+    assert_eq!(chunk_count(0), 1);
+    assert_eq!(chunk_raw(0, 0), 0);
+    assert_eq!(chunk_count(CHUNK_BYTES), 1);
+    assert_eq!(chunk_count(CHUNK_BYTES + 1), 2);
+    assert_eq!(chunk_raw(CHUNK_BYTES + 1, 0), CHUNK_BYTES);
+    assert_eq!(chunk_raw(CHUNK_BYTES + 1, 1), 1);
+    assert_eq!(chunk_raw(2 * CHUNK_BYTES, 1), CHUNK_BYTES);
 }

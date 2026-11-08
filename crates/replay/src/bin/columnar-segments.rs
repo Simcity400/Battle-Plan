@@ -55,6 +55,42 @@ fn thread_ns() -> u64 {
     0
 }
 
+/// The process's peak working set and peak commit, in bytes.
+#[cfg(windows)]
+fn peaks() -> Option<(usize, usize)> {
+    use windows_sys::Win32::{Foundation::HANDLE, System::Threading::GetCurrentProcess};
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        size: u32,
+        page_faults: u32,
+        peak_working_set: usize,
+        working_set: usize,
+        quota_peak_paged_pool: usize,
+        quota_paged_pool: usize,
+        quota_peak_non_paged_pool: usize,
+        quota_non_paged_pool: usize,
+        committed: usize,
+        peak_committed: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn K32GetProcessMemoryInfo(process: HANDLE, counters: *mut Counters, size: u32) -> i32;
+    }
+    let mut counters = Counters {
+        size: size_of::<Counters>() as u32,
+        ..Counters::default()
+    };
+    // SAFETY: the current-process pseudo-handle and an owned block of its stated size.
+    let read = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.size) };
+    (read != 0).then_some((counters.peak_working_set, counters.peak_committed))
+}
+
+#[cfg(not(windows))]
+fn peaks() -> Option<(usize, usize)> {
+    None
+}
+
 /// One walked segment: its hours, its walker's CPU and, when checked, whether it ended in
 /// the next restart's state.
 struct Walked {
@@ -218,6 +254,8 @@ fn main() -> io::Result<()> {
         "checked": check,
         "damage": damage,
         "restart_mismatches": failed,
+        "peak_working_set_bytes": peaks().map(|(working, _)| working),
+        "peak_commit_bytes": peaks().map(|(_, committed)| committed),
     });
     println!("],\"summary\":{report}}}");
     if failed > 0 {

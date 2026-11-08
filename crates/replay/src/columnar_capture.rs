@@ -169,17 +169,6 @@ impl CaptureWriter {
                     pages: run.page_extents().to_vec(),
                 };
                 let (chunks, ids) = run.chunk_starts();
-                let page = recording.page(last, run.pages() - 1)?;
-                let blocks = if page.restart.is_some() {
-                    Vec::new()
-                } else {
-                    let mut blocks = vec![None; tables];
-                    let raw = recording.page_blocks(last, run.pages() - 1)?;
-                    for (table, bytes) in raw {
-                        blocks[table as usize] = Some(bytes);
-                    }
-                    blocks
-                };
                 self.builder.resume(
                     state,
                     run.branch,
@@ -194,7 +183,6 @@ impl CaptureWriter {
                     chunks,
                     ids,
                     previous,
-                    blocks,
                 });
             }
         }

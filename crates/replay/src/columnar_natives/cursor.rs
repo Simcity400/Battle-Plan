@@ -3,7 +3,9 @@
 use super::{Natives, Place, invalid};
 use crate::{
     campaign::Parallel,
-    columnar_frames::{Note, Pool, Recording, Segment, Spread, Steps, Views, Walker, metrics, on_pool},
+    columnar_frames::{
+        Note, Pool, Recording, Segment, Spread, Steps, Views, Walker, metrics, on_pool, on_rayon,
+    },
     format::FormatVersion,
     frame::{DecodedFrame, Metrics},
     rows::TableId,
@@ -91,12 +93,6 @@ enum Start {
     Here,
     Checkpoint(usize),
     Restart,
-}
-
-/// Runs each part of an hour on rayon's threads.
-fn spread(count: usize, job: &(dyn Fn(usize) + Sync)) {
-    use rayon::prelude::*;
-    (0..count).into_par_iter().for_each(job);
 }
 
 /// Frames of some tables at any hour [`Natives`] hold, as walking the recording makes them.
@@ -248,7 +244,7 @@ impl Cursor {
             *walk = Some(Walk::try_new::<io::Error>(recording, |recording| {
                 let mut walker = Walker::new(recording)?;
                 if apart {
-                    walker.restore_apart(self::spread);
+                    walker.decode_apart(on_rayon);
                 }
                 Ok(Walking {
                     walker,
@@ -310,7 +306,7 @@ impl Cursor {
                     let held = &kept.list[index];
                     walker.take_up()?;
                     *state = held.state.share_spread(spread)?;
-                    *steps = held.steps.fork()?;
+                    *steps = Some(held.steps.fork()?);
                     *last = held.metrics.clone();
                     *at = held.next.checked_sub(1).map(|ordinal| Place { ordinal, ..place });
                     views.reset();
@@ -466,9 +462,7 @@ impl Kept {
         {
             return Ok(());
         }
-        let Some(forked) = steps.fork()? else {
-            return Ok(());
-        };
+        let forked = steps.fork()?;
         let state = state.share_spread(spread)?;
         self.list
             .try_reserve(1)
@@ -499,8 +493,8 @@ impl Kept {
             let live = at.filter(|at| after.is_none() && at.run == held.run);
             bytes += held.steps.decoder_bytes()
                 + match (after, live) {
-                    (Some(later), _) => held.state.unshared_bytes(&later.state, &spread)?,
-                    (None, Some(_)) => held.state.unshared_bytes(state, &spread)?,
+                    (Some(later), _) => held.state.unshared_bytes(&later.state, &on_rayon)?,
+                    (None, Some(_)) => held.state.unshared_bytes(state, &on_rayon)?,
                     (None, None) => held.state.held_bytes(),
                 };
         }

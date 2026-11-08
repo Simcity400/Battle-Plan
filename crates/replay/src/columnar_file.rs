@@ -1,15 +1,17 @@
-//! A columnar recording file (`H4COLUMN` version 4, [`replay_columnar::envelope`]) written run
-//! by run, a block at a time ([`crate::columnar_blocks`]): each block's hour records and its
-//! tables' blocks, every [`RESTART_BLOCKS`]th with a restart of every table, each stored as a
-//! change from the run's previous restart's but every [`KEYFRAME_RESTARTS`]th. A revision
-//! publishes everything written so far under a new root; the file ends with its root and
-//! footer.
+//! A columnar recording file ([`replay_columnar::envelope`]) written run by run, a block at a
+//! time ([`crate::columnar_blocks`]): each block's hour records and its tables' blocks, each in
+//! chunks of [`CHUNK_BYTES`] compressed apart, every [`RESTART_BLOCKS`]th with a restart of every
+//! table, each stored as a change from the run's previous restart's but every
+//! [`KEYFRAME_RESTARTS`]th. A revision publishes everything written so far under a new root; the
+//! file ends with its root and footer.
 //!
+//! [`CHUNK_BYTES`]: replay_columnar::envelope::CHUNK_BYTES
 //! [`RESTART_BLOCKS`]: replay_columnar::envelope::RESTART_BLOCKS
 //! [`KEYFRAME_RESTARTS`]: replay_columnar::envelope::KEYFRAME_RESTARTS
 
+use engine_allocation::zstd::{Compressor, Holder};
 use replay_columnar::{
-    envelope::{self, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, RunDirectory},
+    envelope::{self, CHUNK_BYTES, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, RunDirectory},
     leaf::{Reader, Writer as Bytes},
     state::{Bits, Column, Table},
 };
@@ -145,6 +147,89 @@ fn compress_all(level: i32, parallel: bool, jobs: &[(&[u8], Option<&[u8]>)]) -> 
     } else {
         jobs.iter().map(|&(raw, base)| compress(level, raw, base)).collect()
     }
+}
+
+static WRITER: Holder = Holder::new("zstd: columnar writer");
+
+/// A page unit's stored bytes, its chunks end to end, and each chunk's stored length.
+struct Unit {
+    stored: Vec<u8>,
+    chunks: Vec<u32>,
+}
+
+/// `raw`, a page unit, as chunks of [`CHUNK_BYTES`] raw bytes each compressed apart by
+/// `compressor`: one frame at least.
+fn compress_unit(compressor: &mut Compressor, raw: &[u8]) -> io::Result<Unit> {
+    let count = envelope::chunk_count(raw.len() as u64) as usize;
+    let bound = (0..count as u64)
+        .map(|at| engine_allocation::zstd::bound(envelope::chunk_raw(raw.len() as u64, at) as usize))
+        .sum();
+    let mut unit = Unit {
+        stored: engine_allocation::vec(bound)?,
+        chunks: engine_allocation::vec(count)?,
+    };
+    for at in 0..count {
+        let start = at * CHUNK_BYTES as usize;
+        let chunk = &raw[start..start + envelope::chunk_raw(raw.len() as u64, at as u64) as usize];
+        let written = compressor.compress_append(chunk, &mut unit.stored).map_err(|error| error.invalid())?;
+        unit.chunks.push(u32::try_from(written).map_err(|_| invalid("A chunk passes 2^32 stored bytes"))?);
+    }
+    Ok(unit)
+}
+
+/// Each of `units` compressed as [`compress_unit`] does at `level`, its chunks on the thread
+/// pool.
+fn compress_units_apart(level: i32, units: &[&[u8]]) -> io::Result<Vec<Unit>> {
+    use rayon::prelude::*;
+    let count = units
+        .iter()
+        .try_fold(0_usize, |count, raw| count.checked_add(envelope::chunk_count(raw.len() as u64) as usize))
+        .ok_or_else(engine_allocation::oom)?;
+    let mut chunks = engine_allocation::vec(count)?;
+    for (unit, raw) in units.iter().enumerate() {
+        for at in 0..envelope::chunk_count(raw.len() as u64) {
+            let start = (at * CHUNK_BYTES) as usize;
+            chunks.push((unit, &raw[start..start + envelope::chunk_raw(raw.len() as u64, at) as usize]));
+        }
+    }
+    let mut stored = engine_allocation::vec(count)?;
+    chunks
+        .par_iter()
+        .map_init(
+            || Compressor::new(&WRITER, level),
+            |compressor, &(_, chunk)| -> io::Result<Vec<u8>> {
+                let compressor = compressor.as_mut().map_err(|error| io::Error::new(error.kind(), error.to_string()))?;
+                let mut stored = engine_allocation::vec(engine_allocation::zstd::bound(chunk.len()))?;
+                compressor.compress_append(chunk, &mut stored).map_err(|error| error.invalid())?;
+                Ok(stored)
+            },
+        )
+        .collect_into_vec(&mut stored);
+    let mut made = engine_allocation::vec(units.len())?;
+    let mut rest = chunks.iter().zip(stored).peekable();
+    for unit in 0..units.len() {
+        let mut held = Vec::new();
+        while let Some((_, stored)) = rest.next_if(|((of, _), _)| *of == unit) {
+            engine_allocation::reserve(&mut held, 1)?;
+            held.push(stored?);
+        }
+        let length = held
+            .iter()
+            .try_fold(0_usize, |length, stored| length.checked_add(stored.len()))
+            .ok_or_else(engine_allocation::oom)?;
+        let mut joined = Unit {
+            stored: engine_allocation::vec(length)?,
+            chunks: engine_allocation::vec(held.len())?,
+        };
+        for stored in held {
+            joined
+                .chunks
+                .push(u32::try_from(stored.len()).map_err(|_| invalid("A chunk passes 2^32 stored bytes"))?);
+            joined.stored.extend_from_slice(&stored);
+        }
+        made.push(joined);
+    }
+    Ok(made)
 }
 
 /// The largest window a block is compressed with: what every zstd decoder takes by default.
@@ -408,9 +493,6 @@ struct Run {
     /// The run's previous restart's raw bytes of every table, which the next restart's are a
     /// change from; none before its first.
     previous: Vec<Vec<u8>>,
-    /// Each table's block of the last page, raw, which its next block is a change from; none
-    /// past a restart or before the run's first page.
-    blocks: Vec<Option<Vec<u8>>>,
 }
 
 /// Where a writer takes up a file it wrote before ([`FileWriter::resume`]): the file's runs, the
@@ -436,14 +518,12 @@ pub struct OpenRun {
     pub chunks: Vec<u32>,
     pub ids: u32,
     pub previous: Vec<Vec<u8>>,
-    /// Each table's block of the run's last page, raw, when that page carries no restart.
-    pub blocks: Vec<Option<Vec<u8>>>,
 }
 
 pub struct FileWriter<W: Write + Seek> {
     file: W,
     settings: Settings,
-    compressor: CCtx<'static>,
+    compressor: Compressor,
     /// Taken by the root.
     identity: Option<envelope::Identity>,
     tables: usize,
@@ -473,14 +553,10 @@ impl<W: Write + Seek> FileWriter<W> {
     }
 
     fn with(file: W, identity: envelope::Identity, tables: usize, settings: Settings) -> io::Result<Self> {
-        let mut compressor = CCtx::try_create().ok_or_else(engine_allocation::oom)?;
-        compressor
-            .set_parameter(CParameter::CompressionLevel(settings.level))
-            .map_err(zstd_error)?;
         Ok(Self {
             file,
             settings,
-            compressor,
+            compressor: Compressor::new(&WRITER, settings.level)?,
             identity: Some(identity),
             tables,
             run: None,
@@ -536,8 +612,6 @@ impl<W: Write + Seek> FileWriter<W> {
                 chunks: open.chunks,
                 ids: open.ids,
                 previous: open.previous,
-                // A run is taken up after a restart, or at a page no later walk starts past.
-                blocks: open.blocks,
             });
         }
         Ok(writer)
@@ -594,7 +668,6 @@ impl<W: Write + Seek> FileWriter<W> {
             chunks: Vec::new(),
             ids: 0,
             previous: Vec::new(),
-            blocks: Vec::new(),
         });
         Ok(())
     }
@@ -624,37 +697,33 @@ impl<W: Write + Seek> FileWriter<W> {
         {
             return Err(invalid("A block's tables are in order"));
         }
-        let mut chained = engine_allocation::filled(self.tables.div_ceil(64), 0_u64)?;
-        let mut held = std::mem::take(&mut self.run.as_mut().expect("a run under way").blocks);
-        if held.len() < self.tables {
-            engine_allocation::resize_default(&mut held, self.tables)?;
-        }
-        let mut jobs: Vec<(&[u8], Option<&[u8]>)> = engine_allocation::vec(1 + block.tables.len())?;
-        jobs.push((block.records, None));
-        for (table, payload) in block.tables {
-            let base = held[*table as usize].as_deref();
-            if base.is_some() {
-                chained[*table as usize / 64] |= 1 << (table % 64);
+        let mut raw = engine_allocation::vec(1 + block.tables.len())?;
+        raw.push(block.records);
+        raw.extend(block.tables.iter().map(|(_, payload)| payload.as_slice()));
+        let units = if self.settings.parallel {
+            compress_units_apart(self.settings.level, &raw)?
+        } else {
+            // A unit's chunks size their own windows.
+            self.compressor.window_log(0)?;
+            let mut units = engine_allocation::vec(raw.len())?;
+            for raw in &raw {
+                units.push(compress_unit(&mut self.compressor, raw)?);
             }
-            jobs.push((payload, base));
-        }
-        let mut stored = compress_all(self.settings.level, self.settings.parallel, &jobs)?.into_iter();
-        let records = self.append(envelope::Kind::Records, index, 0, first, block.hours, block.records.len(), &stored.next().expect("records"))?;
+            units
+        };
+        let mut chunks = engine_allocation::vec(units.iter().map(|unit| unit.chunks.len()).sum())?;
+        let mut units = units.into_iter();
+        let unit = units.next().expect("records");
+        let records = self.append(envelope::Kind::Records, index, 0, first, block.hours, block.records.len(), &unit.stored)?;
+        chunks.extend_from_slice(&unit.chunks);
         self.written.records += records.stored;
         let mut tables = engine_allocation::vec(block.tables.len())?;
-        for ((table, payload), stored) in block.tables.iter().zip(stored) {
-            let extent = self.append(envelope::Kind::Block, index, *table, first, block.hours, payload.len(), &stored)?;
+        for ((table, payload), unit) in block.tables.iter().zip(units) {
+            let extent = self.append(envelope::Kind::Block, index, *table, first, block.hours, payload.len(), &unit.stored)?;
+            chunks.extend_from_slice(&unit.chunks);
             self.written.tables += extent.stored;
             tables.push(extent);
         }
-        // A walk starts past a restart with no block before it.
-        let mut next = engine_allocation::collect_vec((0..self.tables).map(|_| None))?;
-        if block.restart.is_none() {
-            for (table, payload) in block.tables {
-                next[*table as usize] = Some(engine_allocation::copy_vec(payload)?);
-            }
-        }
-        self.run.as_mut().expect("a run under way").blocks = next;
         let restart = match block.restart {
             Some((strings, states)) => Some(self.restart(strings, states, block.last_hour, first + block.hours - 1)?),
             None => None,
@@ -671,7 +740,7 @@ impl<W: Write + Seek> FileWriter<W> {
             last_hour: block.last_hour,
             records,
             tables,
-            chained: Bits::from_words(chained)?,
+            chunks,
             restart,
             sectioned: bits(block.sectioned)?,
             read: bits(block.read)?,
@@ -900,11 +969,11 @@ impl<W: Write + Seek> FileWriter<W> {
             None => {
                 let needed = raw.len().max(2);
                 let window = (usize::BITS - (needed - 1).leading_zeros()).clamp(10, LARGEST_WINDOW_LOG);
+                self.compressor.window_log(window)?;
+                let mut stored = engine_allocation::vec(engine_allocation::zstd::bound(raw.len()))?;
                 self.compressor
-                    .set_parameter(CParameter::WindowLog(window))
-                    .map_err(zstd_error)?;
-                let mut stored = engine_allocation::vec(zstd::zstd_safe::compress_bound(raw.len()))?;
-                self.compressor.compress2(&mut stored, raw).map_err(zstd_error)?;
+                    .compress_append(raw, &mut stored)
+                    .map_err(|error| error.invalid())?;
                 stored
             }
         };

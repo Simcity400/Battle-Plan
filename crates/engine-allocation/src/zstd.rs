@@ -6,6 +6,7 @@ use std::{
     alloc::{Layout, alloc, dealloc},
     ffi::{CStr, c_void},
     io,
+    mem::MaybeUninit,
     ptr::NonNull,
     sync::OnceLock,
 };
@@ -163,6 +164,11 @@ impl Compressor {
         Ok(())
     }
 
+    /// Frames from now on use windows of 2^`log` bytes; 0 sizes each by its level and input.
+    pub fn window_log(&mut self, log: u32) -> io::Result<()> {
+        self.set(ZSTD_cParameter::ZSTD_c_windowLog, log as i32)
+    }
+
     /// `src` as one frame into `dst`: the bytes written.
     pub fn compress(&mut self, dst: &mut [u8], src: &[u8]) -> Result<usize, Error> {
         // SAFETY: both buffers are live for their lengths.
@@ -218,6 +224,21 @@ impl Decompressor {
     /// `src`'s frames into `dst`: the bytes written.
     pub fn decompress(&mut self, dst: &mut [u8], src: &[u8]) -> Result<usize, Error> {
         // SAFETY: both buffers are live for their lengths.
+        checked(unsafe {
+            zstd_sys::ZSTD_decompressDCtx(
+                self.0.as_ptr(),
+                dst.as_mut_ptr().cast(),
+                dst.len(),
+                src.as_ptr().cast(),
+                src.len(),
+            )
+        })
+    }
+
+    /// `src`'s frames into `dst`, which need not hold initialized bytes: the bytes written, from
+    /// its first.
+    pub fn decompress_into(&mut self, dst: &mut [MaybeUninit<u8>], src: &[u8]) -> Result<usize, Error> {
+        // SAFETY: zstd writes within `dst` alone, and reads `src` for its length.
         checked(unsafe {
             zstd_sys::ZSTD_decompressDCtx(
                 self.0.as_ptr(),
