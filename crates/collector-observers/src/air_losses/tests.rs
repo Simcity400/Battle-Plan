@@ -66,27 +66,6 @@ fn assembly_forwards_seven_slots_and_native_return() {
     assert_eq!(*FORWARDED.lock().unwrap(), [11, 22, 33, 44, 55, 66, 77]);
     assert_eq!(active(), 0);
 }
-/// Status sums the ledger's call and zero-write counts with the fast path's
-/// as their atomics count: wrapping, never panicking at the top of the range.
-#[test]
-fn status_sums_wrap_with_their_counters() {
-    let _owner = ObservationOwner::new();
-    let saved = [
-        LEDGER.calls.load(Ordering::Relaxed),
-        LEDGER.zero_writes.load(Ordering::Relaxed),
-        FAST_ZERO_WRITES.load(Ordering::Relaxed),
-    ];
-    LEDGER.calls.store(u64::MAX - 1, Ordering::Relaxed);
-    LEDGER.zero_writes.store(u64::MAX, Ordering::Relaxed);
-    FAST_ZERO_WRITES.store(3, Ordering::Relaxed);
-    let value = serde_json::to_value(status()).unwrap();
-    LEDGER.calls.store(saved[0], Ordering::Relaxed);
-    LEDGER.zero_writes.store(saved[1], Ordering::Relaxed);
-    FAST_ZERO_WRITES.store(saved[2], Ordering::Relaxed);
-    assert_eq!(value["calls"], 1);
-    assert_eq!(value["zero_writes"], 2);
-    assert_eq!(value["fast_zero_writes"], 3);
-}
 static PASSED: Mutex<[usize; 7]> = Mutex::new([0; 7]);
 #[allow(clippy::too_many_arguments)]
 unsafe extern "system" fn passed_through(

@@ -976,8 +976,6 @@ impl AirWingJob {
     /// Completes the census from its walk: the game-score, AirWings, source,
     /// naval and dependent outcomes and every part's WingEquipment store.
     fn finish_census(&mut self, parts: &mut [AirWingJob]) {
-        crate::map_capture::observe_air_wing_name_failures(&self.name_failure_reasons);
-        crate::map_capture::observe_air_wing_name_refusals(self.name_failures);
         let walked = self.census;
         self.game_score.finish(walked.score);
         self.map_outcome = walked.shared.map;

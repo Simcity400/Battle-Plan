@@ -4,6 +4,11 @@ use replay::columnar_file::Settings;
 use replay::columnar_frames::{Recording, Segment};
 use replay::native_frame::{OneThread, RowFrame};
 
+/// A session's segment durability, as the spool's processor starts it.
+fn durability() -> Arc<Durability> {
+    Durability::start().unwrap()
+}
+
 /// A row encoder's view of an hour that is no keyframe, lending no baselines.
 fn row() -> RowFrame<'static> {
     RowFrame {
@@ -129,7 +134,7 @@ fn write(columnar: &mut Columnar, branch: u64, hours: std::ops::RangeInclusive<i
 fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
     let root = Folder::new("runs");
     let folder = Folder(root.0.join("campaign"));
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     let first = envelope::UNIT_ORDINALS as i32 + 3;
     write(&mut columnar, 1, 1..=first);
     write(&mut columnar, 1, first + 5..=first + 6);
@@ -177,7 +182,7 @@ fn hours_across_a_gap_and_a_branch_change_finish_as_runs_of_one_file() {
 #[test]
 fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     let folder = Folder::new("interrupt");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     write(&mut columnar, 1, 1..=2);
     columnar.interrupt();
     write(&mut columnar, 1, 3..=3);
@@ -187,7 +192,7 @@ fn a_failed_hour_starts_a_run_and_the_file_goes_on() {
     assert_eq!(recording.run(1).unwrap().epoch, envelope::epoch::WRITE_FAILURE);
 
     let failed = Folder::new("failed");
-    let mut columnar = Columnar::open(&failed.0, "campaign", &session());
+    let mut columnar = Columnar::open(&failed.0, "campaign", &session(), &durability());
     write(&mut columnar, 1, 1..=2);
     let _uncommitted = columnar.prepare(&frame(1, 3), row(), &OneThread).unwrap().expect("prepared");
     // Preparing the hour again before its commit would lose the first preparation's strings.
@@ -212,7 +217,7 @@ fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
     // The campaign's directory cannot be made under a file, so the first hour's file fails.
     let blocker = folder.0.join("blocker");
     fs::write(&blocker, b"").unwrap();
-    let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session());
+    let mut columnar = Columnar::open(&blocker.join("campaign"), "campaign", &session(), &durability());
     let prepared = columnar.prepare(&frame(1, 1), row(), &OneThread).unwrap().expect("prepared");
     assert!(columnar.commit(prepared, false, &OneThread).is_err());
     assert!(columnar.status().unwrap()["stopped"].is_string());
@@ -227,7 +232,7 @@ fn a_failed_file_stops_the_recording_and_fails_every_later_hour() {
 #[test]
 fn queued_hours_wait_for_their_rows_and_a_failure_drops_them() {
     let folder = Folder::new("queued");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     for hour in 1..=4 {
         let prepared = columnar.prepare(&frame(1, hour), row(), &OneThread).unwrap().expect("prepared");
         columnar.commit(prepared, true, &OneThread).unwrap();
@@ -257,7 +262,7 @@ fn the_capture_keeps_a_context_given_again_once_and_every_gap_summary() {
     use replay::spool::{ControlRecord, Record};
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let folder = Folder::new("controls");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     let start = Record::BranchStart(BranchStart {
         id: 1,
         session: 1,
@@ -300,7 +305,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
     use replay::spool::{ControlRecord, Record};
     use replay_frame::branches::{BranchReason, BranchStart, Parentage};
     let folder = Folder::new("queued-controls");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     let start = Record::BranchStart(BranchStart {
         id: 1,
         session: 1,
@@ -342,7 +347,7 @@ fn a_queued_frame_s_records_wait_for_its_write_and_a_failed_one_s_are_dropped() 
 fn each_capture_takes_the_next_number_and_keeps_the_earlier_files() {
     let folder = Folder::new("captures");
     for hours in [1..=2, 3..=5] {
-        let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+        let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
         write(&mut columnar, 1, hours);
         columnar.finish();
     }
@@ -374,7 +379,7 @@ fn an_unopened_recording_fails_every_hour() {
 #[test]
 fn a_run_starts_in_the_file_after_the_hours_queued_before_it() {
     let folder = Folder::new("queued-runs");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     for (branch, hour) in [(1, 1), (1, 2), (2, 3), (2, 4)] {
         let prepared = columnar.prepare(&frame(branch, hour), row(), &OneThread).unwrap().expect("prepared");
         columnar.commit(prepared, true, &OneThread).unwrap();
@@ -405,7 +410,7 @@ fn commands_without_an_hour_reach_the_journal_at_once() {
         spool::{ControlRecord, Record, encode_record},
     };
     let folder = Folder::new("commands");
-    let mut columnar = Columnar::open(&folder.0, "campaign", &session());
+    let mut columnar = Columnar::open(&folder.0, "campaign", &session(), &durability());
     let packet = Packet::pack(4, 1, 1, 0, 10, 20, 0, &Batch::default()).unwrap();
     let record = Record::Control(ControlRecord::PlayerCommands { session: 1, packet });
     columnar.note(std::slice::from_ref(&record));

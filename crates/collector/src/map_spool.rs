@@ -297,19 +297,6 @@ fn ships(
         Err(failure) => return failure,
     };
     // Refuse only the affected name column; numeric ship state stays usable.
-    for row in rows {
-        if row
-            .name
-            .is_some_and(|(start, len)| range(names, start, len).is_none())
-        {
-            crate::map_capture::ship_name_span_refused(0);
-        }
-        if row.naming.is_some_and(|naming| {
-            range(overrides, naming.override_name.0, naming.override_name.1).is_none()
-        }) {
-            crate::map_capture::ship_name_span_refused(1);
-        }
-    }
     let name = |row: &cship::Row| row.name.and_then(|(start, len)| range(names, start, len));
     let naming = |row: &cship::Row| {
         let raw = row.naming?;

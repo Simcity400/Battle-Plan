@@ -56,24 +56,6 @@ pub const TABLES: [TableId; N] = [
     TableId::DesignOrganisationLiveness,
 ];
 
-/// Name, local cost slot, and local member indices. Zero cost in a non-anchor
-/// slot means the work is accounted for by this group, not that reads are free.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("variant definitions and author liveness", 3, &[3, 22]),
-    ("variant modules, stats and upgrades", 4, &[4, 5, 6]),
-    (
-        "army upgrade groups, requests, deliveries and produced equipment",
-        7,
-        &[7, 8, 9, 10],
-    ),
-    (
-        "deployment conveyors, lines, manpower and in-transit equipment",
-        12,
-        &[12, 13, 14, 15],
-    ),
-    ("production licences and licence records", 11, &[11, 16]),
-];
-
 /// Borrowed current census owned by shared acquisition, in native source order.
 pub struct Sources<'a, T> {
     pub rows: &'a [T],
@@ -464,8 +446,6 @@ impl Variants {
         } else {
             self.capture_state_carried(memory, base, variants, hour, full, !forced)
         };
-        let bonus_phase =
-            design_changes::profile::Timer::new(design_changes::profile::Phase::Bonuses);
         match bonus_snapshots::snapshot() {
             Ok(snapshot) => self.dictionary = snapshot,
             Err(reason) => {
@@ -473,7 +453,6 @@ impl Variants {
                 self.fail(reason, hour, true);
             }
         }
-        drop(bonus_phase);
         self.nested_bytes = self
             .definitions
             .rows
@@ -501,12 +480,9 @@ impl Variants {
                     .flatten()
             });
             let mut seed = || {
-                let context_phase =
-                    design_changes::profile::Timer::new(design_changes::profile::Phase::Context);
                 (self.context, self.templates) =
                     design_context::seed_partitioned(memory, base, self, full, lanes, &mut context)
                         .unwrap_or_default();
-                drop(context_phase);
             };
             if let (Some(storage), Some(overlap)) = (storage, overlap.as_mut()) {
                 overlap(storage, &mut seed);

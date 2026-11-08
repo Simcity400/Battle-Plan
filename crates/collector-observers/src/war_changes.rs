@@ -88,13 +88,6 @@ pub enum Forwarder {
 impl Forwarder {
     const ALL: [Self; 3] = [Self::CountryInputs, Self::Opinions, Self::Relations];
 
-    fn name(self) -> &'static str {
-        match self {
-            Self::CountryInputs => "country_input_changes",
-            Self::Opinions => "opinion_changes",
-            Self::Relations => "relation_changes",
-        }
-    }
 }
 
 static FORWARDERS: [AtomicBool; Forwarder::ALL.len()] =
@@ -125,18 +118,6 @@ impl Site {
         Self::DiplomacyReset,
     ];
 
-    fn name(self) -> &'static str {
-        match self {
-            Self::ReplaceRelation => "replace_relation",
-            Self::SetInstigator => "set_instigator",
-            Self::SetDefender => "set_defender",
-            Self::StatusReset => "status_reset",
-            Self::StatusConstruct => "status_construct",
-            Self::StatusLoad => "status_load",
-            Self::RelationSlot => "relation_slot",
-            Self::DiplomacyReset => "diplomacy_reset",
-        }
-    }
 }
 
 static CALLS: [AtomicU64; Site::ALL.len()] = [const { AtomicU64::new(0) }; Site::ALL.len()];
@@ -204,30 +185,6 @@ pub fn record(counts: &Counts) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let calls = crate::status::map(
-        Site::ALL
-            .iter()
-            .zip(&CALLS)
-            .map(|(site, n)| (site.name(), n.load(Ordering::Relaxed))),
-    );
-    let forwarders = crate::status::map(
-        Forwarder::ALL
-            .iter()
-            .zip(&FORWARDERS)
-            .map(|(family, enabled)| (family.name(), enabled.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "war_changes"),
-        "poisoned": WARS.poisoned(),
-        "quiet_hours": reads[0],
-        "read_hours": reads[1],
-        "events": calls,
-        "forwarders": forwarders,
-        "scope": "cumulative since attach; WarRelations walks and validates every country's owned relations unless the hour is quiet: when the war domain's token (every forwarded writer of the war set, its vectors and its fixed fields) and the country census equal those taken before the latest complete walk, the held rows are published with each war's casualty counters read afresh (quiet_hours); the domain observes only while every forwarding family is enabled (forwarders)"
-    })
-}
 
 #[cfg(test)]
 mod tests {

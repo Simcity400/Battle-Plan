@@ -193,19 +193,6 @@ impl MovementPacket {
             .filter(|row| (row.path_total as i32) > 0 && row.base_speed.is_none())
             .count()
     }
-    /// Independent current-pass suffix refusals; established row coverage is
-    /// reported by outcome(), so unavailable prefixes add no false refusals.
-    pub fn movement_style_refusals(&self) -> (usize, usize) {
-        self.units[..self.result.outcome.len()].iter().fold(
-            (0, 0),
-            |(withdrawal, priority), row| {
-                (
-                    withdrawal + usize::from(row.withdrawal.is_none()),
-                    priority + usize::from(row.movement_priority.is_none()),
-                )
-            },
-        )
-    }
 }
 
 pub(super) fn movement_route_prefixes(

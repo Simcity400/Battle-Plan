@@ -13,9 +13,8 @@ pub(super) fn bytes_hint() -> usize {
 pub(super) fn observe_capacity(
     memory: &impl Memory,
     base: usize,
-    failures: &collector_extended_support::demand::DemandFailures,
 ) -> Result<usize, &'static str> {
-    failures.observe((|| {
+    (|| {
         // The display grid uses a quarter of the map dimensions. The
         // retained last row/column occupies width+height-1 bytes per plane.
         let [width, height] = cweather_manager::display_grid_size(memory, base)?;
@@ -26,7 +25,7 @@ pub(super) fn observe_capacity(
             .ok_or("weather display sizing byte overflow")?;
         BYTES_HINT.fetch_max(bytes, Ordering::Relaxed);
         Ok(bytes)
-    })())
+    })()
 }
 
 #[derive(Debug)]

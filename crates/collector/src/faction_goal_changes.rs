@@ -61,13 +61,6 @@ pub(crate) unsafe fn install_growth() {
         WATCHES.install_growth_quiescent();
     }
 }
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "configured": cfg!(feature = "faction_changes"),
-        "watches": WATCHES.status(),
-        "calls": CALLS.each_ref().map(|calls| calls.load(Ordering::Relaxed)),
-    })
-}
 
 enum OwnedHook {
     Entry(Hook),

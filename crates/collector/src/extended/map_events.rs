@@ -8,7 +8,6 @@ use replay_frame::{frame::TableInput, frame::TableView};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::MapEvents];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("map event interval", 0, &[0])];
 const ASSEMBLED: &str = "map event interval assembled by spool";
 const UNSEALED: &str = "map event interval not sealed this hour";
 

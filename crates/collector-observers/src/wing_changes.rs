@@ -245,29 +245,6 @@ pub fn record(counts: &Counts, wings: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "wing_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_wings": reads[0],
-        "read_wings": reads[1],
-        "reused_rows": reads[2],
-        "read_rows": reads[3],
-        "events": events,
-        "replacement_preference": crate::wing_preferences::status(),
-        "kill_airplanes": WATCHES.kills.load(Ordering::Relaxed),
-        "kills_observed": WATCHES.kills_observed.load(Ordering::SeqCst),
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a WingEquipment wing's rows are carried when it is the wing held at the same address with the same id and no hooked writer touched its equipment pool since its read; the wing census is read every hour"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

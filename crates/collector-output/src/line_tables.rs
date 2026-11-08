@@ -28,7 +28,6 @@ pub const TABLES: [TableId; N] = [
     TableId::ProductionLineOutput,
     TableId::RocketProductionOutput,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// The spool replaces this placeholder with the published table.
 pub const ASSEMBLED_BY_SPOOL: &str =

@@ -361,21 +361,6 @@ impl DirtySet {
         self.active.load(SeqCst)
     }
 
-    pub fn status(&self) -> impl serde::Serialize {
-        crate::status::status!({
-            "capacity": self.capacity.load(Relaxed),
-            "requested": self.requested.load(Relaxed),
-            "installs": self.installs.load(Relaxed),
-            "deferred_boundaries": self.deferred.load(Relaxed),
-            "held_for_full_hour": self.held.load(Relaxed),
-            "failed_offers": self.failed_offers.load(Relaxed),
-            "overflow_notifications": self.overflows.load(Relaxed),
-            "every_notifications": self.everies.load(Relaxed),
-            "taken_ids": self.taken.load(Relaxed),
-            "refused_takes": self.refused.load(Relaxed),
-            "scope": "cumulative since attach; an id beyond capacity or a writer naming none moves the epoch, so every entry is read afresh; an install starts an epoch and waits for an invalidating hour (attach, load, gap or recovery), except the first"
-        })
-    }
 }
 
 impl Drop for DirtySet {

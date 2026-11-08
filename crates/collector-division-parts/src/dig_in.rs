@@ -13,10 +13,7 @@
 use crate::table_capture::{Arena, grow_vec};
 use collector_observers::retreat_ban_changes;
 use engine_native::{Memory, carmy, walk::Outcome};
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Default)]
 struct Row {
@@ -29,13 +26,6 @@ struct Row {
 /// Each block's term by leader and accumulator, with the certificate taken before its read; a
 /// freed leader's address can later hold another leader's accumulator.
 type Terms = HashMap<(usize, usize), ((u64, u64), i64)>;
-
-static BLOCKS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-
-/// Cumulative commander blocks carried, read under a certificate, and read without one.
-pub fn carry_counts() -> [u64; 3] {
-    BLOCKS.each_ref().map(|count| count.load(Ordering::Relaxed))
-}
 
 pub struct Captured {
     rows: Arena<Row>,
@@ -170,12 +160,9 @@ impl Captured {
             self.rows.len += 1;
         }
         std::mem::swap(&mut self.held, &mut self.next);
-        for (total, count) in BLOCKS.iter().zip(self.blocks) {
-            total.fetch_add(count, Ordering::Relaxed);
-        }
     }
 
-    /// The latest capture's [`carry_counts`].
+    /// The latest capture's commander blocks carried, read under a certificate, and read without one.
     pub fn blocks(&self) -> [u64; 3] {
         self.blocks
     }
@@ -216,41 +203,6 @@ impl Captured {
     }
 }
 
-/// Spool-thread counts of captured and refused factors, by reader reason.
-#[derive(Default)]
-pub struct Work {
-    captured: u64,
-    refusals: Vec<(&'static str, u64)>,
-}
-
-impl Work {
-    pub fn observe(&mut self, captured: &Captured) -> std::io::Result<()> {
-        for row in &captured.rows.first[..captured.rows.len] {
-            match row.factor {
-                Some(Ok(_)) => self.captured = self.captured.saturating_add(1),
-                Some(Err(reason)) => {
-                    let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-                        Ok(index) => index,
-                        Err(index) => {
-                            engine_allocation::reserve(&mut self.refusals, 1)?;
-                            self.refusals.insert(index, (reason, 0));
-                            index
-                        }
-                    };
-                    self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
-                }
-                None => {}
-            }
-        }
-        Ok(())
-    }
-
-    pub fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({ "captured": self.captured,
-            "refusals": crate::status::map(self.refusals.iter().copied()) })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,10 +235,6 @@ mod tests {
         assert_eq!(captured.factor(11, 1), None);
         // A census index names one division; another handle is refused.
         assert_eq!(captured.factor(11, 0), None);
-        let mut work = Work::default();
-        work.observe(&captured).unwrap();
-        assert_eq!(work.captured, 1);
-        assert_eq!(work.refusals, [("movement leader field unreadable", 1)]);
     }
 
     /// Two groups under two commanders, read as `counter_dig_in_factor`
@@ -517,11 +465,6 @@ mod tests {
                     assert_eq!(settled.factor, expected.factor);
                 }
             }
-            let (mut settled_work, mut expected_work) = (Work::default(), Work::default());
-            settled_work.observe(&settled).unwrap();
-            expected_work.observe(&expected).unwrap();
-            assert_eq!(settled_work.captured, expected_work.captured);
-            assert_eq!(settled_work.refusals, expected_work.refusals);
         }
     }
 

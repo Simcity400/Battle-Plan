@@ -126,16 +126,6 @@ pub fn record(carried: bool) {
 pub fn note_inventory_bytes(bytes: usize) {
     INVENTORY_BYTES.store(bytes, Ordering::Relaxed);
 }
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "read_owners": READS.load(Ordering::Relaxed),
-        "carried_owners": CARRIED.load(Ordering::Relaxed),
-        "shared_inventory_bytes": INVENTORY_BYTES.load(Ordering::Relaxed),
-        "writers": crate::status::map(mutations::SITES.iter().zip(&CALLS).map(|(s,n)| (s.name, n.load(Ordering::Relaxed))).chain(std::iter::once(("expire_goals", EXPIRY_CALLS.load(Ordering::Relaxed))))),
-        "goal_certificates": WATCHES[0].status(),
-        "justification_certificates": WATCHES[1].status(),
-    })
-}
 
 /// A reset names the diplomacy owner; an unreadable receiver revokes all.
 pub fn diplomacy_reset(diplomacy: usize) -> Guard {

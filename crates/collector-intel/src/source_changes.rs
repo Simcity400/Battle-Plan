@@ -116,41 +116,6 @@ struct Store {
     snapshots: [crate::retained_snapshot::RetainedSnapshot; 2],
 }
 impl Store {
-    fn allocated_bytes(&self) -> usize {
-        self.snapshots
-            .iter()
-            .map(|snapshot| snapshot.bytes())
-            .sum::<usize>()
-            + self.lanes.capacity() * size_of::<Box<SharedLane<Event>>>()
-            + self
-                .lanes
-                .iter()
-                .map(|lane| size_of::<SharedLane<Event>>() + lane.allocated_bytes())
-                .sum::<usize>()
-            + self.owners.capacity() * size_of::<Owner>()
-            + self
-                .owners
-                .iter()
-                .map(Owner::allocated_bytes)
-                .sum::<usize>()
-            + self.events.capacity() * size_of::<(u64, usize, u64, Event)>()
-            + (self.networks.capacity() + self.next_networks.capacity()) * size_of::<Reference>()
-            + self.network_seeds.capacity() * size_of::<(u32, u32, usize)>()
-            + (self.index_scratch.capacity()
-                + self.acquired.capacity()
-                + self.acquired_networks.capacity()
-                + self.dirty.capacity())
-                * size_of::<usize>()
-            + self
-                .index
-                .iter()
-                .chain(self.retired.iter())
-                .map(|index| {
-                    size_of::<ReferenceIndex>() + index.addresses.capacity() * size_of::<usize>()
-                })
-                .sum::<usize>()
-            + self.retired.capacity() * size_of::<Box<ReferenceIndex>>()
-    }
 
     const fn new() -> Self {
         Self {
@@ -874,20 +839,6 @@ impl Drop for Hooks {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let store = STORE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    crate::status::status!({
-        "enabled":ENABLED.load(Ordering::Acquire),"failed_observations":FAILED.load(Ordering::Relaxed),
-        "calls_by_writer":crate::status::map(sites::SITES.iter().enumerate().map(|(index,site)|(site.name,CALLS[index].load(Ordering::Relaxed)))),
-        "failures_by_writer":crate::status::map(sites::SITES.iter().enumerate().map(|(index,site)|(site.name,FAILURES[index].load(Ordering::Relaxed)))),
-        "first_failure":*FIRST_FAILURE.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-        "lane_bytes":store.lanes.iter().map(|lane|lane.allocated_bytes()).sum::<usize>(),
-        "retained_bytes":store.allocated_bytes(),
-        "observed_owners":store.owners.len(),"held_network_references":store.networks.len(),
-    })
-}
 
 #[cfg(test)]
 mod tests {

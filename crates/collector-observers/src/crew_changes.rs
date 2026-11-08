@@ -42,23 +42,6 @@ pub fn collect() {
 pub fn active() -> usize {
     WATCHES.active()
 }
-pub fn status() -> impl serde::Serialize {
-    #[derive(serde::Serialize)]
-    struct Status<T> {
-        certificate: T,
-        scope: &'static str,
-        read: u64,
-        carried: u64,
-        unavailable: u64,
-    }
-    Status {
-        certificate: WATCHES.status(),
-        scope: "new or writer-marked objects only; an unavailable certificate refuses crews without polling",
-        read: READS[0].load(Ordering::Relaxed),
-        carried: READS[1].load(Ordering::Relaxed),
-        unavailable: READS[2].load(Ordering::Relaxed),
-    }
-}
 /// Free the crew certificate tables.
 ///
 /// # Safety

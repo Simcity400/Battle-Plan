@@ -243,28 +243,6 @@ impl Store {
         self.membership = true;
         Ok(())
     }
-    fn bytes(&self) -> usize {
-        self.snapshot.bytes()
-            + self.seed_order.capacity() * size_of::<usize>()
-            + self.pairs.capacity() * size_of::<(u32, u32, usize)>()
-            + self.owners.capacity() * size_of::<Owner>()
-            + self
-                .owners
-                .iter()
-                .map(|owner| {
-                    owner.states.capacity() * size_of::<native::State>()
-                        + owner.entries.capacity() * size_of::<(native::Entry, u64)>()
-                        + owner.next.capacity() * size_of::<(native::Entry, u64)>()
-                        + owner.scratch.capacity() * size_of::<native::Entry>()
-                })
-                .sum::<usize>()
-            + self.lanes.capacity() * size_of::<Box<SharedLane<Event>>>()
-            + self
-                .lanes
-                .iter()
-                .map(|lane| lane.allocated_bytes() + size_of::<SharedLane<Event>>())
-                .sum::<usize>()
-    }
 }
 pub fn membership(
     seeds: &[network::Summary],
@@ -296,12 +274,6 @@ pub fn refused() {
     #[cfg(test)]
     let _lock = test_lock();
     FAILED.fetch_add(1, Ordering::SeqCst);
-}
-pub fn status() -> impl serde::Serialize {
-    let store = STORE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    crate::status::status!({"enabled":ENABLED.load(Ordering::Acquire),"failed_observations":FAILED.load(Ordering::Relaxed),"first_failure":store.reason,"shared_cache_bytes":store.bytes(),"scope":"independent network rebuild/load/lifetime certificate; only marked held networks read; loss waits for existing census"})
 }
 
 pub(crate) fn capture(

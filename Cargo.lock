@@ -945,7 +945,6 @@ version = "0.1.0"
 dependencies = [
  "collector-certificates",
  "collector-construction",
- "collector-country-counters",
  "collector-extended-support",
  "collector-hooks",
  "collector-lifetime",

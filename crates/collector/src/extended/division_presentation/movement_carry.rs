@@ -3,55 +3,10 @@ use engine_native::{Memory, carmy::DivisionSeed, cprovince};
 use engine_naval_history::cnaval_unit_transfer::{
     SpeedCache, SpeedInputs, TransportRegion, movement_speeds_inputs,
 };
-use std::{
-    collections::HashMap,
-    sync::atomic::{AtomicU64, Ordering},
-};
+use std::collections::HashMap;
 
 const ALLOCATION: &str = "division transport observation allocation failed";
 const QUERY_MISSING: &str = "division transport query missing";
-
-const COUNTS: usize = 11;
-const COUNT_NAMES: [&str; COUNTS] = [
-    "hours",
-    "divisions",
-    "stationary_divisions",
-    "province_ids_carried",
-    "province_ids_read",
-    "transfer_divisions",
-    "transfer_regions_carried",
-    "transfer_regions_read",
-    "transport_owners",
-    "transport_queries",
-    "land_divisions_read",
-];
-static TOTALS: [AtomicU64; COUNTS] = [const { AtomicU64::new(0) }; COUNTS];
-
-/// One pass's counts, in [`COUNT_NAMES`] order.
-pub(super) type Counts = [u64; COUNTS];
-
-pub(super) fn record(counts: &Counts) {
-    for (total, count) in TOTALS.iter().zip(counts) {
-        total.fetch_add(*count, Ordering::Relaxed);
-    }
-}
-
-pub(super) fn status_data() -> impl serde::Serialize {
-    let [carried, read, uncertified] = collector_division_parts::dig_in::carry_counts();
-    crate::status::status!({
-        "reads": crate::status::map(
-            COUNT_NAMES
-                .into_iter()
-                .zip(TOTALS.each_ref().map(|total| total.load(Ordering::Relaxed)))
-        ),
-        "dig_in_blocks": {
-            "carried": carried,
-            "read": read,
-            "uncertified": uncertified,
-        },
-        "scope": "cumulative since attach, per hourly movement pass: its census divisions and the stationary ones (no route, combat or transfer), whose movement rows read nothing once their source and target province ids are held; province ids answered from the ids held for the current world or read and authenticated afresh; transfer divisions, whose location's strategic region is read every hour (the map editor rebinds provinces) and authenticated once an hour per region (transfer_regions_carried: answered by this hour's earlier authentication), and the batched transport speed queries (owners, and owner and region pairs); land inputs read for every division; dig-in commander blocks carried under the commander's retreat-ban certificate, read under one, or read without one",
-    })
-}
 
 #[derive(Default)]
 pub(super) struct Transport {
@@ -66,8 +21,6 @@ pub(super) struct Transport {
     results: Vec<Result<SpeedInputs, &'static str>>,
     wanted: Vec<usize>,
     cache: SpeedCache,
-    /// Regions carried and read, owners and queries this hour.
-    counts: [u64; 4],
 }
 
 fn reserve<T>(values: &mut Vec<T>, additional: usize) -> Result<(), &'static str> {
@@ -94,16 +47,11 @@ impl Transport {
         self.queries.clear();
         self.results.clear();
         self.wanted.clear();
-        self.counts = [0; 4];
     }
 
     pub(super) fn begin(&mut self, divisions: usize) -> Result<(), &'static str> {
         self.clear();
         reserve(&mut self.pending, divisions)
-    }
-
-    pub(super) fn counts(&self) -> [u64; 4] {
-        self.counts
     }
 
     pub(super) fn push(
@@ -126,13 +74,11 @@ impl Transport {
                 .ok_or("division transport region pointer unavailable")?
                 as usize;
             if let Some(&region) = self.regions.get(&pointer) {
-                self.counts[0] += 1;
                 return Ok((owner, region));
             }
             let id = engine_native::cstrategic_region::id(memory, base, pointer)?
                 .ok_or("division transport source region absent")?;
             let region = TransportRegion { id, pointer };
-            self.counts[1] += 1;
             if engine_allocation::advisory(|| engine_allocation::reserve_map(&mut self.regions, 1))
                 .is_ok()
             {
@@ -204,10 +150,8 @@ impl Transport {
                 &mut self.cache,
                 &mut |_, inputs| results.push(inputs),
             );
-            self.counts[2] += 1;
             start = end;
         }
-        self.counts[3] = self.queries.len() as u64;
         self.cache.finish();
         for &(index, entry) in &self.pending {
             emit(

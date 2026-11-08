@@ -36,8 +36,6 @@ pub const TABLES: [TableId; N] = [
     TableId::AceRangeInputs,
     TableId::CountryCommandPower,
 ];
-/// One country pass produces all five tables.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("raid launch inputs", 0, &[0, 1, 2, 3, 4])];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

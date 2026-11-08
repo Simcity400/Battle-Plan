@@ -5,7 +5,35 @@ mod retained;
 pub(super) use retained::{Retained, prune, release, retained};
 pub(super) mod speculative;
 mod witness;
-use profile::Outcome as CacheOutcome;
+#[cfg(test)]
+const CACHE_FIELDS: usize = 20;
+/// Why a design snapshot hit or decoded; tests count them as cache evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(usize)]
+// Test-only miss diagnostics construct the remaining outcomes.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) enum CacheOutcome {
+    FullCopyHit,
+    ReadWitnessHit,
+    FullDecode,
+    NoRecentEntry,
+    SpanCount,
+    SpanAddress,
+    SpanMetadata,
+    ReadBytes,
+    Overlap,
+    ContextNotReusable,
+    AllocationSkipped,
+    WitnessUnavailable,
+    UnreadableCopy,
+    WitnessReadFailed,
+    InsertOverlap,
+    DesignEvents,
+    RetainedHits,
+    RetainedCheckSpans,
+    RetainedCandidateReads,
+    RetainedRepeats,
+}
 use std::{
     hash::{DefaultHasher, Hash, Hasher},
     sync::Arc,
@@ -237,20 +265,15 @@ pub(super) struct Cache<'a> {
     entries: Vec<Entry>,
     recent: HashMap<usize, (usize, Option<usize>)>,
     order: Vec<usize>,
-    counts: [u64; profile::CACHE_FIELDS],
-    full_decode: profile::Cost,
+    #[cfg(test)]
+    counts: [u64; CACHE_FIELDS],
+    #[cfg(test)]
     miss: Option<CacheOutcome>,
     /// Speculative walks and planned retained tests by event index, and the event being decoded.
     speculative: Vec<Option<Box<speculative::Prepared>>>,
     checks: Vec<Check>,
     scratch: Scratch,
     current: Option<usize>,
-}
-impl Drop for Cache<'_> {
-    fn drop(&mut self) {
-        profile::add_cache(self.counts);
-        profile::add_cost(profile::Phase::FullDecode, self.full_decode);
-    }
 }
 fn payload<'a>(log: &'a RawLog<1>, span: &collector_raw::raw::Span) -> &'a [u8] {
     if span.ok {
@@ -445,7 +468,6 @@ impl<'a> Cache<'a> {
         hour: i32,
         speculation: &mut super::Speculation<'_>,
     ) {
-        let _phase = profile::Timer::new(profile::Phase::Speculate);
         let mut planned = speculative::speculate(
             batch,
             base,
@@ -460,9 +482,20 @@ impl<'a> Cache<'a> {
     fn absorb(&mut self, scratch: &mut Scratch) {
         let mut totals = Scratch::default();
         totals.absorb(scratch);
-        self.counts[CacheOutcome::RetainedCheckSpans as usize] += totals.spans;
-        self.counts[CacheOutcome::RetainedCandidateReads as usize] += totals.candidate_reads;
-        self.counts[CacheOutcome::AllocationSkipped as usize] += totals.allocation_skips;
+        self.count_by(CacheOutcome::RetainedCheckSpans, totals.spans);
+        self.count_by(CacheOutcome::RetainedCandidateReads, totals.candidate_reads);
+        self.count_by(CacheOutcome::AllocationSkipped, totals.allocation_skips);
+    }
+    #[inline(always)]
+    fn count(&mut self, outcome: CacheOutcome) {
+        self.count_by(outcome, 1);
+    }
+    #[inline(always)]
+    fn count_by(&mut self, _outcome: CacheOutcome, _count: u64) {
+        #[cfg(test)]
+        {
+            self.counts[_outcome as usize] += _count;
+        }
     }
     /// The next [`Self::decode`] is the batch's event `index`.
     pub fn at(&mut self, index: usize) {
@@ -519,14 +552,13 @@ impl<'a> Cache<'a> {
             Overlaps::Inconsistent if report => CacheOutcome::InsertOverlap,
             Overlaps::Unreadable | Overlaps::Inconsistent => return Ok(false),
         };
-        self.counts[outcome as usize] += 1;
+        self.count(outcome);
         Ok(false)
     }
     fn reuse(&self, index: usize) -> Result<Arc<Decoded>, &'static str> {
         Self::observe(&self.entries[index].value)
     }
     fn observe(value: &Arc<Decoded>) -> Result<Arc<Decoded>, &'static str> {
-        let _phase = profile::Timer::new(profile::Phase::CachedObserve);
         sources::track(&value.definition)?;
         liveness::sample(&value.definition)?;
         value
@@ -596,7 +628,7 @@ impl<'a> Cache<'a> {
             &entry.value,
             Some(index),
         ) {
-            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+            self.count(CacheOutcome::AllocationSkipped);
         }
 
         if let Some((latest, previous)) = self.recent.get_mut(&pointer) {
@@ -611,7 +643,7 @@ impl<'a> Cache<'a> {
         {
             self.recent.insert(pointer, (index, None));
         } else {
-            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+            self.count(CacheOutcome::AllocationSkipped);
         }
     }
     pub fn decode(
@@ -622,10 +654,12 @@ impl<'a> Cache<'a> {
         hour: i32,
         shared: &mut Shared,
     ) -> Result<Arc<Decoded>, &'static str> {
-        let _phase = profile::Timer::new(profile::Phase::CacheDecode);
-        self.counts[CacheOutcome::DesignEvents as usize] += 1;
+        self.count(CacheOutcome::DesignEvents);
         let range = event.start..event.end;
-        self.miss = None;
+        #[cfg(test)]
+        {
+            self.miss = None;
+        }
         let source = copied::sources(&batch.log, range.clone(), event.pointer);
         // Capacity evidence must survive every optional cache allocation and early return.
         if let Some(retained) = &mut self.retained {
@@ -647,7 +681,7 @@ impl<'a> Cache<'a> {
                 // Equal complete copies inherit the verified occurrence's overlap consistency.
                 let value = Self::observe(&head.value)?;
                 head.range = range;
-                self.counts[CacheOutcome::FullCopyHit as usize] += 1;
+                self.count(CacheOutcome::FullCopyHit);
                 return Ok(value);
             }
         }
@@ -665,7 +699,7 @@ impl<'a> Cache<'a> {
                 witness.equal(&batch.log, entry.range.clone(), range.clone())
             }) {
                 let value = self.reuse(index)?;
-                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.count(CacheOutcome::ReadWitnessHit);
                 self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
@@ -686,7 +720,7 @@ impl<'a> Cache<'a> {
                 });
                 if matched == Some(true) {
                     let value = self.reuse(index)?;
-                    self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                    self.count(CacheOutcome::ReadWitnessHit);
                     self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
@@ -697,7 +731,6 @@ impl<'a> Cache<'a> {
             .as_ref()
             .is_some_and(|retained| retained.contains(event))
         {
-            let checks = profile::Timer::new(profile::Phase::RetainedChecks);
             // A planned test stands: until the pass finishes, states are only removed.
             let check = match self
                 .current
@@ -726,12 +759,11 @@ impl<'a> Cache<'a> {
                 }),
                 Check::Miss | Check::Unchecked => None,
             };
-            drop(checks);
             if let Some((value, charge, repeat)) = matched {
                 if repeat {
-                    self.counts[CacheOutcome::RetainedRepeats as usize] += 1;
+                    self.count(CacheOutcome::RetainedRepeats);
                 }
-                self.counts[CacheOutcome::RetainedHits as usize] += 1;
+                self.count(CacheOutcome::RetainedHits);
                 let value = Self::observe(&value)?;
                 // A retained hit supersedes any earlier local revision at this source count.
                 if !Self::verified(
@@ -742,10 +774,10 @@ impl<'a> Cache<'a> {
                     None,
                 ) {
                     self.source_heads.remove(&event.variant);
-                    self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+                    self.count(CacheOutcome::AllocationSkipped);
                 }
                 shared.heap_bytes += charge;
-                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.count(CacheOutcome::ReadWitnessHit);
                 return Ok(value);
             }
         }
@@ -753,7 +785,7 @@ impl<'a> Cache<'a> {
             for index in std::iter::once(latest).chain(previous) {
                 if equal(&batch.log, self.entries[index].range.clone(), range.clone()) {
                     let value = self.reuse(index)?;
-                    self.counts[CacheOutcome::FullCopyHit as usize] += 1;
+                    self.count(CacheOutcome::FullCopyHit);
                     self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
@@ -767,10 +799,11 @@ impl<'a> Cache<'a> {
                 });
                 if mismatch == Some(None) {
                     let value = self.reuse(index)?;
-                    self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                    self.count(CacheOutcome::ReadWitnessHit);
                     self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
+                #[cfg(test)]
                 if index == latest {
                     self.miss = Some(mismatch.flatten().unwrap_or_else(|| {
                         witness::shape_miss(
@@ -812,7 +845,7 @@ impl<'a> Cache<'a> {
                 && witness.equal(&batch.log, entry.range.clone(), range.clone())
             {
                 let value = self.reuse(index)?;
-                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.count(CacheOutcome::ReadWitnessHit);
                 self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
@@ -837,7 +870,7 @@ impl<'a> Cache<'a> {
                     })
                 {
                     let value = self.reuse(index)?;
-                    self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                    self.count(CacheOutcome::ReadWitnessHit);
                     self.remember(event.pointer, index, range.clone());
                     return Ok(value);
                 }
@@ -858,7 +891,7 @@ impl<'a> Cache<'a> {
             });
             if let Some(index) = matched {
                 let value = self.reuse(index)?;
-                self.counts[CacheOutcome::ReadWitnessHit as usize] += 1;
+                self.count(CacheOutcome::ReadWitnessHit);
                 self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
@@ -934,12 +967,13 @@ impl<'a> Cache<'a> {
                 && equal(&batch.log, entry.range.clone(), range.clone())
             {
                 let value = self.reuse(index)?;
-                self.counts[CacheOutcome::FullCopyHit as usize] += 1;
+                self.count(CacheOutcome::FullCopyHit);
                 self.remember(event.pointer, index, range.clone());
                 return Ok(value);
             }
             next = entry.next;
         }
+        #[cfg(test)]
         let miss = self.miss.take().unwrap_or_else(|| {
             self.recent
                 .get(&event.pointer)
@@ -961,10 +995,10 @@ impl<'a> Cache<'a> {
                     )
                 })
         });
-        self.counts[CacheOutcome::FullDecode as usize] += 1;
-        self.counts[miss as usize] += 1;
-        let stamp = profile::Stamp::new();
-        let result = (|| {
+        self.count(CacheOutcome::FullDecode);
+        #[cfg(test)]
+        self.count(miss);
+        (|| {
             let recorded = crate::raw::Recorded::build_range(&batch.log, range.clone())?;
             let (memory, value) = match self.prepared(&batch.log, range.clone()) {
                 // The lane walked identical spans; the ordered step runs every effect here.
@@ -987,19 +1021,23 @@ impl<'a> Cache<'a> {
                 .as_ref()
                 .is_some_and(|context| context.reusable())
             {
-                self.counts[CacheOutcome::ContextNotReusable as usize] += 1;
+                self.count(CacheOutcome::ContextNotReusable);
                 return Ok(value);
             }
             if !self.consistent(&batch.log, range.clone())? {
                 return Ok(value);
             }
+            #[cfg(test)]
             let (complete, allocation_failed, read_failed) = memory.diagnostics();
             let witness = memory.finish(&batch.log, range.clone(), &self.order, true);
-            if allocation_failed || (complete && witness.is_none()) {
-                self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
-            }
-            if read_failed {
-                self.counts[CacheOutcome::WitnessReadFailed as usize] += 1;
+            #[cfg(test)]
+            {
+                if allocation_failed || (complete && witness.is_none()) {
+                    self.count(CacheOutcome::AllocationSkipped);
+                }
+                if read_failed {
+                    self.count(CacheOutcome::WitnessReadFailed);
+                }
             }
             let proof = witness.as_ref().and_then(|witness| {
                 engine_allocation::advisory(|| {
@@ -1020,9 +1058,7 @@ impl<'a> Cache<'a> {
                 );
             }
             Ok(value)
-        })();
-        self.full_decode.add(stamp.finish());
-        result
+        })()
     }
     fn index_missions(
         &mut self,
@@ -1070,7 +1106,7 @@ impl<'a> Cache<'a> {
             self.entries[index].missions = Some(proof);
             self.entries[index].mission_next = self.mission_heads.insert(mission_key, index);
         } else {
-            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+            self.count(CacheOutcome::AllocationSkipped);
         }
     }
     fn insert(
@@ -1087,7 +1123,7 @@ impl<'a> Cache<'a> {
             engine_allocation::reserve(&mut self.entries, 1)
         });
         if reserved.is_err() {
-            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+            self.count(CacheOutcome::AllocationSkipped);
             return false;
         }
         if witness.is_some()
@@ -1097,7 +1133,7 @@ impl<'a> Cache<'a> {
             })
             .is_err()
         {
-            self.counts[CacheOutcome::AllocationSkipped as usize] += 1;
+            self.count(CacheOutcome::AllocationSkipped);
             witness = None;
         }
         let witness_key = witness

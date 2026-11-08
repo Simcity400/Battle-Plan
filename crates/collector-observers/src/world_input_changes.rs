@@ -179,16 +179,6 @@ fn navy_reset_enabled(enabled: bool) {
 }
 /// Per domain: quiet hours and read hours.
 static READS: [[AtomicU64; 2]; DOMAINS] = [const { [const { AtomicU64::new(0) }; 2] }; DOMAINS];
-const NAMES: [&str; DOMAINS] = [
-    "province_names",
-    "region_access",
-    "tension",
-    "dynamic_modifiers",
-    "industrial_organisation_rosters",
-    "industrial_organisation_policies",
-    "design_industrial_organisation",
-    "game_fog",
-];
 
 /// A domain's quiet token: `(epoch, revision)`.
 pub type Token = (u64, u64);
@@ -447,36 +437,6 @@ pub fn collect() {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&CALLS)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let domains = crate::status::map(NAMES.iter().zip(&READS).zip(&WATCHES).map(
-        |((&name, reads), watches)| {
-            let reads = reads.each_ref().map(|value| value.load(Ordering::Relaxed));
-            (
-                name,
-                crate::status::status!({
-                    "observed": watches.quiet().is_some() || watches.active() != 0,
-                    "poisoned": watches.poisoned(),
-                    "quiet": reads[0],
-                    "read": reads[1],
-                }),
-            )
-        },
-    ));
-    crate::status::status!({
-        "configured": cfg!(feature = "world_input_changes"),
-        "doctrines": crate::doctrine_changes::status(),
-        "domains": domains,
-        "events": events,
-        "watches": WATCHES[Domain::DynamicModifiers as usize].status(),
-        "scope": "cumulative since attach; a whole-table domain's token stands still while none of its writers runs (province_names: the rename and reset effects; region_access: region access setter and the navy reset; tension: update total, which every source writer ends in); an hour whose token equals the one taken before the table's latest complete read publishes that read (quiet, in hours), any other hour reads afresh (read); dynamic_modifiers counts countries instead: a country whose certificate (the add, renew, remove and daily update sites naming its container, and the naval tree family's modifier recalculation and country appearance reset) is the held read's is carried (quiet), any other country is read (read)"
-    })
-}
 
 const HOOK_ERRORS: [&str; 27] = [
     "world-input rename_province hook construction failed",

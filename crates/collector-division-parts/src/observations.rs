@@ -16,19 +16,6 @@ pub(crate) fn quiet(kind: usize) {
     QUIET[kind].fetch_add(1, Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let quiet = QUIET.each_ref().map(|count| count.load(Relaxed));
-    let refused = REFUSED.each_ref().map(|count| count.load(Relaxed));
-    crate::status::status!({
-        "quiet_experience": quiet[0],
-        "quiet_progression": quiet[1],
-        "quiet_officer": quiet[2],
-        "quiet_career": quiet[3],
-        "quiet_history": quiet[4],
-        "refused_takes": refused,
-        "scope": "cumulative since attach; observations carried because the hour's one take of their registry saw no writer touch the receiver since it was held, and takes (armies, experience, progression, history, edits) that certified nothing; pool membership marks are taken with the panel sources' boundary",
-    })
-}
 
 /// One registry's take: the epoch it certified, and the receivers writers touched since the
 /// previous take, sorted. A failed take, or one whose visits could not all be kept, certifies

@@ -43,14 +43,6 @@ impl Site {
         Self::Destroy,
     ];
 
-    fn name(self) -> &'static str {
-        match self {
-            Self::RecalculateModifiers => "recalculate_modifiers",
-            Self::Construct => "construct",
-            Self::CopyConstruct => "copy_construct",
-            Self::Destroy => "destroy",
-        }
-    }
 }
 
 /// The forwarded writers' domain.
@@ -125,25 +117,6 @@ pub fn record(counts: &Counts, leaders: usize) {
     LEADERS.store(leaders, Ordering::Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        Site::ALL
-            .iter()
-            .zip(&CALLS)
-            .map(|(site, calls)| (site.name(), calls.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "unit_leader_trait_changes"),
-        "poisoned": WATCHES.poisoned(),
-        "reused_leaders": reads[0],
-        "read_leaders": reads[1],
-        "carrying_hours": reads[2],
-        "events": events,
-        "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a leader's UnitLeaderTraits rows are carried, without reading the leader, while the role census names it at the held address for the held character and no forwarded writer (events: the naval tree family's modifier recalculation tail and leader construct, copy_construct and destroy) touched it since the held read; every other leader is read and its rows held"
-    })
-}
 
 #[cfg(test)]
 mod tests {

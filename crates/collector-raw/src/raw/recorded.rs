@@ -14,17 +14,6 @@ static INDEX_REBUILD_NS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REUSED_SPANS: AtomicU64 = AtomicU64::new(0);
 static INDEX_REBUILT_SPANS: AtomicU64 = AtomicU64::new(0);
 
-pub fn index_diagnostics() -> impl serde::Serialize {
-    crate::status::status!({
-        "scope": "shared raw indexes since attach; preparation only, not row decoding",
-        "reuses": INDEX_REUSES.load(Ordering::Relaxed),
-        "rebuilds": INDEX_REBUILDS.load(Ordering::Relaxed),
-        "reuse_ns": INDEX_REUSE_NS.load(Ordering::Relaxed),
-        "rebuild_ns": INDEX_REBUILD_NS.load(Ordering::Relaxed),
-        "reused_spans": INDEX_REUSED_SPANS.load(Ordering::Relaxed),
-        "rebuilt_spans": INDEX_REBUILT_SPANS.load(Ordering::Relaxed),
-    })
-}
 
 /// Decode-side address space: serves exactly the recorded spans and fails
 /// every other read, so the replayed walk observes the identical bytes and

@@ -320,7 +320,6 @@ enum SetupWork {
 }
 impl SetupPart {
     pub fn capture(&mut self) {
-        let _phase = profile::Timer::new(profile::Phase::ColdStorageParts);
         engine_allocation::advisory(|| match &mut self.work {
             SetupWork::Batch {
                 events,
@@ -350,7 +349,6 @@ pub(in crate::production) fn presize_partitioned(
     lanes: usize,
     acquire: &mut impl FnMut(Vec<SetupPart>) -> Result<Vec<SetupPart>, &'static str>,
 ) {
-    let _phase = profile::Timer::new(profile::Phase::ColdStorage);
     engine_allocation::advisory(|| presize_with(lanes, acquire));
 }
 fn presize_with(
@@ -724,7 +722,7 @@ mod tests {
             Err("variant change raw storage exhausted")
         );
         assert!(output.is_empty());
-        assert_eq!(status().refused_intervals, 1);
+        assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 1);
         assert!(needs_full());
         presize();
         let store = STORE.get().unwrap().lock().unwrap();

@@ -130,7 +130,6 @@ fn production_verdict_indirect_foreign_unwind() {
             winner: 1,
             ..NO_DISPATCH
         });
-        let calls = LEADER_CALLS.load(Ordering::Relaxed);
         assert!(Hook::set_enabled_batch(&mut [&mut hook], true).unwrap());
         unsafe { probe.run(case, invoke, std::ptr::addr_of_mut!(invocation) as usize) };
         let normal = usize::from(case.expected == 1);
@@ -142,7 +141,6 @@ fn production_verdict_indirect_foreign_unwind() {
             ),
             (1, normal, normal)
         );
-        assert_eq!(LEADER_CALLS.load(Ordering::Relaxed), calls + 1);
         assert_eq!(
             (
                 ACTIVE.load(Ordering::SeqCst),

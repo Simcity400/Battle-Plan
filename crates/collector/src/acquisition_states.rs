@@ -139,86 +139,8 @@ impl Inputs {
             .ok()
             .and_then(|index| rows[index].fraction.ok())
     }
-
-    pub(crate) fn observe(&self, work: &mut InputWork) -> std::io::Result<()> {
-        work.observe(
-            self.outcome,
-            self.required,
-            self.rows.len(),
-            self.rows[..self.outcome.len()]
-                .iter()
-                .map(|row| row.fraction.map(|_| true)),
-        )
-    }
 }
 
-/// Spool-thread totals preserve the exact static native refusal reasons.
-#[derive(Default)]
-pub(crate) struct InputWork {
-    samples: u64,
-    captured: u64,
-    unqueried: u64,
-    refused: u64,
-    required: usize,
-    capacity: usize,
-    omissions: u64,
-    reasons: Vec<(&'static str, u64)>,
-}
-
-impl InputWork {
-    pub(crate) fn observe(
-        &mut self,
-        outcome: Outcome,
-        required: usize,
-        capacity: usize,
-        results: impl Iterator<Item = Result<bool, &'static str>>,
-    ) -> std::io::Result<()> {
-        self.samples = self.samples.saturating_add(1);
-        self.required = self.required.max(required);
-        self.capacity = self.capacity.max(capacity);
-        if let Outcome::Truncated { unread_rows, .. } = outcome {
-            self.omissions = self.omissions.saturating_add(u64::from(unread_rows));
-        }
-        if let Outcome::Unavailable { reason } = outcome {
-            self.refusal(reason)?;
-        }
-        for result in results {
-            match result {
-                Ok(true) => self.captured = self.captured.saturating_add(1),
-                Ok(false) => self.unqueried = self.unqueried.saturating_add(1),
-                Err(reason) => self.refusal(reason)?,
-            }
-        }
-        Ok(())
-    }
-
-    fn refusal(&mut self, reason: &'static str) -> std::io::Result<()> {
-        let index = match self.reasons.binary_search_by_key(&reason, |entry| entry.0) {
-            Ok(index) => index,
-            Err(index) => {
-                engine_allocation::reserve(&mut self.reasons, 1)?;
-                self.reasons.insert(index, (reason, 0));
-                index
-            }
-        };
-        self.reasons[index].1 = self.reasons[index].1.saturating_add(1);
-        self.refused = self.refused.saturating_add(1);
-        Ok(())
-    }
-
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "samples": self.samples,
-            "captured": self.captured,
-            "unqueried": self.unqueried,
-            "refused": self.refused,
-            "required": self.required,
-            "capacity": self.capacity,
-            "omissions": self.omissions,
-            "refusals": crate::status::map(self.reasons.iter().map(|&(reason, count)| (reason, count))),
-        })
-    }
-}
 /// The frame's state display-name arena, owned by the request while it runs.
 #[derive(Default)]
 pub(crate) struct Names {
@@ -816,11 +738,6 @@ pub(crate) mod tests {
         assert_eq!(captured.inputs.fraction(3), None);
         assert_eq!(healthy.inputs.fraction(1), Some(0));
         assert_eq!(healthy.inputs.fraction(3), Some(0));
-        let mut work = InputWork::default();
-        captured.inputs.observe(&mut work).unwrap();
-        assert_eq!(work.refused, 2);
-        assert_eq!(work.captured, 0);
-        assert_eq!(work.required, 2);
     }
 
     #[test]
@@ -914,10 +831,6 @@ pub(crate) mod tests {
         assert!(capacities[3] >= 4097);
         assert_eq!(frame.states.len(), capacities[3]);
         assert_eq!(frame.state_inputs.rows.len(), capacities[3]);
-        let mut work = InputWork::default();
-        frame.state_inputs.observe(&mut work).unwrap();
-        assert_eq!(work.reasons, [("states worker panicked", 1)]);
-        assert_eq!(work.required, 4097);
     }
 
     mod carry;

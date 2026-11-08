@@ -5,20 +5,8 @@ use super::{
 };
 use crate::sampling::qpc;
 use replay_data::rows::TableId;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const N: usize = 8;
-const FAMILIES: [&str; N] = [
-    "land_events",
-    "event_feed",
-    "line_output",
-    "fuel_awards",
-    "construction_ic",
-    "peace_settlements",
-    "operation_outcomes",
-    "politics",
-];
-static LOST_DRAINS: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 
 #[derive(Clone, Copy, Default)]
 pub(crate) struct ObserverBoundaryReport {
@@ -199,7 +187,6 @@ impl ObserverBoundaryRequest {
         let lane_reason = lane_reason(&self.finished, reason);
         for (index, finished) in self.finished.into_iter().enumerate() {
             if !finished {
-                LOST_DRAINS[index].fetch_add(1, Ordering::Relaxed);
                 match index {
                     0 => self.land.fail(self.hour, reason),
                     1 => self.feed.fail(self.hour, reason),
@@ -252,12 +239,6 @@ fn lane_reason(finished: &[bool; N], reason: &'static str) -> &'static str {
 }
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
-}
-pub(crate) fn status() -> crate::status::Object<impl crate::status::Fields> {
-    crate::status::status!({
-        "lost_worker_drains": crate::status::map(FAMILIES.into_iter().zip(LOST_DRAINS.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
-        "scope": "rejected or unfinished hourly observer worker handoffs; finished sibling intervals retain their original outcomes",
-    })
 }
 impl Captured {
     pub(crate) fn take_observer_boundary_request(

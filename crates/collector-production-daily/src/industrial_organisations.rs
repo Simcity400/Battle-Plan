@@ -25,11 +25,6 @@ pub const TABLES: [TableId; N] = [
     TableId::IndustrialOrganisationDetails,
     TableId::IndustrialOrganisationPolicies,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "industrial organisations, history and state",
-    0,
-    &[0, 1, 2, 3],
-)];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

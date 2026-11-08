@@ -9,7 +9,6 @@ use collector_primitives::raw_memory;
 use collector_primitives::table_capture;
 use collector_primitives::table_hash;
 use collector_projection::table_conversion;
-use collector_status::status;
 #[cfg(test)]
 use collector_test_support as _;
 use collector_timing::hook_timing;

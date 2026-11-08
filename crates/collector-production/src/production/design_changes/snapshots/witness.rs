@@ -58,6 +58,7 @@ impl<'a, M: Memory> Observed<'a, M> {
             read_failed: self.read_failed.get(),
         }
     }
+    #[cfg(test)]
     pub fn diagnostics(&self) -> (bool, bool, bool) {
         (
             self.complete.get(),

@@ -407,24 +407,6 @@ enum Role {
 }
 const ROLES: usize = 16;
 impl Role {
-    const ALL: [Self; ROLES] = [
-        Self::WarCall,
-        Self::Settlement,
-        Self::Provenance,
-        Self::Script,
-        Self::ScriptInstance,
-        Self::PendingRegistration,
-        Self::DelayedWriter,
-        Self::DelayedPass,
-        Self::DecisionWriter,
-        Self::PoliticalBalance,
-        Self::Refusal,
-        Self::BoundaryPrepare,
-        Self::BoundarySeal,
-        Self::Census,
-        Self::Detach,
-        Self::Staging,
-    ];
     /// The busy word: zero is free.
     fn held(self) -> u8 {
         self as u8 + 1
@@ -432,26 +414,6 @@ impl Role {
     /// The holder role in a busy word.
     fn holder(busy: u64) -> usize {
         ((busy & HOLDER) as usize).saturating_sub(1).min(ROLES - 1)
-    }
-    fn name(index: usize) -> &'static str {
-        match Self::ALL[index] {
-            Self::WarCall => "war_call",
-            Self::Settlement => "settlement",
-            Self::Provenance => "provenance",
-            Self::Script => "script",
-            Self::ScriptInstance => "script_instance",
-            Self::PendingRegistration => "pending_registration",
-            Self::DelayedWriter => "delayed_writer",
-            Self::DelayedPass => "delayed_pass",
-            Self::DecisionWriter => "decision_writer",
-            Self::PoliticalBalance => "political_balance",
-            Self::Refusal => "refusal",
-            Self::BoundaryPrepare => "boundary_prepare",
-            Self::BoundarySeal => "boundary_seal",
-            Self::Census => "census",
-            Self::Detach => "detach",
-            Self::Staging => "staging",
-        }
     }
 }
 /// Declined entries by (declined role, holder role).
@@ -1856,124 +1818,6 @@ fn presize_storage(slots: usize) {
             *spare = Some(store);
         }
     }
-}
-
-const CONTENTION_SCOPE: &str = concat!(
-    "since load: native callbacks the shared store declined, by declined and holder role; ",
-    "callbacks declined for a worker owed the free store, by declined role; ",
-    "collector worker entries that waited, by worker and first holder role; ",
-    "worker entries that lost a race for the store, by worker role; ",
-    "worker entries refused because the owner was retained, by worker role",
-);
-#[derive(serde::Serialize)]
-struct Contention {
-    declined: &'static str,
-    holder: &'static str,
-    count: u64,
-}
-#[derive(serde::Serialize)]
-struct WorkerWait {
-    worker: &'static str,
-    holder: &'static str,
-    count: u64,
-}
-#[derive(serde::Serialize)]
-struct WorkerRefusal {
-    worker: &'static str,
-    count: u64,
-}
-#[derive(serde::Serialize)]
-struct WaitingDecline {
-    declined: &'static str,
-    count: u64,
-}
-/// Nonzero per-role counters.
-fn roles(counters: &'static [AtomicU64; ROLES]) -> impl Iterator<Item = (&'static str, u64)> {
-    counters.iter().enumerate().filter_map(|(role, count)| {
-        let count = count.load(Ordering::Relaxed);
-        (count != 0).then(|| (Role::name(role), count))
-    })
-}
-/// Nonzero cells of a (requesting role, holder role) matrix.
-fn cells(
-    matrix: &'static [[AtomicU64; ROLES]; ROLES],
-) -> impl Iterator<Item = (&'static str, &'static str, u64)> {
-    matrix.iter().enumerate().flat_map(|(role, holders)| {
-        holders
-            .iter()
-            .enumerate()
-            .filter_map(move |(holder, count)| {
-                let count = count.load(Ordering::Relaxed);
-                (count != 0).then(|| (Role::name(role), Role::name(holder), count))
-            })
-    })
-}
-/// Streams a sequence as it is read; status collects nothing.
-struct Streamed<F>(F);
-impl<F, I> serde::Serialize for Streamed<F>
-where
-    F: Fn() -> I,
-    I: Iterator,
-    I::Item: serde::Serialize,
-{
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq((self.0)())
-    }
-}
-
-fn repeated(registry: crate::event_feed_history::OwnerRegistry) -> u64 {
-    crate::event_feed_history::REPEATED_OWNER_REFUSALS[registry as usize].load(Ordering::Relaxed)
-}
-
-pub fn status() -> impl serde::Serialize {
-    let contention = Streamed(|| {
-        cells(&DECLINED).map(|(declined, holder, count)| Contention {
-            declined,
-            holder,
-            count,
-        })
-    });
-    let worker_waits = Streamed(|| {
-        cells(&WORKER_WAITS).map(|(worker, holder, count)| WorkerWait {
-            worker,
-            holder,
-            count,
-        })
-    });
-    let workers = |counters: &'static [AtomicU64; ROLES]| {
-        Streamed(move || roles(counters).map(|(worker, count)| WorkerRefusal { worker, count }))
-    };
-    let declined_for_waiting_worker = Streamed(|| {
-        roles(&DECLINED_FOR_WAITING_WORKER)
-            .map(|(declined, count)| WaitingDecline { declined, count })
-    });
-    let crossed =
-        |sample: usize| crate::event_feed_history::CROSSED_SAMPLES[sample].load(Ordering::Relaxed);
-    crate::status::status!({
-        "enabled": unsafe { SHARED.load(Ordering::SeqCst).as_ref() }.is_some_and(|owner| owner.armed.load(Ordering::SeqCst)),
-        "unhooked": crate::world_lifetime::unavailable_reason(),
-        "native_flights": active(), "faults": FAULT.load(Ordering::SeqCst),
-        "provenance": crate::war_provenance::status(),
-        "recovery_pending": recovery_pending(),
-        // Refusals of an owner already refused in its loss epoch: counted,
-        // never published again.
-        "repeated_owner_refusals": {
-            "delayed_events": repeated(crate::event_feed_history::OwnerRegistry::Delayed),
-            "decisions": repeated(crate::event_feed_history::OwnerRegistry::Decisions),
-        },
-        // Baseline samples a native writer crossed: none was certified.
-        "crossed_samples": {
-            "registry": crossed(crate::event_feed_history::REGISTRY_SAMPLE),
-            "delayed": crossed(crate::event_feed_history::OwnerRegistry::Delayed as usize),
-            "decisions": crossed(crate::event_feed_history::OwnerRegistry::Decisions as usize),
-        },
-        "contention": contention,
-        "declined_for_waiting_worker": declined_for_waiting_worker,
-        "worker_waits": worker_waits,
-        "worker_lost_races": workers(&WORKER_LOST_RACES),
-        "worker_refusals": workers(&WORKER_REFUSALS),
-        "contention_scope": CONTENTION_SCOPE,
-    })
 }
 
 /// Test only: install a fresh SHARED owner whose store has a prepared

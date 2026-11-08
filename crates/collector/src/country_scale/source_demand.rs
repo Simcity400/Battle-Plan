@@ -1,29 +1,7 @@
 //! Advisory source storage from native headers before attach and on demand cadence.
-use super::{DemandFailures, Sizing, demand_game_state, raise, table_demand};
+use super::{Sizing, demand_game_state, raise, table_demand};
 use crate::extended;
 use engine_native::{Memory, cgame_state, cpdx_array::Array};
-
-const NAMES: [&str; 10] = [
-    "world",
-    "countries",
-    "country_links",
-    "provinces",
-    "states",
-    "state_names",
-    "factions",
-    "faction_members",
-    "war_sources",
-    "border_conflict_groups",
-];
-static FAILURES: [DemandFailures; 10] = [const { DemandFailures::new() }; 10];
-
-pub(crate) fn diagnostics() -> impl serde::Serialize {
-    crate::status::map(
-        NAMES
-            .into_iter()
-            .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
-    )
-}
 
 pub(crate) struct Demand {
     countries: Result<usize, &'static str>,
@@ -47,7 +25,7 @@ impl Demand {
         base: usize,
         capacity_census: bool,
     ) -> Result<Option<Self>, &'static str> {
-        let Some(state) = FAILURES[0].observe(demand_game_state(memory, base))? else {
+        let Some(state) = demand_game_state(memory, base)? else {
             return Ok(None);
         };
         // World reset and province initialization
@@ -82,27 +60,27 @@ impl Demand {
             crate::variable_changes::Observer.demand_embedded(owners);
         }
         Ok(Some(Self {
-            countries: FAILURES[1].observe(indexed(cgame_state::COUNTRIES, 8)),
-            links: FAILURES[2].observe(links),
-            provinces: FAILURES[3].observe(indexed(cgame_state::PROVINCES, 8)),
-            states: FAILURES[4].observe(indexed(cgame_state::STATES, 8)),
+            countries: indexed(cgame_state::COUNTRIES, 8),
+            links,
+            provinces: indexed(cgame_state::PROVINCES, 8),
+            states: indexed(cgame_state::STATES, 8),
             state_names: capacity_census.then(|| {
-                FAILURES[5].observe(engine_native::cstate::name_demand(memory, base, state))
+                engine_native::cstate::name_demand(memory, base, state)
             }),
-            factions: FAILURES[6].observe(faction_rows),
+            factions: faction_rows,
             faction_members: capacity_census.then(|| {
-                FAILURES[7].observe(table_demand::rows(
+                table_demand::rows(
                     engine_native::cfaction_system::walk_members(memory, base, state, &mut []),
-                ))
+                )
             }),
             wars: capacity_census.then(|| {
-                FAILURES[8].observe(engine_native::cwar_relation::row_demand(
+                engine_native::cwar_relation::row_demand(
                     memory, base, state,
-                ))
+                )
             }),
-            groups: FAILURES[9].observe(engine_native::cprovince::conflict_group_demand(
+            groups: engine_native::cprovince::conflict_group_demand(
                 memory, base, state,
-            )),
+            ),
         }))
     }
 
@@ -182,21 +160,12 @@ mod tests {
                 false
             }
         }
-        let failures = || {
-            [5, 7, 8].map(|index| {
-                serde_json::to_value(FAILURES[index].diagnostics()).unwrap()["failed_observations"]
-                    .as_u64()
-                    .unwrap()
-            })
-        };
-        let before = failures();
         let skipped = Demand::observe_periodic(&Registry, 0, false)
             .unwrap()
             .unwrap();
         assert!(skipped.state_names.is_none());
         assert!(skipped.faction_members.is_none());
         assert!(skipped.wars.is_none());
-        assert_eq!(failures(), before);
         // Unreadable prompt/fixed inputs still request the original retry rate.
         assert!(skipped.refused());
         let mut sizing = Sizing::for_slots(1);
@@ -207,6 +176,5 @@ mod tests {
         assert!(attach.state_names.unwrap().is_err());
         assert!(attach.faction_members.unwrap().is_err());
         assert!(attach.wars.unwrap().is_err());
-        assert_eq!(failures(), before.map(|count| count + 1));
     }
 }

@@ -6,7 +6,6 @@ use collector_memory::read_accounting;
 use collector_primitives::clock;
 use collector_primitives::table_hash;
 use collector_projection::table_conversion;
-use collector_status::status;
 #[cfg(test)]
 use collector_test_support as _;
 use collector_timing::hook_timing;

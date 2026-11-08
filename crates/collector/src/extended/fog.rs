@@ -9,8 +9,7 @@ use crate::{
 use engine_allocation::{copy_vec, owned_vec, reserve, resize};
 use engine_map_air::radar_group;
 use engine_native::{
-    Memory, cair_base, ccontroller_area, ccountry, ctheatre, memory::RecordLayout,
-    memory::RecordSources, walk::Outcome,
+    Memory, cair_base, ccontroller_area, ccountry, ctheatre, walk::Outcome,
 };
 use engine_visibility::unit_viewer_entry;
 use replay_data::{rows, rows::TableId, rows::tables};
@@ -28,17 +27,6 @@ pub const TABLES: [TableId; N] = [
     TableId::UnitIntel,
     TableId::AirBaseRegistrations,
     TableId::SentVolunteers,
-];
-
-/// The stationed walk censuses areas and units together, so its cost is charged
-/// once to TheatreAreas. The other families have independent roots.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("radar coverage groups", 0, &[0]),
-    ("volunteer host vectors", 1, &[1]),
-    ("volunteer theatre areas and stationed units", 2, &[2, 3]),
-    ("unit viewer levels", 4, &[4]),
-    ("air base registrations", 5, &[5]),
-    ("sent volunteer references", 6, &[6]),
 ];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

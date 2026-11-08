@@ -160,8 +160,6 @@ pub(crate) fn capture(
                         tick_busy: 0,
                     }),
                     entry_ticks: 0,
-                    buffer_wait_ns: 0,
-                    free_frames: 0,
                     dispatched: qpc(),
                 },
                 CountedMemory::new(Traced {
@@ -175,8 +173,7 @@ pub(crate) fn capture(
         assert_eq!(shared.ready.pop(), Some(index));
         let frame = unsafe { &*shared.frames[index].load(Ordering::Acquire) };
         assert_eq!(frame.clock.as_ref().unwrap().hour, hour);
-        assert_eq!(frame.hour_cost.force_full, matches!(hour, 0 | 13));
-        assert_eq!(frame.hour_cost.continuous, hour != 0);
+        assert_eq!(frame.force_full, matches!(hour, 0 | 13));
         let spans = std::mem::take(&mut *world.reads.lock().unwrap());
         let roles = std::mem::take(&mut *world.roles.lock().unwrap());
         assert!(spans.iter().any(|span| span.accepted && span.len != 0));

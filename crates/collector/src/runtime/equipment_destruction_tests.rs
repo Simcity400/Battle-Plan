@@ -381,18 +381,13 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
         .unwrap();
     let shared = Shared::new(0, 0, session.qpc_frequency);
     shared.recording.store(false, Ordering::Release);
-    let work = WorkerWork::new();
     let mut writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
-    let handle = writer.handle();
     let status = crate::status::serialize(
         &spool_status(
             &processor,
             &shared,
             &session,
-            &work,
-            &handle,
             "detached",
-            0,
             None,
             None,
             true,
@@ -411,13 +406,7 @@ fn equipment_destruction_pinned_status_preserves_closed_spool_metadata_and_unloc
     assert_eq!(status["campaign"], "01234567-89ab-cdef-0123-456789abcdef");
     assert_eq!(status["state"], "pinned");
     assert_eq!(status["drain_complete"], true);
-    assert_eq!(status["recording_stopped"], true);
-    assert_eq!(status["spool_closed"], true);
-    assert_eq!(status["collector_pinned"], true);
-    assert_eq!(status["process_start_time"], session.process_start_time);
-    assert_eq!(status["original_bytes_verified"], false);
-    assert_eq!(status["installation_error"], "synthetic setup error");
-    assert!(status.get("active_callbacks").is_none());
+    assert_eq!(status["error"], "synthetic setup error");
     assert_eq!(
         status["restoration_error"],
         "synthetic persistent patch error"

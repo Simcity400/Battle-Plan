@@ -11,7 +11,7 @@ use crate::{
     hook::{Hook, Threads},
     sampling::{self, ACTIVE, SHARED, Shared},
     spool_phases::Phase,
-    spooling::{Distribution, Processor, WallTotals},
+    spooling::Processor,
 };
 use collector_primitives::capacity::CapacityMax;
 use engine_executable::build::hash_executable;
@@ -559,137 +559,6 @@ fn replace_status(temp: &Path, path: &Path) -> io::Result<()> {
     }
 }
 
-struct WorkerWork {
-    buffer_service: Distribution,
-    recycle_capacities_wait: WallTotals,
-    sizing_capacities_hold: WallTotals,
-    idle_flush_calls: u64,
-    idle_flush_ns: u64,
-    idle_flush_max_ns: u64,
-    status_update: Distribution,
-    queue_peak_observed: usize,
-    started_qpc: i64,
-    started_cpu_ns: Result<u64, io::ErrorKind>,
-}
-
-struct CpuWorkStatus {
-    cpu_ns: Result<u64, io::ErrorKind>,
-    hours: u64,
-}
-
-impl crate::status::Fields for CpuWorkStatus {
-    fn field_count(&self) -> usize {
-        if self.cpu_ns.is_ok() { 2 } else { 1 }
-    }
-
-    fn serialize<M: serde::ser::SerializeMap>(&self, map: &mut M) -> Result<(), M::Error> {
-        match self.cpu_ns {
-            Ok(cpu_ns) => {
-                map.serialize_entry("cpu_total_ns", &cpu_ns)?;
-                map.serialize_entry(
-                    "cpu_ns_per_recorded_hour",
-                    &if self.hours == 0 {
-                        None
-                    } else {
-                        Some(cpu_ns as f64 / self.hours as f64)
-                    },
-                )
-            }
-            Err(_) => map.serialize_entry("cpu_error", "GetThreadTimes failed"),
-        }
-    }
-}
-
-impl WorkerWork {
-    fn new() -> Self {
-        Self {
-            buffer_service: Distribution::default(),
-            recycle_capacities_wait: WallTotals::default(),
-            sizing_capacities_hold: WallTotals::default(),
-            idle_flush_calls: 0,
-            idle_flush_ns: 0,
-            idle_flush_max_ns: 0,
-            status_update: Distribution::default(),
-            queue_peak_observed: 0,
-            started_qpc: sampling::qpc(),
-            started_cpu_ns: thread_cpu_ns().map_err(|error| error.kind()),
-        }
-    }
-
-    fn recycle_capacities<'a>(
-        &mut self,
-        sizing: &'a SizingShared,
-        frequency: u64,
-    ) -> std::sync::MutexGuard<'a, BufferCapacities> {
-        let started = sampling::qpc();
-        let capacities = lock(&sizing.capacities);
-        self.recycle_capacities_wait
-            .record_ticks(sampling::qpc() - started, frequency);
-        capacities
-    }
-
-    /// Once per status update. CPU time includes all work on the spool thread;
-    /// buffer_service contains the conversion/encoding/write phases, not their sum.
-    fn status(
-        &self,
-        hours: u64,
-        frequency: u64,
-    ) -> io::Result<crate::status::Object<impl crate::status::Fields>> {
-        let buffer_service = self.buffer_service.status()?;
-        let status_update = self.status_update.status()?;
-        let elapsed_ns = ((sampling::qpc() - self.started_qpc).max(0) as u128 * 1_000_000_000
-            / u128::from(frequency)) as u64;
-        let cpu_ns = match self.started_cpu_ns {
-            Ok(start) => thread_cpu_ns()
-                .map(|now| now.saturating_sub(start))
-                .map_err(|error| error.kind()),
-            Err(error) => Err(error),
-        };
-        Ok(crate::status::status!({
-            "buffer_service": buffer_service,
-            "recycle_capacities_wait": self.recycle_capacities_wait.status(),
-            "recycle_capacities_wait_scope": "spool-thread wait per capture-capacity mutex acquisition for the returning buffer: one initial capacity snapshot and each monotonic merge/publication attempt; excludes all live reads, allocation, buffer preparation and growth",
-            "sizing_capacities_hold": self.sizing_capacities_hold.status(),
-            "sizing_capacities_hold_scope": "capacity-mutex hold wall per sizing snapshot or monotonic publication; excludes live reads, allocations, idle-buffer and combat-hint growth, lock acquisition and diagnostic hand-over; capacity observations run inline on the spool thread when the sizing thread cannot start, without idle-buffer growth",
-            "idle_flush": {
-                "calls": self.idle_flush_calls,
-                "total_ns": self.idle_flush_ns,
-                "max_ns": self.idle_flush_max_ns,
-                "mean_ns": self.idle_flush_ns.checked_div(self.idle_flush_calls).unwrap_or(0),
-            },
-            "idle_flush_scope": "spool-thread wall in Processor::flush after draining ready buffers; includes periodic durable synchronization; separate from buffer_service and status_update",
-            "status_update": status_update,
-            "queue_peak_observed": self.queue_peak_observed,
-            "elapsed_ns": elapsed_ns,
-        }).join(crate::status::Object(CpuWorkStatus { cpu_ns, hours })))
-    }
-}
-
-pub(crate) fn thread_cpu_ns() -> io::Result<u64> {
-    let mut creation = unsafe { std::mem::zeroed() };
-    let mut exit = unsafe { std::mem::zeroed() };
-    let mut kernel = unsafe { std::mem::zeroed() };
-    let mut user = unsafe { std::mem::zeroed() };
-    if unsafe {
-        GetThreadTimes(
-            GetCurrentThread(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    let ticks = |time: windows_sys::Win32::Foundation::FILETIME| {
-        (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
-    };
-    Ok(ticks(kernel)
-        .saturating_add(ticks(user))
-        .saturating_mul(100))
-}
-
 fn run(
     module: HMODULE,
     prepared_session: u64,
@@ -907,7 +776,6 @@ fn run(
     crate::market_changes::restore_sequence(market_sequence)?;
     let mut processor = Processor::new(&config.output_dir, history, session.clone())
         .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
-    let validation_refusals = processor.validation_refusals();
     let mut hook = unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }
         .map_err(|cause| {
             let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
@@ -1203,9 +1071,6 @@ fn run(
             .map_err(|error| error_reason(error, "game score sizing allocation failed"))?
     {
         sizing.extended.game_score.raise(observed.demand);
-        processor
-            .observe_game_score_sizing(&observed)
-            .map_err(|error| error_reason(error, "game score sizing status allocation failed"))?;
     }
     let _ = sizing.extended.combat_progress.presize(&memory, base);
     crate::equipment_destruction::prepare(&memory, base, slots);
@@ -1851,7 +1716,6 @@ fn run(
         }
         progress.step("sampler_stopped", Some(samples));
     }
-    let mut event_feed_detach = None;
     // Retain every callback, worker and frame owner on refusal. Keep an earlier
     // terminal fault separate from the new stop diagnostic.
     macro_rules! retain_detach {
@@ -1869,16 +1733,8 @@ fn run(
                 if !crate::allocation::failed() {
                     let status = crate::status::status!({
                         "state":"detach_refused", "session":session_id,
-                        "drain_complete":false, "original_bytes_verified":false,
-                        "error":error, "detach_refusal":reason,
-                        "decode_failure":decode::panic_failure(),
-                        "event_feed_failure":crate::event_feed_observer::status(),
-                        "installation_error":installation_error,
-            "failed_hook_families":crate::hook_failures::status(),
-            "validation_refusals": &validation_refusals,
-                        "hook_publication":crate::hook::publication::status(),
-                        "land_events":crate::land_events::status(),
-                        "event_feed_detach":event_feed_detach,
+                        "drain_complete":false, "error":error,
+                        "build":collector_primitives::build_gate::status(),
                     });
                     #[cfg(feature = "worker_sampler")]
                     let status = status.join(crate::status::status!({
@@ -2179,8 +2035,7 @@ fn run(
         .map_err(|_| crate::worker_panic::first().unwrap_or("spool thread failed"))
         .and_then(|result| result);
     priority_reconciler.finish();
-    let history_release_error = history_worker.finish().err().map(|error| error.to_string());
-    if history_release_error.is_some() {
+    if history_worker.finish().is_err() {
         progress.step("history_release_acknowledgement_failed", None);
     }
     status_writer.finish();
@@ -2231,16 +2086,14 @@ fn run(
         if let Some(hooks) = command_hooks.inner.as_mut() {
             hooks.release_after_quiet();
         }
-        event_feed_detach = Some(
-            match event_feed_hooks
-                .inner
-                .as_mut()
-                .map_or(Ok(Default::default()), |hooks| hooks.release_after_quiet())
-            {
-                Ok(losses) => losses,
-                Err(reason) => retain_detach!(reason, spool_result.as_ref().err().copied(), ()),
-            },
-        );
+        let _ = match event_feed_hooks
+            .inner
+            .as_mut()
+            .map_or(Ok(Default::default()), |hooks| hooks.release_after_quiet())
+        {
+            Ok(losses) => losses,
+            Err(reason) => retain_detach!(reason, spool_result.as_ref().err().copied(), ()),
+        };
         unsafe {
             crate::logistics_balance::release();
             crate::operation_outcomes::release();
@@ -2344,22 +2197,11 @@ fn run(
         let pinned = restore_result.is_err();
         let status = crate::status::status!({
             "state":if pinned { "pinned" } else { "detached" },"session":session_id,
-            "process_start_time":process_start,"drain_complete":drain_complete,
+            "drain_complete":drain_complete,
             "error":spool_result.as_ref().err().copied(),
             "warning":restore_result.err(),
-            "decode_failure":decode::panic_failure(),
-            "history_release_error": &history_release_error,
-            "event_feed_failure":restore_result.is_err().then(crate::event_feed_observer::status),
-            "installation_error":installation_error,
-            "failed_hook_families":crate::hook_failures::status(),
             "build":collector_primitives::build_gate::status(),
-            "validation_refusals": &validation_refusals,
-            "hook_publication":crate::hook::publication::status(),
-            "restoration_error":restore_result.err(),"collector_pinned":pinned,
-            "recording_stopped":true,"spool_closed":true,
-            "original_bytes_verified":!pinned,
-            "active_callbacks":if pinned { None } else { Some(0_u64) },
-            "event_feed_detach":event_feed_detach,
+            "restoration_error":restore_result.err(),
         });
         #[cfg(feature = "worker_sampler")]
         let status = status.join(crate::status::status!({
@@ -2367,11 +2209,7 @@ fn run(
         }));
         let write = if drain_complete {
             if let Some((mut bytes, directories)) = terminal_status {
-                append_event_feed_detach_status(&mut bytes, event_feed_detach)
-                    .and_then(|()| {
-                        append_history_release_status(&mut bytes, history_release_error.as_deref())
-                    })
-                    .and_then(|()| crate::status_writer::measure_bytes(&mut bytes, &directories))
+                crate::status_writer::measure_bytes(&mut bytes, &directories)
                     .and_then(|()| write_status_bytes(&status_path, &bytes))
             } else {
                 write_status(&status_path, &status)
@@ -2398,40 +2236,6 @@ fn run(
     *spool_final = true;
     signal_done(output_lock, &done);
     spool_result
-}
-
-fn append_event_feed_detach_status(
-    bytes: &mut Vec<u8>,
-    losses: Option<crate::event_feed_history::DetachLosses>,
-) -> io::Result<()> {
-    // The spool's final snapshot precedes receipt drain and store release.
-    let suffix = crate::status::serialize(&crate::status::status!({"event_feed_detach":losses}))?;
-    if bytes.last() != Some(&b'}') {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    engine_allocation::reserve(bytes, suffix.len())?;
-    bytes.pop();
-    if bytes.len() > 1 {
-        bytes.push(b',');
-    }
-    bytes.extend_from_slice(&suffix[1..]);
-    Ok(())
-}
-
-fn append_history_release_status(bytes: &mut Vec<u8>, error: Option<&str>) -> io::Result<()> {
-    let Some(error) = error else { return Ok(()) };
-    let suffix =
-        crate::status::serialize(&crate::status::status!({"history_release_error": error}))?;
-    if bytes.last() != Some(&b'}') {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    engine_allocation::reserve(bytes, suffix.len())?;
-    bytes.pop();
-    if bytes.len() > 1 {
-        bytes.push(b',');
-    }
-    bytes.extend_from_slice(&suffix[1..]);
-    Ok(())
 }
 
 use crate::hook_failures::{Family as RestoreFamily, FamilyHooks};
@@ -3095,39 +2899,23 @@ fn set_drain_status(status: &mut Value, result: &Result<(), &'static str>) {
     }
 }
 
-/// Additive decode-worker calibration for status. Existing keys survive; the
-/// counters are monotonic since attach (see `crate::decode`). `table_ns`
-/// for raw families is acquisition-only (workers may overlap); `decode_ns` lives here, so
-/// the two are not comparable across threads (PLAN-appendix
-/// apples-to-oranges).
-/// Per-frame read counters and processed-frame totals remain untouched here;
-/// asynchronously sampled live counters have a different observation cohort.
-struct DecodeStatus<T, U, V> {
+/// The collector's own part of the status: what the recorder and the bench read.
+struct DecodeStatus<T, U> {
     base: crate::status::Object<T>,
     shared: Option<crate::status::Object<U>>,
-    acquisition: Option<crate::status::Object<V>>,
 }
 
-impl<T: crate::status::Fields, U: crate::status::Fields, V: crate::status::Fields> serde::Serialize
-    for DecodeStatus<T, U, V>
-{
+impl<T: crate::status::Fields, U: crate::status::Fields> serde::Serialize for DecodeStatus<T, U> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let fields = self.base.0.field_count()
             + self
                 .shared
                 .as_ref()
-                .map_or(0, |status| status.0.field_count())
-            + self
-                .acquisition
-                .as_ref()
                 .map_or(0, |status| status.0.field_count());
         let mut map = serializer.serialize_map(Some(fields))?;
         self.base.0.serialize(&mut map)?;
         if let Some(status) = &self.shared {
-            status.0.serialize(&mut map)?;
-        }
-        if let Some(status) = &self.acquisition {
             status.0.serialize(&mut map)?;
         }
         map.end()
@@ -3146,92 +2934,11 @@ fn decode_status() -> impl serde::Serialize {
 }
 
 fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
-    use crate::status::{DebugValue, map, sequence, status};
+    use crate::status::status;
     let base = status!({
         "worker_panic": crate::worker_panic::first(),
-        "decode_work": decode::calibration_json(),
         "hook_timing": crate::hook_timing::status(),
-        "attach_callbacks": crate::attach_diagnostics::Status,
-        "hook_publication": crate::hook::publication::status(),
-        "portrait_changes": crate::portrait_changes::status(),
-        "advisor_changes": crate::advisor_changes::status(),
-        "relation_changes": crate::relation_changes::status(),
-        "history_changes": crate::history_changes::status(),
-        "flag_changes": crate::flag_changes::status(),
-        "propaganda_changes": collector_intel::propaganda_changes::status(),
-        "intel_sources": collector_intel::source_changes::status(),
-        "network_auxiliary": collector_intel::network_auxiliary::status(),
-        "building_changes": crate::building_changes::status(),
-        "advisor_pool_changes": crate::advisor_pool_changes::status(),
-        "party_leader_changes": crate::party_leader_changes::status(),
-        "variable_changes": crate::variable_changes::status(),
-        "party_changes": crate::party_changes::status(),
-        "wing_changes": crate::wing_changes::status(),
-        "roster_changes": crate::roster_changes::status(),
-        "political_status_changes": crate::political_status_changes::status(),
-        "war_changes": crate::war_changes::status(),
-        "war_participation": crate::war_participation::status(),
-        "mission_changes": crate::mission_changes::status(),
-        "navy_ledger_changes": crate::navy_ledger_changes::status(),
-        "air_base_changes": crate::air_base_changes::status(),
-        "air_record_changes": crate::air_record_changes::status(),
-        "rail_changes": crate::rail_changes::status(),
-        "territory_changes": crate::territory_changes::status(),
-        "army_stat_changes": crate::army_stat_changes::status(),
-        "country_input_changes": crate::country_input_changes::status(),
-        "stability_batches": crate::extended::country_stability::status(),
-        "raid_changes": crate::raid_changes::status(),
-        "naval_tree_changes": crate::naval_tree_changes::status(),
-        "occupation_changes": collector_observers::occupation_changes::status(),
-        "naval_escort_sources": crate::extended::naval_escort_trees::status(),
-        "raid_intel_changes": crate::extended::raid_intel_carry::status(),
-        "unit_leader_changes": crate::unit_leader_changes::status(),
-        "naval_management_changes": collector_naval_management::changes::status(),
-        "census_changes": crate::census_changes::status(),
-        "orders_group_changes": crate::orders_group_changes::status(),
-        "unit_leader_trait_changes": crate::unit_leader_trait_changes::status(),
-        "world_input_changes": crate::world_input_changes::status(),
-        "retreat_ban_changes": crate::retreat_ban_changes::status(),
-        "local_subunit_changes": crate::local_subunit_changes::status(),
-        "province_unit_changes": crate::province_unit_changes::status(),
-        "province_combat_changes": crate::province_combat_changes::status(),
-        "variant_changes": crate::design_changes::status(),
-        "template_changes": crate::template_changes::status(),
-        "faction_goals": crate::faction_goal_changes::status(),
-        "faction_companions":crate::faction_companion_changes::status(),
-        "ship_model_changes": crate::ship_model_changes::status(),
-        "air_base_carry_changes": crate::air_base_carry_changes::status(),
-        "state_air_base_fuel": crate::extended::air::state_fuel_capture_status(),
-        "area_changes": crate::area_changes::status(),
-        "province_changes": crate::province_changes::status(),
-        "character_changes": crate::character_changes::status(),
-        "opinion_changes": crate::opinion_changes::status(),
         "equipment_destruction": crate::equipment_destruction::status(),
-        "naval_result_sources": crate::naval_result_sources::status(),
-        "experience_gains": crate::experience_gains::status(),
-        "player_commands": crate::player_commands::status(),
-        "event_feed": crate::event_feed_observer::status(),
-        "world_lifetime": crate::world_lifetime::status(),
-        "operation_outcomes": crate::operation_outcomes::status(),
-        "operative_capture": crate::extended::intel::operative_capture_diagnostics(),
-        "agency_upgrade_capture": crate::extended::intel::agency_upgrade_capture_diagnostics(),
-        "network_summary_capture": crate::extended::intel::network_summary_capture_diagnostics(),
-        "country_scale_demand": crate::country_scale::demand_diagnostics(),
-        "air_losses": crate::air_losses::status(),
-        "building_bombing": crate::building_bombing::status(),
-        "nuclear_strikes": crate::nuclear_strikes::status(),
-        "market_changes": crate::market_changes::status(),
-        "map_events": crate::map_events::hooks::status(),
-        "line_output": crate::line_output::status(),
-        "fuel_awards": crate::fuel_awards::status(),
-        "politics_capture": crate::politics_changes::status(),
-        "peace_settlements": crate::peace_settlements::status(),
-        "land_events": crate::land_events::status(),
-        "combat_log_prune": crate::combat_log_prune::status(),
-        "construction_ic": crate::construction_ic::status(),
-        "logistics_balance": crate::logistics_balance::status(),
-        "batch_fallbacks": map(engine_native::batch_fallback::counts()),
-        "replay_format": replay_data::FORMAT_VERSION,
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
     });
     #[cfg(feature = "callback_profile")]
@@ -3246,41 +2953,17 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     let base = base.join(
         status!({"advisor_profile": crate::extended::characters::advisors::profile::status()}),
     );
-    let shared_status = shared.map(|shared| {
-        let models = {
-            let guard = shared.template_models.lock();
-            guard.map(|stats| *stats).unwrap_or_default()
-        };
-        let load = |slot: &std::sync::atomic::AtomicU64| slot.load(Ordering::Relaxed);
+    let shared = shared.map(|shared| {
         status!({
-            "game_score_enabled": shared.game_score_enabled,
-            "fixed_layout": crate::fixed_layout::status(shared.fixed_layout.get()),
-            "naval_result_details": crate::extended::naval_result_details::status(),
-            "land_reserve_speed": crate::extended::combat_details::status(),
             "native_tick_work": {
                 "elapsed_ns": shared.native_tick_ns.load(Ordering::Relaxed),
                 "calls": shared.native_tick_calls.load(Ordering::Relaxed),
-                "scope": "asynchronously sampled cumulative original hourly-tick (trampoline) wall time since attach, including engine waits; excludes the entry read, the collect wait and all acquisition; not a recorder-free baseline or CPU time",
             },
-            "template_models": {
-                "hours": models.hours,
-                "rows": models.rows,
-                "first_reason": models.first_reason,
-                "by_reason": map(models.reasons.into_iter().filter(|(_, rows)| *rows != 0)),
-                "other_reasons": models.other,
-                "missed_hours": shared.template_models_missed.load(Ordering::Relaxed),
-                "scope": "cumulative template model, spatial, settings and country-context refusals since attach, by reason; independent counter and model fields remain available when extension acquisition fails. missed_hours counts hours not folded because this status write held the counters",
+            "acquisition_work": {
+                "buffer_wait_calls": shared.buffer_wait_calls.load(Ordering::Relaxed),
+                "buffer_wait_ns": shared.buffer_wait_ns.load(Ordering::Relaxed),
+                "buffer_wait_max_ns": shared.buffer_wait_max_ns.load(Ordering::Relaxed),
             },
-            "division_model_inputs": {
-                "hours": shared.model_inputs.hours.load(Ordering::Relaxed),
-                "training": shared.model_inputs.training.load(Ordering::Relaxed),
-                "training_peak": shared.model_inputs.training_peak.load(Ordering::Relaxed),
-                "scope": "Map recordings only: hours the DivisionModelInputs job read the division census, and the rows whose orders group trained (the only ones it reads exercise operands for), cumulative and the most in one hour; its timing is the division_model_inputs role's",
-            },
-            "background_priority": background_priority_status(),
-            "allocator": crate::ALLOCATOR.status(),
-            "frame_priority": shared.frame_priority.status(shared.frequency),
-            "thread_diagnostics": crate::thread_diagnostics::status(shared.frequency),
             "collector_thread_cpu": crate::thread_cpu::status(
                 shared
                     .acquisition
@@ -3289,193 +2972,9 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
                     .unwrap_or_default()
                     .ids(),
             ),
-            "refresh_requests_accepted": REFRESH_ACCEPTED.load(Ordering::Relaxed),
-            "presentation_phases": {
-                "hours": load(&shared.presentation.hours),
-                "settle": presentation_settle_status(shared),
-                "range_dispatch_ns": load(&shared.presentation.range_dispatch_ns),
-                "store_wait_ns": load(&shared.presentation.store_wait_ns),
-                "input_consumers_ns": load(&shared.presentation.input_consumers_ns),
-                "input_restore_ns": load(&shared.presentation.input_restore_ns),
-                "input_publish_hold_ns": shared.acquisition.get().map_or(0, |pool| shared.ns(pool.presentation_input_hold_ticks() as i64)),
-                "callback_parks": crate::acquisition::callback_parks::snapshot(),
-                "callback_parks_scope": "cumulative acquisition-callback blocking attempts and wall through return, by site; mutexes count failed try_lock followed by blocking lock; readiness/join/drain count address waits, store_return counts condition-variable waits; includes spurious/immediate returns and scheduling delay, not an OS context-switch count; excludes worker/status waits, pre-acquisition clock/buffer backpressure and uninstrumented family locks",
-                "early_steps_ns": map(crate::sampling::EarlyStep::ALL.into_iter()
-                    .zip(shared.presentation.early_steps.each_ref())
-                    .map(move |(step, stats)| (DebugValue(step), status!({
-                        "calls": load(&stats.calls), "ns": load(&stats.ns),
-                    })))),
-                "wait_for_advance": {
-                    "calls": load(&shared.presentation.wait_advance.calls),
-                    "ns": load(&shared.presentation.wait_advance.ns),
-                },
-                "queue_ns": load(&shared.presentation.queue_ns),
-                "submission_ns": load(&shared.acquisition_dispatch_ns),
-                "release_ns": load(&shared.game_thread.release_ns),
-                "early_steps_scope": "cumulative callback handler wall excluding acquisition_wait_ns, including request building, submission and release; wait_for_advance is nested presentation.advance wall inside wait_for and overlaps its enclosing handler; queue_ns includes request building and submission, submission_ns counts admission only, release_ns counts held-burst release; these nested totals must not be added",
-                "input_consumers_scope": "callback wall after collecting DivisionInputs through restoring the ordered census and installing UnitInputs, before Divisions submission, excluding part join spans; input_restore_ns is its nested fan-in lock/restore wall; input_publish_hold_ns sums publisher holds from successful lock acquisition to release, including early returns/unwind and excluding successor wake",
-                "source_admission": crate::extended::division_presentation::source_admission_data(),
-                "shared_sources": crate::division_census::shared_source_data(),
-                "movement_reads": crate::extended::division_presentation::movement_read_data(),
-                "phase_ns": crate::status::map(
-                    crate::extended::division_presentation::PHASE_NAMES
-                        .into_iter()
-                        .zip(shared.presentation.phase_ns.each_ref().map(load))
-                ),
-                "scope": "cumulative Presentation acquisition and owned-decode wall since attach; status includes preparation and ranges; prepare_* and certify_* are nested pause phases; decode_sources, decode_scalars, decode_stitch and decode_attack run on the FIFO decode worker before encoding; sources_ordered/prune/variants/publish subdivide prepare_sources on an ordered fallback or decode_sources on a fully staged pass; sources_owned_gate and sources_fallback separate pause admission from the ordered source fallback; certification_native_fallback is certification plus native preparation on the same ordered-source cohort, not a concurrent lane; source_admission counts passes, with owned_local_province_refusal a subset of owned; range_dispatch_ns is nested final-range submission wall; store_wait_ns is callback wait for the preceding owned store; settle reports its own acquisition-entry offsets, separately from initial setup; phases overlap other jobs",
-            },
         })
     });
-    let acquisition = shared.and_then(|shared| shared.acquisition.get().map(|acquisition| {
-            let world = acquisition.world_calibration();
-            let calibration = acquisition.calibration();
-            let block_ns = shared.collect_wait_ns.load(Ordering::Relaxed);
-            let block_calls = shared.native_tick_calls.load(Ordering::Relaxed);
-            let phase_calls = shared.phase_calls.load(Ordering::Relaxed);
-            let phase_mean = move |ns: u64| ns.checked_div(phase_calls).unwrap_or(0);
-            let join_wait = shared.join_wait.each_ref().map(|wait| wait.load(Ordering::Relaxed));
-            let join_wait_by_role = map(crate::acquisition_jobs::ROLES.into_iter()
-                .zip(join_wait).filter(|(_, wait)| *wait > 0)
-                .map(move |(role, wait)| (DebugValue(role), phase_mean(wait))));
-            let segments = shared.phase_segments.each_ref().map(|segment| phase_mean(segment.load(Ordering::Relaxed)));
-            let role_timeline = map(crate::acquisition_jobs::ROLES.into_iter()
-                .zip(shared.role_timeline.each_ref())
-                .map(|(role, timeline)| (role, timeline.means(), timeline.slow_joins()))
-                .filter(|(_, (jobs, _), _)| *jobs > 0)
-                .map(move |(role, (jobs, means), slow)| {
-                    let ns = means.map(|ticks| shared.ns(i64::try_from(ticks).unwrap_or(i64::MAX)));
-                    (DebugValue(role), status!({
-                        "jobs": jobs,
-                        "queued_ns": ns[0], "body_begin_ns": ns[1], "body_end_ns": ns[2],
-                        "join_begin_ns": ns[3], "join_end_ns": ns[4],
-                        "joins_waiting_over_250us": slow[0], "joins_waiting_over_1ms": slow[1],
-                        "joins_waiting_over_4ms": slow[2],
-                    }))
-                }));
-            status!({ "acquisition_work": {
-                "collect_wait_ns": block_ns,
-                "calls": block_calls,
-                "mean_ns": block_ns.checked_div(block_calls).unwrap_or(0),
-                "buffer_wait_ns": shared.buffer_wait_ns.load(Ordering::Relaxed),
-                "buffer_wait_calls": shared.buffer_wait_calls.load(Ordering::Relaxed),
-                "buffer_wait_max_ns": shared.buffer_wait_max_ns.load(Ordering::Relaxed),
-                "buffer_wait_scope": "game-thread wall waiting for one of the four reusable capture buffers; included in collect_wait_ns and successful callback_work, not additional acquisition work; cancellation during detach or worker failure retains the existing explicit loss accounting",
-                "collect_scope": "cumulative game-thread wall from taking a reusable buffer through live acquisition at tick entry, before the trampoline, including buffer waits and failed or cancelled captures; successful-capture percentiles are in callback_work",
-                "block_phases": {
-                    "calls": phase_calls,
-                    "setup_mean_ns": phase_mean(shared.phase_setup_ns.load(Ordering::Relaxed)),
-                    "parallel_mean_ns": phase_mean(shared.phase_parallel_ns.load(Ordering::Relaxed)),
-                    "parallel_inline_walk_mean_ns": phase_mean(shared.phase_inline_walk_ns.load(Ordering::Relaxed)),
-                    "parallel_join_mean_ns": phase_mean(shared.phase_join_ns.load(Ordering::Relaxed)),
-                    "segments_mean_ns": sequence(segments.into_iter()),
-                    "segments_scope": sampling::SEGMENTS_SCOPE,
-                    "per_hour_attribution": "callback_tail.slowest[].diagnostics retains readiness waits, all-job top eight, thread growth split, inclusive EarlyStep maximum and inline census merges for the 64 slowest recorded hours since attach; callback_tail.dominant_segment_counts covers every recorded hour",
-                    "join_wait_by_role_mean_ns": join_wait_by_role,
-                    "role_timeline": role_timeline,
-                    "role_timeline_scope": "per pool role, its collected jobs (jobs, cumulative) and the mean offset in ns from their acquisition body's entry of when each was queued (a held first-burst job is queued at its submission: its release only wakes idle workers, and a worker already running may claim it before), when a pool participant began and ended its body (over the jobs that ran on one), and when the game thread began and ended its join. A join that begins after the body ended waits only on collection; one that begins before it waits on the unfinished body. joins_waiting_over_250us, _1ms and _4ms count the role's joins whose wait reached each threshold, so a mean wait from a few long hours shows apart from a steady one",
-                    "residual_mean_ns": phase_mean(shared.phase_residual_ns.load(Ordering::Relaxed)),
-                },
-                "block_phases_scope": "disjoint game-thread wall means summing to the recorded acquisition body: setup = reusable-frame wait, frame reset and country authentication; parallel = shared input acquisition, request dispatch, result installation and sequential job joins; residual = completion bookkeeping before decode enqueue. parallel_inline_walk is collection-span wall excluding joins, measured submissions and held-burst releases; it retains request building, owned merges and installations, not just native walks; parallel_join counts sequential completion spans and may include execution of the exact awaited job. Their sum leaves dispatch and other work outside that span. Worker durations overlap this game-thread wall and must not be added. Reusable-frame wait is separately reported but already included in setup, collect_wait_ns and callback_work",
-                "game_thread": game_thread_status(shared, phase_calls),
-                "panics": shared.acquisition_panics.load(Ordering::Relaxed),
-                "workers": calibration,
-                "dispatch_ns": shared.acquisition_dispatch_ns.load(Ordering::Relaxed),
-                "join_wait_ns": shared.acquisition_wait_ns.load(Ordering::Relaxed),
-                "join_scope": if cfg!(feature = "executor_join_help") {
-                    "sequential game-thread completion spans including bookkeeping, exact-target caller execution of an eligible awaited queued job and helped caller-eligible queued jobs while the awaited job runs; help uses try_lock and skips contention, requires history for both roles and the awaited role mean minus elapsed body time at least twice the candidate role decaying maximum (max(sample, old - old/16)); each join has at most four attempts and spends at most half its first predicted remainder in cumulative candidate maximum costs; bodies have no preemption so this bound is a heuristic"
-                } else {
-                    "sequential game-thread completion spans including bookkeeping and possible exact-target caller execution when the awaited request is still queued"
-                },
-                "join_costs": join_costs_status(shared, phase_calls),
-                "join_costs_scope": "per pool role, over its collected published jobs (published): those already published when their join began (ready_at_join); per acquired hour, the collector's first queue-lock wait only when its initial lock-free collection CAS failed (finish_lock_ns_per_hour; zero on the fast path), the stall from the later of join begin and atomic publication to collection (collect_stall_ns_per_hour: atomic handoff, address wake and rescheduling; optional helped bodies can also defer collection) and completion bookkeeping from body end to atomic publication (publish_wait_ns_per_hour; failures also stop/cancel under the queue mutex); and joins whose stall reached 0.25 and 1 ms (stalls_over_250us, stalls_over_1ms). With join help disabled, a role's join wait less its collect stall is time waiting on its unfinished body",
-                "table_costs_overlap": true,
-                "pool_bytes_scope": "reserved collector and writer storage, including queued/in-flight sealed records, deferred receipts and retained ledger capacities; shared CountryIntel growth is charged once by its atomic capacity high-water mark; executor bytes count its actual Arc shared allocation, payload cells, atomic words, metadata and ready-queue capacities, thread-id and join-handle capacities, boxed runner and enabled help history arrays",
-                "country_snapshot_scope": "one immutable country authentication snapshot shared with acquisition workers; production-rest acquires fresh country inputs for its discovery builder and validates its current read plan; payload counted once in pool_bytes; preparation charged once to Countries; worker calibration reports the borrowed snapshot status",
-                "world_country_cache": world.country_cache,
-                "world_acquisition_ns": shared.ns(i64::try_from(world.acquisition_ticks).unwrap_or(i64::MAX)),
-                "world_last_error": world.last_error,
-                "world_cost_scope": "hourly owned World (production and construction rests) and Economy (economy rest) jobs together on any acquisition participant: world_acquisition_ns sums both, world_country_cache is observed once an hour by the Economy job, world_last_error names the job; includes staging attempts; shared country preparation charged once to Countries; typed fallback table costs exclude discarded staging attempts; overlaps other jobs and acquisition work; panicked/stopped worker cost is unavailable",
-            } })
-        }));
-    DecodeStatus {
-        base,
-        shared: shared_status,
-        acquisition,
-    }
-}
-
-/// Separate the ordered worker's offsets from its short setup predecessor.
-fn presentation_settle_status(shared: &sampling::Shared) -> impl serde::Serialize {
-    let (jobs, ticks) =
-        shared.role_timeline[crate::acquisition_jobs::Role::PresentationSettle as usize].means();
-    let ns = ticks.map(|ticks| shared.ns(i64::try_from(ticks).unwrap_or(i64::MAX)));
-    crate::status::status!({
-        "jobs": jobs,
-        "queued_ns": ns[0], "body_begin_ns": ns[1], "body_end_ns": ns[2],
-        "join_begin_ns": ns[3], "join_end_ns": ns[4],
-    })
-}
-
-/// Each pool role's collection costs after its jobs finished
-/// ([`sampling::JoinCosts`]), per acquired hour; roles with no published job
-/// are left out.
-fn join_costs_status(shared: &sampling::Shared, hours: u64) -> impl serde::Serialize + '_ {
-    use crate::status::{DebugValue, map, status};
-    let per_hour = move |ticks: u64| {
-        shared
-            .ns(i64::try_from(ticks).unwrap_or(i64::MAX))
-            .checked_div(hours)
-            .unwrap_or(0)
-    };
-    map(crate::acquisition_jobs::ROLES
-        .into_iter()
-        .zip(shared.join_costs.each_ref())
-        .map(|(role, costs)| (role, costs.totals()))
-        .filter(|(_, (published, ..))| *published > 0)
-        .map(move |(role, (published, ready, ticks, stalls))| {
-            (
-                DebugValue(role),
-                status!({
-                    "published": published,
-                    "ready_at_join": ready,
-                    "finish_lock_ns_per_hour": per_hour(ticks[0]),
-                    "collect_stall_ns_per_hour": per_hour(ticks[1]),
-                    "publish_wait_ns_per_hour": per_hour(ticks[2]),
-                    "stalls_over_250us": stalls[0],
-                    "stalls_over_1ms": stalls[1],
-                }),
-            )
-        }))
-}
-
-/// The game thread's own work per acquired hour, by kind (QPC wall means over
-/// `hours`): what the parked hour costs besides waiting for workers.
-fn game_thread_status(shared: &sampling::Shared, hours: u64) -> impl serde::Serialize + '_ {
-    let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
-    let phases = &shared.game_thread;
-    let mean = move |ns: u64| ns.checked_div(hours).unwrap_or(0);
-    let per_hour = move |count: u64| {
-        if hours == 0 {
-            0.0
-        } else {
-            count as f64 / hours as f64
-        }
-    };
-    crate::status::status!({
-        "hours": hours,
-        "frame_reset_mean_ns": mean(load(&phases.frame_reset_ns)),
-        "observer_boundaries_mean_ns": mean(load(&phases.boundaries_ns)),
-        "country_snapshot_mean_ns": mean(load(&phases.country_snapshot_ns)),
-        "dispatch_mean_ns": mean(load(&shared.acquisition_dispatch_ns)),
-        "dispatched_jobs_per_hour": per_hour(load(&phases.dispatched_jobs)),
-        "release_mean_ns": mean(load(&phases.release_ns)),
-        "releases_per_hour": per_hour(load(&phases.releases)),
-        "released_jobs_per_hour": per_hour(load(&phases.released_jobs)),
-        "join_wait_mean_ns": mean(load(&shared.acquisition_wait_ns)),
-        "map_sample_mean_ns": mean(load(&phases.map_sample_ns)),
-        "table_assembly_mean_ns": mean(load(&phases.table_assembly_ns)),
-        "scope": "game-thread QPC wall per acquired hour: frame reset (reused frame verdicts and decode slot), both observer boundary jobs, the country snapshot, job submission (dispatch, the jobs submitted and the wakes releasing held bursts), join waits for workers (including caller execution of a still-queued awaited job), the map sample's typed walk and table assembly after the joins. The rest of block_phases (installs and request building) is what these leave of setup and parallel; worker time overlaps and is not here",
-    })
+    DecodeStatus { base, shared }
 }
 
 #[cfg(test)]
@@ -3508,42 +3007,21 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     let pool = acquisition::Pool::start(1, acquisition::MAX_JOBS)
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
     assert!(shared.acquisition.set(pool).is_ok());
-    shared.phase_calls.store(3, Ordering::Relaxed);
-    shared.join_wait[0].store(42, Ordering::Relaxed);
-    {
-        let mut models = shared.template_models.lock().unwrap();
-        models.reasons[0] = ("synthetic model reason", 2);
-    }
-    let work = with_allocations_denied(WorkerWork::new);
+    shared.native_tick_calls.store(3, Ordering::Relaxed);
     let decode = with_allocations_denied(|| decode_status_from(Some(&shared)));
-    let worker = with_allocations_denied(|| work.status(0, 1))?;
-    let value = crate::status::status!({"decode": decode, "worker": worker});
+    let value = crate::status::status!({"decode": decode});
     let mut count = Count(0);
     with_allocations_denied(|| serde_json::to_writer(&mut count, &value))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     let mut bytes = Vec::new();
     engine_allocation::reserve_exact(&mut bytes, count.0)?;
     // Mutating the source between passes must not change the owned snapshot.
-    shared.phase_calls.store(30, Ordering::Relaxed);
-    shared.join_wait[0].store(420_000, Ordering::Relaxed);
-    shared.template_models.try_lock().unwrap().reasons[0].1 = 200_000;
+    shared.native_tick_calls.store(30, Ordering::Relaxed);
     with_allocations_denied(|| serde_json::to_writer(&mut bytes, &value))
         .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
     assert_eq!(bytes.len(), count.0);
     let status: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(
-        status["decode"]["acquisition_work"]["block_phases"]["calls"],
-        3
-    );
-    assert_eq!(
-        status["decode"]["template_models"]["by_reason"]["synthetic model reason"],
-        2
-    );
-    assert!(status["worker"]["cpu_ns_per_recorded_hour"].is_null());
-    assert_eq!(
-        status["decode"]["raid_intel_changes"]["configured"],
-        cfg!(feature = "raid_intel_changes")
-    );
+    assert_eq!(status["decode"]["native_tick_work"]["calls"], 3);
     // Every hook family is published; thread CPU includes the started worker.
     let families = status["decode"]["hook_timing"]["families"].as_object();
     assert_eq!(
@@ -3559,8 +3037,7 @@ pub(crate) fn status_allocation_failure_exercise() -> io::Result<()> {
     drop(value);
     let absent = with_allocations_denied(|| decode_status_from(None));
     let absent = serde_json::to_value(absent).unwrap();
-    assert!(absent.get("fixed_layout").is_none());
-    assert!(absent.get("acquisition_work").is_none());
+    assert!(absent.get("native_tick_work").is_none());
     assert!(absent.get("collector_thread_cpu").is_none());
     assert!(absent["hook_timing"]["families"]["hourly"].is_object());
     shared
@@ -4700,52 +4177,29 @@ struct TeardownStatus {
 }
 
 #[derive(serde::Serialize)]
-struct SpoolStatus<P, D, W> {
+struct SpoolStatus<P, D> {
     #[serde(flatten)]
     processor: P,
     #[serde(flatten)]
     decode: D,
     state: &'static str,
     session: u64,
-    process_start_time: u64,
     pool_bytes: u64,
-    pool_buffers: usize,
     dropped_frames: u64,
-    startup_unattributed_callbacks: u64,
     drain_complete: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     warning: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    original_bytes_verified: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    active_callbacks: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    collector_pinned: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    recording_stopped: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    spool_closed: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     restoration_error: Option<&'static str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    installation_error: Option<&'static str>,
-    status_writer: W,
-    combat_sizing_hints: crate::country_scale::CombatHintStatus,
-    clock_misses: u64,
-    clock_advisory_misses: u64,
-    clock_last_failure: Option<&'static str>,
 }
 #[allow(clippy::too_many_arguments)]
 fn spool_status<'a>(
     processor: &'a Processor,
     shared: &'a Shared,
     session: &'a SessionStart,
-    work: &'a WorkerWork,
-    writer: &'a crate::status_writer::StatusHandle,
     state: &'static str,
-    startup_unknown: u64,
     warning: Option<&'static str>,
     error: Option<&'static str>,
     drain_complete: bool,
@@ -4753,33 +4207,17 @@ fn spool_status<'a>(
     teardown: TeardownStatus,
 ) -> io::Result<impl serde::Serialize + 'a> {
     let pinned = terminal && teardown.restoration_error.is_some();
-    let (clock_misses, clock_advisory_misses, clock_last_failure) = shared.clock_status();
     Ok(SpoolStatus {
-        processor: processor
-            .status_with_work(work.status(processor.recorded_hours(), shared.frequency)?)?,
+        processor: processor.status_fields()?,
         decode: decode_status(),
         state: if pinned { "pinned" } else { state },
         session: session.id,
-        process_start_time: session.process_start_time,
         pool_bytes: shared.pool_total(),
-        pool_buffers: sampling::BUFFERS,
         dropped_frames: shared.dropped.load(Ordering::Relaxed),
-        startup_unattributed_callbacks: startup_unknown,
         drain_complete,
         warning: warning.or(teardown.restoration_error),
         error: error.or(teardown.installation_error),
-        original_bytes_verified: terminal.then_some(!pinned),
-        active_callbacks: (terminal && !pinned).then_some(0),
-        collector_pinned: terminal.then_some(pinned),
-        recording_stopped: terminal.then_some(!shared.recording.load(Ordering::Acquire)),
-        spool_closed: terminal.then_some(true),
         restoration_error: teardown.restoration_error,
-        installation_error: teardown.installation_error,
-        status_writer: writer.status(),
-        combat_sizing_hints: crate::country_scale::combat_hint_status(),
-        clock_misses,
-        clock_advisory_misses,
-        clock_last_failure,
     })
 }
 
@@ -4880,7 +4318,6 @@ fn spool_loop(
     let mut last_warning = None;
     let mut drain_result = Ok(());
     let mut startup_unknown = 0_u64;
-    let mut work = WorkerWork::new();
     let mut reported = Instant::now() - Duration::from_secs(1);
     let mut priority = OwnPriority::frame_pipeline();
     priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
@@ -4910,8 +4347,6 @@ fn spool_loop(
             }
             priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
             let span = phases.span(Phase::Receive);
-            let service_started = sampling::qpc();
-            work.queue_peak_observed = work.queue_peak_observed.max(shared.ready.len() + 1);
             let elapsed =
                 wait_completed_callback(&shared.completed[index], &shared.callback_tail[index])?;
             let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
@@ -4943,8 +4378,6 @@ fn spool_loop(
                             .sum::<u64>(),
                     );
                 shared.recycle_frame_prepared(index);
-                work.buffer_service
-                    .record_ticks(sampling::qpc() - service_started, shared.frequency);
                 continue;
             }
             verify_content_roster(shared, config, &mut session, &mut processor, &writer)?;
@@ -5011,7 +4444,7 @@ fn spool_loop(
                         crate::event_feed_observer::lost_drain();
                         crate::operation_outcomes::lost_drain();
                         crate::politics_changes::invalidate();
-                        crate::land_events::fail("land prepared spool write failed");
+                        crate::land_events::fail();
                         crate::air_losses::lost_drain();
                         crate::building_bombing::lost_drain();
                         crate::nuclear_strikes::lost_drain();
@@ -5031,7 +4464,7 @@ fn spool_loop(
                     crate::event_feed_observer::lost_drain();
                     crate::operation_outcomes::lost_drain();
                     crate::politics_changes::invalidate();
-                    crate::land_events::fail("land frame conversion failed");
+                    crate::land_events::fail();
                     crate::air_losses::lost_drain();
                     crate::building_bombing::lost_drain();
                     crate::nuclear_strikes::lost_drain();
@@ -5057,11 +4490,7 @@ fn spool_loop(
             if pending_write.is_none() {
                 crate::allocation::attempted_hour(None);
             }
-            sizing
-                .sizing
-                .recycle_frame(shared, index, &mut work);
-            work.buffer_service
-                .record_ticks(sampling::qpc() - service_started, shared.frequency);
+            sizing.sizing.recycle_frame(shared, index);
             span.finish();
             // No reference to the recycled frame survives this point. Complete
             // this write before preparing another frame or flushing: comparison
@@ -5075,7 +4504,7 @@ fn spool_loop(
                 crate::event_feed_observer::lost_drain();
                 crate::operation_outcomes::lost_drain();
                 crate::politics_changes::invalidate();
-                crate::land_events::fail("land recycled spool write failed");
+                crate::land_events::fail();
                 crate::air_losses::lost_drain();
                 crate::building_bombing::lost_drain();
                 crate::nuclear_strikes::lost_drain();
@@ -5097,12 +4526,11 @@ fn spool_loop(
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        sizing.spool_pass(shared, &mut processor, &mut work, received)?;
+        sizing.spool_pass(shared, &mut processor, received)?;
         let span = phases.span(Phase::Flush);
         if crate::allocation::failed() {
             return Err("collector allocation failed");
         }
-        let flush_started = sampling::qpc();
         if let Err(error) = processor.flush() {
             crate::equipment_destruction::lost_drain();
             crate::naval_result_sources::lost_drain();
@@ -5110,7 +4538,7 @@ fn spool_loop(
             crate::event_feed_observer::lost_drain();
             crate::operation_outcomes::lost_drain();
             crate::politics_changes::invalidate();
-            crate::land_events::fail("land final spool flush failed");
+            crate::land_events::fail();
             crate::air_losses::lost_drain();
             crate::building_bombing::lost_drain();
             crate::nuclear_strikes::lost_drain();
@@ -5118,10 +4546,6 @@ fn spool_loop(
             crate::map_events::interval::lost_output();
             last_warning = Some(error_reason(error, "collector spool I/O failed"));
         }
-        let flush_ns = shared.ns(sampling::qpc() - flush_started);
-        work.idle_flush_calls += 1;
-        work.idle_flush_ns = work.idle_flush_ns.saturating_add(flush_ns);
-        work.idle_flush_max_ns = work.idle_flush_max_ns.max(flush_ns);
         span.finish();
         history_requests.poll(&mut processor, &shared.history_frames);
         if reported.elapsed() >= Duration::from_secs(1) || shared.stop_spool.load(Ordering::Acquire)
@@ -5132,7 +4556,6 @@ fn spool_loop(
             if history_requests.take_refresh_failure() {
                 last_warning = Some("refresh request failed");
             }
-            let status_started = sampling::qpc();
             if let Some(error) = writer.take_error() {
                 last_warning = Some(error);
             }
@@ -5140,14 +4563,11 @@ fn spool_loop(
                 &processor,
                 shared,
                 &session,
-                &work,
-                &writer,
                 if shared.recording.load(Ordering::Acquire) {
                     "recording"
                 } else {
                     "detaching"
                 },
-                startup_unknown,
                 last_warning,
                 None,
                 false,
@@ -5164,8 +4584,6 @@ fn spool_loop(
                         .map_err(|e| error_reason(e, "status directories allocation failed"))?,
                 )
                 .map_err(|e| error_reason(e, "status hand-over allocation failed"))?;
-            work.status_update
-                .record_ticks(sampling::qpc() - status_started, shared.frequency);
             reported = Instant::now();
         }
         if shared.stop_spool.load(Ordering::Acquire) {
@@ -5218,10 +4636,7 @@ fn spool_loop(
                     &processor,
                     shared,
                     &session,
-                    &work,
-                    &writer,
                     "detached",
-                    startup_unknown,
                     last_warning,
                     drain_result.as_ref().err().copied(),
                     drain_result.is_ok(),
@@ -5343,8 +4758,6 @@ struct SizingState {
 struct PendingSizing {
     errors: u64,
     last_error: Option<&'static str>,
-    game_score: Vec<engine_native::game_score_inputs::ArenaSizing>,
-    capacities_hold: WallTotals,
 }
 
 #[cfg(test)]
@@ -5485,8 +4898,8 @@ impl SizingShared {
     }
 
     /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.
-    fn recycle_frame(&self, shared: &Shared, index: usize, work: &mut WorkerWork) {
-        let mut proposal = *work.recycle_capacities(self, shared.frequency);
+    fn recycle_frame(&self, shared: &Shared, index: usize) {
+        let mut proposal = *lock(&self.capacities);
         // A live read: between ticks only. The sizing thread presizes combats every pass, so
         // a frame returned during a tick still grows to the latest live demand.
         if !crate::tick_gate::game_ticking() {
@@ -5516,7 +4929,7 @@ impl SizingShared {
             if let Some(check) = lock(&self.before_recycle_publish).take() {
                 check(self, shared);
             }
-            let mut capacities = work.recycle_capacities(self, shared.frequency);
+            let mut capacities = lock(&self.capacities);
             self.merge_capacities(&mut capacities, proposal);
             if *capacities == proposal {
                 shared.recycle_frame(index);
@@ -5532,21 +4945,12 @@ impl SizingShared {
         }
     }
 
-    /// Time only sizing work under the capacity mutex, reporting after release.
     fn with_capacities<R>(
         &self,
-        shared: &Shared,
+        _shared: &Shared,
         step: impl FnOnce(&mut BufferCapacities) -> R,
     ) -> R {
-        let mut capacities = lock(&self.capacities);
-        let started = sampling::qpc();
-        let result = step(&mut capacities);
-        let elapsed = sampling::qpc() - started;
-        drop(capacities);
-        lock(&self.pending)
-            .capacities_hold
-            .record_ticks(elapsed, shared.frequency);
-        result
+        step(&mut lock(&self.capacities))
     }
 }
 
@@ -5607,7 +5011,6 @@ impl SizingThread {
         &self,
         shared: &Shared,
         processor: &mut Processor,
-        work: &mut WorkerWork,
         received: bool,
     ) -> Result<(), &'static str> {
         let span = crate::spool_phases::SPOOL.span(Phase::Sizing);
@@ -5615,16 +5018,8 @@ impl SizingThread {
             return Err(failure);
         }
         let pending = std::mem::take(&mut *lock(&self.sizing.pending));
-        work.sizing_capacities_hold.merge(pending.capacities_hold);
         if let Some(reason) = pending.last_error {
             processor.observe_input_demand_errors(pending.errors, reason);
-        }
-        for observed in &pending.game_score {
-            processor
-                .observe_game_score_sizing(observed)
-                .map_err(|error| {
-                    error_reason(error, "game score sizing status allocation failed")
-                })?;
         }
         *lock(&self.sizing.context) = crate::allocation::context();
         span.finish();
@@ -5742,7 +5137,7 @@ fn sizing_pass(
     shared: &Shared,
     sizing: &SizingShared,
     state: &mut SizingState,
-    phases: &'static crate::spool_phases::Totals,
+    phases: &'static crate::spool_phases::Steps,
     background: bool,
 ) -> Result<(), &'static str> {
     let live = unsafe { LiveMemory::new() };
@@ -5757,7 +5152,6 @@ fn sizing_pass(
         hint_demand,
     ) && once_a_second;
     let span = phases.span(Phase::Sizing);
-    let mut steps = crate::sizing_steps::Steps::begin();
     if let Some(logistics_rows) = registry
         .poll_logistics(&live, base)
         .map_err(|e| error_reason(e, "logistics balance staging allocation failed"))?
@@ -5766,7 +5160,6 @@ fn sizing_pass(
             capacities.extended.logistics.raise(logistics_rows)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Logistics);
     let span = span.switch(Phase::Observers);
     crate::relation_changes::collect();
     crate::world_input_changes::collect();
@@ -5859,7 +5252,6 @@ fn sizing_pass(
     crate::line_output::collect();
     crate::construction_ic::collect();
     crate::fuel_awards::collect();
-    steps.mark(crate::sizing_steps::Step::Observers);
     let span = span.switch(Phase::Sizing);
     if state.fuel_demand_at.elapsed() >= RegistryWatch::INTEL_INTERVAL {
         state.fuel_demand_at = Instant::now();
@@ -5870,7 +5262,6 @@ fn sizing_pass(
         }
         crate::fuel_awards::presize(&live, base);
     }
-    steps.mark(crate::sizing_steps::Step::FuelDemand);
     // This advisory worker arena has no observer-preparation dependency; do
     // not nest its admission under the independent event-preparation timer.
     if capacity_census {
@@ -5888,7 +5279,6 @@ fn sizing_pass(
         awards.entries = awards.entries.max(entries);
         awards.names = awards.names.max(names);
     });
-    steps.mark(crate::sizing_steps::Step::FuelUnits);
     let span = span.switch(Phase::Observers);
     crate::peace_settlements::collect();
     let span = span.switch(Phase::Sizing);
@@ -5911,7 +5301,6 @@ fn sizing_pass(
     ) {
         crate::event_feed_observer::presize(crate::country_scale::census_rows(0));
     }
-    steps.mark(crate::sizing_steps::Step::Peace);
     let span = span.switch(Phase::Sizing);
     crate::naval_result_sources::prepare(&live, base);
     let naval_result_capacity = crate::naval_result_sources::capacity();
@@ -5919,7 +5308,6 @@ fn sizing_pass(
         let sources = &mut capacities.extended.naval_result_sources;
         *sources = (*sources).max(naval_result_capacity);
     });
-    steps.mark(crate::sizing_steps::Step::NavalResults);
     if let Some(lines) = registry.poll_lines(&live, base) {
         crate::line_output::presize(lines);
         sizing.raise(shared, |capacities| {
@@ -5927,7 +5315,6 @@ fn sizing_pass(
             *entries = (*entries).max(lines);
         });
     }
-    steps.mark(crate::sizing_steps::Step::Lines);
     // A save load rebuilds the country registry before its first hourly
     // tick; presize every buffer while the game is still loading. Sizing
     // only grows, so a larger region roster alone repeats it harmlessly.
@@ -5945,7 +5332,6 @@ fn sizing_pass(
             decode::presize_weather_jobs();
         }
     }
-    steps.mark(crate::sizing_steps::Step::Weather);
     if let Some((slots, regions)) = registry.poll(&live, base) {
         crate::country_scale::note_slots(slots);
         crate::operation_outcomes::resize(slots.max(1));
@@ -5980,18 +5366,15 @@ fn sizing_pass(
         });
         shared.offer_country_cache(country_cells);
     }
-    steps.mark(crate::sizing_steps::Step::Registry);
     if once_a_second {
         if let Err(reason) = crate::construction_ic::presize_from_live(&live, base) {
             sizing.error(reason);
         }
-        steps.mark(crate::sizing_steps::Step::Construction);
         crate::air_losses::prepare(&live, base, registry.slots);
         crate::building_bombing::prepare(&live, base, registry.slots);
         crate::nuclear_strikes::presize(
             crate::building_bombing::buildings().saturating_add(registry.slots),
         );
-        steps.mark(crate::sizing_steps::Step::Losses);
         let source = crate::country_scale::source_demand::Demand::observe_periodic(
             &live,
             base,
@@ -6018,7 +5401,6 @@ fn sizing_pass(
         if let Err(reason) = source {
             sizing.error(reason);
         }
-        steps.mark(crate::sizing_steps::Step::SourceDemand);
         sizing.raise_from_live_observation(shared, |capacities| {
             [
                 crate::country_scale::table_demand::presize_periodic(
@@ -6035,12 +5417,10 @@ fn sizing_pass(
                     .err(),
             ]
         });
-        steps.mark(crate::sizing_steps::Step::TableDemand);
         // These fixed before/after arenas and bounded event logs cannot grow
         // on native writers. Keep their live census at one second, not on
         // the advisory worker-census backoff.
         crate::equipment_destruction::prepare(&live, base, registry.slots);
-        steps.mark(crate::sizing_steps::Step::Destruction);
         // A census during loading undercounts, and its table could not grow before the next load.
         if crate::world_lifetime::token().is_some() {
             collector_naval_management::changes::presize(&live, base);
@@ -6051,14 +5431,12 @@ fn sizing_pass(
             *destruction = (*destruction).max(destruction_capacity);
         });
     }
-    steps.mark(crate::sizing_steps::Step::NavalManagement);
     if capacity_census && let Some(rows) = sizing.demand(registry.poll_intel(&live, base)).flatten()
     {
         sizing.raise(shared, |capacities| {
             capacities.extended.raise_for_country_intel(rows)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Intel);
     if capacity_census
         && let Some(demand) = sizing
             .demand(registry.poll_ace_names(&live, base))
@@ -6089,7 +5467,6 @@ fn sizing_pass(
             capacities.extended.railway_guns.raise_for_names(demand)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Names);
     // Mixed with fixed province/geometry floors; keep the whole map group fast.
     if let Some(demand) = sizing.demand(registry.poll_map(&live, base)).flatten() {
         if let Ok(carrier) = demand.carrier
@@ -6138,7 +5515,6 @@ fn sizing_pass(
             sizing.error(reason);
         }
     }
-    steps.mark(crate::sizing_steps::Step::Map);
     if capacity_census
         && let Some(demand) = sizing
             .demand(registry.poll_presentation_census(&live, base))
@@ -6154,7 +5530,6 @@ fn sizing_pass(
                 .raise_for_census(demand)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Presentation);
     let game_score = lock(&sizing.capacities).extended.game_score.enabled;
     if capacity_census
         && game_score
@@ -6163,20 +5538,12 @@ fn sizing_pass(
         let observed =
             observed.map_err(|error| error_reason(error, "game score sizing allocation failed"))?;
         let demand = observed.demand;
-        {
-            let mut pending = lock(&sizing.pending);
-            engine_allocation::reserve(&mut pending.game_score, 1).map_err(|error| {
-                error_reason(error, "game score sizing status allocation failed")
-            })?;
-            pending.game_score.push(observed);
-        }
         if sizing.raise(shared, |capacities| {
             capacities.extended.game_score.raise(demand)
         }) {
             decode::presize_country_pools();
         }
     }
-    steps.mark(crate::sizing_steps::Step::GameScore);
     if capacity_census
         && let Some(demand) = sizing.demand(registry.poll_raids(&live, base)).flatten()
     {
@@ -6187,7 +5554,6 @@ fn sizing_pass(
             capacities.extended.raise_for_raid_arenas(demand)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Raids);
     // Script-variable demand also offers scope-watch storage before native
     // writers run. Keep this mixed character/flag/variable census prompt.
     if let Some(demand) = sizing
@@ -6198,7 +5564,6 @@ fn sizing_pass(
             capacities.extended.raise_for_characters(demand)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Characters);
     if capacity_census
         && let Some(demand) = sizing
             .demand(registry.poll_saved_targets(&live, base))
@@ -6208,7 +5573,6 @@ fn sizing_pass(
             capacities.extended.saved_event_targets.raise(demand)
         });
     }
-    steps.mark(crate::sizing_steps::Step::SavedTargets);
     // This mixed group also prepares operation-completion observer arenas.
     if let Some(demand) = sizing.demand(registry.poll_politics(&live, base)).flatten() {
         for reason in demand.failures() {
@@ -6225,7 +5589,6 @@ fn sizing_pass(
             sizing.with_capacities(shared, |capacities| capacities.extended.operation_outcomes);
         operations.prepare();
     }
-    steps.mark(crate::sizing_steps::Step::Politics);
     if capacity_census
         && let Some(slots) = sizing
             .demand(registry.poll_reserved_visibility(&live, base))
@@ -6235,11 +5598,9 @@ fn sizing_pass(
             capacities.extended.raise_reserved_visibility(slots)
         });
     }
-    steps.mark(crate::sizing_steps::Step::Visibility);
     if background {
         sizing.grow_idle(shared);
     }
-    steps.mark(crate::sizing_steps::Step::IdleGrowth);
     if background
         && capacity_census
         && let Some(hints) = registry.poll_combat_hints(&live, base)
@@ -6254,7 +5615,6 @@ fn sizing_pass(
             sizing.hint_demand.store(true, Ordering::Release);
         }
     }
-    steps.mark(crate::sizing_steps::Step::CombatHints);
     span.finish();
     let demand = sizing.hint_demand.swap(false, Ordering::AcqRel) || hint_demand;
     if capacity_census {
@@ -6386,11 +5746,7 @@ impl HistoryReplies {
     }
 }
 
-static PRIORITY_LOWERED: AtomicU64 = AtomicU64::new(0);
-static PRIORITY_RAISED: AtomicU64 = AtomicU64::new(0);
 static PRIORITY_FAILURES: AtomicU64 = AtomicU64::new(0);
-static ECO_QOS_ENABLED: AtomicU64 = AtomicU64::new(0);
-static ECO_QOS_CLEARED: AtomicU64 = AtomicU64::new(0);
 static ECO_QOS_FAILURES: AtomicU64 = AtomicU64::new(0);
 static CONFINED: AtomicU64 = AtomicU64::new(0);
 static CONFINEMENT_CLEARED: AtomicU64 = AtomicU64::new(0);
@@ -6410,6 +5766,7 @@ enum ConfinementAvailability {
     AllocationFailed,
 }
 
+#[cfg(test)]
 fn confinement_availability() -> &'static str {
     match CONFINEMENT_AVAILABILITY.load(Ordering::Relaxed) {
         code if code == ConfinementAvailability::NotQueried as u8 => "not queried",
@@ -6552,7 +5909,6 @@ pub(crate) const BACKGROUND_STACK_BYTES: usize = 16 * 1024 * 1024;
 
 // Frame service must never wait for a buffer backlog before becoming runnable.
 pub(crate) struct OwnPriority {
-    _profile: Option<crate::thread_diagnostics::Profile>,
     boosts_disabled: bool,
     frame_pipeline: bool,
     lowest: Option<bool>,
@@ -6563,7 +5919,6 @@ pub(crate) struct OwnPriority {
 impl OwnPriority {
     pub(crate) const fn new() -> Self {
         Self {
-            _profile: None,
             boosts_disabled: false,
             frame_pipeline: false,
             lowest: None,
@@ -6574,7 +5929,6 @@ impl OwnPriority {
 
     pub(crate) fn frame_pipeline() -> Self {
         let mut priority = Self {
-            _profile: Some(crate::thread_diagnostics::Profile::start()),
             frame_pipeline: true,
             ..Self::new()
         };
@@ -6597,7 +5951,7 @@ impl OwnPriority {
             return;
         }
         pipeline.register(role);
-        pipeline.refresh(crate::frame_priority::Caller::Worker);
+        pipeline.refresh();
         // Only a thread its controller keeps at idle priority during ticks works through them.
         crate::tick_gate::copy_only(
             !matches!(role, crate::frame_priority::Role::Sizing)
@@ -6656,11 +6010,6 @@ impl OwnPriority {
             if unsafe { SetThreadPriority(GetCurrentThread(), priority) } == 0 {
                 PRIORITY_FAILURES.fetch_add(1, Ordering::Relaxed);
             } else {
-                if lowest {
-                    PRIORITY_LOWERED.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    PRIORITY_RAISED.fetch_add(1, Ordering::Relaxed);
-                }
                 self.lowest = Some(lowest);
             }
         }
@@ -6687,11 +6036,6 @@ impl OwnPriority {
             {
                 ECO_QOS_FAILURES.fetch_add(1, Ordering::Relaxed);
             } else {
-                if lowest {
-                    ECO_QOS_ENABLED.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    ECO_QOS_CLEARED.fetch_add(1, Ordering::Relaxed);
-                }
                 self.eco_qos = Some(lowest);
             }
         }
@@ -6721,23 +6065,6 @@ impl OwnPriority {
             }
         }
     }
-}
-
-fn background_priority_status() -> impl serde::Serialize {
-    crate::status::status!({
-        "lowered": PRIORITY_LOWERED.load(Ordering::Relaxed),
-        "raised_for_backlog": PRIORITY_RAISED.load(Ordering::Relaxed),
-        "failures": PRIORITY_FAILURES.load(Ordering::Relaxed),
-        "eco_qos_enabled": ECO_QOS_ENABLED.load(Ordering::Relaxed),
-        "eco_qos_cleared_for_backlog": ECO_QOS_CLEARED.load(Ordering::Relaxed),
-        "eco_qos_failures": ECO_QOS_FAILURES.load(Ordering::Relaxed),
-        "confined": CONFINED.load(Ordering::Relaxed),
-        "confinement_cleared_for_backlog": CONFINEMENT_CLEARED.load(Ordering::Relaxed),
-        "confinement_failures": CONFINEMENT_FAILURES.load(Ordering::Relaxed),
-        "confinement_cpu_sets": CONFINEMENT_CPU_SETS.load(Ordering::Relaxed),
-        "confinement_availability": confinement_availability(),
-        "scope": "cumulative successful policy applications: decode, spool, both conversion helpers and sizing initialize NORMAL with execution-speed EcoQoS explicitly cleared and no collector CPU-set selection; frame_priority reports their adaptive promotions and costs; sizing participates to avoid a descheduled capacity-mutex owner; dynamic wake-up boosts are disabled; priority and EcoQoS failures retain their previous setting independently and retry between work items; counts include initial applications, not current thread counts; confined, confinement_cleared_for_backlog and confinement_failures count successful selections of the two least preferred physical cores while keeping up, their clears (including frame-service startup) and failed selection calls; confinement_cpu_sets is the number of logical processors selected; confinement_availability is not queried until sizing first applies policy, then retains selected, too few cores, several processor groups, query failed or allocation failed until the collector reloads; an unavailable selection stays empty and makes no selection call; status never initializes or retries the query",
-    })
 }
 
 #[cfg(test)]
@@ -6835,11 +6162,8 @@ pub(crate) fn background_cpu_sets_failure_exercise(
         assert_eq!(CONFINEMENT_CLEARED.load(Ordering::Relaxed), 0);
         assert_eq!(CONFINEMENT_FAILURES.load(Ordering::Relaxed), 0);
     }
-    serde_json::to_writer(std::io::sink(), &background_priority_status()).unwrap();
     assert_eq!(ATTEMPTS.load(Ordering::Relaxed), attempts);
     drop(guard);
-    let status = serde_json::to_value(background_priority_status()).unwrap();
-    assert_eq!(status["confinement_availability"], expected);
     attempts
 }
 
@@ -6849,23 +6173,6 @@ mod equipment_destruction_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn failed_history_release_marker_keeps_successful_terminal_drain_and_diagnostics() {
-        let mut bytes =
-            br#"{"state":"detached","drain_complete":true,"spool_closed":true,"hours":42}"#
-                .to_vec();
-        append_history_release_status(&mut bytes, Some("Access is denied. (os error 5)")).unwrap();
-        let status: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(status["drain_complete"], true);
-        assert_eq!(status["spool_closed"], true);
-        assert_eq!(status["hours"], 42);
-        assert_eq!(status["state"], "detached");
-        assert_eq!(
-            status["history_release_error"],
-            "Access is denied. (os error 5)"
-        );
-    }
 
     #[test]
     fn spool_error_stops_capture_before_synchronous_writer_cleanup() {
@@ -7768,83 +7075,30 @@ mod tests {
     }
 
     #[test]
-    fn capacity_mutex_costs_reach_spool_status_once_per_call() {
-        let directory =
-            std::env::temp_dir().join(format!("hoi4-capacity-mutex-status-{}", std::process::id()));
-        let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
-        let (shared, sizing) = sizing_fixture();
-        let mut work = WorkerWork::new();
-        let returning = shared.take_frame(&mut 0).unwrap();
-        sizing
-            .sizing
-            .recycle_frame(&shared, returning, &mut work);
-        let recycle_calls =
-            serde_json::to_value(work.recycle_capacities_wait.status()).unwrap()["calls"]
-                .as_u64()
-                .unwrap();
-        assert_eq!(recycle_calls, 2);
-        for _ in 0..2 {
-            sizing.sizing.raise(&shared, |_| {});
-        }
-        sizing.sizing.with_capacities(&shared, |_| {});
-        for _ in 0..2 {
-            sizing
-                .spool_pass(&shared, &mut processor, &mut work, true)
-                .unwrap();
-            let status = serde_json::to_value(
-                processor
-                    .status_with_work(work.status(0, shared.frequency).unwrap())
-                    .unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                status["spool_work"]["recycle_capacities_wait"]["calls"],
-                recycle_calls
-            );
-            assert_eq!(status["spool_work"]["sizing_capacities_hold"]["calls"], 5);
-        }
-        fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
     fn the_spool_records_sizing_observations_once_and_ends_on_a_sizing_failure() {
         let directory =
             std::env::temp_dir().join(format!("hoi4-sizing-handoff-{}", std::process::id()));
         let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
         let (shared, sizing) = sizing_fixture();
-        let mut work = WorkerWork::new();
         sizing.sizing.error("first sizing refusal");
         sizing.sizing.error("second sizing refusal");
-        lock(&sizing.sizing.pending)
-            .game_score
-            .push(engine_native::game_score_inputs::ArenaSizing::default());
         let context = crate::allocation::Context {
             failed_hour: Some(7),
             ..Default::default()
         };
         crate::allocation::set_context(context);
         sizing
-            .spool_pass(&shared, &mut processor, &mut work, true)
+            .spool_pass(&shared, &mut processor, true)
             .unwrap();
         // A terminal allocation failure on the sizing thread names the
         // spool thread's latest campaign context.
         assert_eq!(lock(&sizing.sizing.context).failed_hour, Some(7));
         crate::allocation::set_context(Default::default());
-        for pass in 0..2 {
-            if pass != 0 {
-                sizing
-                    .spool_pass(&shared, &mut processor, &mut work, true)
-                    .unwrap();
-            }
-            let status = serde_json::to_value(processor.status().unwrap()).unwrap();
-            assert_eq!(status["input_demand_errors"], 2);
-            assert_eq!(status["input_demand_last_error"], "second sizing refusal");
-            assert_eq!(status["game_score"]["sizing_observations"], 1);
-        }
+        sizing.spool_pass(&shared, &mut processor, true).unwrap();
         let _ = sizing.sizing.failure.set("synthetic sizing failure");
         assert_eq!(
             sizing
-                .spool_pass(&shared, &mut processor, &mut work, true)
+                .spool_pass(&shared, &mut processor, true)
                 .err(),
             Some("synthetic sizing failure")
         );
@@ -7858,14 +7112,13 @@ mod tests {
             std::env::temp_dir().join(format!("hoi4-sizing-request-{}", std::process::id()));
         let mut processor = crate::spooling::spool_failure_fixture(&directory).unwrap();
         let (shared, mut sizing) = sizing_fixture();
-        let mut work = WorkerWork::new();
         sizing.thread = Some(std::thread::spawn(std::thread::park));
         sizing
-            .spool_pass(&shared, &mut processor, &mut work, false)
+            .spool_pass(&shared, &mut processor, false)
             .unwrap();
         assert!(!sizing.sizing.pass_requested.load(Ordering::Acquire));
         sizing
-            .spool_pass(&shared, &mut processor, &mut work, true)
+            .spool_pass(&shared, &mut processor, true)
             .unwrap();
         assert!(sizing.sizing.pass_requested.load(Ordering::Acquire));
         drop(sizing);
@@ -8014,7 +7267,7 @@ mod tests {
             });
             check_seen.store(true, Ordering::Relaxed);
         }));
-        sizing.recycle_frame(&shared, returning, &mut WorkerWork::new());
+        sizing.recycle_frame(&shared, returning);
         assert!(checked.load(Ordering::Relaxed));
         assert!(!sizing.hint_demand.load(Ordering::Acquire));
         let capacities = *lock(&sizing.capacities);
@@ -8068,7 +7321,7 @@ mod tests {
         assert_eq!(shared.take_frame(&mut wait), Some(idle));
         assert_eq!(wait, 0);
         assert_eq!(shared.buffer_wait_calls.load(Ordering::Relaxed), waits);
-        sizing.recycle_frame(&shared, idle, &mut WorkerWork::new());
+        sizing.recycle_frame(&shared, idle);
         assert!(
             unsafe { &*shared.frames[idle].load(Ordering::Acquire) }
                 .wars
@@ -8110,7 +7363,7 @@ mod tests {
                 })
                 .collect();
             assert!(shared.free.is_empty());
-            sizing.recycle_frame(&shared, returning, &mut WorkerWork::new());
+            sizing.recycle_frame(&shared, returning);
             let mut wait = u64::MAX;
             assert_eq!(shared.take_frame(&mut wait), Some(returning));
             assert_eq!(wait, 0);
@@ -8167,7 +7420,7 @@ mod tests {
             (allocated_after_idle - allocated_before) as u64
         );
 
-        sizing.recycle_frame(&shared, returning, &mut WorkerWork::new());
+        sizing.recycle_frame(&shared, returning);
         assert_eq!(shared.country_intel.allocated_bytes(), shared_after_idle);
         let allocated_after_return = allocated_bytes();
         assert!(allocated_after_return > allocated_after_idle);
@@ -8650,7 +7903,6 @@ mod tests {
         let shared = Shared::new(0, 0, 1);
         let capacities = crate::extended::Capacities::default();
         let mut applied = [CombatHintState::default(); sampling::BUFFERS];
-        let before = crate::country_scale::combat_hint_status();
         let hints = CombatHints {
             land: Some(engine_native::cland_combat::DetailDemand {
                 rows: usize::MAX,
@@ -8677,15 +7929,6 @@ mod tests {
         ));
         assert!(applied == [CombatHintState::default(); sampling::BUFFERS]);
         assert_eq!(crate::allocation::failed(), stopped);
-        let after = crate::country_scale::combat_hint_status();
-        let before = serde_json::to_value(before).unwrap();
-        let after = serde_json::to_value(after).unwrap();
-        for name in ["land_skipped", "naval_skipped"] {
-            assert!(
-                after[name].as_u64().unwrap()
-                    >= before[name].as_u64().unwrap() + 2 * sampling::BUFFERS as u64
-            );
-        }
         assert!(capacities == crate::extended::Capacities::default());
         // A later valid observation is retried, without the failed huge peak.
         let before = shared.pool_owned();
@@ -9138,17 +8381,12 @@ mod tests {
         let shared = Shared::new(0, 0, 1);
         shared.recording.store(false, Ordering::Release);
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
-        let work = WorkerWork::new();
-        let handle = writer.handle();
         let status = serde_json::to_value(
             spool_status(
                 &processor,
                 &shared,
                 &session,
-                &work,
-                &handle,
                 "detached",
-                0,
                 None,
                 None,
                 true,
@@ -9158,11 +8396,6 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(status["input_demand_errors"], 1);
-        assert_eq!(
-            status["input_demand_last_error"],
-            "division presentation demand selecting header changed",
-        );
         assert_eq!(status["write_errors"], 0);
         assert_eq!(status["drain_complete"], true);
         assert!(status.get("warning").is_none());
@@ -9203,8 +8436,6 @@ mod tests {
         let shared = Shared::new(0, 0, 1);
         shared.recording.store(false, Ordering::Release);
         let writer = crate::status_writer::StatusWriter::start(|_, _| Ok(())).unwrap();
-        let work = WorkerWork::new();
-        let handle = writer.handle();
         for (warning, error, installation_error, drain_complete) in [
             (None, None, None, true),
             (Some("earlier write retried"), None, None, true),
@@ -9218,10 +8449,7 @@ mod tests {
                         &processor,
                         &shared,
                         &session,
-                        &work,
-                        &handle,
                         "detached",
-                        0,
                         warning,
                         error,
                         drain_complete,
@@ -9237,11 +8465,6 @@ mod tests {
             )
             .unwrap();
             assert_eq!(status["state"], "pinned");
-            assert_eq!(status["collector_pinned"], true);
-            assert_eq!(status["recording_stopped"], true);
-            assert_eq!(status["spool_closed"], true);
-            assert_eq!(status["original_bytes_verified"], false);
-            assert!(status.get("active_callbacks").is_none());
             assert_eq!(status["drain_complete"], drain_complete);
             assert_eq!(status["restoration_error"], "synthetic hook stayed busy");
             assert_eq!(
@@ -9266,29 +8489,6 @@ mod tests {
     }
 
     #[test]
-    fn final_spool_status_preserves_metadata_and_adds_event_feed_detach_losses() {
-        let mut bytes =
-            br#"{"spool_closed":true,"hours":2,"decode":{"event_feed":{"native_flights":0}}}"#
-                .to_vec();
-        append_event_feed_detach_status(
-            &mut bytes,
-            Some(crate::event_feed_history::DetachLosses {
-                unrecorded_tail_events: 1,
-                unrecorded_tail_revisions: 2,
-                failed_batches: 3,
-            }),
-        )
-        .unwrap();
-        let status: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(status["spool_closed"], true);
-        assert_eq!(status["hours"], 2);
-        assert_eq!(status["decode"]["event_feed"]["native_flights"], 0);
-        assert_eq!(status["event_feed_detach"]["unrecorded_tail_events"], 1);
-        assert_eq!(status["event_feed_detach"]["unrecorded_tail_revisions"], 2);
-        assert_eq!(status["event_feed_detach"]["failed_batches"], 3);
-    }
-
-    #[test]
     fn terminal_failures_remain_explicit_even_with_recovered_history() {
         let mut result = Ok(());
         add_terminal_error(&mut result, "final sync failed");
@@ -9302,27 +8502,11 @@ mod tests {
 
     #[test]
     fn decode_status_merge_is_additive_and_keeps_existing_keys() {
-        let mut status = json!({
-            "state": "recording", "hours": 3,
-            "table_reads_recorded": true, "table_reads_frames": 3,
-            "table_reads": [{"bytes": 42}], "table_total_reads": [{"bytes": 123}],
-        });
+        let mut status = json!({"state": "recording", "hours": 3});
         add_decode_status(&mut status);
         assert_eq!(status["state"], "recording");
         assert_eq!(status["hours"], 3);
-        assert_eq!(status["replay_format"], replay_data::FORMAT_VERSION);
-        assert_eq!(status["table_reads_recorded"], true);
-        assert_eq!(status["table_reads_frames"], 3);
-        assert_eq!(status["table_reads"][0]["bytes"], 42);
-        assert_eq!(status["table_total_reads"][0]["bytes"], 123);
-        assert_eq!(
-            status["decode_work"]["relations_tables"][0],
-            "RelationOpinions"
-        );
-        assert_eq!(
-            status["decode_work"]["relations_tables"][1],
-            "RelationTuples"
-        );
-        assert!(status.get("research_decode").is_none());
+        assert_eq!(status["sample_boundary"], "end_of_hour");
+        assert!(status["hook_timing"]["families"]["hourly"].is_object());
     }
 }

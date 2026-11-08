@@ -15,7 +15,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NewDivisionEquipment];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// The two id counters at the last daily walk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

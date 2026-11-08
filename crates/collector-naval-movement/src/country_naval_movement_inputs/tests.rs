@@ -244,14 +244,6 @@ fn physical_identity_failure_refuses_only_that_slot_and_is_not_reacquired() {
     captured.finish();
     reader.clear();
     assert_eq!(memory.count(FOREIGN_NAVY), 1);
-    let mut work = Work::default();
-    work.observe(&captured, &launch).unwrap();
-    assert_eq!(work.refusals, [(reason, 1)]);
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["sampled_hours"], 1);
-    assert_eq!(status["refusals"][reason], 1);
-    assert_eq!(status["physical_slots_required"], 4);
-    assert!(status.get("controller_area_domain_required").is_none());
 }
 
 #[test]
@@ -265,9 +257,6 @@ fn absent_hour_publishes_nothing_and_reset_retires_every_private_source() {
     let mut reader = captured.begin(&memory, 0, STATE, None, &mut launch);
     assert_eq!(captured.sample_hour, None);
     assert!(launch.projection_launch(None).unwrap().is_none());
-    let mut work = Work::default();
-    work.observe(&captured, &launch).unwrap();
-    assert_eq!(work.sampled, 0);
     captured.reset();
     launch.reset();
     reader.clear();
@@ -315,8 +304,5 @@ fn unreadable_provinces_never_reach_the_physical_navy_pass() {
     captured.finish();
     reader.clear();
     assert_eq!(memory.count(PROVINCES[0]), 0);
-    let mut work = Work::default();
-    work.observe(&captured, &launch).unwrap();
-    assert!(work.refusals.is_empty());
     assert!(captured.navies.first.iter().all(|row| row.inputs.is_none()));
 }

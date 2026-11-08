@@ -9,7 +9,7 @@ const CALLBACK_SCALARS: usize = 14;
 const JOIN_SCALARS: usize = 15;
 const SCALARS: usize = CALLBACK_SCALARS + JOIN_SCALARS;
 const BASE_WIDTH: usize = SCALARS + sampling::SEGMENTS + acquisition_jobs::ROLE_COUNT;
-const WIDTH: usize = BASE_WIDTH + crate::acquisition_diagnostics::FIELDS + 1;
+const WIDTH: usize = BASE_WIDTH + 1;
 static SAMPLES: Samples<LIMIT> = Samples::new();
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -20,21 +20,45 @@ pub(crate) struct JoinSample {
     pub profile: acquisition::Profile,
 }
 
+thread_local! {
+    static JOIN: std::cell::Cell<Option<JoinSample>> = const { std::cell::Cell::new(None) };
+}
+
 /// Call on the game thread before starting this callback's acquisition.
 pub(crate) fn reset_join() {
-    sampling::reset_hour_joins();
-    DIAGNOSTICS.with_borrow_mut(|slot| *slot = Default::default());
+    JOIN.set(None);
 }
 
 /// Keep the first largest join on this thread; ties retain the earlier join.
-#[cfg(test)]
 pub(crate) fn record_join(role: usize, wall_ns: u64, profile: acquisition::Profile) {
-    sampling::record_hour_join(role, wall_ns, 0, profile, None);
+    keep(JoinSample {
+        role: Some(role),
+        wall_ns,
+        readiness: false,
+        profile,
+    });
+}
+
+pub(crate) fn record_readiness(ticks: i64) {
+    let mut frequency = 0;
+    // SAFETY: a valid local output.
+    unsafe { windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency) };
+    keep(JoinSample {
+        wall_ns: (ticks.max(0) as u128 * 1_000_000_000 / frequency.max(1) as u128) as u64,
+        readiness: true,
+        ..Default::default()
+    });
+}
+
+fn keep(sample: JoinSample) {
+    if JOIN.get().is_none_or(|join| sample.wall_ns > join.wall_ns) {
+        JOIN.set(Some(sample));
+    }
 }
 
 /// Returns this callback's slowest join and clears the thread-local slot.
 pub(crate) fn take_join() -> JoinSample {
-    sampling::take_profile_join()
+    JOIN.take().unwrap_or_default()
 }
 
 impl JoinSample {
@@ -122,7 +146,6 @@ pub(crate) struct Sample {
     pub join: JoinSample,
     pub segments_ns: [u64; sampling::SEGMENTS],
     pub join_wait_ns: [u64; acquisition_jobs::ROLE_COUNT],
-    pub diagnostics: crate::acquisition_diagnostics::Hour,
     pub frequency: u64,
 }
 
@@ -144,7 +167,6 @@ impl Default for Sample {
             join: JoinSample::default(),
             segments_ns: [0; sampling::SEGMENTS],
             join_wait_ns: [0; acquisition_jobs::ROLE_COUNT],
-            diagnostics: Default::default(),
             frequency: 1,
         }
     }
@@ -173,7 +195,6 @@ impl Sample {
         let joins = SCALARS + sampling::SEGMENTS;
         fields[SCALARS..joins].copy_from_slice(&self.segments_ns);
         fields[joins..BASE_WIDTH].copy_from_slice(&self.join_wait_ns);
-        fields[BASE_WIDTH..WIDTH - 1].copy_from_slice(&self.diagnostics.fields());
         fields[WIDTH - 1] = self.frequency;
         fields
     }
@@ -196,9 +217,6 @@ impl Sample {
             join: JoinSample::from_fields(fields[CALLBACK_SCALARS..SCALARS].try_into().unwrap()),
             segments_ns: fields[SCALARS..joins].try_into().unwrap(),
             join_wait_ns: fields[joins..BASE_WIDTH].try_into().unwrap(),
-            diagnostics: crate::acquisition_diagnostics::Hour::from_fields(
-                fields[BASE_WIDTH..WIDTH - 1].try_into().unwrap(),
-            ),
             frequency: fields[WIDTH - 1],
         }
     }
@@ -219,7 +237,6 @@ impl Sample {
             "dispatch_ns": self.dispatch_ns,
             "phase_calls": self.phase_calls,
             "join": self.join.json(),
-            "diagnostics": crate::acquisition_diagnostics::Status(self.diagnostics, self.frequency),
             "segments_ns": crate::status::sequence(self.segments_ns.into_iter()),
             "join_wait_ns": crate::status::sequence(self.join_wait_ns.into_iter()),
         })
@@ -378,16 +395,6 @@ impl<const N: usize> Samples<N> {
     }
 }
 
-thread_local! {
-    static DIAGNOSTICS: std::cell::RefCell<crate::acquisition_diagnostics::Hour> = std::cell::RefCell::new(Default::default());
-}
-pub(crate) fn retain_diagnostics(hour: crate::acquisition_diagnostics::Hour) {
-    DIAGNOSTICS.with_borrow_mut(|slot| *slot = hour);
-}
-pub(crate) fn take_diagnostics() -> crate::acquisition_diagnostics::Hour {
-    DIAGNOSTICS.with_borrow_mut(std::mem::take)
-}
-
 pub(crate) fn record(sample: Sample) {
     SAMPLES.record(sample);
 }
@@ -464,7 +471,6 @@ mod tests {
             },
             segments_ns: std::array::from_fn(|index| 100 + index as u64),
             join_wait_ns: std::array::from_fn(|index| 200 + index as u64),
-            diagnostics: Default::default(),
             frequency: 10_000_000,
         };
         samples.slots[0].publish(sample);

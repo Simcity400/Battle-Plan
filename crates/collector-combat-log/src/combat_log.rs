@@ -64,11 +64,6 @@ pub const TABLES: [TableId; N] = [
     TableId::CombatLogBattleModifiers,
     TableId::CombatLogBattleCountries,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "combat log group walk and retained writer operands (charged to CombatLogEquipment)",
-    0,
-    &[0, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13],
-)];
 
 /// Detach worker, after capture jobs and native writers have quiesced. Static
 /// Rust owners are not dropped by DLL unloading; release the retained cache

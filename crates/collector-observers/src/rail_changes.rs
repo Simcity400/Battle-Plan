@@ -308,35 +308,6 @@ pub fn record(counts: &Counts, slots: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "rail_changes"),
-        "poisoned": WATCHES.set.poisoned(),
-        "reused_infos": reads[0],
-        "read_infos": reads[1],
-        "reused_edges": reads[2],
-        "read_edges": reads[3],
-        "carried_batches": reads[4],
-        "read_batches": reads[5],
-        "marked_provinces": reads[6],
-        "countdown_hours": reads[7],
-        "full_reads": reads[8],
-        "quiet_hours": reads[9],
-        "events": events,
-        "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
-        "building_writes": WATCHES.buildings[0].load(Ordering::Relaxed),
-        "unnamed_building_writes": WATCHES.buildings[1].load(Ordering::Relaxed),
-        "set": WATCHES.set.status(),
-        "scope": "cumulative since attach; a batch of 64 rail slots is published from the held outputs of its last complete read (cooldown rows, building and selection inputs, indexed levels, RailEdges rows) without reading any slot when the hour's take returned the held capture's epoch, no hooked writer marked any of its provinces and the manager, rail table and province table headers are unchanged; the daily countdown (countdown_hours) marks every province on the held and the current cooldown lists, which are read every hour; in a batch read for a marked province an unmarked info whose identity, cooldown and pair header are those of its held read is carried; quiet_hours had no marked province or countdown and carried every batch"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

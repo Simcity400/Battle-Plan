@@ -24,13 +24,6 @@ pub const TABLES: [TableId; N] = [
     TableId::TaskForceMapMotion,
     TableId::TaskForceMissions,
 ];
-/// One country/fleet/task-force traversal serves all four tables; its time is charged to task
-/// forces.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "fleet and task-force counter, motion and mission operands",
-    0,
-    &[0, 1, 2, 3],
-)];
 
 static ARROW_REFUSALS: [std::sync::atomic::AtomicU64; 6] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 6];
@@ -968,17 +961,6 @@ impl Captured {
             }),
             avoided_ship_types,
         })
-    }
-
-    pub fn observe_supply(&self, work: &mut super::supply_inputs::Work) {
-        for row in self
-            .task_forces
-            .rows
-            .iter()
-            .take(self.task_forces.outcome.len())
-        {
-            work.observe(row.supply, row.supply_failure);
-        }
     }
 
     pub fn outcomes(&self) -> [Outcome; N] {

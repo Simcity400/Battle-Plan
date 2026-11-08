@@ -68,7 +68,6 @@ pub(crate) struct SunkCopyReport {
     /// payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; SUNK_N],
-    pub raw_bytes: [u64; SUNK_N],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -413,7 +412,6 @@ pub(crate) fn copy_sunk_refresh_growing(
     SunkCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 
@@ -432,7 +430,6 @@ pub(crate) fn copy_sunk_refresh(
     SunkCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 

@@ -71,12 +71,6 @@ impl DivisionsJob {
             ..Default::default()
         });
     }
-    pub fn payload_bytes(&self) -> [u64; 6] {
-        let mut bytes = [0; 6];
-        bytes[0] = self.census.payload_bytes();
-        bytes[1..].copy_from_slice(&self.details.acquired_bytes());
-        bytes
-    }
     #[cfg(test)]
     pub(super) fn source_outcome(&self, capacity: usize) -> Outcome {
         self.census.outcome(capacity)
@@ -126,7 +120,6 @@ pub(crate) struct DivisionsCopyReport {
     /// only an input-stage shortage before leasing may use a fresh fallback.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 6],
-    pub raw_bytes: [u64; 6],
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DivisionsCopyContext {
@@ -269,7 +262,6 @@ fn divisions_copy_report(payload: &DivisionsJob) -> DivisionsCopyReport {
     DivisionsCopyReport {
         raw_ok: !payload.overflowed,
         copy_ticks: payload.acquisition_ticks,
-        raw_bytes: payload.payload_bytes(),
     }
 }
 

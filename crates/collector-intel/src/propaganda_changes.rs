@@ -471,25 +471,6 @@ impl Store {
         Ok(Some(count))
     }
 
-    fn allocated_bytes(&self) -> usize {
-        self.snapshot.bytes()
-            + self.lanes.capacity() * size_of::<Box<SharedLane<Append>>>()
-            + self
-                .lanes
-                .iter()
-                .map(|lane| lane.allocated_bytes())
-                .sum::<usize>()
-            + (self.owners.capacity() + self.staging.capacity()) * size_of::<Owner>()
-            + self
-                .owners
-                .iter()
-                .chain(&self.staging)
-                .map(|owner| owner.history.capacity() * size_of::<Row>())
-                .sum::<usize>()
-            + self.seeds.capacity() * size_of::<strategic_operatives::Row>()
-            + self.lookup.capacity() * size_of::<(usize, usize)>()
-            + self.events.capacity() * size_of::<(u64, usize, u64, Append)>()
-    }
 }
 
 impl Drop for Store {
@@ -570,21 +551,6 @@ pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
 
-pub fn status() -> impl serde::Serialize {
-    let store = STORE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    crate::status::status!({
-        "enabled": ENABLED.load(Ordering::Acquire),
-        "daily_calls": CALLS[0].load(Ordering::Relaxed),
-        "reset_calls": CALLS[1].load(Ordering::Relaxed),
-        "failed_observations": FAILED.load(Ordering::Relaxed),
-        "rejected_appends": store.lanes.iter().map(|lane| lane.rejected()).sum::<u64>(),
-        "lane_bytes": store.lanes.iter().map(|lane| lane.allocated_bytes()).sum::<usize>(),
-        "history_bytes": store.owners.iter().map(|owner| owner.history.capacity() * size_of::<Row>()).sum::<usize>(),
-        "shared_cache_bytes": store.allocated_bytes(),
-    })
-}
 
 struct Guard {
     complete: bool,

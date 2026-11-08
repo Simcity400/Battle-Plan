@@ -38,7 +38,6 @@ use replay_data::{
 };
 use replay_frame::{frame::TableInput, frame::TableView};
 
-use std::mem::size_of;
 use std::sync::{Arc, Weak};
 
 pub const N: usize = 6;
@@ -49,16 +48,6 @@ pub const TABLES: [TableId; N] = [
     TableId::UnitLeaders,
     TableId::UnitLeaderTraits,
     TableId::UnitLeaderTraitExperience,
-];
-
-/// The first table in each group carries its full QPC cost.
-/// Companion slots are zero: their shared traversal has one
-/// measured cost, not an invented allocation of time between its outputs.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("character roster and unit leaders", 0, &[0, 3, 5]),
-    ("country leader roles", 1, &[1]),
-    ("advisor roles", 2, &[2]),
-    ("unit leader traits", 4, &[4]),
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -91,7 +80,6 @@ impl Capacities {
 }
 
 mod demand;
-pub(crate) use demand::status as demand_status;
 
 pub(super) struct Buffer<R> {
     pub(super) rows: CaptureRows<R>,
@@ -207,86 +195,6 @@ fn roster_part(active: [bool; N]) -> bool {
     active[..5] == PART_MASKS[0][..5]
 }
 
-static COPY_CALLS: [std::sync::atomic::AtomicU64; PARTS] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; PARTS];
-static COPY_NS: [std::sync::atomic::AtomicU64; PARTS] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; PARTS];
-static BACKEND_NS: [std::sync::atomic::AtomicU64; PARTS] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; PARTS];
-static ADVISOR_SECTION_CALLS: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
-static ADVISOR_SECTION_PLANNED: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
-static ADVISOR_SECTION_NS: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
-
-static CURRENT_IDEOLOGY_FAILURES: std::sync::Mutex<Vec<(&'static str, u64)>> =
-    std::sync::Mutex::new(Vec::new());
-static FORMATION_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-fn leader_ideology_status() -> impl serde::Serialize {
-    let failures = owned_vec(copy_vec(
-        &CURRENT_IDEOLOGY_FAILURES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    ));
-    crate::status::status!({
-        "refused": failures.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
-        "refusals": crate::status::map(failures.into_iter()),
-        "scope": "country-leader current-ideology conversion failures; unavailable appended values retain the existing role row",
-    })
-}
-
-fn record_leader_ideologies(rows: &[ccountry_leader::Row]) {
-    let mut failures = CURRENT_IDEOLOGY_FAILURES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for reason in rows.iter().filter_map(|row| row.current_ideology_failure) {
-        let index = match failures.binary_search_by_key(&reason, |entry| entry.0) {
-            Ok(index) => index,
-            Err(index) => {
-                if engine_allocation::reserve(&mut failures, 1).is_err() {
-                    return;
-                }
-                failures.insert(index, (reason, 0));
-                index
-            }
-        };
-        failures[index].1 = failures[index].1.saturating_add(1);
-    }
-}
-
-pub(crate) fn acquisition_diagnostics() -> impl serde::Serialize {
-    use std::sync::atomic::Ordering::Relaxed;
-    let parts = std::array::from_fn::<_, PARTS, _>(|part| {
-        let calls = COPY_CALLS[part].load(Relaxed);
-        let total = COPY_NS[part].load(Relaxed);
-        let backend = BACKEND_NS[part].load(Relaxed);
-        crate::status::status!({
-            "name": READ_GROUPS[part].0, "calls": calls, "total_ns": total,
-            "backend_ns": backend, "mean_backend_ns": backend.checked_div(calls).unwrap_or(0),
-            "mean_other_ns": total.saturating_sub(backend).checked_div(calls).unwrap_or(0),
-        })
-    });
-    let sections = std::array::from_fn::<_, 2, _>(|section| {
-        let calls = ADVISOR_SECTION_CALLS[section].load(Relaxed);
-        let ns = ADVISOR_SECTION_NS[section].load(Relaxed);
-        crate::status::status!({
-            "roster": section, "calls": calls,
-            "complete_prepared": ADVISOR_SECTION_PLANNED[section].load(Relaxed),
-            "total_ns": ns, "mean_ns": ns.checked_div(calls).unwrap_or(0),
-        })
-    });
-    crate::status::status!({
-        "scope": "cumulative active character acquisitions; backend is fresh prepared execution only; other includes discovery/continuation, trait acquisition and metadata restoration; overlapping jobs must not be summed as callback wall",
-        "parts": crate::status::sequence(parts.into_iter()),
-        "advisor_sections": crate::status::sequence(sections.into_iter()),
-        "advisor_modifiers": advisors::modifier_status(),
-        "country_leader_ideologies": leader_ideology_status(),
-        "unit_leader_formation_refusals": FORMATION_REFUSALS.load(Relaxed),
-    })
-}
-
 fn anchor(active: [bool; N]) -> usize {
     active.iter().position(|&value| value).unwrap_or(0)
 }
@@ -302,21 +210,6 @@ mod shadow;
 pub(crate) use shadow::*;
 
 impl Captured {
-    pub(crate) fn observe_naming(
-        &self,
-        work: &mut super::character_inputs::NamingWork,
-    ) -> std::io::Result<()> {
-        for row in &self.units.rows.rows[..self.units.rows.outcome.len()] {
-            if row.formation_reason.is_some() {
-                FORMATION_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Some(reason) = row.codename_reason {
-                work.refuse(reason)?;
-            }
-        }
-        Ok(())
-    }
-
     pub(crate) fn character_activity(&self) -> [bool; N] {
         self.active
     }
@@ -616,14 +509,6 @@ impl Captured {
     }
 
     fn leaders_table(&self) -> TableView {
-        if let Some(rows) = self
-            .leaders
-            .rows
-            .rows
-            .get(..self.leaders.rows.outcome.len())
-        {
-            record_leader_ideologies(rows);
-        }
         view::<tables::CountryLeaderRoles, _>(
             &self.leaders,
             |_, _| true,
@@ -2188,7 +2073,6 @@ fn copy_characters_inner(
         };
     }
     let started = qpc();
-    let wall_started = std::time::Instant::now();
     // The roster domain's token, before any registration or read of the
     // roster job's pass ([`quiet`]).
     let roster_token = if job.part == 0 {
@@ -2260,28 +2144,6 @@ fn copy_characters_inner(
         // A pass without the census leaves nothing certified.
         cache.forget();
     }
-    let total_ns = wall_started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-    use std::sync::atomic::Ordering::Relaxed;
-    COPY_NS[job.part].fetch_add(total_ns, Relaxed);
-    BACKEND_NS[job.part].fetch_add(
-        job.log.backend_ns
-            + job
-                .advisor_dynamic
-                .as_ref()
-                .map_or(0, |job| job.log.backend_ns),
-        Relaxed,
-    );
-    COPY_CALLS[job.part].fetch_add(1, Relaxed);
-    let mut raw_bytes = job.log.raw_bytes;
-    if let Some(cache) = &job.advisor_cache {
-        raw_bytes[2] = cache.raw_bytes;
-    }
-    if let Some(dynamic) = &job.advisor_dynamic {
-        for (index, bytes) in raw_bytes.iter_mut().enumerate() {
-            *bytes += job.advisor_roots.raw_bytes[index] + dynamic.log.raw_bytes[index];
-        }
-    }
-    raw_bytes[4] += job.traits.raw_bytes;
     let plan_failed = job.requires_no_retry();
     let mut copy_ticks = [0; N];
     copy_ticks[anchor(ctx.active)] = elapsed(started);
@@ -2289,7 +2151,6 @@ fn copy_characters_inner(
         raw_ok: !job.overflowed() && !plan_failed,
         plan_failed,
         copy_ticks,
-        raw_bytes,
     }
 }
 

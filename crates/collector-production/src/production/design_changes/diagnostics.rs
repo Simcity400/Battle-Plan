@@ -1,25 +1,18 @@
 //! Static call sites, not a bounded callback map. Recording a refusal allocates
 //! nothing; status walks the once-linked sites outside the native writer path.
 use super::*;
-use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::sync::atomic::AtomicPtr;
 
 static HEAD: AtomicPtr<Site> = AtomicPtr::new(std::ptr::null_mut());
 pub(super) struct Site {
-    file: &'static str,
-    line: u32,
-    cause: &'static str,
     calls: AtomicU64,
     intervals: AtomicU64,
     pending: AtomicBool,
     next: AtomicPtr<Site>,
 }
 impl Site {
-    pub(super) const fn new(file: &'static str, line: u32, cause: &'static str) -> Self {
+    pub(super) const fn new() -> Self {
         Self {
-            file,
-            line,
-            cause,
             calls: AtomicU64::new(0),
             intervals: AtomicU64::new(0),
             pending: AtomicBool::new(false),
@@ -65,34 +58,6 @@ pub(super) fn refused() {
         }
     });
 }
-pub(super) struct Report;
-impl Serialize for Report {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        #[derive(Serialize)]
-        struct Row {
-            file: &'static str,
-            line: u32,
-            cause: &'static str,
-            calls: u64,
-            refused_intervals: u64,
-        }
-        let mut sequence = serializer.serialize_seq(None)?;
-        let mut result = Ok(());
-        sites(|site| {
-            if result.is_ok() {
-                result = sequence.serialize_element(&Row {
-                    file: site.file,
-                    line: site.line,
-                    cause: site.cause,
-                    calls: site.calls.load(Ordering::Relaxed),
-                    refused_intervals: site.intervals.load(Ordering::Relaxed),
-                });
-            }
-        });
-        result?;
-        sequence.end()
-    }
-}
 // Only the boundary worker records these named reasons; no hook touches the
 // map or waits for its serializer. Per-site hook evidence stays static above.
 static REASONS: OnceLock<Mutex<HashMap<&'static str, u64>>> = OnceLock::new();
@@ -107,20 +72,10 @@ pub(super) fn refusal(reason: &'static str) {
         reasons.insert(reason, 1);
     }
 }
-pub(super) struct Reasons;
-impl Serialize for Reasons {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        REASONS
-            .get_or_init(|| Mutex::new(HashMap::new()))
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .serialize(serializer)
-    }
-}
 macro_rules! missed_site {
     ($cause:literal) => {{
         static SITE: $crate::production::design_changes::diagnostics::Site =
-            $crate::production::design_changes::diagnostics::Site::new(file!(), line!(), $cause);
+            $crate::production::design_changes::diagnostics::Site::new();
         SITE.hit();
         $crate::production::design_changes::missed_at();
     }};
@@ -150,7 +105,7 @@ mod tests {
     use super::*;
     #[test]
     fn missed_sources_count_each_static_path_and_each_refused_interval_without_allocation() {
-        static SITE: Site = Site::new(file!(), line!(), "test_source");
+        static SITE: Site = Site::new();
         collector_test_support::with_allocations_denied(|| {
             SITE.hit();
             SITE.hit();

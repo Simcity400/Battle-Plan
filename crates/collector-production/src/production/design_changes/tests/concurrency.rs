@@ -164,8 +164,8 @@ fn different_saved_designs_overlap_and_publish_exact_terminal_snapshots() {
             .collect::<Vec<_>>(),
         [22, 11]
     );
-    assert_eq!(status().competing_writer_rejections, 0);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     assert!(!needs_full());
     assert!(held::certified().is_some());
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
@@ -198,10 +198,10 @@ fn same_saved_design_overlap<const SITE: usize>() {
     assert!(meter.reads.get() > 0);
     assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], 33);
-    assert_eq!(status().competing_writer_rejections, 2);
-    assert_eq!(status().lock_contentions, 0);
-    assert_eq!(status().missed_refusals, 0);
-    assert_eq!(status().repaired_receivers, 1);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 2);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 0);
+    assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 1);
     assert!(!needs_full());
     assert_published_equals_fresh(baseline, changes.clone(), acquire(&space, &registry));
     let mut captured = Captured::vacant();
@@ -266,7 +266,7 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
         changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
         [registry[1].id, registry[2].id, registry[0].id]
     );
-    assert_eq!(status().competing_writer_rejections, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -335,10 +335,10 @@ fn contended_terminal_snapshots_keep_every_occurrence_in_sequence_order() {
             [index as i64 * 10 + 1, index as i64 * 10 + 2]
         );
     }
-    assert!(status().lock_contentions >= 2);
-    assert_eq!(status().competing_writer_rejections, 0);
-    assert_eq!(status().refused_intervals, 0);
-    assert_eq!(status().repaired_intervals, 0);
+    assert!(LOCK_CONTENTIONS.load(Ordering::Relaxed) >= 2);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
+    assert_eq!(REPAIRED_INTERVALS.load(Ordering::Relaxed), 0);
     assert!(!needs_full());
     assert_published_equals_fresh(baseline, changes.clone(), acquire(&space, &registry));
     let mut captured = Captured::vacant();
@@ -357,7 +357,7 @@ fn a_self_owned_derived_writer_waits_only_for_its_terminal_snapshot() {
     let mut changes = Vec::new();
     assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
     assert_eq!(changes.len(), 1);
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -386,7 +386,7 @@ fn contended_scalar_and_flag_writes_keep_both_occurrences_and_refresh_cached_fla
         STORE.get().unwrap().lock().unwrap().watched[&pointer].flags[1],
         1
     );
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -410,7 +410,7 @@ fn a_parent_content_conflict_does_not_poison_an_independent_child_identity_snaps
     second.join().unwrap();
     let mut changes = Vec::new();
     assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
-    assert_eq!(status().refused_intervals, 0);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -425,8 +425,8 @@ fn unknown_receiver_loss_still_requests_a_full_census() {
     );
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
     assert!(needs_full());
-    assert_eq!(status().unknown_receivers, 1);
-    assert_eq!(status().repaired_receivers, 0);
+    assert_eq!(UNKNOWN_RECEIVERS.load(Ordering::Relaxed), 1);
+    assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 0);
 }
 #[test]
 fn a_repair_rechecks_the_revision_after_its_live_reads() {
@@ -530,7 +530,7 @@ fn unwind_releases_receiver_claims_and_restores_same_thread_nesting() {
     assert_eq!(TARGET.get(), 0);
     assert!(!CREATING.get());
     assert_eq!(unsafe { around::<0>([pointer, 0, 42, 0], edited) }, 42);
-    assert_eq!(status().competing_writer_rejections, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert!(MISSED.load(Ordering::Acquire));
 }
 
@@ -550,7 +550,7 @@ fn different_derived_refreshes_can_overlap_when_their_version_owners_are_indepen
     let mut changes = Vec::new();
     drain(space.base, 7, &mut changes).unwrap();
     assert_eq!(changes.len(), 2);
-    assert_eq!(status().competing_writer_rejections, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -571,14 +571,14 @@ fn derived_refreshes_of_different_designs_still_refuse_a_shared_version_owner() 
     assert_eq!(active(), 2);
     pauses[1].wait();
     second.join().unwrap();
-    assert_eq!(status().competing_writer_rejections, 1);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
     pauses[0].wait();
     first.join().unwrap();
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
     // The ancestry conflict still refuses globally. A parent identity witness
     // alone is not poisoned by ordinary content contention on that owner.
-    assert_eq!(status().competing_writer_rejections, 1);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     assert!(STORE.get().unwrap().lock().unwrap().watched[&owner].dirty);
 }
 unsafe extern "system-unwind" fn wait_only(_: usize, pause: usize, _: usize, _: usize) -> usize {
@@ -601,8 +601,8 @@ fn unknown_create_scope_conflicts_with_a_foreign_saved_writer() {
     pause.wait();
     assert_eq!(creating.join().unwrap(), 19);
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-    assert_eq!(status().competing_writer_rejections, 1);
-    assert_eq!(status().unknown_receivers, 1);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(UNKNOWN_RECEIVERS.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn foreign_destruction_conflicts_with_an_active_ancestry_traversal() {
@@ -617,8 +617,8 @@ fn foreign_destruction_conflicts_with_an_active_ancestry_traversal() {
     pause.wait();
     refresh.join().unwrap();
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-    assert_eq!(status().competing_writer_rejections, 1);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
 }
 unsafe extern "system-unwind" fn moved(
     destination: usize,
@@ -659,7 +659,7 @@ fn a_contended_move_of_two_unwatched_drafts_preserves_saved_rows_without_native_
     assert!(changes.is_empty());
     assert!(!needs_full());
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[2..]));
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
@@ -683,7 +683,7 @@ fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
     survivors.extend_from_slice(&registry[2..]);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &survivors));
     assert_eq!(memory.reads.get(), 0);
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occurrence() {
@@ -717,7 +717,7 @@ fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occu
     survivors.extend_from_slice(&registry[2..]);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &survivors));
     assert_eq!(memory.reads.get(), 0);
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_rows() {
@@ -758,8 +758,8 @@ fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_ro
         native::RegistryRow::read(&space.memory(), space.base, registry[0].pointer()).unwrap(),
         registry[2],
     ];
-    assert_eq!(status().competing_writer_rejections, 0);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &fresh_registry));
 }
 #[test]
@@ -784,8 +784,8 @@ fn a_move_source_claim_survives_saved_binding_retirement() {
     pause.wait();
     moving.join().unwrap();
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-    assert_eq!(status().competing_writer_rejections, 1);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
 }
 #[test]
 fn a_saved_destruction_conflict_is_not_mistaken_for_two_unwatched_drafts() {
@@ -809,8 +809,8 @@ fn a_saved_destruction_conflict_is_not_mistaken_for_two_unwatched_drafts() {
     pause.wait();
     destroying.join().unwrap();
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-    assert_eq!(status().competing_writer_rejections, 1);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
 }
 fn parent_snapshot_refuses_a_consuming_move(operand: usize) {
     let (space, registry, _) = setup(3);
@@ -838,8 +838,8 @@ fn parent_snapshot_refuses_a_consuming_move(operand: usize) {
     collector_test_support::with_allocations_denied(|| {
         observe(&space.memory(), space.base, child, false, false);
     });
-    assert_eq!(status().competing_writer_rejections, 1);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     pause.wait();
     moving.join().unwrap();
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
@@ -880,8 +880,8 @@ fn different_saved_designs_with_a_parent_link_still_admit_concurrent_ordinary_ed
     let mut changes = Vec::new();
     drain(space.base, 7, &mut changes).unwrap();
     assert_eq!(changes.len(), 2);
-    assert_eq!(status().competing_writer_rejections, 0);
-    assert_eq!(status().lock_contentions, 0);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 
@@ -945,7 +945,7 @@ fn a_rejected_move_still_forwards_both_original_receivers_through_terminal_phase
     forwarder(None);
     assert_eq!(active(), 0);
     assert_eq!(FORWARDED_MOVE.load(Ordering::SeqCst), 1234);
-    assert_eq!(status().competing_writer_rejections, 1);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -963,8 +963,8 @@ fn a_contended_saved_destruction_logs_its_tombstone_before_the_original() {
     assert_eq!(memory.reads.get(), 0);
     assert_eq!(changes.len(), 1);
     assert!(changes[0].removed);
-    assert_eq!(status().lock_contentions, 1);
-    assert_eq!(status().refused_intervals, 0);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[1..]));
 }
 #[test]
@@ -1084,9 +1084,9 @@ fn a_contended_source_keeps_every_dependant_occurrence_without_terminal_rereads(
     assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
     assert_eq!(memory.reads.get(), 0);
     assert_eq!(changes.len(), 2);
-    assert_eq!(status().repaired_receivers, 0);
-    assert_eq!(status().lock_contentions, 1);
-    assert_eq!(status().refused_intervals, 0);
+    assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 0);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -1112,7 +1112,7 @@ fn a_contended_demanded_source_retirement_keeps_its_observation_without_reading_
         Err("applied design source destroyed while still referenced")
     );
     assert!(needs_full());
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn a_contended_author_retirement_keeps_liveness_without_rewriting_frozen_designs() {
@@ -1139,8 +1139,8 @@ fn a_contended_author_retirement_keeps_liveness_without_rewriting_frozen_designs
     let author = changes[0].organisation.as_ref().unwrap();
     assert_eq!(author.organisation, 1);
     assert!(!author.live);
-    assert_eq!(status().lock_contentions, 1);
-    assert_eq!(status().refused_intervals, 0);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     let held = held::certified().unwrap();
     for (source, row) in registry.iter().zip(&baseline.definitions.rows) {
         assert!(std::sync::Arc::ptr_eq(
@@ -1177,7 +1177,7 @@ fn contended_author_roster_keeps_its_occurrence_and_frozen_designs() {
     assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
     assert_eq!(changes.len(), 1);
     assert!(!changes[0].organisation.as_ref().unwrap().live);
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 
@@ -1200,7 +1200,7 @@ fn contended_draft_destruction_does_not_poison_an_unrelated_saved_publication() 
     );
     let mut changes = Vec::new();
     assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
-    assert_eq!(status().refused_intervals, 0);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 
@@ -1216,7 +1216,7 @@ fn a_rejected_saved_destruction_still_refuses_unobservable_lifetime_history() {
     assert!(drain_with(&memory, space.base, 7, &mut Vec::new()).is_err());
     assert_eq!(memory.reads.get(), 0);
     assert!(needs_full());
-    assert_eq!(status().lock_contentions, 1);
+    assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
 fn a_source_without_a_receiver_still_refuses_the_whole_interval() {
@@ -1224,7 +1224,7 @@ fn a_source_without_a_receiver_still_refuses_the_whole_interval() {
     source_hooks::observe(&space.memory(), space.base, sources::Key::Direct(0), false);
     assert!(drain(space.base, 7, &mut Vec::new()).is_err());
     assert!(needs_full());
-    assert_eq!(status().unknown_receivers, 1);
+    assert_eq!(UNKNOWN_RECEIVERS.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -1325,7 +1325,7 @@ fn a_native_overlap_repair_and_an_unrelated_retirement_preserve_exact_surviving_
     assert!(memory.reads.get() > 0);
     assert_eq!(changes.len(), 2);
     assert!(changes[0].removed);
-    assert_eq!(status().refused_intervals, 0);
+    assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[1..]));
 }
 

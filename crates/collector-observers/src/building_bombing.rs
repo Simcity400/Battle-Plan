@@ -112,10 +112,6 @@ fn writer_cost(start: i64) {
     WRITER_TICKS.fetch_add(ticks, Ordering::Relaxed);
     INTERVAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
 }
-fn ns(ticks: u64) -> u64 {
-    ((u128::from(ticks) * 1_000_000_000) / u128::from(FREQUENCY.load(Ordering::Relaxed)))
-        .min(u128::from(u64::MAX)) as u64
-}
 
 /// Off-thread census; overflow demand grows even when the census is unavailable.
 pub fn prepare(memory: &impl Memory, base: usize, countries: usize) {
@@ -419,33 +415,6 @@ impl Hooks {
     pub fn executable_ranges(&self) -> impl Iterator<Item = Range<usize>> + '_ {
         self.hook.iter().flat_map(Hook::executable_ranges)
     }
-}
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "rva": native::APPLY_DAMAGE_RVA.0,
-        "installed": INSTALLED.load(Ordering::Acquire), "enabled": ENABLED.load(Ordering::SeqCst),
-        "active": active(), "stranded": LEDGER.stranded.load(Ordering::SeqCst), "unhooked": UNHOOKED.get(), "branch_unavailable": LEDGER.poisoned.load(Ordering::SeqCst),
-        "calls": LEDGER.calls.load(Ordering::Relaxed), "events": LEDGER.events.load(Ordering::Relaxed),
-        "overflow": LEDGER.overflow.load(Ordering::Relaxed), "refusals": LEDGER.refusals.load(Ordering::Relaxed),
-        "lost_events": LEDGER.lost_events.load(Ordering::Relaxed), "lost_drains": LEDGER.lost_drains.load(Ordering::Relaxed),
-        "lost_events_unknown": LEDGER.lost_events_unknown.load(Ordering::Relaxed),
-        "overlaps": LEDGER.overlaps.load(Ordering::Relaxed), "drains": LEDGER.drains.load(Ordering::Relaxed),
-        "handed_over": LEDGER.handed_over.load(Ordering::Relaxed), "event_capacity": LEDGER.capacity.load(Ordering::Acquire), "event_required": capacity(),
-        "pending_claim_capacity": 1,
-        "partial_intervals": LEDGER.partial_intervals.load(Ordering::Relaxed), "partial_events": LEDGER.partial_events.load(Ordering::Relaxed),
-        "building_count": BUILDINGS.load(Ordering::Acquire), "prepare_failures": LEDGER.prepare_failures.load(Ordering::Relaxed),
-        "prepare_last_refusal": LEDGER.prepare_last_refusal(),
-        "unattributed": UNATTRIBUTED.load(Ordering::Relaxed),
-        "attribution_failures": ATTRIBUTION_FAILURES.load(Ordering::Relaxed),
-        "unknown_callers": UNKNOWN_CALLERS.load(Ordering::Relaxed),
-        "caller_calls": crate::status::sequence(native::CALLERS.iter().zip(&CALLER_CALLS)
-            .map(|((rva, _), count)| (rva.0, count.load(Ordering::Relaxed)))),
-        "hourly_peak_events": LEDGER.hourly_peak_events.load(Ordering::Relaxed), "hourly_peak_capacity": LEDGER.hourly_peak_capacity.load(Ordering::Relaxed),
-        "writer_ns": ns(WRITER_TICKS.load(Ordering::Relaxed)), "last_hour_writer_ns": ns(LAST_HOUR_TICKS.load(Ordering::Relaxed)),
-        "max_hour_writer_ns": ns(MAX_HOUR_TICKS.load(Ordering::Relaxed)),
-        "zero_writes": LEDGER.zero_writes.load(Ordering::Relaxed),
-        "scope": "since attach; observer time excludes native work; first/recovery partial intervals withheld"
-    })
 }
 
 #[cfg(test)]

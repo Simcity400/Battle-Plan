@@ -145,7 +145,6 @@ pub const TABLES: [TableId; N] = [
     TableId::RailwayGunCounterInputs,
     TableId::OwnerTransportSpeeds,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
@@ -703,12 +702,6 @@ impl Captured {
             .first
             .get(..self.supply_origins.len)?
             .get(row.supply_origins_start..end)
-    }
-
-    pub fn observe_supply(&self, work: &mut super::supply_inputs::Work) {
-        for row in &self.rows.rows[..self.rows.outcome.len()] {
-            work.observe(row.supply, row.supply_failure);
-        }
     }
 
     pub fn tables(&self) -> [TableView; N] {

@@ -1205,12 +1205,11 @@ fn weather_display_memory(fault: Option<usize>) -> AttackWeatherMemory {
 }
 
 #[test]
-fn weather_display_hint_failure_is_named_counted_and_keeps_capacity_after_healthy_capture() {
+fn weather_display_hint_failure_keeps_capacity_after_healthy_capture() {
     let _guard = crate::country_scale::hint_guard();
-    let failures = collector_extended_support::demand::DemandFailures::new();
     let source = weather_display_memory(None);
     let before = display::bytes_hint();
-    assert_eq!(display::observe_capacity(&source, 0, &failures), Ok(10));
+    assert_eq!(display::observe_capacity(&source, 0), Ok(10));
     let retained = before.max(10);
     assert_eq!(display::bytes_hint(), retained);
     source.reads.borrow_mut().clear();
@@ -1218,20 +1217,14 @@ fn weather_display_hint_failure_is_named_counted_and_keeps_capacity_after_health
         .fault_once
         .set(Some(0x2800 + engine_native::cmap::WIDTH));
     assert_eq!(
-        display::observe_capacity(&source, 0, &failures),
+        display::observe_capacity(&source, 0),
         Err("weather display dimensions unreadable")
     );
     assert_eq!(source.attempts(0x2800 + engine_native::cmap::WIDTH), 1);
     assert_eq!(display::bytes_hint(), retained);
     let (captured, _) = weather_display_split(&source, 10);
     assert!(matches!(captured.outcomes()[1], Outcome::Rows { len: 1 }));
-    assert_eq!(display::observe_capacity(&source, 0, &failures), Ok(10));
-    let diagnostics = serde_json::to_value(failures.diagnostics()).unwrap();
-    assert_eq!(diagnostics["failed_observations"], 1);
-    assert_eq!(
-        diagnostics["last_reason"],
-        "weather display dimensions unreadable"
-    );
+    assert_eq!(display::observe_capacity(&source, 0), Ok(10));
     assert_eq!(display::bytes_hint(), retained);
 }
 

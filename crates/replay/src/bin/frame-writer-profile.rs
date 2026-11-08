@@ -136,6 +136,9 @@ fn main() -> io::Result<()> {
                     }
                 }
                 let begin = Instant::now();
+                if let Some(ended) = journal.next_segment()? {
+                    ended.sync_data()?;
+                }
                 journal.run(decoded.branch, epoch, decoded.hour)?;
                 journal_ns += begin.elapsed().as_nanos() as u64;
                 let begin = Instant::now();
@@ -188,7 +191,9 @@ fn main() -> io::Result<()> {
             let begin = Instant::now();
             journal.hour(&prepared.manifest, &sections)?;
             if (*ordinal + 1) % envelope::UNIT_ORDINALS == 0 {
-                journal.next_segment()?;
+                if let Some(ended) = journal.next_segment()? {
+                    ended.sync_data()?;
+                }
             }
             let elapsed = begin.elapsed().as_nanos() as u64;
             journal_ns += elapsed;

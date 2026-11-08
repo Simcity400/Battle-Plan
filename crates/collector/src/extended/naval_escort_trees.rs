@@ -15,9 +15,6 @@ fn refused(reason: &'static str) {
         .entry(reason)
         .or_default() += 1;
 }
-pub(crate) fn status() -> impl serde::Serialize {
-    REFUSALS.lock().unwrap_or_else(|e| e.into_inner()).clone()
-}
 #[derive(Default)]
 pub(crate) struct Trees {
     nodes: Vec<native::RawNode<1>>,

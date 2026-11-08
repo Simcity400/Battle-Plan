@@ -49,12 +49,6 @@ pub enum Table {
     /// HiredAdvisors.
     CharacterRecords,
 }
-const TABLES: [&str; 4] = [
-    "AvailableAdvisors",
-    "AdvisorTokens",
-    "HiredAdvisors",
-    "CharacterRecords",
-];
 
 /// One observation domain: the watched pools and token sets and each writer
 /// site's calls.
@@ -229,35 +223,6 @@ pub fn record(table: Table, counts: &Counts, pools: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let tables = crate::status::map(TABLES.iter().zip(&READS).map(|(&name, reads)| {
-        let reads = reads.each_ref().map(|value| value.load(Ordering::Relaxed));
-        (
-            name,
-            crate::status::status!({
-                "reused": reads[0],
-                "read": reads[1],
-                "reused_rows": reads[2],
-                "read_rows": reads[3],
-            }),
-        )
-    }));
-    crate::status::status!({
-        "configured": cfg!(feature = "advisor_pool_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "tables": tables,
-        "events": events,
-        "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; HiredAdvisors and CharacterRecords (CountryCharacters with CountryRetiredCharacters) count hours: a quiet hour (reused) publishes the latest complete walk's rows without reading any country when this domain's token (every pool, appointed list, character record and token set writer), the character domain's and the roster's tokens and the country and link array headers equal those taken before that walk; every other hour (read) walks every country; AvailableAdvisors counts pools (one per country), each read once a day at its country's owner slice: a pool's rows are carried when its CCountryCharacters, country and array header are those of the held read a day earlier, no hooked writer touched it since and every listed advisor's character certificate is unchanged; AdvisorTokens counts token tables, read every hour: the table is carried when its manager and header are those of the held read and no hooked writer touched it since; the slice's countries, pool objects and headers and the token manager are read at every read"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

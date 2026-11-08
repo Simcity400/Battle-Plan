@@ -55,25 +55,6 @@ static FIRST_TREE_REFUSAL: OnceLock<&'static str> = OnceLock::new();
 static RESERVE_TREE_COUNTS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
 static FIRST_SIDE_INPUT_REFUSAL: OnceLock<&'static str> = OnceLock::new();
 
-/// The reserve reinforcement speed shares the land combat pass composed and
-/// refused since attach.
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "computed": RESERVE_SHARES.load(Ordering::Relaxed),
-        "refused": REFUSED_SHARES.load(Ordering::Relaxed),
-        "first_refusal": FIRST_SHARE_REFUSAL.get(),
-        "scope": "cumulative reserve reinforcement speed shares composed at capture for captured LandCombatDivisions reserve rows since attach; a refused share leaves that reserve's chance arm unknown and its row otherwise intact",
-        "side_inputs_refused": REFUSED_SIDE_INPUTS.load(Ordering::Relaxed),
-        "first_side_input_refusal": FIRST_SIDE_INPUT_REFUSAL.get(),
-        "trees_refused": REFUSED_TREES.load(Ordering::Relaxed),
-        "first_tree_refusal": FIRST_TREE_REFUSAL.get(),
-        "trees_carried": RESERVE_TREE_COUNTS[0].load(Ordering::Relaxed),
-        "trees_read": RESERVE_TREE_COUNTS[1].load(Ordering::Relaxed),
-        "trees_scope": "cumulative ReserveModifierTrees sources since attach: refused rows (that source's tree, accumulator or commander name unreadable; the other rows stand), trees carried while the naval tree writers' certificate of their country or commander held, and trees read",
-        "side_inputs_scope": "cumulative optional side inputs of captured LandCombatDetails rows since attach (a selected commander's next skill level, the live LEADER_TRAITS_XP_SHOW threshold, the selected leader modifier block) whose read failed; each leaves only its hover part unknown and the row intact",
-    })
-}
-
 pub const N: usize = 6;
 /// LandCombatDivisionModifiers projects the members the modifier side rows'
 /// pass captured: it has no capture or read accounting of its own, and its
@@ -86,11 +67,6 @@ pub const TABLES: [TableId; N] = [
     TableId::LandCombatDivisionModifiers,
     TableId::ReserveModifierTrees,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "land combat detail census and member authentication",
-    0,
-    &[0, 1, 2, 3, 4],
-)];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

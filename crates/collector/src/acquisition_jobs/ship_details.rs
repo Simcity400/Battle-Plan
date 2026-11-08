@@ -94,7 +94,7 @@ impl acquisition::Publication for ShipDetailsDispatch {
     fn failed(&self) {
         self.lock().failure = Some(Failure::Panicked);
     }
-    fn published(&self, _: i64) {
+    fn published(&self) {
         let mut state = self.lock();
         if state.closed || state.captured.is_none() || crate::allocation::failed() {
             return;

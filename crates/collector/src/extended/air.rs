@@ -71,11 +71,6 @@ pub const TABLES: [TableId; N] = [
     TableId::AirTransferInputs,
 ];
 
-/// Owned wing acquisition is charged to WingEquipment, excluding separately
-/// charged naval-membership reads. Typed fallback extension times exclude the
-/// enclosing map census.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     /// Witnesses count probed base handles.
@@ -1916,7 +1911,6 @@ pub(crate) use stats::{
 
 mod bases;
 pub(super) mod carrier;
-pub(crate) use carrier::capture_status as carrier_capture_status;
 mod carrier_memory;
 mod census_store;
 mod state_fuel_inputs;
@@ -1925,7 +1919,7 @@ use super::fog;
 pub(crate) use bases::copy_air_bases_refresh;
 pub(crate) use bases::{
     AIR_BASES_N, AirBasesCopyContext, AirBasesCopyReport, AirBasesJob, AirBasesMemo,
-    AirBasesMemoContext, AirBasesMemoReport, HeldSegment, air_bases_memo_memory,
+    AirBasesMemoContext, AirBasesMemoReport, HeldSegment,
     copy_air_bases_refresh_growing,
 };
 #[cfg(test)]
@@ -1934,7 +1928,6 @@ use bases::{
 };
 #[cfg(test)]
 pub(super) use state_fuel_inputs::Packet as StateFuelPacket;
-pub(crate) use state_fuel_inputs::status as state_fuel_capture_status;
 
 #[cfg(test)]
 mod census_store_tests;

@@ -44,14 +44,6 @@ static NAME_CONSUMED: AtomicU64 = AtomicU64::new(0);
 static ENTRY_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static NAME_DEMAND: AtomicUsize = AtomicUsize::new(0);
 static APPEND_REFUSALS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
-const APPEND_NAMES: [&str; 6] = [
-    "fuel recipient append lost: entry capacity exceeded",
-    "fuel terminal root append lost: entry capacity exceeded",
-    "fuel reset append lost: entry capacity exceeded",
-    "fuel recipient append lost: live storage absent",
-    "fuel terminal root append lost: live storage absent",
-    "fuel reset append lost: live storage absent",
-];
 static APPEND_CAUSES: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
 const SETTLED_NAMES: [&str; 8] = [
     "fuel root observation epoch changed",
@@ -512,11 +504,6 @@ pub fn release() -> Result<(), &'static str> {
 
 fn attempted_since(cursor: u64, consumed: &AtomicU64) -> usize {
     usize::try_from(cursor.wrapping_sub(consumed.load(Ordering::Relaxed))).unwrap_or(usize::MAX)
-}
-fn append_reason(code: usize) -> Option<&'static str> {
-    code.checked_sub(1)
-        .and_then(|index| APPEND_NAMES.get(index))
-        .copied()
 }
 fn refuse_append(entry: Entry, absent: bool) {
     let lane = if entry.reset {
@@ -1142,36 +1129,6 @@ pub fn capacities() -> (usize, usize) {
             .load(Ordering::Acquire)
             .max(OFFERED_NAMES.load(Ordering::Acquire)),
     )
-}
-pub fn status() -> crate::status::Object<impl crate::status::Fields> {
-    let append_refusal = append_reason(FIRST_APPEND_REFUSAL.load(Ordering::Acquire));
-    crate::status::status!({ "unhooked": UNHOOKED.get(), "enabled": LOG.enabled.load(Ordering::SeqCst),
-        "first_refusal": REFUSAL.get().or(append_refusal),
-        "first_append_refusal": append_refusal,
-        "append_reasons": crate::status::map(APPEND_NAMES.into_iter().zip(APPEND_CAUSES.iter().map(|value| value.load(Ordering::Relaxed)))),
-        "settled_reasons": crate::status::map(SETTLED_NAMES.into_iter().zip(SETTLED_CAUSES.iter().map(|value| value.load(Ordering::Relaxed)))),
-        "root_read_refusals": COUNTERS[0].load(Ordering::Relaxed),
-        "orphan_operands": COUNTERS[1].load(Ordering::Relaxed),
-        "settled_refusals": COUNTERS[2].load(Ordering::Relaxed),
-        "recipient_refusals": COUNTERS[3].load(Ordering::Relaxed),
-        "census_refusals": COUNTERS[5].load(Ordering::Relaxed),
-        "census_last_refusal": *CENSUS_LAST_REFUSAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-        "name_refusals": COUNTERS[8].load(Ordering::Relaxed),
-        "reset_refusals": COUNTERS[9].load(Ordering::Relaxed),
-        "recipient_append_refusals": APPEND_REFUSALS[0].load(Ordering::Relaxed),
-        "terminal_root_append_refusals": APPEND_REFUSALS[1].load(Ordering::Relaxed),
-        "reset_append_refusals": APPEND_REFUSALS[2].load(Ordering::Relaxed),
-        "storage_absent_refusals": COUNTERS[11].load(Ordering::Relaxed),
-        "overflow_intervals": COUNTERS[10].load(Ordering::Relaxed),
-        "lost_worker_drains": LOST_DRAINS.load(Ordering::Relaxed),
-        "drain_refusals": DRAIN_REFUSALS.load(Ordering::Relaxed),
-        "first_drain_refusal": FIRST_DRAIN_REFUSAL.get(),
-        "day_sum_refusals": crate::tables::day_sum_refusals(),
-        "busy_refusals": COUNTERS[6].load(Ordering::Relaxed),
-        "held_settles": HELD.total(0),
-        "held_air_recipients": HELD.total(1),
-        "held_unit_recipients": HELD.total(2),
-        "held_scope": "calls that left out a read because they took their UpdateFuel invocation's country, located by its start (settles of the same status, which read only the payload and their own fields; air recipients consuming that country), or a registry header an earlier unit recipient of the invocation read; their other reads, values and refusals are a fresh read's" })
 }
 
 pub struct Hooks {

@@ -6,16 +6,6 @@ mod owned;
 mod preparation;
 use preparation::NativeReads;
 
-/// Range reads that could not settle the sources, by first site, since attach.
-pub fn incomplete_read_counts() -> [(&'static str, u64); preparation::INCOMPLETE_REASONS.len()] {
-    std::array::from_fn(|index| {
-        (
-            preparation::INCOMPLETE_REASONS[index],
-            preparation::INCOMPLETE[index].load(std::sync::atomic::Ordering::Relaxed),
-        )
-    })
-}
-
 pub const PHASE_NAMES: [&str; 4] = [
     "sources_ordered",
     "sources_prune",
@@ -250,7 +240,7 @@ impl Preparation {
         seed: &DivisionSeed,
     ) -> Selection {
         if countries.is_none() {
-            self.reads.incomplete(8);
+            self.reads.incomplete();
         }
         let country = source_owner(seed).ok().and_then(|owner| {
             countries.map(|countries| {
@@ -311,7 +301,7 @@ impl Preparation {
             {
                 // A new refusal can fail allocation before certification.
                 // Only an already published refusal may bypass that barrier.
-                self.reads.incomplete(9);
+                self.reads.incomplete();
             }
         }
         let context = province
@@ -352,7 +342,7 @@ impl Preparation {
         .and_then(|block| match block {
             Ok(block) => block,
             Err(_) => {
-                self.reads.incomplete(10);
+                self.reads.incomplete();
                 None
             }
         });
@@ -364,7 +354,7 @@ impl Preparation {
             || commander.is_some_and(|(_, value)| value.is_err())
             || context.is_some_and(|value| value.is_err())
         {
-            self.reads.incomplete(11);
+            self.reads.incomplete();
         }
         self.reads
             .capture(memory, base, state, store, seed, selection, block);
@@ -2043,11 +2033,6 @@ mod tests {
                 !(address == self.address && out.len() == self.len) && self.world.copy(address, out)
             }
         }
-        let refusals = || {
-            serde_json::to_value(operands::status()).unwrap()["refused_operands"]
-                .as_u64()
-                .unwrap()
-        };
         for (address, len) in [
             (usize::MAX, 0),
             (COUNTRY, 8),
@@ -2064,17 +2049,14 @@ mod tests {
             };
             let mut serial = Store::default();
             let mut expected_selection = Vec::new();
-            let before = refusals();
             let expected = serial
                 .capture(&source, 0, STATE, &seeds, &mut expected_selection)
                 .unwrap();
-            let expected_refusals = refusals() - before;
             for parts in [1, 7] {
                 let mut staged = Store::default();
                 let mut selected = Vec::new();
                 let mut observations = vec![None; seeds.len()];
                 let countries = ccountry::Reader::new(&source, 0, STATE).unwrap();
-                let before = refusals();
                 for part in (0..parts).rev() {
                     let range = seeds.len() * part / parts..seeds.len() * (part + 1) / parts;
                     let mut memo = Preparation::default();
@@ -2095,7 +2077,6 @@ mod tests {
                         observations[index]
                     })
                     .unwrap();
-                assert_eq!(refusals() - before, expected_refusals);
                 assert_eq!(complete(&actual), complete(&expected));
                 assert_eq!(selected, expected_selection);
                 for (division, held) in &serial.pools {
@@ -2115,7 +2096,7 @@ mod tests {
     }
 
     #[test]
-    fn repeated_dirty_refusals_keep_rows_and_membership_allocations_and_refusal_counts() {
+    fn repeated_dirty_refusals_keep_rows_and_membership_allocations() {
         use engine_native::{carmy, cequipment_variant_pool};
         let _serial = MEMBERSHIP_TEST.lock().unwrap();
         operands::demand(1, 0, 0);
@@ -2143,12 +2124,6 @@ mod tests {
             .unwrap();
         let first = store.rows.finish().unwrap();
         let variants = Arc::clone(&store.pools[&seed.division].variants);
-        let refused = || {
-            serde_json::to_value(operands::status()).unwrap()["refused_operands"]
-                .as_u64()
-                .unwrap()
-        };
-        let before = refused();
         drop(operands::notify(pool));
         store.turn += 1;
         world.reads.set(0);
@@ -2163,7 +2138,6 @@ mod tests {
             world.reads.get() > 0,
             "dirty failures must still attempt their native reads"
         );
-        assert_eq!(refused(), before + 2);
         assert!(Arc::ptr_eq(
             &variants,
             &store.pools[&seed.division].variants
@@ -2688,16 +2662,9 @@ mod tests {
 
         // A held refusal is never equal to a value: recovering with the
         // values it replaced republishes ordinal zero and the later rows.
-        let refusals = || {
-            serde_json::to_value(operands::status()).unwrap()["refused_operands"]
-                .as_u64()
-                .unwrap()
-        };
-        let before = refusals();
         world.deny.set(true);
         moved();
         store.variant(&world, 0, handle, pointer).unwrap();
-        assert_eq!(refusals(), before + 1);
         let refused = store.rows.get(key(3, handle, 0)).unwrap();
         assert!(refused.node.is_none());
         assert!(store.rows.get(key(3, handle, 1)).is_none());
@@ -2706,7 +2673,6 @@ mod tests {
         moved();
         store.variant(&world, 0, handle, pointer).unwrap();
         let recovered = store.rows.finish().unwrap();
-        assert_eq!(refusals(), before + 1);
         assert_eq!(recovered.parent, refused.revision);
         assert_eq!(recovered.changed.len(), 3);
         assert_eq!(

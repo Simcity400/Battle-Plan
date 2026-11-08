@@ -176,16 +176,6 @@ impl Snapshot {
     pub(crate) fn acquired_bytes(&self) -> usize {
         self.acquired_bytes.load(Ordering::Relaxed)
     }
-    fn bytes(&self) -> usize {
-        self.acquired_bytes()
-            + self.ordering.get().map_or(0, |order| {
-                size_of::<ProjectionOrder>() + order.bytes.load(Ordering::Relaxed)
-            })
-            + match self.projected.get() {
-                Some(TableInput::SharedComplete(rows)) => rows.allocated_bytes(),
-                _ => 0,
-            }
-    }
 }
 
 pub(crate) struct RetainedSnapshot {
@@ -197,9 +187,6 @@ impl RetainedSnapshot {
     }
     pub(crate) fn clear(&mut self) {
         self.rows = None;
-    }
-    pub(crate) fn bytes(&self) -> usize {
-        self.rows.as_ref().map_or(0, |rows| rows.bytes())
     }
 
     /// Only the family's own certificate admits a cut. Changed cuts transfer
@@ -397,7 +384,7 @@ mod tests {
                 ),
                 refused
             );
-            assert_eq!(retained.bytes(), 0);
+            assert!(retained.rows.is_none());
         }
     }
 

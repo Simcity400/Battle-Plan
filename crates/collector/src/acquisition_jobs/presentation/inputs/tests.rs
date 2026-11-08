@@ -17,7 +17,6 @@ fn closing_a_busy_fanin_never_blocks_and_keeps_the_ordered_fallback() {
     let state = inputs.state.lock().unwrap();
     assert!(state.closed);
     assert_eq!(state.remaining, 2);
-    assert_eq!(inputs.deferred_polls.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -38,7 +37,7 @@ fn failed_input_closes_before_the_last_notification_and_keeps_ordered_fallback()
     let mut census = Census::default();
     assert_eq!(handoff.restore_master(&mut census), (false, None));
     drop(handoff);
-    inputs.published(100);
+    inputs.published();
     let state = inputs.state.lock().unwrap();
     assert!(state.master.is_none());
     assert!(state.pending.is_none());
@@ -62,7 +61,7 @@ fn successful_inputs_wait_for_the_last_notification_without_closing_the_fanin() 
     }
     assert!(inputs.try_close().is_none());
     assert!(!inputs.state.lock().unwrap().closed);
-    inputs.published(100);
+    inputs.published();
     let mut handoff = inputs.try_close().expect("notified handoff");
     assert_eq!(handoff.restore_master(&mut Census::default()), (true, None));
     assert!(handoff.take_dispatched().is_none());
@@ -223,7 +222,6 @@ fn parked_callback_handoff(unwind: PublicationUnwind) {
             abort: &abort,
         };
         let callback = scope.spawn(|| {
-            let _callback = acquisition::callback_parks::Scope::enter();
             let mut probe = Some(probe);
             let handoff = executor.wait_ready(|| {
                 if abort.load(Ordering::Acquire) {

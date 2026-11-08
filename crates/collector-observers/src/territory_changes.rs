@@ -415,40 +415,6 @@ pub fn record(table: Table, counts: &Counts, slots: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&DOMAIN.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let table = |table: Table| {
-        let reads = READS[table as usize]
-            .each_ref()
-            .map(|value| value.load(Ordering::Relaxed));
-        crate::status::status!({
-            "reused_rows": reads[0],
-            "read_rows": reads[1],
-            "quiet_hours": reads[2],
-            "full_reads": reads[3],
-        })
-    };
-    crate::status::status!({
-        "configured": cfg!(feature = "territory_changes"),
-        "poisoned": DOMAIN.sets().iter().any(|set| set.poisoned()),
-        "states": table(Table::States),
-        "provinces": table(Table::Provinces),
-        "events": events,
-        "unnamed_receivers": DOMAIN.unnamed.load(Ordering::Relaxed),
-        "building_writes": DOMAIN.buildings[0].load(Ordering::Relaxed),
-        "unnamed_building_writes": DOMAIN.buildings[1].load(Ordering::Relaxed),
-        "province_set": DOMAIN.provinces.status(),
-        "state_set": DOMAIN.states.status(),
-        "province_state_set": DOMAIN.province_states.status(),
-        "modifier_state_set": DOMAIN.modifier_states.status(),
-        "scope": "cumulative since attach; a States row is carried when no hooked writer marked its state since the held complete capture in the same epoch and the state array header, slot pointers and shared infrastructure and continent operands are unchanged; every state's identity and manpower and StateFlags are read every hour; Provinces rows are carried by province_changes, whose status counts them"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

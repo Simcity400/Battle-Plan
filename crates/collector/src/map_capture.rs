@@ -21,78 +21,8 @@ pub const MAP_TABLES: usize = 10;
 mod combat;
 pub(crate) use combat::{CombatReport, CombatRequest};
 
-static AIR_WING_NAMES_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static AIR_WING_NAME_FAILURES: [std::sync::atomic::AtomicU64;
-    cair_wing::NameFailure::REASONS.len()] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; cair_wing::NameFailure::REASONS.len()];
-static AIR_WING_TRANSPORT_REFUSED: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static AIR_WING_OPTIONAL_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-pub(crate) fn air_wing_name_data() -> impl serde::Serialize {
-    let refused = AIR_WING_NAMES_REFUSED.load(std::sync::atomic::Ordering::Relaxed);
-    crate::status::status!({
-        "refused": refused,
-        "transport_fields_refused": AIR_WING_TRANSPORT_REFUSED.load(std::sync::atomic::Ordering::Relaxed),
-        "optional_source_bytes": AIR_WING_OPTIONAL_BYTES.load(std::sync::atomic::Ordering::Relaxed),
-        "refusals": crate::status::map(std::iter::once(("air wing name guarded read or arena refusal", refused)).filter(|(_, count)| *count != 0)),
-        "worker_name_refusals": crate::status::map(cair_wing::NameFailure::REASONS.into_iter().zip(
-            AIR_WING_NAME_FAILURES.iter().map(|count| count.load(std::sync::atomic::Ordering::Relaxed))
-        ).filter(|(_, count)| *count != 0)),
-        "scope": "cumulative stored air-wing name and optional transport acquisition refusals; core AirWings columns remain available; transport_source_bytes covers owned wing acquisitions",
-    })
-}
-
-pub(crate) fn observe_air_wing_name_refusals(count: usize) {
-    AIR_WING_NAMES_REFUSED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// One census's worker name failures, by [`cair_wing::NameFailure::index`].
-pub(crate) fn observe_air_wing_name_failures(
-    failures: &[usize; cair_wing::NameFailure::REASONS.len()],
-) {
-    for (total, &count) in AIR_WING_NAME_FAILURES.iter().zip(failures) {
-        if count != 0 {
-            total.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-}
-
-static SHIP_NAME_COUNTS: [std::sync::atomic::AtomicU64; 4] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 4];
-
-static SHIP_NAME_SPAN_REFUSALS: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
-
-pub(crate) fn ship_name_span_refused(field: usize) {
-    SHIP_NAME_SPAN_REFUSALS[field].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-fn ship_name_result<T>(
-    counts: &mut [u64; 4],
-    field: usize,
-    result: Result<Option<T>, &'static str>,
-) -> Option<T> {
-    let value = result.ok().flatten();
-    counts[field * 2 + usize::from(value.is_none())] += 1;
-    value
-}
-
-pub(crate) fn ship_name_data() -> impl serde::Serialize {
-    let count = |at: usize| SHIP_NAME_COUNTS[at].load(std::sync::atomic::Ordering::Relaxed);
-    let span = |at: usize| SHIP_NAME_SPAN_REFUSALS[at].load(std::sync::atomic::Ordering::Relaxed);
-    crate::status::status!({
-        "cache_span_refused": span(0), "naming_span_refused": span(1),
-        "cache_captured": count(0), "cache_refused": count(1),
-        "naming_captured": count(2), "naming_refused": count(3),
-        "refusals": crate::status::map([
-            ("Ships.name guarded read or arena refusal", count(1)),
-            ("Ships.naming guarded read or arena refusal", count(3)),
-            ("Ships.name captured arena span invalid", span(0)),
-            ("Ships.naming captured override span invalid", span(1)),
-        ].into_iter().filter(|(_, count)| *count != 0)),
-        "scope": "hourly ship census; cache and raw saved naming operands refuse independently without erasing core ship values",
-    })
+fn ship_name_result<T>(result: Result<Option<T>, &'static str>) -> Option<T> {
+    result.ok().flatten()
 }
 
 /// Inline source consumers own their state and validation. Return raw QPC ticks
@@ -329,7 +259,6 @@ impl ShipCensus {
                 crate::decode::owned_failed,
             ),
         );
-        let mut name_counts = [0; 4];
         let (mut name_len, mut name_required) = (0, 0);
         let (mut override_len, mut override_required) = (0, 0);
         let naval = cfleet::walk_timed_growing_with_management(
@@ -344,10 +273,7 @@ impl ShipCensus {
                 qpc() as u64
             },
             |pointer, row| {
-                row.name = ship_name_result(
-                    &mut name_counts,
-                    0,
-                    cship::cached_name_growing(
+                row.name = ship_name_result(cship::cached_name_growing(
                         memory,
                         base,
                         pointer,
@@ -360,10 +286,7 @@ impl ShipCensus {
                 if let Some((_, len)) = row.name {
                     name_len += len;
                 }
-                row.naming = ship_name_result(
-                    &mut name_counts,
-                    1,
-                    cship::naming_growing(
+                row.naming = ship_name_result(cship::naming_growing(
                         memory,
                         base,
                         pointer,
@@ -387,11 +310,6 @@ impl ShipCensus {
             &mut self.fleet_names,
             |visit| management.borrow_mut().visit(visit),
         );
-        for (total, count) in SHIP_NAME_COUNTS.iter().zip(name_counts) {
-            if count != 0 {
-                total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-            }
-        }
         self.ship_names.truncate(name_len);
         self.ship_overrides.truncate(override_len);
         (self.management, self.management_owned) = management.into_inner().finish_owned(naval.capture);
@@ -867,12 +785,6 @@ impl MapCaptured {
         }
         let begin = qpc();
         let len = job.map_outcome.len();
-        AIR_WING_TRANSPORT_REFUSED.fetch_add(
-            job.transport.failures as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        AIR_WING_OPTIONAL_BYTES
-            .fetch_add(job.optional_raw_bytes, std::sync::atomic::Ordering::Relaxed);
         if len > self.air_wings.rows.len() {
             // The allocating wing worker already owns complete storage.
             // Park the old frame allocation in its job for off-thread reuse.
@@ -893,11 +805,6 @@ impl MapCaptured {
             self.air_wing_names_len = job.names_len;
         } else {
             self.air_wing_names_len = 0;
-            let omitted = self.air_wings.rows[..len]
-                .iter()
-                .filter(|row| row.name.is_some())
-                .count();
-            observe_air_wing_name_refusals(omitted);
             for row in &mut self.air_wings.rows[..len] {
                 row.name = None;
             }
@@ -1206,11 +1113,6 @@ impl MapCaptured {
             self.air_wing_names_len = names.used;
             self.air_wing_names_required = names.required;
             self.air_wing_name_failures = names.failures;
-            AIR_WING_TRANSPORT_REFUSED.fetch_add(
-                self.air_transport.failures as u64,
-                std::sync::atomic::Ordering::Relaxed,
-            );
-            observe_air_wing_name_refusals(names.failures);
             self.air_wings.outcome = walked.shared.map;
             let source = source.into_inner();
             let nested = nested
@@ -1284,7 +1186,6 @@ pub(crate) struct PlayersCopyReport {
     /// False only when worker-owned staging cannot finish; no native retry.
     pub raw_ok: bool,
     pub copy_ticks: [u64; 2],
-    pub raw_bytes: [u64; 2],
 }
 
 /// Game-thread copy parameters, bundled to keep the tick entry small.
@@ -1503,7 +1404,6 @@ pub(crate) fn copy_players_refresh(
     PlayersCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: [elapsed(started), 0],
-        raw_bytes: job.log.raw_bytes,
     }
 }
 

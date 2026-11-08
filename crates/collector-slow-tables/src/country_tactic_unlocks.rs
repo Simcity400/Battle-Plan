@@ -32,8 +32,6 @@ pub const TABLES: [TableId; N] = [
     TableId::DoctrineMasteryGrants,
     TableId::DoctrineEquipmentBonuses,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("doctrine state", 1, &[1, 2, 3, 4, 5, 6, 7])];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

@@ -653,37 +653,6 @@ impl Hooks {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let forwarding = FORWARDING
-        .each_ref()
-        .map(|flag| flag.load(Ordering::SeqCst));
-    let refused = REFUSED
-        .each_ref()
-        .map(|count| count.load(Ordering::Relaxed));
-    crate::status::status!({
-        "installed": INSTALLED.load(Ordering::Acquire), "enabled": ENABLED.load(Ordering::SeqCst),
-        "unhooked": UNHOOKED.get(), "active": active(), "ledger_active": LEDGER.active.load(Ordering::SeqCst),
-        "stranded": LEDGER.stranded.load(Ordering::SeqCst),
-        "branch_unavailable": LEDGER.poisoned.load(Ordering::SeqCst),
-        "strikes": STRIKES.load(Ordering::Relaxed), "entries": LEDGER.events.load(Ordering::Relaxed),
-        "forwarding_war_support": forwarding[Part::WarSupport as usize],
-        "forwarding_buildings": forwarding[Part::Buildings as usize],
-        "forwarding_equipment": forwarding[Part::Equipment as usize],
-        "refused_war_support": refused[Part::WarSupport as usize],
-        "refused_buildings": refused[Part::Buildings as usize],
-        "refused_units": refused[Part::Units as usize],
-        "refused_equipment": refused[Part::Equipment as usize],
-        "overflow": LEDGER.overflow.load(Ordering::Relaxed), "refusals": LEDGER.refusals.load(Ordering::Relaxed),
-        "lost_events": LEDGER.lost_events.load(Ordering::Relaxed), "lost_drains": LEDGER.lost_drains.load(Ordering::Relaxed),
-        "lost_events_unknown": LEDGER.lost_events_unknown.load(Ordering::Relaxed),
-        "overlaps": LEDGER.overlaps.load(Ordering::Relaxed), "drains": LEDGER.drains.load(Ordering::Relaxed),
-        "handed_over": LEDGER.handed_over.load(Ordering::Relaxed),
-        "entry_capacity": LEDGER.capacity.load(Ordering::Acquire), "entry_required": capacity(),
-        "partial_intervals": LEDGER.partial_intervals.load(Ordering::Relaxed),
-        "prepare_failures": LEDGER.prepare_failures.load(Ordering::Relaxed),
-        "scope": "since attach; a strike's parts refused while open are named in its row; first/recovery partial intervals withheld"
-    })
-}
 
 #[cfg(test)]
 mod tests;

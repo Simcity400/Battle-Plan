@@ -10,7 +10,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::SliceReads];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// The spool replaces this placeholder with the assembled table.
 pub(crate) const ASSEMBLED_BY_SPOOL: &str = "assembled by the spool from the hour's sliced reads";

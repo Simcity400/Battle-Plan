@@ -4,7 +4,6 @@
 #[cfg(any(test, feature = "test-support"))]
 use collector_memory::read_accounting;
 use collector_primitives::clock;
-use collector_status::status;
 #[cfg(test)]
 use collector_test_support as _;
 

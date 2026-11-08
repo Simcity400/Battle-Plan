@@ -22,8 +22,6 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryProductionModifiers,
     TableId::ProductionLineModifiers,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("production modifier operands and source trees", 0, &[0, 1])];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

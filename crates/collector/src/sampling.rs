@@ -28,9 +28,11 @@ use engine_native::cunit;
 use engine_native::{
     Memory, capture_text::Owned, carmy, ccountry, cfaction, cfaction_system, cgame_state,
     cgame_state::Clock, country_memory::Cache, country_memory::SeedStatus, cprovince, cstate,
-    cwar_relation, memory::CountedMemory, memory::LiveMemory, memory::ReadCounts,
+    cwar_relation, memory::LiveMemory,
     save_allocation_counters, save_allocation_counters::AllocationCounters, walk::Outcome,
 };
+#[cfg(test)]
+use engine_native::memory::{CountedMemory, ReadCounts};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
 use std::{
@@ -49,7 +51,9 @@ const CHARACTER_PARTS: usize = extended::characters::PARTS;
 const AIR_RELATION_PARTS: usize = extended::air_relations::PARTS;
 const AIR_HISTORY_PARTS: usize = extended::air_histories::PARTS;
 const PORTRAIT_PARTS: usize = extended::character_portraits::PARTS;
+#[cfg(feature = "callback_profile")]
 pub const SEGMENTS: usize = 15;
+#[cfg(feature = "callback_profile")]
 pub const SEGMENTS_SCOPE: &str = "game-thread wall of the parallel phase split at fixed marks: 0 first held burst of independent jobs; 1 completion-driven dependency scheduling through Late/history and FinalInputs dispatch (root census -> Orders/parts -> stitch -> Fronts and, with Naval/wing, ChildFronts; division inputs/parts -> Divisions -> ArmyIcons and PresentationPrepare -> status ranges -> Presentation; census consumers, raw verdicts, map sample, AirMissions and ScoresRails are joined only when their full producer barrier is ready); 2-7 unused; 8 weather/lexical + core joins (presentation publication edges continue during these and later joins); 9 supply/portraits/order/template/slow/war overview/stability/raid/gated/character input/governance/research joins + event-feed seal dispatch + ShipModels detail joins + Ordinary family joins + event-feed seal join + slot-8 production and part joins + independent Variants join; 10 capture_tables; 11 Late join + Fronts join + presentation and movement joins + order transport + border inputs; 12 history-part joins + FinalInputs join + capture_tables_late; 13 Intel and AirBases joins + visibility + failure handling; 14 ShipModels completed projection";
 /// Core row capacities: countries, provinces, links, states, divisions, wars,
 /// factions, faction members, faction name bytes, border-conflict provinces,
@@ -201,74 +205,12 @@ impl LossBatch {
     }
 }
 
-/// Owned diagnostic bytes, separate from replay rows and availability.
-pub struct OrderCounterCapture {
-    pub forced: bool,
-    pub rows: Vec<ccountry::OrderInstanceCounter>,
-    pub read: Option<ccountry::OrderInstanceCounterRead>,
-    pub qpc_begin: i64,
-    pub qpc_end: i64,
-    pub elapsed_ns: u64,
-}
-
-impl OrderCounterCapture {
-    fn with_capacity(capacity: usize) -> Self {
-        Self {
-            forced: false,
-            rows: engine_allocation::owned_vec(engine_allocation::default_vec::<
-                ccountry::OrderInstanceCounter,
-            >(capacity)),
-            read: None,
-            qpc_begin: 0,
-            qpc_end: 0,
-            elapsed_ns: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.forced = false;
-        self.read = None;
-        self.qpc_begin = 0;
-        self.qpc_end = 0;
-        self.elapsed_ns = 0;
-    }
-
-    fn capture(
-        &mut self,
-        force_full: bool,
-        memory: &impl engine_native::Memory,
-        roster: Option<ccountry::AuthenticatedRoster<'_>>,
-    ) {
-        self.reset();
-        if force_full {
-            self.forced = true;
-            self.read = ccountry::read_order_instance_counters(memory, roster, &mut self.rows);
-        }
-    }
-
-    pub fn allocated_bytes(&self) -> usize {
-        self.rows.capacity() * size_of::<ccountry::OrderInstanceCounter>()
-    }
-
-    // Off-thread only, on buffers the existing pool has actually allocated.
-    fn grow(&mut self, country_capacity: usize) {
-        let required = self
-            .read
-            .map_or(0, |read| read.required)
-            .max(country_capacity);
-        if self.rows.len() < required {
-            crate::table_capture::grow_vec(&mut self.rows, required);
-        }
-    }
-}
-
 pub struct Captured {
     pub world_generation: u64,
     /// This clocked hour's fixed-layout check, applied during conversion.
     pub fixed_layout: Option<crate::fixed_layout::Layout>,
     /// The same sequence carried by this frame's sole DecodeJob (zero is valid).
     pub capture_seq: u64,
-    pub order_counters: OrderCounterCapture,
     pub map: MapCaptured,
     pub extended: extended::Captured,
     pub country_cache_status: SeedStatus,
@@ -310,10 +252,11 @@ pub struct Captured {
     pub faction_members_result: Outcome,
     pub links_result: Outcome,
     pub table_ns: [u64; TABLE_COUNT],
-    pub table_reads: [ReadCounts; TABLE_COUNT],
+    #[cfg(test)]
+    pub table_reads: [engine_native::memory::ReadCounts; TABLE_COUNT],
     pub total_ns: u64,
-    /// This hour's diagnostics, replaced in full before decode publication.
-    pub(crate) hour_cost: HourCost,
+    /// This hour forced a full capture, set before decode publication.
+    pub(crate) force_full: bool,
     pub qpc: i64,
     /// Reserved collector storage, including the executor's actual shared
     /// allocation, cells, words, metadata, queue, thread ids/handles, boxed
@@ -326,141 +269,6 @@ pub struct Captured {
     verdicts_reset: bool,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct HourCost {
-    pub entry_ns: u64,
-    pub buffer_wait_ns: u64,
-    /// Frames still free once this hour took its own.
-    pub free_frames: u8,
-    /// Wall any collector thread spent blocked on the allocator during this acquisition.
-    pub allocator_wait_ns: u64,
-    pub setup_ns: u64,
-    pub parallel_ns: u64,
-    pub residual_ns: u64,
-    pub segments_ns: [u64; SEGMENTS],
-    pub slowest_join: Option<SlowestJoin>,
-    pub collect_stalls_over_1ms: u64,
-    pub growths: u64,
-    pub diagnostics: crate::acquisition_diagnostics::Hour,
-    pub idle: crate::acquisition::idle_diagnostics::Hour,
-    pub variants: Option<crate::design_changes::profile::Hour>,
-    #[cfg(feature = "callback_profile")]
-    pub join_timeline: Option<crate::acquisition_diagnostics::JoinSpan>,
-    pub first_since_attach: bool,
-    pub continuous: bool,
-    pub force_full: bool,
-    pub recovery: bool,
-    pub refresh: bool,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct SlowestJoin {
-    pub role: Option<usize>,
-    pub readiness: bool,
-    pub wait_ns: u64,
-    pub collect_stall_ns: u64,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct HourJoins {
-    slowest: Option<SlowestJoin>,
-    collect_stalls_over_1ms: u64,
-}
-
-#[derive(Clone, Copy, Default)]
-struct JoinTally {
-    hour: HourJoins,
-    // The opt-in sample is consumed after acquire takes the hour's diagnostics.
-    #[cfg(feature = "callback_profile")]
-    profile: crate::callback_profile::JoinSample,
-    #[cfg(feature = "callback_profile")]
-    profile_span: Option<crate::acquisition_diagnostics::JoinSpan>,
-}
-
-thread_local! {
-    static HOUR_JOINS: std::cell::Cell<Option<JoinTally>> = const { std::cell::Cell::new(None) };
-}
-
-pub(crate) fn reset_hour_joins() {
-    HOUR_JOINS.set(None);
-    crate::acquisition_diagnostics::reset();
-    crate::acquisition::idle_diagnostics::reset();
-}
-
-pub(crate) fn record_hour_join(
-    role: usize,
-    wait_ns: u64,
-    collect_stall_ns: u64,
-    #[cfg(feature = "callback_profile")] profile: crate::acquisition::Profile,
-    #[cfg(feature = "callback_profile")] span: Option<crate::acquisition_diagnostics::JoinSpan>,
-) {
-    let mut tally = HOUR_JOINS.get().unwrap_or_default();
-    if tally.hour.slowest.is_none_or(|join| wait_ns > join.wait_ns) {
-        tally.hour.slowest = Some(SlowestJoin {
-            role: Some(role),
-            readiness: false,
-            wait_ns,
-            collect_stall_ns,
-        });
-        #[cfg(feature = "callback_profile")]
-        {
-            tally.profile = crate::callback_profile::JoinSample {
-                role: Some(role),
-                wall_ns: wait_ns,
-                readiness: false,
-                profile,
-            };
-            tally.profile_span = span;
-        }
-    }
-    tally.hour.collect_stalls_over_1ms += u64::from(collect_stall_ns >= JoinCosts::STALL_NS[1]);
-    HOUR_JOINS.set(Some(tally));
-}
-
-pub(crate) fn record_readiness_wait(
-    wait_ns: u64,
-    outstanding: crate::acquisition_diagnostics::Outstanding,
-    completion: Option<crate::acquisition_diagnostics::Completion>,
-    ending_probe_exhausted: bool,
-) {
-    let completion = completion.filter(|_| !ending_probe_exhausted);
-    crate::acquisition_diagnostics::update(|hour| {
-        hour.readiness(wait_ns, outstanding, completion, ending_probe_exhausted)
-    });
-    let mut tally = HOUR_JOINS.get().unwrap_or_default();
-    if tally.hour.slowest.is_none_or(|join| wait_ns > join.wait_ns) {
-        tally.hour.slowest = Some(SlowestJoin {
-            role: completion.map(|completion| completion.identity.role),
-            readiness: true,
-            wait_ns,
-            collect_stall_ns: 0,
-        });
-        #[cfg(feature = "callback_profile")]
-        {
-            tally.profile = crate::callback_profile::JoinSample {
-                role: completion.map(|completion| completion.identity.role),
-                wall_ns: wait_ns,
-                readiness: true,
-                ..Default::default()
-            };
-            tally.profile_span = None;
-        }
-    }
-    HOUR_JOINS.set(Some(tally));
-}
-
-fn take_hour_joins() -> HourJoins {
-    let mut tally = HOUR_JOINS.get().unwrap_or_default();
-    let hour = std::mem::take(&mut tally.hour);
-    HOUR_JOINS.set(Some(tally));
-    hour
-}
-
-#[cfg(feature = "callback_profile")]
-pub(crate) fn take_profile_join() -> crate::callback_profile::JoinSample {
-    HOUR_JOINS.take().unwrap_or_default().profile
-}
-
 impl Captured {
     /// Clear every verdict and cost of the previous hour, as the callback did
     /// before reading. The spool runs it when it returns the frame, after
@@ -470,8 +278,11 @@ impl Captured {
             reason: "clock unavailable",
         };
         self.table_ns = [0; TABLE_COUNT];
-        self.hour_cost = HourCost::default();
-        self.table_reads = crate::read_accounting::ZERO;
+        self.force_full = false;
+        #[cfg(test)]
+        {
+            self.table_reads = crate::read_accounting::ZERO;
+        }
         self.countries_result = unavailable;
         self.provinces_result = unavailable;
         self.provinces.conflict_walk = cprovince::ConflictWalk::default();
@@ -494,7 +305,6 @@ impl Captured {
         };
         self.country_cache_entries = 0;
         self.country_cache_ns = 0;
-        self.order_counters.reset();
         self.fixed_layout = None;
     }
 
@@ -524,7 +334,6 @@ impl Captured {
             world_generation: crate::world_lifetime::generation(),
             capture_seq: 0,
             fixed_layout: None,
-            order_counters: OrderCounterCapture::with_capacity(capacities[0]),
             map: MapCaptured::with_capacities(map_capacities),
             extended: extended::Captured::with_capacities(extended_capacities),
             country_cache_status: SeedStatus::Unavailable {
@@ -570,9 +379,10 @@ impl Captured {
             faction_members_result: unavailable,
             links_result: unavailable,
             table_ns: [0; TABLE_COUNT],
+            #[cfg(test)]
             table_reads: crate::read_accounting::ZERO,
             total_ns: 0,
-            hour_cost: HourCost::default(),
+            force_full: false,
             qpc: 0,
             pool_bytes: 0,
             dropped_frames: 0,
@@ -618,7 +428,6 @@ impl Captured {
                 .map_or(0, |clock| clock.campaign_id.allocated_bytes())
             + self.clock_spare.allocated_bytes()
             + self.dropped_before.allocated_bytes()
-            + self.order_counters.allocated_bytes()
             + self.wars_snapshot.allocated_bytes()
             + self.division_fallback.allocated_bytes() as usize
             + self.countries.capacity() * size_of::<ccountry::Row>()
@@ -741,7 +550,6 @@ impl Captured {
             crate::table_capture::grow_vec(&mut self.provinces.groups, capacities[10]);
         }
         resize(&mut self.links, self.links_result, &mut capacities[2]);
-        self.order_counters.grow(capacities[0]);
         if self.wars_snapshot.grow(capacities[0]).is_err() {
             return;
         }
@@ -773,320 +581,34 @@ impl Captured {
     }
 }
 
-/// The game thread's own work in the parked hour, by kind: cumulative QPC
-/// wall since attach over `hours` acquired hours. Worker time overlaps it and
-/// is not here; join waits are `acquisition_wait_ns`.
-#[derive(Default)]
-pub struct GameThreadPhases {
-    pub hours: AtomicU64,
-    /// Resetting the reused frame's verdicts and reserving its decode slot.
-    pub frame_reset_ns: AtomicU64,
-    /// The observer boundary job, submission and join included.
-    pub boundaries_ns: AtomicU64,
-    /// The shared country authentication snapshot.
-    pub country_snapshot_ns: AtomicU64,
-    /// Jobs submitted, and their submission wall.
-    pub dispatched_jobs: AtomicU64,
-    /// Wakes that released held bursts, the jobs they released and their wall.
-    pub releases: AtomicU64,
-    pub released_jobs: AtomicU64,
-    pub release_ns: AtomicU64,
-    /// The map sample's typed walk.
-    pub map_sample_ns: AtomicU64,
-    /// Table assembly after the joins: capture_tables, border inputs, the
-    /// late tables and the ShipModels projection.
-    pub table_assembly_ns: AtomicU64,
-}
-
-impl GameThreadPhases {
-    fn release(&self, jobs: usize, ns: u64) {
-        if jobs != 0 {
-            self.releases.fetch_add(1, Ordering::Relaxed);
-            self.released_jobs.fetch_add(jobs as u64, Ordering::Relaxed);
-        }
-        self.release_ns.fetch_add(ns, Ordering::Relaxed);
-    }
-}
-
-/// Cumulative Presentation acquisition by pass, one observation per hour.
-#[derive(Default)]
-pub struct PresentationStats {
-    pub hours: AtomicU64,
-    /// [`extended::division_presentation::PHASE_NAMES`] order.
-    pub phase_ns: [AtomicU64; extended::division_presentation::PHASES],
-    pub range_dispatch_ns: AtomicU64,
-    pub store_wait_ns: AtomicU64,
-    pub input_consumers_ns: AtomicU64,
-    pub input_restore_ns: AtomicU64,
-    pub early_steps: [EarlyStepStats; EarlyStep::ALL.len()],
-    pub wait_advance: EarlyStepStats,
-    pub queue_ns: AtomicU64,
-}
-
-#[derive(Default)]
-pub struct EarlyStepStats {
+/// The callback profile's cumulative game-thread walls since attach.
+#[cfg(feature = "callback_profile")]
+pub struct ProfilePhases {
+    pub buffer_wait_ns: AtomicU64,
+    /// Disjoint walls summing to the body: setup, the parallel region, then residual work.
+    pub setup_ns: AtomicU64,
+    pub parallel_ns: AtomicU64,
+    pub residual_ns: AtomicU64,
     pub calls: AtomicU64,
-    pub ns: AtomicU64,
+    pub dispatch_ns: AtomicU64,
+    pub segments: [AtomicU64; SEGMENTS],
+    /// Indexed by `acquisition::ROLES`.
+    pub join_wait: [AtomicU64; acquisition::ROLE_COUNT],
 }
 
-struct EarlyStepTimer<'a> {
-    shared: &'a Shared,
-    stats: &'a EarlyStepStats,
-    begin: i64,
-    wait: u64,
-    step: EarlyStep,
-}
-impl<'a> EarlyStepTimer<'a> {
-    fn new(shared: &'a Shared, stats: &'a EarlyStepStats, step: EarlyStep) -> Self {
+#[cfg(feature = "callback_profile")]
+impl ProfilePhases {
+    fn new() -> Self {
         Self {
-            shared,
-            stats,
-            begin: qpc(),
-            step,
-            wait: shared.acquisition_wait_ns.load(Ordering::Relaxed),
+            buffer_wait_ns: AtomicU64::new(0),
+            setup_ns: AtomicU64::new(0),
+            parallel_ns: AtomicU64::new(0),
+            residual_ns: AtomicU64::new(0),
+            calls: AtomicU64::new(0),
+            dispatch_ns: AtomicU64::new(0),
+            segments: std::array::from_fn(|_| AtomicU64::new(0)),
+            join_wait: std::array::from_fn(|_| AtomicU64::new(0)),
         }
-    }
-}
-impl Drop for EarlyStepTimer<'_> {
-    fn drop(&mut self) {
-        let wall_ns = self.shared.ns(qpc() - self.begin);
-        crate::acquisition_diagnostics::update(|hour| hour.step(self.step as usize, wall_ns));
-        let ns = wall_ns.saturating_sub(
-            self.shared
-                .acquisition_wait_ns
-                .load(Ordering::Relaxed)
-                .saturating_sub(self.wait),
-        );
-        self.stats.ns.fetch_add(ns, Ordering::Relaxed);
-        self.stats.calls.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// Map's DivisionModelInputs job since attach: the hours it read a census and
-/// the rows whose orders group trained, the only ones it reads exercise operands for.
-#[derive(Debug, Default)]
-pub struct ModelInputStats {
-    pub hours: AtomicU64,
-    pub training: AtomicU64,
-    pub training_peak: AtomicU64,
-}
-impl ModelInputStats {
-    fn record(&self, training: u32) {
-        self.hours.fetch_add(1, Ordering::Relaxed);
-        self.training
-            .fetch_add(u64::from(training), Ordering::Relaxed);
-        self.training_peak
-            .fetch_max(u64::from(training), Ordering::Relaxed);
-    }
-}
-
-/// Cumulative DivisionTemplateIcons rows whose model inputs failed, by
-/// reason, since attach. Fixed size: folding an hour in allocates nothing.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TemplateModelStats {
-    /// Hours with at least one failed row.
-    pub hours: u64,
-    pub rows: u64,
-    pub first_reason: Option<&'static str>,
-    pub reasons: [(&'static str, u64); extended::division_templates::MODEL_REASONS],
-    pub other: u64,
-}
-
-impl TemplateModelStats {
-    fn fold(&mut self, hour: extended::division_templates::ModelFailures) {
-        if hour.rows == 0 {
-            return;
-        }
-        self.hours += 1;
-        self.rows += u64::from(hour.rows);
-        self.other += u64::from(hour.other);
-        for (reason, rows) in hour.reasons.into_iter().filter(|(_, rows)| *rows != 0) {
-            self.first_reason.get_or_insert(reason);
-            match self
-                .reasons
-                .iter_mut()
-                .find(|slot| slot.1 == 0 || slot.0 == reason)
-            {
-                Some(slot) => *slot = (reason, slot.1 + u64::from(rows)),
-                None => self.other += u64::from(rows),
-            }
-        }
-    }
-}
-
-/// One pool role's collected jobs, as offsets from their acquisition body's
-/// entry: when each was queued, when a pool participant began and ended its
-/// body, and when the game thread began and ended its join. Sums of QPC
-/// ticks; status reports the mean per job. Atomics only, written once per
-/// collected job on the game thread.
-pub struct RoleTimeline {
-    /// Collected jobs, and those whose body a participant ran.
-    jobs: AtomicU64,
-    bodies: AtomicU64,
-    /// Queued, body begin, body end, join begin, join end.
-    offsets: [AtomicU64; 5],
-    /// Joins whose wait fell in [0.25, 1), [1, 4) and [4, ∞) ms
-    /// ([`Self::SLOW_JOIN_NS`]): one increment at most per join.
-    slow: [AtomicU64; 3],
-}
-
-impl RoleTimeline {
-    /// The join-wait thresholds the slow counts start at, in ns.
-    pub const SLOW_JOIN_NS: [u64; 3] = [250_000, 1_000_000, 4_000_000];
-
-    const fn new() -> Self {
-        Self {
-            jobs: AtomicU64::new(0),
-            bodies: AtomicU64::new(0),
-            offsets: [const { AtomicU64::new(0) }; 5],
-            slow: [const { AtomicU64::new(0) }; 3],
-        }
-    }
-
-    /// The joins whose wait reached each of [`Self::SLOW_JOIN_NS`].
-    pub fn slow_joins(&self) -> [u64; 3] {
-        let [quarter, one, four] = self
-            .slow
-            .each_ref()
-            .map(|count| count.load(Ordering::Relaxed));
-        [quarter + one + four, one + four, four]
-    }
-
-    fn record(
-        &self,
-        entry: i64,
-        timeline: &crate::acquisition::Timeline,
-        join: i64,
-        joined: i64,
-        wait_ns: u64,
-    ) {
-        if let Some(bucket) = Self::SLOW_JOIN_NS
-            .iter()
-            .rposition(|&floor| wait_ns >= floor)
-        {
-            self.slow[bucket].fetch_add(1, Ordering::Relaxed);
-        }
-        let offset = |qpc: i64| u64::try_from(qpc.saturating_sub(entry)).unwrap_or(0);
-        let ran = timeline.body_begin_qpc != 0 && timeline.body_end_qpc != 0;
-        for (index, qpc) in [
-            (0, timeline.queued_qpc),
-            (1, timeline.body_begin_qpc),
-            (2, timeline.body_end_qpc),
-            (3, join),
-            (4, joined),
-        ] {
-            if ran || !matches!(index, 1 | 2) {
-                self.offsets[index].fetch_add(offset(qpc), Ordering::Relaxed);
-            }
-        }
-        self.jobs.fetch_add(1, Ordering::Relaxed);
-        if ran {
-            self.bodies.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// `(jobs, [queued, body begin, body end, join begin, join end])`, the
-    /// mean offsets in ticks; the body means cover only the jobs that ran.
-    pub fn means(&self) -> (u64, [u64; 5]) {
-        let jobs = self.jobs.load(Ordering::Relaxed);
-        let bodies = self.bodies.load(Ordering::Relaxed);
-        let mean = |index: usize, count: u64| {
-            self.offsets[index]
-                .load(Ordering::Relaxed)
-                .checked_div(count)
-                .unwrap_or(0)
-        };
-        (
-            jobs,
-            [
-                mean(0, jobs),
-                mean(1, bodies),
-                mean(2, bodies),
-                mean(3, jobs),
-                mean(4, jobs),
-            ],
-        )
-    }
-}
-
-/// Where a pool role's joins spend their wall once the awaited job is done,
-/// over every collected job: the collector's first wait for the queue mutex
-/// when the initial lock-free collection CAS did not succeed,
-/// the stall from the moment the job is both awaited and published to its
-/// collection (the atomic handoff, address wake and rescheduling), and
-/// the worker's completion bookkeeping after its body ended, before atomic
-/// publication. Failure publication also stops/cancels under the queue mutex.
-/// Diagnostics only; optional helped bodies are part of their caller's join.
-pub struct JoinCosts {
-    /// Collected jobs whose completion was published (canceled ones too).
-    published: AtomicU64,
-    /// Of those, the jobs already published when their join began.
-    ready: AtomicU64,
-    /// Summed ticks: first finish-lock wait, collection stall, publication wait.
-    ticks: [AtomicU64; 3],
-    /// Stalls of at least [`Self::STALL_NS`] (0.25 and 1 ms).
-    stalls: [AtomicU64; 2],
-}
-
-impl JoinCosts {
-    /// The collection-stall thresholds the stall counts start at, in ns.
-    pub const STALL_NS: [u64; 2] = [250_000, 1_000_000];
-
-    const fn new() -> Self {
-        Self {
-            published: AtomicU64::new(0),
-            ready: AtomicU64::new(0),
-            ticks: [const { AtomicU64::new(0) }; 3],
-            stalls: [const { AtomicU64::new(0) }; 2],
-        }
-    }
-
-    /// One collected job: `join` is when its join began; `ns` converts
-    /// ticks for the stall thresholds. A job that no participant ran or that
-    /// was never published (rejected or inline work) is not counted.
-    fn record(
-        &self,
-        timeline: &crate::acquisition::Timeline,
-        join: i64,
-        ns: impl Fn(i64) -> u64,
-    ) -> u64 {
-        if timeline.published_qpc == 0 || timeline.collected_qpc == 0 {
-            return 0;
-        }
-        let ticks = |from: i64, to: i64| u64::try_from(to.saturating_sub(from)).unwrap_or(0);
-        let stall = ticks(join.max(timeline.published_qpc), timeline.collected_qpc);
-        self.published.fetch_add(1, Ordering::Relaxed);
-        if timeline.published_qpc <= join {
-            self.ready.fetch_add(1, Ordering::Relaxed);
-        }
-        self.ticks[0].fetch_add(timeline.finish_lock_ticks, Ordering::Relaxed);
-        self.ticks[1].fetch_add(stall, Ordering::Relaxed);
-        if timeline.body_end_qpc != 0 {
-            self.ticks[2].fetch_add(
-                ticks(timeline.body_end_qpc, timeline.published_qpc),
-                Ordering::Relaxed,
-            );
-        }
-        let stall_ns = ns(i64::try_from(stall).unwrap_or(i64::MAX));
-        for (count, floor) in self.stalls.iter().zip(Self::STALL_NS) {
-            if stall_ns >= floor {
-                count.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        stall_ns
-    }
-
-    /// `(published jobs, of them ready at their join, [finish-lock wait,
-    /// collection stall, publication wait] summed ticks, [stalls of at least
-    /// 0.25 ms, at least 1 ms])`.
-    pub fn totals(&self) -> (u64, u64, [u64; 3], [u64; 2]) {
-        let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
-        (
-            load(&self.published),
-            load(&self.ready),
-            self.ticks.each_ref().map(load),
-            self.stalls.each_ref().map(load),
-        )
     }
 }
 
@@ -1174,41 +696,10 @@ impl FreeFrames {
 pub struct Shared {
     /// Initialized before hook publication; workers own raw jobs, never frames.
     pub acquisition: OnceLock<acquisition::Pool>,
-    /// Cumulative game-thread block per hour running the acquisition body before
-    /// the trampoline: the whole main-thread exposure. Its per-hour percentiles
-    /// live in callback_work (the same body wall, recorded off-thread).
-    pub collect_wait_ns: AtomicU64,
     pub acquisition_panics: AtomicU64,
-    pub acquisition_dispatch_ns: AtomicU64,
-    pub acquisition_wait_ns: AtomicU64,
-    /// Disjoint game-thread wall phases of the block, summing to the body wall:
-    /// setup+country snapshot, the parallel region (dispatch, inline reads and
-    /// every join), then residual work and enqueue. Game thread writer;
-    /// phase_calls is the divisor.
-    pub phase_setup_ns: AtomicU64,
-    pub phase_parallel_ns: AtomicU64,
-    pub phase_residual_ns: AtomicU64,
-    pub phase_calls: AtomicU64,
-    /// The two halves of the parallel phase: the game thread's own typed walks
-    /// (countries/links/wars/factions) versus the wall it spends joining the
-    /// already-dispatched pool jobs.
-    pub phase_inline_walk_ns: AtomicU64,
-    pub phase_join_ns: AtomicU64,
-    /// Game-thread wall between successive marks of the parallel phase; see
-    /// `block_segments_scope` in status.json for what each segment spans.
-    pub phase_segments: [AtomicU64; SEGMENTS],
-    /// Game-thread wall spent joining each pool role, indexed by
-    /// `acquisition::ROLES`.
-    pub join_wait: [AtomicU64; acquisition::ROLE_COUNT],
-    /// QPC at the current acquisition body's entry, the reference of
-    /// [`Self::role_timeline`].
-    pub acquisition_entry_qpc: AtomicI64,
-    /// Each pool role's collected jobs on the timeline of their hour,
-    /// indexed by `acquisition::ROLES`.
-    pub role_timeline: [RoleTimeline; acquisition::ROLE_COUNT],
-    /// Each pool role's collection costs after its jobs finished, indexed by
-    /// `acquisition::ROLES`.
-    pub join_costs: [JoinCosts; acquisition::ROLE_COUNT],
+    /// The callback profile's cumulative phase walls, read as deltas per callback.
+    #[cfg(feature = "callback_profile")]
+    pub profile: ProfilePhases,
     /// Existing QPC brackets around the original native tick, not collector
     /// acquisition. These diagnostic counters also include ticks with no free
     /// recording buffer and exclude game-loop work outside the hooked function.
@@ -1223,7 +714,6 @@ pub struct Shared {
     pub capture_mode: replay_data::scope::CaptureMode,
     /// The recorder's event, set while the game is not ticking, which its packing waits on.
     pub tick_idle: Option<crate::runtime::Event>,
-    pub model_inputs: ModelInputStats,
     /// Every slot is allocated before hook installation and never moves.
     pub frames: [AtomicPtr<Captured>; BUFFERS],
     pub completed: [AtomicI64; BUFFERS],
@@ -1232,8 +722,9 @@ pub struct Shared {
     frame_return: Mutex<()>,
     frame_available: Condvar,
     pub cancel_buffer_wait: AtomicBool,
-    pub buffer_wait_ns: AtomicU64,
+    /// Hours the game thread waited for a free frame, and that wait's total and longest wall.
     pub buffer_wait_calls: AtomicU64,
+    pub buffer_wait_ns: AtomicU64,
     pub buffer_wait_max_ns: AtomicU64,
     pub free: FreeFrames,
     pub(crate) frame_priority: Arc<crate::frame_priority::Pipeline>,
@@ -1268,9 +759,6 @@ pub struct Shared {
     clock_capture: Mutex<ClockCapture>,
     clock_available: Condvar,
     clock_required: AtomicUsize,
-    clock_misses: AtomicU64,
-    clock_hint_misses: AtomicU64,
-    clock_failure: Mutex<Option<&'static str>>,
     cadence: UnsafeCell<CadenceState>,
     /// One store per sliced family (`slicing::FAMILIES`), loaned to that
     /// family's job each hour. Only the game thread takes and returns them.
@@ -1376,7 +864,7 @@ pub struct Shared {
     province_unit_store: UnsafeCell<Option<Box<extended::province_unit_order::ProvinceUnitStore>>>,
     province_unit_store_bytes: AtomicU64,
     /// Held controller and owner areas, lent to the Provinces job each hour
-    /// ([`crate::area_changes`]). Only the game thread takes and returns it.
+    /// ([`collector_observers::area_changes`]). Only the game thread takes and returns it.
     area_store: UnsafeCell<Option<Box<engine_native::controller_areas::Store>>>,
     area_store_bytes: AtomicU64,
     /// Held Provinces rows, lent to the Provinces job each hour
@@ -1401,13 +889,6 @@ pub struct Shared {
     /// Only the game thread takes and returns it.
     appearance_store: UnsafeCell<Option<Box<extended::country_appearance::AppearanceStore>>>,
     appearance_store_bytes: AtomicU64,
-    pub presentation: PresentationStats,
-    pub game_thread: GameThreadPhases,
-    /// Template rows whose model inputs failed; the status thread copies it.
-    pub template_models: Mutex<TemplateModelStats>,
-    /// Hours whose failures were not folded because the status thread held
-    /// `template_models`: the game thread never waits for it.
-    pub template_models_missed: AtomicU64,
     /// Capture recovery after lost frame continuity; the next hour also
     /// restarts native interval observation.
     pub force_next: AtomicBool,
@@ -1630,21 +1111,9 @@ impl Shared {
         }
         let shared = Self {
             acquisition: OnceLock::new(),
-            collect_wait_ns: AtomicU64::new(0),
             acquisition_panics: AtomicU64::new(0),
-            phase_setup_ns: AtomicU64::new(0),
-            phase_parallel_ns: AtomicU64::new(0),
-            phase_residual_ns: AtomicU64::new(0),
-            phase_calls: AtomicU64::new(0),
-            phase_inline_walk_ns: AtomicU64::new(0),
-            phase_join_ns: AtomicU64::new(0),
-            phase_segments: std::array::from_fn(|_| AtomicU64::new(0)),
-            join_wait: std::array::from_fn(|_| AtomicU64::new(0)),
-            acquisition_entry_qpc: AtomicI64::new(0),
-            role_timeline: std::array::from_fn(|_| RoleTimeline::new()),
-            join_costs: std::array::from_fn(|_| JoinCosts::new()),
-            acquisition_dispatch_ns: AtomicU64::new(0),
-            acquisition_wait_ns: AtomicU64::new(0),
+            #[cfg(feature = "callback_profile")]
+            profile: ProfilePhases::new(),
             native_tick_ns: AtomicU64::new(0),
             native_tick_calls: AtomicU64::new(0),
             base,
@@ -1653,7 +1122,6 @@ impl Shared {
             game_score_enabled: sizing.extended.game_score.enabled,
             capture_mode: replay_data::scope::CaptureMode::Full,
             tick_idle: None,
-            model_inputs: ModelInputStats::default(),
             frames: std::array::from_fn(|_| AtomicPtr::new(ptr::null_mut())),
             frame_bytes: std::array::from_fn(|_| AtomicU64::new(0)),
             completed: std::array::from_fn(|_| AtomicI64::new(0)),
@@ -1662,8 +1130,8 @@ impl Shared {
             frame_return: Mutex::new(()),
             frame_available: Condvar::new(),
             cancel_buffer_wait: AtomicBool::new(false),
-            buffer_wait_ns: AtomicU64::new(0),
             buffer_wait_calls: AtomicU64::new(0),
+            buffer_wait_ns: AtomicU64::new(0),
             buffer_wait_max_ns: AtomicU64::new(0),
             free: FreeFrames::new(),
             frame_priority,
@@ -1688,9 +1156,6 @@ impl Shared {
             clock_capture: Mutex::new(ClockCapture::default()),
             clock_available: Condvar::new(),
             clock_required: AtomicUsize::new(0),
-            clock_misses: AtomicU64::new(0),
-            clock_hint_misses: AtomicU64::new(0),
-            clock_failure: Mutex::new(None),
             cadence: UnsafeCell::new(CadenceState::default()),
             // The air families' stores belong to their decode steps.
             slice_fingerprints,
@@ -1760,10 +1225,6 @@ impl Shared {
             counter_store_bytes: AtomicU64::new(0),
             appearance_store: UnsafeCell::new(appearance_store),
             appearance_store_bytes: AtomicU64::new(0),
-            presentation: PresentationStats::default(),
-            game_thread: GameThreadPhases::default(),
-            template_models: Mutex::new(TemplateModelStats::default()),
-            template_models_missed: AtomicU64::new(0),
             force_next: AtomicBool::new(false),
             refresh_next: AtomicBool::new(false),
             forget_families: std::sync::atomic::AtomicU32::new(0),
@@ -1866,13 +1327,11 @@ impl Shared {
             return None;
         }
         if let Some(index) = self.free.pop() {
-            self.frame_priority
-                .claim(index, crate::frame_priority::Caller::Callback);
+            self.frame_priority.claim(index);
             return Some(index);
         }
         let started = qpc();
-        self.frame_priority
-            .refresh(crate::frame_priority::Caller::Callback);
+        self.frame_priority.refresh();
         self.buffer_wait_calls.fetch_add(1, Ordering::Relaxed);
         let mut returned = self.frame_return.lock().unwrap_or_else(|e| e.into_inner());
         let index = loop {
@@ -1882,8 +1341,7 @@ impl Shared {
             if self.cancel_buffer_wait.load(Ordering::Acquire) {
                 break None;
             }
-            self.frame_priority
-                .refresh(crate::frame_priority::Caller::Callback);
+            self.frame_priority.refresh();
             // Cancellation must work even if a failed consumer cannot notify us.
             returned = self
                 .frame_available
@@ -1893,16 +1351,17 @@ impl Shared {
         };
         drop(returned);
         if let Some(index) = index {
-            self.frame_priority
-                .claim(index, crate::frame_priority::Caller::Callback);
+            self.frame_priority.claim(index);
         } else {
-            self.frame_priority
-                .refresh(crate::frame_priority::Caller::Callback);
+            self.frame_priority.refresh();
         }
         let elapsed = self.ns(qpc() - started);
         self.buffer_wait_ns.fetch_add(elapsed, Ordering::Relaxed);
-        self.buffer_wait_max_ns
-            .fetch_max(elapsed, Ordering::Relaxed);
+        self.buffer_wait_max_ns.fetch_max(elapsed, Ordering::Relaxed);
+        #[cfg(feature = "callback_profile")]
+        self.profile
+            .buffer_wait_ns
+            .fetch_add(elapsed, Ordering::Relaxed);
         *wait_ns = elapsed;
         index
     }
@@ -1912,8 +1371,7 @@ impl Shared {
         if !self.free.take(index, true) {
             return false;
         }
-        self.frame_priority
-            .claim(index, crate::frame_priority::Caller::Worker);
+        self.frame_priority.claim(index);
         true
     }
 
@@ -2004,17 +1462,11 @@ impl Shared {
         debug_assert!(published.is_ok());
         self.frame_available.notify_one();
         drop(_returned);
-        self.frame_priority
-            .refresh(crate::frame_priority::Caller::Worker);
+        self.frame_priority.refresh();
     }
 
     fn take_army_stat_store(&self) -> Option<extended::division_presentation::held_store::Loan> {
-        let begin = qpc();
-        let store = self.army_stat_store.as_ref().and_then(|slot| slot.take());
-        self.presentation
-            .store_wait_ns
-            .fetch_add(self.ns(qpc() - begin), Ordering::Relaxed);
-        store
+        self.army_stat_store.as_ref().and_then(|slot| slot.take())
     }
 
     pub(crate) fn return_army_stat_store(
@@ -2027,22 +1479,6 @@ impl Shared {
         self.pool_bytes
             .fetch_add(bytes.wrapping_sub(previous), Ordering::Relaxed);
         drop(store);
-    }
-
-    /// Fold one hour's Presentation pass split into the cumulative counters.
-    fn record_presentation(&self, ticks: [u64; extended::division_presentation::PHASES]) {
-        self.presentation.hours.fetch_add(1, Ordering::Relaxed);
-        self.record_owned_presentation(ticks);
-    }
-
-    /// Add post-resume phase work without counting the same hour twice.
-    pub(crate) fn record_owned_presentation(
-        &self,
-        ticks: [u64; extended::division_presentation::PHASES],
-    ) {
-        for (slot, ticks) in self.presentation.phase_ns.iter().zip(ticks) {
-            slot.fetch_add(self.ns(ticks as i64), Ordering::Relaxed);
-        }
     }
 
     pub fn ns(&self, ticks: i64) -> u64 {
@@ -2069,13 +1505,7 @@ impl Shared {
             self.grow_clock_capture(&mut capture, required)
         } else {
             // Startup/wall-clock polling is optional preparation, never terminal.
-            if engine_allocation::advisory(|| self.grow_clock_capture(&mut capture, required))
-                .is_err()
-            {
-                self.clock_hint_misses.fetch_add(1, Ordering::Relaxed);
-                *self.clock_failure.lock().unwrap_or_else(|e| e.into_inner()) =
-                    Some("clock preparation advisory allocation failed");
-            }
+            let _ = engine_allocation::advisory(|| self.grow_clock_capture(&mut capture, required));
             Ok(())
         }
     }
@@ -2108,8 +1538,7 @@ impl Shared {
             if !self.free.take(index, false) {
                 continue;
             }
-            self.frame_priority
-                .claim(index, crate::frame_priority::Caller::Worker);
+            self.frame_priority.claim(index);
             let frame = unsafe { &mut *self.frames[index].load(Ordering::Acquire) };
             let result = frame.prepare_clock(required);
             self.measure_frame(index);
@@ -2144,14 +1573,6 @@ impl Shared {
                 .0;
         }
         capture
-    }
-
-    pub(crate) fn clock_status(&self) -> (u64, u64, Option<&'static str>) {
-        (
-            self.clock_misses.load(Ordering::Relaxed),
-            self.clock_hint_misses.load(Ordering::Relaxed),
-            *self.clock_failure.lock().unwrap_or_else(|e| e.into_inner()),
-        )
     }
 
     pub(crate) fn clock_required(&self) -> usize {
@@ -2258,7 +1679,7 @@ fn lost_observer_interval() {
     crate::event_feed_observer::lost_drain();
     crate::operation_outcomes::lost_drain();
     crate::politics_changes::invalidate();
-    crate::land_events::fail("land observer frame not captured");
+    crate::land_events::fail();
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
     crate::nuclear_strikes::lost_drain();
@@ -2359,23 +1780,22 @@ struct Dispatch<'a> {
     index: Option<usize>,
     entry: Option<Clock<&'a [u8]>>,
     entry_ticks: i64,
-    buffer_wait_ns: u64,
-    free_frames: u8,
     dispatched: i64,
 }
 
 #[cfg(feature = "callback_profile")]
 fn callback_profile_counters(shared: &Shared) -> crate::callback_profile::Sample {
     let load = |value: &AtomicU64| value.load(Ordering::Relaxed);
+    let profile = &shared.profile;
     crate::callback_profile::Sample {
-        buffer_wait_ns: load(&shared.buffer_wait_ns),
-        setup_ns: load(&shared.phase_setup_ns),
-        parallel_ns: load(&shared.phase_parallel_ns),
-        residual_ns: load(&shared.phase_residual_ns),
-        dispatch_ns: load(&shared.acquisition_dispatch_ns),
-        phase_calls: load(&shared.phase_calls),
-        segments_ns: shared.phase_segments.each_ref().map(load),
-        join_wait_ns: shared.join_wait.each_ref().map(load),
+        buffer_wait_ns: load(&profile.buffer_wait_ns),
+        setup_ns: load(&profile.setup_ns),
+        parallel_ns: load(&profile.parallel_ns),
+        residual_ns: load(&profile.residual_ns),
+        dispatch_ns: load(&profile.dispatch_ns),
+        phase_calls: load(&profile.calls),
+        segments_ns: profile.segments.each_ref().map(load),
+        join_wait_ns: profile.join_wait.each_ref().map(load),
         ..Default::default()
     }
 }
@@ -2462,7 +1882,9 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         let _frame_priority = shared.frame_priority.callback();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
         let _reads = crate::read_accounting::Capture::new();
-        let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+        let memory = unsafe { LiveMemory::new() };
+        #[cfg(test)]
+        let memory = engine_native::memory::CountedMemory::new(memory);
         let world_generation = crate::world_lifetime::generation();
         // Read the clock at entry: it is still the hour just ended, the trampoline
         // has not run. The frame's identity and the settled state the body reads.
@@ -2470,14 +1892,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         let mut clock_capture = shared.wait_clock_preparation(&memory);
         let (entry, campaign_epoch) = match clock_capture.read(&memory, shared.base) {
             Ok(value) => (Some(value.0), value.1),
-            Err(reason) => {
-                shared.clock_misses.fetch_add(1, Ordering::Relaxed);
-                *shared
-                    .clock_failure
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner()) = Some(reason);
-                (None, 0)
-            }
+            Err(_) => (None, 0),
         };
         let entry = entry.filter(|_| {
             world_generation != u64::MAX && world_generation == crate::world_lifetime::generation()
@@ -2512,12 +1927,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         #[cfg(feature = "callback_profile")]
         let profile_stamp = crate::callback_profile::Stamp::start();
         let dispatched = qpc();
-        shared
-            .acquisition_entry_qpc
-            .store(dispatched, Ordering::Relaxed);
-        let mut buffer_wait_ns = 0;
-        let index = shared.take_frame(&mut buffer_wait_ns);
-        let free_frames = shared.free.len() as u8;
+        let index = shared.take_frame(&mut 0);
         if let Some(index) = index {
             history_capture.frame(index);
             shared.completed[index].store(0, Ordering::Relaxed);
@@ -2532,8 +1942,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             index,
             entry,
             entry_ticks,
-            buffer_wait_ns,
-            free_frames,
             dispatched,
         };
         let priority = CallbackPriority::raise();
@@ -2543,11 +1951,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
             shared.callback_tail[index].store(1, Ordering::Release);
         }
         drop(priority);
-        // Include buffer backpressure in the whole game-thread block before the trampoline.
-        // Its percentiles are callback_work; this is only the cheap cumulative.
-        shared
-            .collect_wait_ns
-            .fetch_add(shared.ns(qpc() - dispatched), Ordering::Relaxed);
         crate::allocation::attempted_hour(None);
         #[cfg(feature = "callback_profile")]
         {
@@ -2569,7 +1972,6 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
                 after.join_wait_ns[i].saturating_sub(profile_before.join_wait_ns[i])
             });
             sample.join = crate::callback_profile::take_join();
-            sample.diagnostics = crate::callback_profile::take_diagnostics();
             crate::callback_profile::record(sample);
         }
     }
@@ -2701,32 +2103,23 @@ impl Drop for CallbackPriority {
 /// hook. The trampoline has not run, so the state is the settled end-of-hour
 /// boundary, read exactly as the original collector did.
 unsafe fn acquire(shared: &Shared, dispatch: Dispatch<'_>) {
-    let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+    let memory = unsafe { LiveMemory::new() };
+    #[cfg(test)]
+    let memory = engine_native::memory::CountedMemory::new(memory);
     unsafe { acquire_with_memory(shared, dispatch, memory) };
 }
 
-unsafe fn acquire_with_memory(
-    shared: &Shared,
-    dispatch: Dispatch<'_>,
-    memory: CountedMemory<impl Memory>,
-) {
-    let _callback_parks = crate::acquisition::callback_parks::Scope::enter();
+unsafe fn acquire_with_memory(shared: &Shared, dispatch: Dispatch<'_>, memory: impl Memory) {
     let Dispatch {
         world_generation,
         campaign_epoch,
         index,
         entry,
         entry_ticks,
-        buffer_wait_ns,
-        free_frames,
         dispatched,
     } = dispatch;
-    reset_hour_joins();
-    let growths_before = engine_allocation::growths();
-    let allocator_before = crate::private_heap::contention_ticks();
 
     if let Some(index) = index {
-        let reset_begin = qpc();
         let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
         // The spool reset this frame's verdicts when it returned it; a frame
         // returned another way is reset here.
@@ -2752,10 +2145,6 @@ unsafe fn acquire_with_memory(
             .decode_queue
             .reserve()
             .expect("an owned buffer has a decode slot");
-        shared.game_thread.frame_reset_ns.fetch_add(
-            shared.ns(qpc() - reset_begin - clock_reads),
-            Ordering::Relaxed,
-        );
         let decode::DecodeJob {
             queued_qpc: _,
             relations_payload,
@@ -2868,24 +2257,12 @@ unsafe fn acquire_with_memory(
         let mut decode_force_full = false;
         // Disjoint block phases (game-thread wall); default to dispatched so a
         // clockless frame lands entirely in residual.
+        #[cfg(feature = "callback_profile")]
         let mut ts_setup = dispatched;
+        #[cfg(feature = "callback_profile")]
         let mut ts_parallel = dispatched;
-        // The two halves of the parallel phase.
-        let mut inline_walk_ns = 0u64;
-        let mut join_ns = 0u64;
-        let mut segments_ns = [0; SEGMENTS];
-        let mut first_since_attach = false;
-        let mut continuous = false;
         let mut force_full = false;
-        let mut recovery = false;
-        let mut refresh = false;
-        let mut attach_diagnostics = None;
         if let Some(clock) = entry {
-            attach_diagnostics = Some(crate::attach_diagnostics::begin(
-                clock.hour,
-                dispatched,
-                shared.frequency,
-            ));
             // Out of line: the layout report (about 10 KiB) stays off this frame.
             out_of_line(|| {
                 frame.fixed_layout = Some(match shared.fixed_layout.get() {
@@ -2898,10 +2275,9 @@ unsafe fn acquire_with_memory(
                 });
             });
             let cadence = unsafe { &mut *shared.cadence.get() };
-            first_since_attach = !cadence.initialized;
-            continuous = cadence.continuous(&clock);
-            recovery = shared.force_next.swap(false, Ordering::AcqRel);
-            refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
+            let continuous = cadence.continuous(&clock);
+            let recovery = shared.force_next.swap(false, Ordering::AcqRel);
+            let refresh = shared.refresh_next.swap(false, Ordering::AcqRel);
             forget_unpublished_families(shared);
             force_full = cadence.force_full(&clock) | recovery | refresh;
             // A periodic encoding keyframe does not interrupt native mutation
@@ -2928,11 +2304,9 @@ unsafe fn acquire_with_memory(
             );
             boundary_request.market_clock = Some(clock.with_campaign_id(campaign_epoch));
             boundary_request.market_refresh = force_full;
-            let boundary_begin = qpc();
             // SAFETY: the native hourly call stays parked through the boundary job.
             let boundary_pending =
                 unsafe { submit_observer_boundary(shared, &mut batch, boundary_request) };
-            let mut boundary_ticks = qpc() - boundary_begin;
             let state = clock.game_state as usize;
             // The country snapshot reads only native memory and the shared
             // cache: it runs while a worker drains the observers.
@@ -2949,7 +2323,6 @@ unsafe fn acquire_with_memory(
                 })
                 .expect("every country snapshot lease returned before the next callback");
             let cached = country_snapshot.view(&memory);
-            let snapshot_ticks = qpc() - cache_begin;
             frame
                 .extended
                 .set_load_signal(clock.play_session_started_at);
@@ -2958,10 +2331,6 @@ unsafe fn acquire_with_memory(
             if let Some(store) = &shared.army_stat_store {
                 store.prepare_hour(clock.hour, force_full);
             }
-            shared
-                .game_thread
-                .country_snapshot_ns
-                .fetch_add(shared.ns(snapshot_ticks), Ordering::Relaxed);
             frame.country_cache_status = cached.seed_status();
             frame.country_cache_entries = cached.cached_entries();
             let cache_prepare_ticks = qpc() - cache_begin;
@@ -2995,50 +2364,43 @@ unsafe fn acquire_with_memory(
             // boundaries, its drained and sealed lanes and the offered output
             // stores. Any job below may, and a held job can still run, so it
             // joins before the first `queue!`.
-            let boundary_begin = qpc();
             // SAFETY: as above.
             unsafe { finish_observer_boundary(shared, &mut batch, frame, boundary_pending) };
-            boundary_ticks += qpc() - boundary_begin;
-            shared
-                .game_thread
-                .boundaries_ns
-                .fetch_add(shared.ns(boundary_ticks), Ordering::Relaxed);
             // Every accepted request is owned by this callback-scoped draining guard.
             // Rejected submissions retain their buffers. Only fixed-storage
             // readers may execute inline; allocating readers require a worker.
-            ts_setup = qpc();
+            #[cfg(feature = "callback_profile")]
+            {
+                ts_setup = qpc();
+            }
+            #[cfg(feature = "callback_profile")]
             let mut segment_prev = ts_setup;
+            #[cfg(feature = "callback_profile")]
             macro_rules! segment {
                 ($index:expr) => {{
                     let now = qpc();
-                    let ns = shared.ns(now - segment_prev);
-                    shared.phase_segments[$index].fetch_add(ns, Ordering::Relaxed);
-                    segments_ns[$index] += ns;
+                    shared.profile.segments[$index]
+                        .fetch_add(shared.ns(now - segment_prev), Ordering::Relaxed);
                     segment_prev = now;
                 }};
             }
-            let wait_at_setup = shared.acquisition_wait_ns.load(Ordering::Relaxed);
+            #[cfg(not(feature = "callback_profile"))]
+            macro_rules! segment {
+                ($index:expr) => {};
+            }
             // Requests are built, submitted and collected out of line, so this
             // frame holds tickets and variant results, never a job or completion.
             macro_rules! queue {
                 ($job:expr) => {{
-                    let begin = qpc();
                     let job = || $job;
                     // SAFETY: batch drains all accepted work before this callback returns.
-                    let pending = unsafe { queue_acquisition(shared, &mut batch, job) };
-                    shared
-                        .presentation
-                        .queue_ns
-                        .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
-                    pending
+                    unsafe { queue_acquisition(shared, &mut batch, job) }
                 }};
             }
             // One collector wake; workers relay the held burst's peer wakes.
             macro_rules! release {
                 () => {{
-                    let begin = qpc();
-                    let jobs = batch.release();
-                    shared.game_thread.release(jobs, shared.ns(qpc() - begin));
+                    batch.release();
                 }};
             }
             let mut presentation = PresentationPending::default();
@@ -3975,10 +3337,6 @@ unsafe fn acquire_with_memory(
             // same loans before submitting its consumers. Split walks still
             // collect in slot order. Failed stitches retain the pre-Naval
             // admission decision and settle only after Naval and its wings.
-            let inline_walk_begin = qpc();
-            let inline_wait_begin = shared.acquisition_wait_ns.load(Ordering::Relaxed);
-            let inline_dispatch_begin = shared.acquisition_dispatch_ns.load(Ordering::Relaxed);
-            let inline_release_begin = shared.game_thread.release_ns.load(Ordering::Relaxed);
             let mut root_pending = Some(root_pending);
             let mut input_pending = Some(input_pending);
             let mut ship_models_pending = Some(ship_models_pending);
@@ -4093,7 +3451,6 @@ unsafe fn acquire_with_memory(
             let mut relations_failure = None;
             let mut final_inputs_pending = None;
             let mut final_sources_done = false;
-            let mut final_sources_publish = 0;
             let mut final_inputs_armed = false;
             macro_rules! join_final_sources {
                 () => {{
@@ -4239,12 +3596,10 @@ unsafe fn acquire_with_memory(
                                 force_full,
                             ),
                             required,
-                            final_sources_publish,
                         );
                     });
                     final_inputs_armed = true;
                 }
-                let wait_begin = qpc();
                 let mut input_handoff = None;
                 let step = batch.wait_ready(|batch| {
                     macro_rules! ready {
@@ -4256,7 +3611,6 @@ unsafe fn acquire_with_memory(
                     }
                     macro_rules! ready_step {
                         ($step:ident, $condition:expr) => {{
-                            crate::acquisition_diagnostics::probe_condition();
                             if $condition {
                                 return Some(EarlyStep::$step);
                             }
@@ -4370,7 +3724,6 @@ unsafe fn acquire_with_memory(
                                     relations_pending.as_ref(),
                                 ],
                             )
-                            .is_some()
                     );
                     ready_step!(
                         Late,
@@ -4398,14 +3751,6 @@ unsafe fn acquire_with_memory(
                     );
                     None
                 });
-                shared
-                    .acquisition_wait_ns
-                    .fetch_add(shared.ns(qpc() - wait_begin), Ordering::Relaxed);
-                let _step = EarlyStepTimer::new(
-                    shared,
-                    &shared.presentation.early_steps[step as usize],
-                    step,
-                );
                 match step {
                     EarlyStep::Presentation => {
                         // SAFETY: readiness proved publication; no preparation wait here.
@@ -4608,8 +3953,6 @@ unsafe fn acquire_with_memory(
                             input_pending.take().expect("input producer"),
                             DivisionInputs
                         );
-                        let consumers_begin = qpc();
-                        let consumers_wait = shared.acquisition_wait_ns.load(Ordering::Relaxed);
                         // Published tickets no longer borrow the closed fan-in.
                         let mut parts = [const { None }; crate::division_census::MAX_PARTS - 1];
                         for (part, pending) in
@@ -4620,18 +3963,9 @@ unsafe fn acquire_with_memory(
                                 parts[part] = Some((request.census, failure));
                             }
                         }
-                        let restore_begin = qpc();
                         let (joined, join_failure) =
                             input_handoff.restore_master(&mut input_request.payload.census);
-                        shared
-                            .presentation
-                            .input_restore_ns
-                            .fetch_add(shared.ns(qpc() - restore_begin), Ordering::Relaxed);
                         input_request.payload.presentation = None;
-                        shared.presentation.store_wait_ns.fetch_add(
-                            shared.ns(input_handoff.store_wait_ticks() as i64),
-                            Ordering::Relaxed,
-                        );
                         input_failure = input_failure.or(join_failure);
                         // The parts join the census in slot order, as one walk would
                         // have left it. The first failure in slot order is the hour's:
@@ -4650,14 +3984,7 @@ unsafe fn acquire_with_memory(
                                 let census = &mut input_request.payload.census;
                                 let result = match failure {
                                     Some(reason) => Err(reason),
-                                    None => {
-                                        let begin = qpc();
-                                        let result = census.absorb(&mut captured);
-                                        crate::acquisition_diagnostics::update(|hour| {
-                                            hour.division_merge_ns += shared.ns(qpc() - begin)
-                                        });
-                                        result
-                                    }
+                                    None => census.absorb(&mut captured),
                                 };
                                 if let Err(reason) = result {
                                     input_failure = Some(reason);
@@ -4683,15 +4010,6 @@ unsafe fn acquire_with_memory(
                             None
                         };
                         frame.extended.install_unit_inputs(inputs.clone());
-                        shared.presentation.input_consumers_ns.fetch_add(
-                            shared.ns(qpc() - consumers_begin).saturating_sub(
-                                shared
-                                    .acquisition_wait_ns
-                                    .load(Ordering::Relaxed)
-                                    .saturating_sub(consumers_wait),
-                            ),
-                            Ordering::Relaxed,
-                        );
                         batch.hold();
                         divisions_pending =
                             Some(queue!(acquisition::Job::Divisions(input_request)));
@@ -5045,11 +4363,7 @@ unsafe fn acquire_with_memory(
                             if air_failure.is_none() && air_request.payload.split {
                                 let begin = qpc();
                                 air_failure = air_request.payload.join_parts(active).err();
-                                let ticks = elapsed(begin);
-                                air_wing_report.copy_ticks[0] += ticks;
-                                crate::acquisition_diagnostics::update(|hour| {
-                                    hour.wing_merge_ns += shared.ns(ticks as i64)
-                                });
+                                air_wing_report.copy_ticks[0] += elapsed(begin);
                             }
                             if air_failure.is_none()
                                 && let Some(split) =
@@ -5129,8 +4443,6 @@ unsafe fn acquire_with_memory(
                             )));
                             let ns = shared.ns(divisions_report.copy_ticks[0] as i64);
                             frame.table_ns[6] = ns;
-                            decode::add_divisions_copy_ns(0, ns);
-                            decode::add_divisions_raw_bytes(0, divisions_report.raw_bytes[0]);
                         }
                         divisions_done = true;
                     }
@@ -5396,7 +4708,6 @@ unsafe fn acquire_with_memory(
                         frame
                             .extended
                             .restore_combat_progress(progress, combat_report.progress_ticks);
-                        let sample_begin = qpc();
                         map_ticks = frame.map.sample(
                             &cached,
                             shared.base,
@@ -5408,10 +4719,6 @@ unsafe fn acquire_with_memory(
                                 naval_report.raw_ok || naval_failure.is_some(),
                             ),
                         );
-                        shared
-                            .game_thread
-                            .map_sample_ns
-                            .fetch_add(shared.ns(qpc() - sample_begin), Ordering::Relaxed);
                         // Otherwise the typed visitor supplied them in the map sample.
                         if air_missions_pending.is_none() {
                             air_missions_pending = Some(queue!(acquisition::Job::AirMissions(
@@ -5525,16 +4832,18 @@ unsafe fn acquire_with_memory(
                         missions_done = true;
                     }
                     EarlyStep::FinalSources => {
-                        final_sources_publish = final_sources_published(
-                            &batch,
-                            [
-                                intel_residual_pending.as_ref(),
-                                capitulation_pending.as_ref(),
-                                session_pending.as_ref(),
-                                relations_pending.as_ref(),
-                            ],
-                        )
-                        .expect("successful final input sources");
+                        assert!(
+                            final_sources_published(
+                                &batch,
+                                [
+                                    intel_residual_pending.as_ref(),
+                                    capitulation_pending.as_ref(),
+                                    session_pending.as_ref(),
+                                    relations_pending.as_ref(),
+                                ],
+                            ),
+                            "successful final input sources"
+                        );
                         join_final_sources!();
                         final_sources_done = true;
                     }
@@ -5806,29 +5115,6 @@ unsafe fn acquire_with_memory(
             frame.table_ns[8] = shared.ns(factions_report.ticks[0] as i64);
             frame.faction_members_result = factions_report.members.result;
             frame.table_ns[9] = shared.ns(factions_report.ticks[1] as i64);
-            // Readiness moved dispatches and releases into this span. They are
-            // coordination costs, not inline walks, and have their own counters.
-            inline_walk_ns = shared
-                .ns(qpc() - inline_walk_begin)
-                .saturating_sub(
-                    shared
-                        .acquisition_wait_ns
-                        .load(Ordering::Relaxed)
-                        .saturating_sub(inline_wait_begin),
-                )
-                .saturating_sub(
-                    shared
-                        .acquisition_dispatch_ns
-                        .load(Ordering::Relaxed)
-                        .saturating_sub(inline_dispatch_begin),
-                )
-                .saturating_sub(
-                    shared
-                        .game_thread
-                        .release_ns
-                        .load(Ordering::Relaxed)
-                        .saturating_sub(inline_release_begin),
-                );
             for (total, ticks) in frame.table_ns[10..].iter_mut().zip(map_ticks) {
                 *total = shared.ns(ticks as i64);
             }
@@ -5866,12 +5152,9 @@ unsafe fn acquire_with_memory(
                 collected!(province_unit_order_pending, ProvinceUnitOrder);
             if let Some(pending) = model_inputs_pending {
                 let (request, _, failure) = completed!(pending, DivisionModelInputs);
-                if let Some(training) = frame
+                frame
                     .extended
-                    .restore_division_model_inputs_request(request, failure.is_none())
-                {
-                    shared.model_inputs.record(training);
-                }
+                    .restore_division_model_inputs_request(request, failure.is_none());
             }
             let province_unit_store = frame
                 .extended
@@ -5901,18 +5184,6 @@ unsafe fn acquire_with_memory(
             frame
                 .extended
                 .take_preacquired_templates(shared.base, state, clock.hour, force_full);
-            // The game thread never waits for the status thread's copy.
-            let failures = frame.extended.template_model_failures();
-            if failures.rows != 0 {
-                match shared.template_models.try_lock() {
-                    Ok(mut stats) => stats.fold(failures),
-                    Err(_) => {
-                        shared
-                            .template_models_missed
-                            .fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }
             let (slow_request, _, slow_failure) = completed!(slow_pending, Slow);
             let stores = frame
                 .extended
@@ -6228,12 +5499,10 @@ unsafe fn acquire_with_memory(
                 frame.extended.restore_variants_request(request, report);
             });
             segment!(9);
-            let assembly_begin = qpc();
             let mut ticks =
                 frame
                     .extended
                     .capture_tables(&cached, shared.base, state, clock.hour, force_full);
-            let mut assembly_ticks = qpc() - assembly_begin;
             segment!(10);
             let (late_request, _, late_failure) = completed!(late_pending, Late);
             frame.extended.restore_late_request(
@@ -6281,7 +5550,6 @@ unsafe fn acquire_with_memory(
                 }
             });
             frame.extended.install_order_transport();
-            let assembly_begin = qpc();
             let border_ticks = frame.extended.capture_border_inputs(
                 &cached,
                 shared.base,
@@ -6289,7 +5557,6 @@ unsafe fn acquire_with_memory(
                 (&frame.provinces.rows, frame.provinces_result),
                 (&mut frame.countries, &mut frame.countries_result),
             );
-            assembly_ticks += qpc() - assembly_begin;
             ticks[replay_data::rows::TableId::DivisionStatus.index()] += border_ticks[0];
             frame.table_ns[replay_data::rows::TableId::Countries.index()] +=
                 shared.ns(border_ticks[1] as i64);
@@ -6311,7 +5578,6 @@ unsafe fn acquire_with_memory(
                     final_failure,
                 );
             });
-            let assembly_begin = qpc();
             frame.extended.capture_tables_late(
                 &cached,
                 shared.base,
@@ -6321,7 +5587,6 @@ unsafe fn acquire_with_memory(
                 &mut frame.map.orders,
                 &mut ticks,
             );
-            assembly_ticks += qpc() - assembly_begin;
             segment!(12);
             // UnitIntel joins here, at its first reader: nothing before reads
             // its rows, report or failure, and its worker finished long ago.
@@ -6373,7 +5638,6 @@ unsafe fn acquire_with_memory(
                 }
                 failure
             });
-            shared.record_presentation(frame.extended.presentation_phase_ticks());
             refuse_world_rest(
                 &mut frame.extended,
                 world_active,
@@ -6476,21 +5740,12 @@ unsafe fn acquire_with_memory(
             // Restore the final independent request before releasing the lease.
             segment!(13);
             let ships = replay_data::rows::TableId::ShipModels.index();
-            let assembly_begin = qpc();
             ticks[ships] = frame.extended.capture_ship_models(&cached, shared.base);
-            assembly_ticks += qpc() - assembly_begin;
-            shared
-                .game_thread
-                .table_assembly_ns
-                .fetch_add(shared.ns(assembly_ticks), Ordering::Relaxed);
             segment!(14);
-            ts_parallel = segment_prev;
-            // Join wall spent on the pool jobs during the parallel phase.
-            // acquisition_wait_ns is written only by this thread's joins.
-            join_ns = shared
-                .acquisition_wait_ns
-                .load(Ordering::Relaxed)
-                .saturating_sub(wait_at_setup);
+            #[cfg(feature = "callback_profile")]
+            {
+                ts_parallel = segment_prev;
+            }
             // Every consumer has joined. Release all input leases before
             // returning a failed payload to its decode-side pool.
             drop(batch);
@@ -6517,8 +5772,6 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(relations_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_relations_copy_ns(slot, ns);
-                    decode::add_relations_raw_bytes(slot, relations_report.raw_bytes[slot]);
                 }
             }
             // Independent jobs charge their own anchor; these worker times
@@ -6534,8 +5787,6 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_characters_copy_ns(slot, ns);
-                    decode::add_characters_raw_bytes(slot, report.raw_bytes[slot]);
                 }
             }
             // Projects tables measured copy-only above; same install.
@@ -6544,8 +5795,6 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(projects_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_projects_copy_ns(slot, ns);
-                    decode::add_projects_raw_bytes(slot, projects_report.raw_bytes[slot]);
                 }
             }
             // Lexical table measured copy-only above; same install.
@@ -6554,20 +5803,15 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(lexical_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_lexical_copy_ns(slot, ns);
-                    decode::add_lexical_raw_bytes(slot, lexical_report.raw_bytes[slot]);
                 }
             }
-            // Divisions-group production tables measured copy-only above;
-            // same install for the calibration counters. The upgrades
+            // Divisions-group production tables measured copy-only above. The upgrades
             // phase cost is anchor-charged to the groups slot.
             if divisions_report.raw_ok {
                 for (slot, table) in decode::DIVISIONS.iter().enumerate().skip(1) {
                     let index = table.index();
                     let ns = shared.ns(divisions_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_divisions_copy_ns(slot, ns);
-                    decode::add_divisions_raw_bytes(slot, divisions_report.raw_bytes[slot]);
                 }
             }
             if air_wing_report.raw_ok {
@@ -6578,8 +5822,6 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(air_wing_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_air_wing_copy_ns(slot, ns);
-                    decode::add_air_wing_raw_bytes(slot, air_wing_report.raw_bytes[slot]);
                 }
                 for (table, ticks) in [
                     TableId::CountryGameScoreInputs,
@@ -6593,8 +5835,7 @@ unsafe fn acquire_with_memory(
                         frame.table_ns[index].saturating_add(shared.ns(ticks as i64));
                 }
             }
-            // Hourly air statistics measured copy-only above; same
-            // install for the calibration counters. The shared
+            // Hourly air statistics measured copy-only above. The shared
             // strategic-air census is anchor-charged to the statistics
             // slot, matching the read-group convention.
             if air_stats_report.raw_ok {
@@ -6602,8 +5843,6 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(air_stats_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_air_stats_copy_ns(slot, ns);
-                    decode::add_air_stats_raw_bytes(slot, air_stats_report.raw_bytes[slot]);
                 }
             }
             if naval_report.raw_ok {
@@ -6611,22 +5850,16 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(naval_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_naval_copy_ns(slot, ns);
-                    decode::add_naval_raw_bytes(slot, naval_report.raw_bytes[slot]);
                 }
             }
-            // Players pair measured copy-only above; same install for the
-            // calibration counters. Each table retains its own timing slot.
+            // Players pair measured copy-only above. Each table retains its own timing slot.
             if players_report.raw_ok {
                 for (slot, table) in decode::PLAYERS.iter().enumerate() {
                     let ns = shared.ns(players_report.copy_ticks[slot] as i64);
                     frame.table_ns[table.index()] = ns;
-                    decode::add_players_copy_ns(slot, ns);
-                    decode::add_players_raw_bytes(slot, players_report.raw_bytes[slot]);
                 }
             }
-            // Session family measured copy-only above; same install for
-            // the calibration counters. The shared manager header is
+            // Session family measured copy-only above. The shared manager header is
             // anchor-charged to the world slot, matching the read-group
             // convention.
             if session_report.raw_ok {
@@ -6634,12 +5867,9 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(session_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_session_copy_ns(slot, ns);
-                    decode::add_session_raw_bytes(slot, session_report.raw_bytes[slot]);
                 }
             }
-            // Production hourly rest measured copy-only above; same
-            // install for the calibration counters. The deployment shared
+            // Production hourly rest measured copy-only above. The deployment shared
             // traversal is anchor-charged to the conveyors slot and the
             // licence walk to the licences slot, matching the read-group
             // convention.
@@ -6648,15 +5878,9 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(production_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_production_rest_copy_ns(slot, ns);
-                    decode::add_production_rest_raw_bytes(
-                        slot,
-                        production_rest_report.raw_bytes[slot],
-                    );
                 }
             }
-            // Construction hourly rest measured copy-only above; same
-            // install for the calibration counters. The construction
+            // Construction hourly rest measured copy-only above. The construction
             // queue is anchor-charged to the building slot and the
             // occupation shared walk to the settings slot, matching the
             // read-group convention.
@@ -6668,15 +5892,9 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(construction_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_construction_rest_copy_ns(slot, ns);
-                    decode::add_construction_rest_raw_bytes(
-                        slot,
-                        construction_rest_report.raw_bytes[slot],
-                    );
                 }
             }
-            // Economy hourly rest measured copy-only above; same install
-            // for the calibration counters. The supply shared traversal
+            // Economy hourly rest measured copy-only above. The supply shared traversal
             // is anchor-charged to the hubs slot and the resource
             // dictionary to the definitions slot, matching the read-group
             // convention.
@@ -6685,12 +5903,9 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(economy_rest_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_economy_rest_copy_ns(slot, ns);
-                    decode::add_economy_rest_raw_bytes(slot, economy_rest_report.raw_bytes[slot]);
                 }
             }
-            // Shared hourly bases measured copy-only above; same install
-            // for the calibration counters. The shared census is
+            // Shared hourly bases measured copy-only above. The shared census is
             // anchor-charged to the bases slot; registrations and aces
             // carry their detail costs, matching the read-group
             // convention.
@@ -6699,56 +5914,41 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(air_bases_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_air_bases_copy_ns(slot, ns);
-                    decode::add_air_bases_raw_bytes(slot, air_bases_report.raw_bytes[slot]);
                 }
             }
-            // Hourly supremacy measured copy-only above; same install
-            // for the calibration counters.
+            // Hourly supremacy measured copy-only above.
             if supremacy_report.raw_ok {
                 for (slot, table) in decode::SUPREMACY.iter().enumerate() {
                     let index = table.index();
                     let ns = shared.ns(supremacy_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_supremacy_copy_ns(slot, ns);
-                    decode::add_supremacy_raw_bytes(slot, supremacy_report.raw_bytes[slot]);
                 }
             }
-            // Hourly sunk-ships measured copy-only above; same install
-            // for the calibration counters.
+            // Hourly sunk-ships measured copy-only above.
             if sunk_report.raw_ok {
                 for (slot, table) in decode::SUNK.iter().enumerate() {
                     let index = table.index();
                     let ns = shared.ns(sunk_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_sunk_copy_ns(slot, ns);
-                    decode::add_sunk_raw_bytes(slot, sunk_report.raw_bytes[slot]);
                 }
             }
-            // Hourly radar measured copy-only above; same install for
-            // the calibration counters.
+            // Hourly radar measured copy-only above.
             if radar_report.raw_ok {
                 for (slot, table) in decode::RADAR.iter().enumerate() {
                     let index = table.index();
                     let ns = shared.ns(radar_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_radar_copy_ns(slot, ns);
-                    decode::add_radar_raw_bytes(slot, radar_report.raw_bytes[slot]);
                 }
             }
-            // Hourly intel measured copy-only above; same install for
-            // the calibration counters.
+            // Hourly intel measured copy-only above.
             if intel_report.raw_ok {
                 for (slot, table) in decode::INTEL.iter().enumerate() {
                     let index = table.index();
                     let ns = shared.ns(intel_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_intel_copy_ns(slot, ns);
-                    decode::add_intel_raw_bytes(slot, intel_report.raw_bytes[slot]);
                 }
             }
-            // Hourly weather measured copy-only above; same install for
-            // the calibration counters. The manager header is
+            // Hourly weather measured copy-only above. The manager header is
             // anchor-charged to the regions slot, matching the read-group
             // convention.
             if weather_report.raw_ok {
@@ -6756,33 +5956,15 @@ unsafe fn acquire_with_memory(
                     let index = table.index();
                     let ns = shared.ns(weather_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_weather_copy_ns(slot, ns);
-                    decode::add_weather_raw_bytes(slot, weather_report.raw_bytes[slot]);
                 }
             }
-            // Hourly capitulation measured copy-only above; same install
-            // for the calibration counters.
+            // Hourly capitulation measured copy-only above.
             if capitulation_report.raw_ok {
                 for (slot, table) in decode::CAPITULATION.iter().enumerate() {
                     let index = table.index();
                     let ns = shared.ns(capitulation_report.copy_ticks[slot] as i64);
                     frame.table_ns[index] = ns;
-                    decode::add_capitulation_copy_ns(slot, ns);
-                    decode::add_capitulation_raw_bytes(slot, capitulation_report.raw_bytes[slot]);
                 }
-            }
-            // Trailing diagnostic: no table acquisition follows this read.
-            // It does not alter any table verdict or force another refresh.
-            if force_full {
-                let begin = qpc();
-                frame.order_counters.capture(
-                    true,
-                    &memory,
-                    engine_native::Memory::authenticated_countries(&cached, shared.base, state),
-                );
-                frame.order_counters.qpc_begin = begin;
-                frame.order_counters.qpc_end = qpc();
-                frame.order_counters.elapsed_ns = shared.ns(frame.order_counters.qpc_end - begin);
             }
             frame.country_cache_ns = shared.ns(cache_prepare_ticks);
             // All dependent tables share the one seeded authentication census.
@@ -6792,6 +5974,7 @@ unsafe fn acquire_with_memory(
             shared.sample_roster(&memory, frame.clock.as_ref().map(Clock::borrowed));
         }
         frame.table_ns[0] = shared.ns(clock_ticks);
+        #[cfg(test)]
         crate::read_accounting::snapshot_into(&mut frame.table_reads);
         if frame.world_generation != crate::world_lifetime::generation() {
             frame.extended.discard_event_feed();
@@ -6816,68 +5999,25 @@ unsafe fn acquire_with_memory(
         // worker hands it to the spool ready queue after decoding any
         // refresh payload. Each queue can hold the complete buffer pool,
         // so owning a buffer guarantees space for its index.
-        // The frame's cost is this acquisition body's wall on the game thread.
-        let diagnostics = crate::acquisition_diagnostics::take(
-            engine_allocation::growths().saturating_sub(growths_before),
-        );
-        #[cfg(feature = "callback_profile")]
-        crate::callback_profile::retain_diagnostics(diagnostics);
         let game_elapsed = (qpc() - dispatched).max(1);
-        let setup_ns = shared.ns(ts_setup - dispatched);
-        let parallel_ns = shared.ns(ts_parallel - ts_setup);
-        let residual_ns = shared.ns(dispatched + game_elapsed - ts_parallel);
         // Disjoint block phases: setup+snapshot, parallel (dispatch/inline/joins),
         // then residual work and enqueue.
-        shared.phase_setup_ns.fetch_add(setup_ns, Ordering::Relaxed);
-        shared
-            .phase_parallel_ns
-            .fetch_add(parallel_ns, Ordering::Relaxed);
-        shared
-            .phase_residual_ns
-            .fetch_add(residual_ns, Ordering::Relaxed);
-        let joins = take_hour_joins();
-        frame.hour_cost = if frame.clock.is_some() {
-            HourCost {
-                entry_ns: shared.ns(entry_ticks),
-                buffer_wait_ns,
-                free_frames,
-                allocator_wait_ns: shared.ns(
-                    crate::private_heap::contention_ticks().saturating_sub(allocator_before) as i64,
-                ),
-                setup_ns,
-                parallel_ns,
-                residual_ns,
-                segments_ns,
-                slowest_join: joins.slowest,
-                collect_stalls_over_1ms: joins.collect_stalls_over_1ms,
-                growths: diagnostics
-                    .callback_growths
-                    .saturating_add(diagnostics.jobs.worker_growths),
-                diagnostics,
-                idle: crate::acquisition::idle_diagnostics::take(),
-                variants: frame.clock.as_ref().and_then(|clock| {
-                    crate::design_changes::profile::latest(clock.hour, dispatched)
-                }),
-                #[cfg(feature = "callback_profile")]
-                join_timeline: HOUR_JOINS.get().and_then(|tally| tally.profile_span),
-                first_since_attach,
-                continuous,
-                force_full,
-                recovery,
-                refresh,
-            }
-        } else {
-            HourCost::default()
-        };
-        if let Some(diagnostics) = attach_diagnostics {
-            diagnostics.finish(frame, shared.ns(game_elapsed));
+        #[cfg(feature = "callback_profile")]
+        {
+            let profile = &shared.profile;
+            profile
+                .setup_ns
+                .fetch_add(shared.ns(ts_setup - dispatched), Ordering::Relaxed);
+            profile
+                .parallel_ns
+                .fetch_add(shared.ns(ts_parallel - ts_setup), Ordering::Relaxed);
+            profile.residual_ns.fetch_add(
+                shared.ns(dispatched + game_elapsed - ts_parallel),
+                Ordering::Relaxed,
+            );
+            profile.calls.fetch_add(1, Ordering::Relaxed);
         }
-        shared
-            .phase_inline_walk_ns
-            .fetch_add(inline_walk_ns, Ordering::Relaxed);
-        shared.phase_join_ns.fetch_add(join_ns, Ordering::Relaxed);
-        shared.phase_calls.fetch_add(1, Ordering::Relaxed);
-        shared.game_thread.hours.fetch_add(1, Ordering::Relaxed);
+        frame.force_full = frame.clock.is_some() && force_full;
         frame.capture_seq = decode::next_seq();
         // Every field is named: a new one cannot keep a previous hour's value.
         let decode::DecodeJob {
@@ -7047,6 +6187,7 @@ unsafe fn submit_retained(
     batch: &mut acquisition::Batch<'_>,
     retained: &mut Option<acquisition::Job>,
 ) -> PendingAcquisition {
+    #[cfg(feature = "callback_profile")]
     let begin = qpc();
     // SAFETY: the caller's batch owns this callback's complete live lease.
     let pending = match unsafe { batch.submit(retained) } {
@@ -7058,13 +6199,13 @@ unsafe fn submit_retained(
                 .expect("acquisition retains at most MAX_JOBS requests"),
         ),
     };
+    #[cfg(feature = "callback_profile")]
     shared
-        .acquisition_dispatch_ns
+        .profile
+        .dispatch_ns
         .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
-    shared
-        .game_thread
-        .dispatched_jobs
-        .fetch_add(1, Ordering::Relaxed);
+    #[cfg(not(feature = "callback_profile"))]
+    let _ = shared;
     pending
 }
 
@@ -7115,82 +6256,19 @@ unsafe fn finish_acquisition_into(
 ) {
     match pending {
         PendingAcquisition::Accepted(ticket) => {
+            #[cfg(feature = "callback_profile")]
             let begin = qpc();
             assert!(batch.finish_into(ticket, out), "submitted acquisition job");
-            let result = out.as_ref().expect("submitted acquisition job");
-            let end = qpc();
-            use crate::acquisition::idle_diagnostics::{self, Family};
-            match (&result.request, &result.report) {
-                (acquisition::Job::Governance(_), Ok(acquisition::Report::Governance(report))) => {
-                    idle_diagnostics::update(|hour| {
-                        hour.governance = Some(Family::new(
-                            extended::governance::TABLES
-                                .into_iter()
-                                .zip(report.governance.ticks),
-                        ));
-                        hour.buildings_ticks = Some(report.buildings);
-                    });
-                }
-                (
-                    acquisition::Job::GatedProjects(request),
-                    Ok(acquisition::Report::GatedProjects(_)),
-                ) => {
-                    idle_diagnostics::update(|hour| {
-                        hour.projects = Some(Family::new(
-                            extended::projects::TABLES.into_iter().zip(request.ticks),
-                        ))
-                    });
-                }
-                _ => {}
-            }
-            let wait = shared.ns(end - begin);
-            let stall_ns = shared.join_costs[result.request.role() as usize].record(
-                &result.timeline,
-                begin,
-                |ticks| shared.ns(ticks),
-            );
-            record_hour_join(
-                result.request.role() as usize,
-                wait,
-                stall_ns,
-                #[cfg(feature = "callback_profile")]
-                result.profile,
-                #[cfg(feature = "callback_profile")]
-                Some(crate::acquisition_diagnostics::JoinSpan {
-                    job: crate::acquisition_diagnostics::Job {
-                        identity: result.request.diagnostic_identity(),
-                        ticket,
-                        timeline: result.timeline,
-                    },
-                    profile: result.profile,
-                    begin_qpc: begin,
-                    end_qpc: end,
-                }),
-            );
             #[cfg(feature = "callback_profile")]
-            idle_diagnostics::update(|hour| match result.request.role() {
-                acquisition::Role::Variants => {
-                    hour.variants_cycles = result.profile.runner_thread_cycles
-                }
-                acquisition::Role::Governance => {
-                    hour.governance_cycles = result.profile.runner_thread_cycles
-                }
-                acquisition::Role::GatedProjects => {
-                    hour.projects_cycles = result.profile.runner_thread_cycles
-                }
-                _ => {}
-            });
-            shared
-                .acquisition_wait_ns
-                .fetch_add(wait, Ordering::Relaxed);
-            shared.join_wait[result.request.role() as usize].fetch_add(wait, Ordering::Relaxed);
-            shared.role_timeline[result.request.role() as usize].record(
-                shared.acquisition_entry_qpc.load(Ordering::Relaxed),
-                &result.timeline,
-                begin,
-                end,
-                wait,
-            );
+            {
+                let result = out.as_ref().expect("submitted acquisition job");
+                let role = result.request.role() as usize;
+                let wait = shared.ns(qpc() - begin);
+                crate::callback_profile::record_join(role, wait, result.profile);
+                shared.profile.join_wait[role].fetch_add(wait, Ordering::Relaxed);
+            }
+            #[cfg(not(feature = "callback_profile"))]
+            let _ = shared;
         }
         // SAFETY: forwarded from the caller.
         PendingAcquisition::Rejected(ticket) => unsafe { finish_rejected(batch, ticket, out) },
@@ -7221,30 +6299,6 @@ pub(crate) enum EarlyStep {
     FinalSources,
     FinalInputs,
 }
-impl EarlyStep {
-    pub(crate) const ALL: [Self; 19] = [
-        Self::Presentation,
-        Self::Roots,
-        Self::Inputs,
-        Self::Ships,
-        Self::Countries,
-        Self::Characters,
-        Self::Wings,
-        Self::Orders,
-        Self::Divisions,
-        Self::Verdicts,
-        Self::Stitch,
-        Self::Naval,
-        Self::Map,
-        Self::ChildFronts,
-        Self::ArmyIcons,
-        Self::Missions,
-        Self::Late,
-        Self::FinalSources,
-        Self::FinalInputs,
-    ];
-}
-
 fn pending_complete(batch: &acquisition::Batch<'_>, pending: &PendingAcquisition) -> bool {
     match pending {
         PendingAcquisition::Accepted(ticket) => batch.is_complete(*ticket),
@@ -7257,28 +6311,27 @@ fn pending_complete(batch: &acquisition::Batch<'_>, pending: &PendingAcquisition
 fn final_sources_published(
     batch: &acquisition::Batch<'_>,
     producers: [Option<&PendingAcquisition>; 4],
-) -> Option<i64> {
+) -> bool {
     producers
         .into_iter()
         .enumerate()
-        .try_fold(0, |last, (index, pending)| {
+        .all(|(index, pending)| {
             let Some(pending) = pending else {
-                return matches!(index, 2 | 3).then_some(last);
+                return matches!(index, 2 | 3);
             };
             let PendingAcquisition::Accepted(ticket) = pending else {
-                return None;
+                return false;
             };
-            let (Ok(report), at) = batch.completed_state(*ticket)? else {
-                return None;
+            let Some(Ok(report)) = batch.completed_report(*ticket) else {
+                return false;
             };
-            let complete = match (index, report) {
+            match (index, report) {
                 (0, acquisition::Report::IntelResidual(_)) => true,
                 (1, acquisition::Report::Capitulation(report)) => report.raw_ok,
                 (2, acquisition::Report::Session(report)) => report.raw_ok,
                 (3, acquisition::Report::Relations(report)) => report.raw_ok,
                 _ => false,
-            };
-            complete.then_some(last.max(at))
+            }
         })
 }
 
@@ -7346,27 +6399,17 @@ impl PresentationPending {
         pending: Option<&PendingAcquisition>,
     ) {
         while self.waiting() {
-            let begin = qpc();
             let advance = batch.wait_ready(|batch| {
                 if self.ready(batch) {
                     return Some(true);
                 }
-                crate::acquisition_diagnostics::probe_condition();
                 pending
                     .is_some_and(|pending| pending_complete(batch, pending))
                     .then_some(false)
             });
-            shared
-                .acquisition_wait_ns
-                .fetch_add(shared.ns(qpc() - begin), Ordering::Relaxed);
             if !advance {
                 break;
             }
-            let _advance = EarlyStepTimer::new(
-                shared,
-                &shared.presentation.wait_advance,
-                EarlyStep::Presentation,
-            );
             // SAFETY: publication is proved above; the same boundary is held.
             unsafe { self.advance(shared, batch) };
         }
@@ -7459,10 +6502,6 @@ impl PresentationPending {
                             }
                         });
             }
-            shared
-                .presentation
-                .range_dispatch_ns
-                .fetch_add(shared.ns(request.dispatch.ticks as i64), Ordering::Relaxed);
         } else if self.failure.is_none() {
             batch.hold();
             for (index, pending) in self
@@ -7491,9 +6530,7 @@ impl PresentationPending {
                     })
                 });
             }
-            let begin = qpc();
-            let jobs = batch.release();
-            shared.game_thread.release(jobs, shared.ns(qpc() - begin));
+            batch.release();
         }
         self.park(batch, request);
     }
@@ -7925,7 +6962,7 @@ unsafe fn finish_rejected_inline(
         .unpark(ticket)
         .expect("parked inline acquisition request");
     // SAFETY: this request was rejected before acquiring any live state.
-    *out = Some(unsafe { batch.run_inline(ticket, request) });
+    *out = Some(unsafe { batch.run_inline(request) });
 }
 
 pub(crate) fn acquisition_failure_reason(failure: acquisition::Failure) -> &'static str {
@@ -8177,146 +7214,6 @@ fn exported_table_ticks(table: replay_data::rows::TableId, walk: bool, ticks: u6
 
 #[cfg(test)]
 mod exported_ticks_tests;
-
-#[cfg(test)]
-mod role_timeline_tests {
-    use super::*;
-
-    /// Offsets are taken from the acquisition entry; a job whose body never
-    /// ran adds to the queue and join means but not to the body means.
-    #[test]
-    fn role_timeline_means_offsets_from_the_acquisition_entry() {
-        let timeline = RoleTimeline::new();
-        timeline.record(
-            1_000,
-            &crate::acquisition::Timeline {
-                queued_qpc: 1_010,
-                body_begin_qpc: 1_100,
-                body_end_qpc: 1_500,
-                ..Default::default()
-            },
-            1_200,
-            1_510,
-            0,
-        );
-        timeline.record(
-            2_000,
-            &crate::acquisition::Timeline {
-                queued_qpc: 2_030,
-                ..Default::default()
-            },
-            2_050,
-            2_060,
-            0,
-        );
-        assert_eq!(timeline.means(), (2, [20, 100, 500, 125, 285]));
-        assert_eq!(timeline.slow_joins(), [0; 3]);
-    }
-
-    /// Each join counts once, in the highest threshold its wait reached;
-    /// the reported counts are the joins at or over each threshold.
-    #[test]
-    fn role_timeline_counts_slow_joins_by_threshold() {
-        let timeline = RoleTimeline::new();
-        let record =
-            |wait_ns| timeline.record(0, &crate::acquisition::Timeline::default(), 0, 0, wait_ns);
-        for wait_ns in [
-            0, 249_999, 250_000, 999_999, 1_000_000, 3_999_999, 4_000_000, 90_000_000,
-        ] {
-            record(wait_ns);
-        }
-        assert_eq!(timeline.slow_joins(), [6, 4, 2]);
-        assert_eq!(
-            timeline
-                .slow
-                .each_ref()
-                .map(|count| count.load(Ordering::Relaxed)),
-            [2, 2, 2]
-        );
-    }
-
-    #[test]
-    fn readiness_waits_compete_with_joins_without_claiming_collection_stalls() {
-        reset_hour_joins();
-        record_hour_join(
-            1,
-            10,
-            4,
-            #[cfg(feature = "callback_profile")]
-            Default::default(),
-            #[cfg(feature = "callback_profile")]
-            None,
-        );
-        let completion = crate::acquisition_diagnostics::Completion {
-            identity: crate::acquisition_diagnostics::Identity {
-                role: 2,
-                ..Default::default()
-            },
-            ticket: crate::acquisition::Ticket::diagnostic(1, 3, 4),
-        };
-        record_readiness_wait(100, Default::default(), Some(completion), false);
-        record_hour_join(
-            3,
-            100,
-            8,
-            #[cfg(feature = "callback_profile")]
-            Default::default(),
-            #[cfg(feature = "callback_profile")]
-            None,
-        );
-        let join = take_hour_joins().slowest.unwrap();
-        assert_eq!(join.role, Some(2));
-        assert!(join.readiness);
-        assert_eq!(join.wait_ns, 100);
-        assert_eq!(join.collect_stall_ns, 0);
-        reset_hour_joins();
-        assert!(take_hour_joins().slowest.is_none());
-    }
-
-    /// A job published before its join stalls from the join's begin to its
-    /// collection; one published during it, from its publication. The first
-    /// finish-lock wait and the worker's wait to publish add up apart, and a
-    /// job never published (rejected or inline work) is not counted.
-    #[test]
-    fn join_costs_split_collection_from_the_unfinished_body() {
-        let costs = JoinCosts::new();
-        let ns = |ticks: i64| ticks as u64 * 100;
-        // Ready before its join at 2_000; collected 3_000 ticks later.
-        costs.record(
-            &crate::acquisition::Timeline {
-                queued_qpc: 100,
-                body_begin_qpc: 200,
-                body_end_qpc: 1_000,
-                published_qpc: 1_040,
-                collected_qpc: 5_000,
-                finish_lock_ticks: 2_900,
-                growths: 0,
-                caller: false,
-                thread_work: None,
-            },
-            2_000,
-            ns,
-        );
-        // Published at 6_500 during its join from 6_000; collected at 6_510.
-        costs.record(
-            &crate::acquisition::Timeline {
-                queued_qpc: 100,
-                body_begin_qpc: 300,
-                body_end_qpc: 6_490,
-                published_qpc: 6_500,
-                collected_qpc: 6_510,
-                finish_lock_ticks: 1,
-                growths: 0,
-                caller: false,
-                thread_work: None,
-            },
-            6_000,
-            ns,
-        );
-        costs.record(&crate::acquisition::Timeline::default(), 7_000, ns);
-        assert_eq!(costs.totals(), (2, 1, [2_901, 3_000 + 10, 40 + 10], [1, 0]));
-    }
-}
 
 #[cfg(test)]
 mod tests;

@@ -33,8 +33,6 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryRetiredCharacters,
     TableId::AvailableAdvisors,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("active and retired character records", 1, &[1, 3])];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

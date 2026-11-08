@@ -93,10 +93,3 @@ pub unsafe fn release() {
         EDITS.release();
     }
 }
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "watches": WATCHES.status(), "entry_edits": EDITS.status(), "read_roots": READS.load(Ordering::Relaxed),
-        "carried_roots": CARRIED.load(Ordering::Relaxed), "refused_roots": REFUSED.load(Ordering::Relaxed),
-        "scope": "deployed division histories and medals; only new or writer-dirty roots are read; each refused summary row retains the named acquisition reason",
-    })
-}

@@ -72,8 +72,6 @@ fn a_locations_region_is_read_every_hour_and_authenticated_once() {
     transport.push(&memory, 0, 0, &transfer(LOCATION));
     transport.push(&memory, 0, 1, &transfer(LOCATION));
     assert_eq!(transport.pending, [(0, Ok((7, held))), (1, Ok((7, held)))]);
-    let [carried, read, ..] = transport.counts();
-    assert_eq!((carried, read), (1, 1));
 
     // The map editor moved the province to another region.
     let moved = REGION + 0x400;
@@ -152,6 +150,4 @@ fn each_owner_is_one_query_over_its_distinct_regions() {
             (4, Some("owner 7 in region 3")),
         ]
     );
-    let [.., owners, pairs] = transport.counts();
-    assert_eq!((owners, pairs), (2, 3));
 }

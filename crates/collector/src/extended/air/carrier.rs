@@ -9,40 +9,6 @@ use engine_native::{
     cair_base::CarrierRegistration, cair_base::CountryOccurrence,
 };
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-const SEED_REFUSALS: [&str; 9] = [
-    "carrier exact index capacity",
-    "carrier exact index invalid",
-    "carrier original census overflowed",
-    "carrier census byte range invalid",
-    "carrier census repeated failed observation",
-    "carrier census repeated observation changed",
-    "carrier census seed capacity",
-    "carrier census source span invalid",
-    "carrier census unclassified seed refusal",
-];
-static SEED_REFUSAL_COUNTS: [AtomicU64; SEED_REFUSALS.len()] =
-    [const { AtomicU64::new(0) }; SEED_REFUSALS.len()];
-
-/// Acquisition counts once; owned decode retains the verdict without counting
-/// again. A future seed refusal still has a counter until given its own slot.
-pub(super) fn note_seed_refusal(reason: &'static str) {
-    let index = SEED_REFUSALS
-        .iter()
-        .position(|candidate| *candidate == reason)
-        .unwrap_or(SEED_REFUSALS.len() - 1);
-    SEED_REFUSAL_COUNTS[index].fetch_add(1, Ordering::Relaxed);
-}
-
-pub(crate) fn capture_status() -> impl serde::Serialize {
-    std::array::from_fn::<_, { SEED_REFUSALS.len() }, _>(|index| {
-        (
-            SEED_REFUSALS[index],
-            SEED_REFUSAL_COUNTS[index].load(Ordering::Relaxed),
-        )
-    })
-}
 
 pub(crate) struct Bases {
     pub rows: Vec<CarrierBase>,

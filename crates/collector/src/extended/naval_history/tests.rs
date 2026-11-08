@@ -101,13 +101,6 @@ fn railway_optional_projection_status_and_failed_growth_keep_their_domains() {
         rows::Recorded::Value(Some(rows::RailwayBuildingState { building: None }))
     );
     assert_eq!(cooldowns[2].building, rows::Recorded::Value(None));
-    let mut work = crate::acquisition_states::InputWork::default();
-    captured.observe_railway_inputs(&mut work).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["captured"], 1);
-    assert_eq!(status["unqueried"], 1);
-    assert_eq!(status["refused"], 1);
-    assert_eq!(status["refusals"]["rail health unreadable"], 1);
     captured.fail_late_capture(0, false, "late worker failed");
     assert_eq!(captured.rail_buildings_required, 5);
     assert_eq!(captured.railway_building(3), None);
@@ -175,23 +168,12 @@ fn selected_railway_projection_counts_refusals_and_retains_arena_demand_through_
         .into()
     );
     assert_eq!(rows[0].selection_hour, Some(12).into());
-    let mut work = crate::acquisition_states::InputWork::default();
-    captured.observe_railway_inputs(&mut work).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["captured"], 3);
-    assert_eq!(status["refusals"]["ETA-only healthy value unavailable"], 1);
     captured.rail_buildings.rows[0]
         .selection
         .as_mut()
         .unwrap()
         .levels = Err("selected railway level capacity insufficient");
     assert_eq!(captured.railway_selection(1).unwrap().levels, None);
-    captured.observe_railway_inputs(&mut work).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(
-        status["refusals"]["selected railway level capacity insufficient"],
-        1
-    );
     captured.fail_late_capture(12, true, "late failed");
     assert_eq!(captured.railway_selection(1), None);
     assert_eq!(captured.rail_levels.required, 9);
@@ -894,8 +876,6 @@ fn hourly_land_theatre_headers_need_no_daily_details_or_wing_storage() {
             &mut job,
         );
         assert!(copy.raw_ok && !job.grow_for_next());
-        assert!(copy.raw_bytes[0] > 0);
-        assert_eq!(&copy.raw_bytes[1..6], &[0; 5]);
         let mut ticks = [0; NAVAL_PACK_N];
         decode_naval_payload(&mut captured, kit::BASE, &job, &mut ticks);
         assert_eq!(captured.land.outcome, expected.land_outcome);
@@ -1182,7 +1162,7 @@ fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
                 &mut supremacy,
             );
             assert!(!report.raw_ok && !supremacy.grow_for_next());
-            assert_eq!((report.copy_ticks, report.raw_bytes), ([0], [0]));
+            assert_eq!(report.copy_ticks, [0]);
             captured.fail_supremacy_capture("worker failed");
             let mut ticks = [0];
             captured.decode_supremacy_payload(0, &supremacy, &mut ticks);
@@ -1200,7 +1180,7 @@ fn supremacy_and_sunk_offslot_jobs_skip_reads_and_decoding() {
                 &mut sunk,
             );
             assert!(!report.raw_ok && !sunk.grow_for_next());
-            assert_eq!((report.copy_ticks, report.raw_bytes), ([0], [0]));
+            assert_eq!(report.copy_ticks, [0]);
             captured.fail_sunk_capture("worker failed");
             let mut ticks = [0];
             captured.decode_sunk_payload(0, &sunk, &mut ticks);
@@ -1402,7 +1382,7 @@ fn supremacy_split_copy_matches_direct_walk() {
         );
         assert_eq!(capture.finish(), read_accounting::ZERO);
         assert!(!skipped.raw_ok && !job.grow_for_next());
-        assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0], [0]));
+        assert_eq!(skipped.copy_ticks, [0]);
     }
     assert_eq!(refreshes, 1);
     let measured = counts[anchor.index()];
@@ -1552,7 +1532,7 @@ fn sunk_split_copy_matches_direct_walk() {
         );
         assert_eq!(capture.finish(), read_accounting::ZERO);
         assert!(!skipped.raw_ok && !job.grow_for_next());
-        assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0], [0]));
+        assert_eq!(skipped.copy_ticks, [0]);
     }
     assert_eq!(refreshes, 1);
     let measured = counts[anchor.index()];

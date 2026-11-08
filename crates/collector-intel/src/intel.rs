@@ -78,22 +78,6 @@ impl OperativeRefusals {
             self.first_state.store(2, Release);
         }
     }
-
-    fn diagnostics(&self) -> impl serde::Serialize {
-        use std::sync::atomic::Ordering::{Acquire, Relaxed};
-        let first = (self.first_state.load(Acquire) == 2).then(|| crate::status::status!({
-            "operative": self.id.load(Relaxed),
-            "roster": self.roster.load(Relaxed),
-            "kind": self.kind.load(Relaxed),
-            "reason": if self.reason.load(Relaxed) == 1 { "active operative operation reference is null" } else { "active operative operation reference is stale" },
-        }));
-        crate::status::status!({
-            "scope": "cumulative refused membership observations; repeated samples count again; healthy rows retained in truncated table",
-            "refused_rows": self.rows.load(Relaxed),
-            "samples_with_refusals": self.samples.load(Relaxed),
-            "first_refusal": first,
-        })
-    }
 }
 
 static OPERATIVE_REFUSALS: OperativeRefusals = OperativeRefusals::new();
@@ -207,23 +191,6 @@ static NETWORK_SUMMARY_CACHE: std::sync::Mutex<NetworkSummaryCache> =
         resets: 0,
     });
 
-pub fn network_summary_capture_diagnostics() -> impl serde::Serialize {
-    let cache = NETWORK_SUMMARY_CACHE
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    crate::status::status!({
-        "shared_cache_bytes": cache.values.allocated_bytes(),
-        "scope": "one worker cache per attachment; native aggregate payload read only on daily/forced refresh or a newly authenticated network; intervening censuses reuse certified payload and observe current membership",
-    })
-}
-
-pub fn operative_capture_diagnostics() -> impl serde::Serialize {
-    crate::status::status!({
-        "membership": OPERATIVE_REFUSALS.diagnostics(),
-        "mission_effect_cache_bytes": crate::operative_effects::allocated_bytes(),
-    })
-}
-
 static AGENCY_UPGRADE_REFUSALS: [std::sync::atomic::AtomicU64;
     agency_upgrade_levels::STATUS_COUNT] =
     [const { std::sync::atomic::AtomicU64::new(0) }; agency_upgrade_levels::STATUS_COUNT];
@@ -231,21 +198,6 @@ static AGENCY_UPGRADE_STORAGE_OMISSIONS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static AGENCY_UPGRADE_PEAK_DEMAND: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-
-pub fn agency_upgrade_capture_diagnostics() -> impl serde::Serialize {
-    use std::sync::atomic::Ordering::Relaxed;
-    let counts = AGENCY_UPGRADE_REFUSALS
-        .each_ref()
-        .map(|count| count.load(Relaxed));
-    crate::status::status!({
-        "scope": "cumulative refused acquired-entry identities; repeated samples count again; raw entries retained; census truncation counts only storage omissions",
-        "refusals_by_name": crate::status::map(counts.into_iter().enumerate().skip(1).map(|(status, count)| (
-            agency_upgrade_levels::status_name(status as u8), count,
-        ))),
-        "agency upgrade row capacity omitted entries": AGENCY_UPGRADE_STORAGE_OMISSIONS.load(Relaxed),
-        "peak_required_rows": AGENCY_UPGRADE_PEAK_DEMAND.load(Relaxed),
-    })
-}
 
 fn operative_storage_outcome(outcome: Outcome, refused: u32) -> Outcome {
     match outcome {
@@ -261,7 +213,6 @@ fn operative_storage_outcome(outcome: Outcome, refused: u32) -> Outcome {
 }
 
 mod demand;
-pub use demand::status as demand_status;
 mod flag_store;
 pub use flag_store::{FlagReuse, FlagStore};
 mod variable_store;
@@ -327,21 +278,6 @@ pub struct CaptureContext {
 pub struct CaptureReport {
     pub ticks: [u64; N],
 }
-
-/// The operation walker supplies both tables in one census, and one relation
-/// matrix pass supplies the cached opinions and the typed tuples. Each group's
-/// entire cost is charged once to its anchor.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("agency scalars and acquired upgrade levels", 3, &[3, 17]),
-    ("operations and assigned slots", 9, &[9, 10]),
-    ("network state rows and national caches", 6, &[6, 21]),
-    (
-        "source contributions, pools and held references",
-        CONTRIBUTIONS_SLOT,
-        &[CONTRIBUTIONS_SLOT, SOURCES_SLOT],
-    ),
-    ("relation opinions and typed tuples", 14, &[13, 14]),
-];
 
 pub const GLOBAL_SCOPE: u8 = 0;
 pub const COUNTRY_SCOPE: u8 = 1;
@@ -5114,23 +5050,6 @@ mod tests {
     }
 
     #[test]
-    fn source_read_cost_is_charged_to_sources_without_network_auxiliaries() {
-        let (_, anchor, members) = READ_GROUPS
-            .iter()
-            .find(|(name, _, _)| *name == "source contributions, pools and held references")
-            .unwrap();
-        assert_eq!(TABLES[*anchor], TableId::IntelContributions);
-        assert_eq!(
-            members
-                .iter()
-                .map(|&index| TABLES[index])
-                .collect::<Vec<_>>(),
-            [TableId::IntelContributions, TableId::IntelSources]
-        );
-        assert!(!members.contains(&table_slot(TableId::IntelNetworkAuxiliaries)));
-    }
-
-    #[test]
     fn network_summary_without_a_writer_certificate_never_adds_off_cadence_payload_reads() {
         use engine_intelligence::{
             clocal_intel_network as local, cstrategic_operative as strategic,
@@ -6691,7 +6610,7 @@ mod tests {
     }
 
     #[test]
-    fn operative_refusals_keep_rows_and_count_named_diagnostics_without_storage_growth() {
+    fn operative_refusals_keep_rows_without_storage_growth() {
         let (_, mut capture) = small();
         capture.operatives.outcome = Outcome::Truncated {
             len: 1,
@@ -6720,16 +6639,6 @@ mod tests {
             operative_storage_outcome(capture.operatives.outcome, 2),
             Outcome::Rows { len: 1 }
         );
-        let diagnostics = OperativeRefusals::new();
-        diagnostics.observe(2, Some(refusal));
-        diagnostics.observe(2, Some(refusal));
-        let value = serde_json::to_value(diagnostics.diagnostics()).unwrap();
-        assert_eq!(value["refused_rows"], 4);
-        assert_eq!(value["samples_with_refusals"], 2);
-        assert_eq!(value["first_refusal"]["operative"], 99);
-        assert_eq!(value["first_refusal"]["roster"], 7);
-        assert_eq!(value["first_refusal"]["kind"], 2);
-        assert_eq!(value["first_refusal"]["reason"], refusal.reason);
         let mut capacity = Capacities {
             rows: [8; N],
             ..Capacities::default()

@@ -405,7 +405,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ShipModels];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 const OPTIONAL_REFUSAL_REASONS: [&str; 15] = [
     "ship subunit address overflow",

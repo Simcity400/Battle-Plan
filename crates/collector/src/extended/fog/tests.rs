@@ -529,14 +529,12 @@ fn free_fog_capture_checks_destination_capacity_before_any_live_observation() {
     for mut job in [RadarJob::with_storage(0, 8), RadarJob::with_storage(4, 0)] {
         let report = copy_radar_refresh(&NoReads, radar_ctx, &mut job);
         assert!(!report.raw_ok && !job.acquired);
-        assert_eq!(report.raw_bytes, [0]);
         assert!(job.grow_for_next());
     }
     let mut job = IntelJob::default();
     let ctx = captured.intel_copy_context(0, BASE);
     let report = copy_intel_refresh_with_divisions(&NoReads, ctx, &mut job, None);
     assert!(!report.raw_ok && !job.acquired);
-    assert_eq!(report.raw_bytes, [0]);
     assert!(job.grow_for_next());
 }
 

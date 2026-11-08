@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::AtomicU64;
 
 fn fixture(high: bool) -> Arc<Pipeline> {
     let pipeline = Arc::new(Pipeline::new());
@@ -20,7 +21,7 @@ fn change(pipeline: &Pipeline, high: bool) {
         },
         Ordering::SeqCst,
     );
-    pipeline.refresh(Caller::Callback);
+    pipeline.refresh();
 }
 
 fn apply(pipeline: &Pipeline, budget: &mut Budget, now: u64, native: &AtomicU32) {
@@ -48,8 +49,8 @@ fn pressure_is_early_targeted_and_only_during_capture() {
     assert_eq!(for_role(pipeline.pressure(), Role::Sizing as usize), 0);
     pipeline.store_returned();
     assert_eq!(pipeline.pressure(), 0);
-    pipeline.claim(0, Caller::Callback);
-    pipeline.claim(1, Caller::Callback);
+    pipeline.claim(0);
+    pipeline.claim(1);
     assert_eq!(for_role(pipeline.pressure(), Role::Spool as usize), 1);
     drop(callback);
     assert_eq!(pipeline.pressure(), 0);
@@ -179,8 +180,14 @@ fn failed_syscalls_stay_unknown_and_retry_without_another_refresh() {
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(pipeline.pending.load(Ordering::SeqCst));
-    let status = serde_json::to_value(pipeline.status(1_000_000_000)).unwrap();
-    assert!(status["threads"][0]["applied_priority"].is_null());
+    assert_eq!(
+        pipeline.targets[Role::Decode as usize]
+            .get()
+            .unwrap()
+            .applied
+            .load(Ordering::SeqCst),
+        UNKNOWN
+    );
     let native = AtomicU32::new(0);
     apply(&pipeline, &mut budget, 0, &native);
     assert_eq!(native.load(Ordering::SeqCst), 2);
@@ -210,11 +217,9 @@ fn a_pass_is_bounded_to_five_setters_and_steady_refreshes_do_not_set_or_wake() {
         },
     );
     assert_eq!(calls.load(Ordering::SeqCst), 5);
-    let wakes = pipeline.wakes.load(Ordering::Relaxed);
     for _ in 0..20 {
-        pipeline.refresh(Caller::Callback);
+        pipeline.refresh();
     }
-    assert_eq!(pipeline.wakes.load(Ordering::Relaxed), wakes);
     assert!(!pipeline.pending.load(Ordering::SeqCst));
     pipeline.reconcile(&mut budget, || 0, |_, _, _| panic!("unchanged setter"));
     drop(callback);
@@ -227,13 +232,6 @@ fn a_pass_is_bounded_to_five_setters_and_steady_refreshes_do_not_set_or_wake() {
         },
     );
     assert_eq!(calls.load(Ordering::SeqCst), 10);
-    pipeline.refresh(Caller::Callback);
-    let status = serde_json::to_value(pipeline.status(1_000_000_000)).unwrap();
-    if !cfg!(feature = "callback_profile") {
-        assert!(status["refresh_cost"][0]["wall_ns"].is_null());
-        assert!(status["refresh_cost"][0]["cycles"].is_null());
-        assert_eq!(status["refresh_cost"][0]["cycle_samples"], 0);
-    }
 }
 
 #[test]
@@ -290,7 +288,7 @@ fn callback_end_demotes_mid_item_and_notifications_and_unwind_allocate_nothing()
     let native = AtomicU32::new(0);
     apply(&pipeline, &mut budget, 0, &native);
     crate::test_support::with_allocations_denied(|| {
-        pipeline.refresh(Caller::Callback);
+        pipeline.refresh();
         let waiting = pipeline.wait_for_store();
         waiting.retry();
         drop(waiting);
@@ -376,12 +374,12 @@ fn availability_publication_cannot_undo_a_racing_claim() {
     assert_eq!(pipeline.free_count(), 1);
     assert_eq!(for_role(pipeline.pressure(), 0), 2);
     pipeline.publish(1);
-    pipeline.claim(0, Caller::Callback);
+    pipeline.claim(0);
     assert_eq!(pipeline.free_count(), 1);
-    pipeline.claim(1, Caller::Callback);
+    pipeline.claim(1);
     assert_eq!(pipeline.free_count(), 0);
     pipeline.publish(0);
-    pipeline.claim(0, Caller::Callback);
+    pipeline.claim(0);
     assert_eq!(pipeline.free_count(), 0);
     pipeline.publish(0);
     pipeline.publish(1);

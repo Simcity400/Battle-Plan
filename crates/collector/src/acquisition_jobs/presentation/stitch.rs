@@ -15,7 +15,6 @@ struct State {
         division_presentation::MAX_STATUS_PARTS],
     pending: Option<RangeTicket>,
     failure: Option<Failure>,
-    last_publish: i64,
     final_ranges: bool,
 }
 impl PresentationFanIn {
@@ -35,18 +34,17 @@ impl PresentationFanIn {
                 parts: std::array::from_fn(|_| None),
                 pending: None,
                 failure: None,
-                last_publish: 0,
                 final_ranges: false,
             }),
         }
     }
     pub(in crate::acquisition_jobs) fn open(&self) {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         assert!(state.closed && state.parent.is_none() && state.pending.is_none());
         state.admission_open = true;
     }
     pub(super) fn arm(&self, count: usize, final_ranges: bool) -> bool {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         if !state.admission_open {
             return false;
         }
@@ -58,7 +56,6 @@ impl PresentationFanIn {
         );
         state.closed = false;
         state.failure = None;
-        state.last_publish = 0;
         state.count = count;
         state.remaining = count + 1;
         state.final_ranges = final_ranges;
@@ -69,7 +66,7 @@ impl PresentationFanIn {
         request: &mut PresentationRequest,
         report: Result<Report, Failure>,
     ) {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         state.failure = report.err();
         state.parent = Some(PresentationRequest {
             countries: Arc::clone(&request.countries),
@@ -93,7 +90,7 @@ impl PresentationFanIn {
         part: Option<division_presentation::StatusWork>,
         report: Result<Report, Failure>,
     ) {
-        lock_callback(&self.state, Site::Ranges).parts[index] = part.map(|part| (part, report));
+        lock_unpoisoned(&self.state).parts[index] = part.map(|part| (part, report));
     }
     /// All parent/range tickets have been collected here, so a delayed publisher
     /// can no longer race the callback's original ordered fallback.
@@ -104,7 +101,7 @@ impl PresentationFanIn {
         Option<PresentationRequest>,
         Option<Failure>,
     ) {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         if state.pending.is_none() {
             Self::restore(&mut state);
         }
@@ -134,14 +131,14 @@ impl PresentationFanIn {
             .restore_preparation_store(parent.army_stats.as_deref_mut());
     }
     pub(crate) fn close(&self) {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         state.admission_open = false;
         state.closed = true;
     }
     pub(crate) fn drain(&self) {
-        let pending = lock_callback(&self.state, Site::Ranges).pending.take();
+        let pending = lock_unpoisoned(&self.state).pending.take();
         super::drain(&self.executor, &self.calibration, pending);
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         for part in &mut state.parts {
             *part = None;
         }
@@ -150,18 +147,17 @@ impl PresentationFanIn {
 }
 impl acquisition::Publication for PresentationFanIn {
     fn failed(&self) {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+        let mut state = lock_unpoisoned(&self.state);
         state.admission_open = false;
         state.closed = true;
         state.failure = Some(Failure::Panicked);
     }
-    fn published(&self, at: i64) {
-        let mut state = lock_callback(&self.state, Site::Ranges);
+    fn published(&self) {
+        let mut state = lock_unpoisoned(&self.state);
         if state.closed {
             return;
         }
         state.remaining -= 1;
-        state.last_publish = state.last_publish.max(at);
         if state.remaining != 0 {
             return;
         }
@@ -187,8 +183,6 @@ impl acquisition::Publication for PresentationFanIn {
             &executor,
             &self.calibration,
             job,
-            state.last_publish,
-            if state.final_ranges { 2 } else { 1 },
         );
         let wake = !pending.parked;
         state.pending = Some(pending);

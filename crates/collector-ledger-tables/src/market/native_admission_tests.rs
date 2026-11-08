@@ -1341,9 +1341,7 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
         let mut encoder = FrameEncoder::new();
         let mut decoder = FrameDecoder::for_tables(&TABLES);
         boundary(99);
-        let slots = serde_json::to_value(producer::status()).unwrap()["prices"]["capacity"]
-            .as_u64()
-            .unwrap() as usize;
+        let slots = session.country_domain_capacity(producer::PRICES);
         producer::presize(16, slots / 2);
         memory.clock(100);
         producer::boundary(
@@ -1356,8 +1354,7 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
         session.defer_country_domain_retirement(producer::PRICES);
         memory.start();
         record(&memory, 100, &mut encoder, &mut decoder);
-        let initial = serde_json::to_value(producer::status()).unwrap();
-        let slots = initial["prices"]["capacity"].as_u64().unwrap() as usize;
+        let slots = session.country_domain_capacity(producer::PRICES);
         let bucket = (0..slots)
             .find(|&bucket| {
                 [0_u32, 5000].into_iter().all(|owner| {
@@ -1423,15 +1420,9 @@ fn offered_country_growth_survives_a_draining_predecessor_and_recovers_after_col
             );
             assert!(matches!(pack.outcomes()[1], Outcome::Rows { .. }));
             assert!(matches!(pack.outcomes()[3], Outcome::Rows { .. }));
-            let status = serde_json::to_value(producer::status()).unwrap();
             assert_eq!(
-                status["prices"]["capacity"].as_u64().unwrap() as usize,
+                session.country_domain_capacity(producer::PRICES),
                 slots * if hour == recovered_hour { 2 } else { 1 }
-            );
-            assert_eq!(
-                status["prices"]["clears"].as_u64().unwrap(),
-                initial["prices"]["clears"].as_u64().unwrap()
-                    + u64::try_from((hour.min(recovered_hour - 1) - 101).max(0)).unwrap()
             );
             let frame = encode_capture(pack, hour, &mut encoder, &mut decoder);
             if hour == recovered_hour {

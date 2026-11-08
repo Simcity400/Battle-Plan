@@ -78,26 +78,6 @@ pub fn record(reused: u64, read: u64, quiet_hours: u64) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(event_counts)
-            .map(|(site, n)| (site.name, n)),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "relation_changes"),
-        "poisoned": WATCHES.poisoned(),
-        "reused_countries": reads[0],
-        "read_countries": reads[1],
-        "quiet_hours": reads[2],
-        "events": events,
-        "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a quiet hour reuses every country's vectors without a read; any other hour copies only the countries a writer touched, whose slot changed or that were never observed, and reuses the rest"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

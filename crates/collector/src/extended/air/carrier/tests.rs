@@ -761,18 +761,6 @@ impl engine_native::Memory for ChangingCensus<'_> {
     }
 }
 
-fn seed_refusal_count(reason: &str) -> u64 {
-    let status = serde_json::to_value(super::super::carrier_capture_status()).unwrap();
-    status
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|entry| entry[0].as_str() == Some(reason))
-        .unwrap()[1]
-        .as_u64()
-        .unwrap()
-}
-
 fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
     use super::super::air_bases_test_kit as kit;
     let mut bytes = coherent_carrier_scale_fixture(3);
@@ -801,7 +789,6 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
         2 => {}
         _ => unreachable!(),
     }
-    let before = seed_refusal_count(reason);
     let report = super::super::copy_air_bases_refresh(
         &memory,
         super::super::AirBasesCopyContext {
@@ -816,7 +803,6 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
     assert_eq!(job.log.fault, [false; 3]);
     assert_eq!(job.carrier.seed, Err(reason));
     assert_eq!(job.carrier.demand.failure, Some(reason));
-    assert_eq!(seed_refusal_count(reason), before + 1);
     if kind < 2 {
         assert!(
             job.carrier.grow_for_next(),
@@ -856,11 +842,6 @@ fn assert_counted_seed_refusal(kind: usize, reason: &'static str) {
     {
         assert_eq!(fog.carrier.packet(source), rows::Recorded::Value(None));
     }
-    assert_eq!(
-        seed_refusal_count(reason),
-        before + 1,
-        "owned decode does not count twice"
-    );
     assert_eq!(job.log.spans, source_spans);
     assert_eq!(job.log.bytes.as_ref(), source_bytes);
 }

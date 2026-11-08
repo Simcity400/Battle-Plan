@@ -211,6 +211,3 @@ pub unsafe fn release() {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({ "refused_operands": REFUSED.load(Ordering::Relaxed), "pools": OPERANDS.status(), "variant_terrain": VARIANTS.status(), "variant_lifetimes": LIFETIMES.status(), "state_context": STATES.status(), "forwarded_calls_active": VARIANT_ACTIVE.load(Ordering::Relaxed) })
-}

@@ -13,7 +13,6 @@ use super::characters::{Buffer, ability_row, valid, view, walk_abilities_growing
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ActiveAbilities];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Capacities {

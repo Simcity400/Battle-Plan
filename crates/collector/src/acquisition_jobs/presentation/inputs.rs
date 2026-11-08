@@ -6,9 +6,6 @@ pub(crate) struct PresentationInputs {
     executor: Weak<acquisition::Pool<Job, Report>>,
     calibration: Arc<SharedCalibration>,
     state: Mutex<State>,
-    hold_ticks: AtomicU64,
-    deferred_polls: AtomicU64,
-    trace: Mutex<Option<acquisition::idle_diagnostics::Inputs>>,
     #[cfg(test)]
     before_store: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>,
     #[cfg(test)]
@@ -33,10 +30,7 @@ struct State {
     movement: Option<PresentationMovementRequest>,
     speed_terms: Option<PresentationSpeedTermsRequest>,
     split: bool,
-    store_wait_ticks: u64,
-    last_publish: i64,
     store: Option<Arc<division_presentation::held_store::Slot>>,
-    trace: Option<acquisition::idle_diagnostics::Inputs>,
 }
 impl std::fmt::Debug for PresentationInputs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -55,9 +49,6 @@ impl PresentationInputs {
                 closed: true,
                 ..Default::default()
             }),
-            hold_ticks: AtomicU64::new(0),
-            deferred_polls: AtomicU64::new(0),
-            trace: Mutex::new(None),
             #[cfg(test)]
             before_store: std::sync::OnceLock::new(),
             #[cfg(test)]
@@ -73,9 +64,8 @@ impl PresentationInputs {
         store: Option<Arc<division_presentation::held_store::Slot>>,
         omit_status: bool,
     ) {
-        let mut state = lock_callback(&self.state, Site::Inputs);
+        let mut state = lock_unpoisoned(&self.state);
         assert!(state.closed && state.request.is_none() && state.pending.is_none());
-        self.deferred_polls.store(0, Ordering::Relaxed);
         *state = State {
             remaining: count + 1,
             count,
@@ -86,19 +76,16 @@ impl PresentationInputs {
         };
     }
     pub(super) fn store_master(&self, census: Census, report: Result<Report, Failure>) {
-        lock_callback(&self.state, Site::Inputs).master = Some((census, report));
+        lock_unpoisoned(&self.state).master = Some((census, report));
     }
     pub(super) fn store_part(&self, index: usize, census: Census, report: Result<Report, Failure>) {
-        lock_callback(&self.state, Site::Inputs).parts[index] = Some((census, report));
+        lock_unpoisoned(&self.state).parts[index] = Some((census, report));
     }
     pub(crate) fn try_close(&self) -> Option<ClosedInputs<'_>> {
         let mut state = match self.state.try_lock() {
             Ok(state) => state,
             Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(std::sync::TryLockError::WouldBlock) => {
-                self.deferred_polls.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
+            Err(std::sync::TryLockError::WouldBlock) => return None,
         };
         // Successful tickets can publish before their notifications run.
         if !state.closed
@@ -111,33 +98,19 @@ impl PresentationInputs {
                 .iter()
                 .all(|part| part.as_ref().is_some_and(|(_, report)| report.is_ok()))
         {
-            self.deferred_polls.fetch_add(1, Ordering::Relaxed);
             return None;
         }
         state.closed = true;
         Some(ClosedInputs(state))
     }
 
-    pub(crate) fn hold_ticks(&self) -> u64 {
-        self.hold_ticks.load(Ordering::Relaxed)
-    }
-
     pub(crate) fn close(&self) {
-        lock_callback(&self.state, Site::Inputs).closed = true;
+        lock_unpoisoned(&self.state).closed = true;
     }
     pub(crate) fn drain(&self) {
-        let pending = lock_callback(&self.state, Site::Inputs).pending.take();
+        let pending = lock_unpoisoned(&self.state).pending.take();
         super::drain(&self.executor, &self.calibration, pending);
-        let mut state = lock_callback(&self.state, Site::Inputs);
-        if let Some(mut trace) = self
-            .trace
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            trace.deferred_polls = self.deferred_polls.load(Ordering::Relaxed);
-            acquisition::idle_diagnostics::update(|hour| hour.inputs = Some(trace));
-        }
+        let mut state = lock_unpoisoned(&self.state);
         *state = State {
             closed: true,
             ..Default::default()
@@ -175,58 +148,25 @@ impl acquisition::Publication for PresentationInputs {
             hook();
         }
     }
-    fn published(&self, at: i64) {
+    fn published(&self) {
         let _ready = ReadyOnDrop(&self.executor);
-        let lock_begin = sampling::qpc();
-        let mut state = lock_callback(&self.state, Site::Inputs);
-        let acquired = sampling::qpc();
-        struct Hold<'a>(&'a AtomicU64, i64);
-        impl Drop for Hold<'_> {
-            fn drop(&mut self) {
-                self.0.fetch_add(
-                    sampling::qpc().saturating_sub(self.1).max(0) as u64,
-                    Ordering::Relaxed,
-                );
-            }
-        }
-        let hold = Hold(&self.hold_ticks, acquired);
-        #[cfg(feature = "callback_profile")]
-        let cycles = crate::callback_profile::thread_cycles();
-        let wake = self.publish_locked(&mut state, at, lock_begin, acquired);
+        let mut state = lock_unpoisoned(&self.state);
+        let wake = self.publish_locked(&mut state);
         if !state.closed {
             // A published ticket is not a settled continuation, especially on unwind.
             state.remaining -= 1;
         }
-        let mut trace = state.trace.take();
-        if let Some(trace) = &mut trace {
-            trace.unlock_begin_qpc = sampling::qpc();
-        }
-        drop(hold);
         drop(state);
-        if let Some(mut trace) = trace {
-            trace.unlock_qpc = sampling::qpc();
-            #[cfg(feature = "callback_profile")]
-            {
-                trace.thread_cycles = cycles
-                    .zip(crate::callback_profile::thread_cycles())
-                    .and_then(|(begin, end)| end.checked_sub(begin));
-            }
-            *self
-                .trace
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(trace);
-        }
         if wake && let Some(executor) = self.executor.upgrade() {
             executor.wake_workers(1);
         }
     }
 }
 impl PresentationInputs {
-    fn publish_locked(&self, state: &mut State, at: i64, lock_begin: i64, acquired: i64) -> bool {
+    fn publish_locked(&self, state: &mut State) -> bool {
         if state.closed {
             return false;
         }
-        state.last_publish = state.last_publish.max(at);
         if state.remaining != 1 {
             return false;
         }
@@ -244,14 +184,6 @@ impl PresentationInputs {
         let Some(executor) = self.executor.upgrade() else {
             return false;
         };
-        state.trace = Some(acquisition::idle_diagnostics::Inputs {
-            publisher_thread_id: unsafe {
-                windows_sys::Win32::System::Threading::GetCurrentThreadId()
-            },
-            lock_begin_qpc: lock_begin,
-            lock_acquired_qpc: acquired,
-            ..Default::default()
-        });
         let State {
             master,
             parts,
@@ -276,7 +208,6 @@ impl PresentationInputs {
             None
         };
         state.joined = true;
-        state.trace.as_mut().unwrap().merge_end_qpc = sampling::qpc();
         if state.omit_status {
             return false;
         }
@@ -288,8 +219,6 @@ impl PresentationInputs {
         // Do not delay the held first burst on the preceding decode's loan.
         // The last input publisher waits here, beside the independent jobs.
         if let Some(store) = &state.store {
-            let begin = sampling::qpc();
-            state.trace.as_mut().unwrap().store_begin_qpc = begin;
             #[cfg(test)]
             if let Some(hook) = self.before_store.get() {
                 hook();
@@ -300,9 +229,6 @@ impl PresentationInputs {
             if let Some(store) = request.army_stats.as_deref_mut() {
                 store.observations.take(&crate::army_stat_changes::Observer);
             }
-            let end = sampling::qpc();
-            state.trace.as_mut().unwrap().store_end_qpc = end;
-            state.store_wait_ticks = end.saturating_sub(begin).max(0) as u64;
             if request.army_stats.is_some() {
                 request.captured.enable_owned_settlement();
             }
@@ -315,7 +241,6 @@ impl PresentationInputs {
             .map_or(0, |inputs| inputs.outcome().len().min(inputs.seeds().len()));
         state.split =
             division_presentation::status_parts_for(divisions, request.captured.status_workers) > 1;
-        state.trace.as_mut().unwrap().submit_begin_qpc = sampling::qpc();
         let request = state.request.take().unwrap();
         let job = if state.split {
             Job::PresentationPrepare(request)
@@ -330,13 +255,7 @@ impl PresentationInputs {
         if let Some(hook) = self.before_submit.get() {
             hook();
         }
-        let pending = submit_retained(
-            &executor,
-            &self.calibration,
-            &mut submission.job,
-            state.last_publish,
-            0,
-        );
+        let pending = submit_retained(&executor, &self.calibration, &mut submission.job);
         let wake = !pending.parked;
         state.pending = Some(pending);
         wake
@@ -387,9 +306,6 @@ impl ClosedInputs<'_> {
             request.captured.restore_speed_terms(speed_terms.pass);
         }
         Some(request)
-    }
-    pub(crate) fn store_wait_ticks(&mut self) -> u64 {
-        self.0.store_wait_ticks
     }
     pub(crate) fn take_dispatched(
         &mut self,

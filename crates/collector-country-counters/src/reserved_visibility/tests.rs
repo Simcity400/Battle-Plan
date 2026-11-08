@@ -177,7 +177,7 @@ fn short_matrix_and_failed_prefix_skip_body_keep_full_demand_and_clear_previous_
 }
 
 #[test]
-fn same_pointer_forward_failure_is_not_retried_and_field_fault_is_counted_once() {
+fn same_pointer_forward_failure_is_not_retried() {
     let mut bytes = world(2);
     put64(
         &mut bytes,
@@ -210,16 +210,6 @@ fn same_pointer_forward_failure_is_not_retried_and_field_fault_is_counted_once()
     let packet = capture.projection().unwrap().unwrap();
     assert_eq!(packet.cells[0].unwrap().war, Some([0, 0]));
     assert_eq!(packet.cells[1].unwrap().war, None);
-    let mut work = Work::default();
-    capture.observe(&mut work).unwrap();
-    assert_eq!(work.field_faults, [0, 1, 0, 0]);
-    assert_eq!(work.refusals, [("slot-0 war retired byte unreadable", 1)]);
-    capture.reset();
-    capture.observe(&mut work).unwrap();
-    assert_eq!(
-        work.attempted, 1,
-        "clockless/reset capture never recounts an earlier attempt"
-    );
 }
 
 #[test]
@@ -256,12 +246,6 @@ fn cell_status_fault_is_local_and_partial_subject_preserves_order_and_fault() {
     assert!(
         packet.cells[2].is_none(),
         "unreached slots stay uncertified"
-    );
-    let mut work = Work::default();
-    capture.observe(&mut work).unwrap();
-    assert_eq!(
-        (work.cells_attempted, work.cells_refused, work.field_faults),
-        (2, 1, [0, 0, 1, 0])
     );
     assert_eq!(memory.attempts.get(), 1);
 }
@@ -429,7 +413,7 @@ fn failed_original_prefix_header_is_not_retried_for_a_positive_alias_to_zero() {
 }
 
 #[test]
-fn early_scalar_fault_survives_naming_refusal_and_equal_source_reason_counts_once() {
+fn early_scalar_fault_survives_naming_refusal() {
     let bytes = world(2);
     for (address, reason) in [
         (
@@ -446,34 +430,18 @@ fn early_scalar_fault_survives_naming_refusal_and_equal_source_reason_counts_onc
         let mut capture = Captured::new(2);
         let source = capture.prepare(&memory, Some(121), Some(observed), false);
         assert!(capture.projection().unwrap().is_none());
-        let mut work = Work::default();
-        capture.observe(&mut work).unwrap();
-        assert_eq!(work.scalar_faults, 1);
-        assert_eq!(
-            work.refusals
-                .iter()
-                .find(|entry| entry.0 == reason)
-                .unwrap()
-                .1,
-            1
-        );
+        assert_eq!(capture.scalar_reason, Some(reason));
         assert_eq!(
             memory.attempts.get(),
             1,
             "scalar diagnostics must not retry"
         );
         drop(source);
-        capture.reset();
-        capture.observe(&mut work).unwrap();
-        assert_eq!(
-            work.attempted, 1,
-            "clockless reset never recounts the earlier attempt"
-        );
     }
 }
 
 #[test]
-fn reverse_military_field_fault_is_counted_without_withholding_other_cell_inputs() {
+fn reverse_military_field_fault_withholds_no_other_cell_input() {
     let bytes = world(2);
     let memory = memory(&bytes, Some(status(0) + crelation_status::MILITARY_ACCESS));
     let observed = observation(&memory);
@@ -486,13 +454,6 @@ fn reverse_military_field_fault_is_counted_without_withholding_other_cell_inputs
     assert_eq!(native.military_access, None);
     assert_eq!(native.war, Some([0, 0]));
     assert_eq!(native.target, Some(0));
-    let mut work = Work::default();
-    capture.observe(&mut work).unwrap();
-    assert_eq!(work.field_faults, [0, 0, 0, 1]);
-    assert_eq!(
-        work.refusals,
-        [("reverse-zero military access pointer unreadable", 1)]
-    );
     assert_eq!(memory.attempts.get(), 1);
 }
 

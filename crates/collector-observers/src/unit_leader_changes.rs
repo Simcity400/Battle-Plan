@@ -180,27 +180,6 @@ pub fn record(counts: &Counts, leaders: usize) {
     LEADERS.store(leaders, Ordering::Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .map(|site| site.name)
-            .chain(LIFETIMES)
-            .zip(WATCHES.calls.iter().chain(&WATCHES.lifetimes))
-            .map(|(name, calls)| (name, calls.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "unit_leader_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_leaders": reads[0],
-        "read_leaders": reads[1],
-        "quiet_hours": reads[2],
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; on a quiet roster hour a leader's UnitLeaders row is carried, without reading the leader, while the role census names it at the held address for the held character and no hooked writer touched it since the held read (events: each patched site's calls, and the naval tree family's forwarded construct, copy_construct and destroy calls); every other leader is read and its row held; hours that read the whole roster read every leader"
-    })
-}
 
 /// Observe while this family's patches and the forwarder's are enabled.
 /// Enabling starts a new epoch, so nothing held from before a gap certifies.

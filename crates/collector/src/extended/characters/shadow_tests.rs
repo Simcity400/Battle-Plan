@@ -63,9 +63,6 @@ fn character_shadow_exact_hits_keep_current_arcs_and_ignore_unused_pool_tails() 
             shadow.characters.bytes.as_ptr()
         )
     );
-    for stats in shadow.statistics() {
-        assert_eq!((stats.hits, stats.misses), (1, 1));
-    }
     assert_eq!(shadow.characters.rows.len(), 2);
     assert_eq!(shadow.characters.bytes, [9, 0, 0xff, b'b', b'c', b'd']);
     assert!(matches!(
@@ -225,7 +222,6 @@ fn character_shadow_offhours_branch_and_allocation_identity_are_not_inferred_fro
     let first = character_shadow_fixture(9);
     let mut shadow = CharacterShadow::default();
     let cached = shared(&inputs(&first, &mut shadow, None, 1));
-    let stats = shadow.statistics();
     let mut skipped = character_shadow_fixture(99);
     for outcome in [
         &mut skipped.characters.rows.outcome,
@@ -238,7 +234,6 @@ fn character_shadow_offhours_branch_and_allocation_identity_are_not_inferred_fro
         };
     }
     assert_canonical(&skipped, &inputs(&skipped, &mut shadow, Some(&cached), 1));
-    assert_eq!(shadow.statistics(), stats);
     let hit = shared(&inputs(&first, &mut shadow, Some(&cached), 1));
     assert!(cached.iter().zip(&hit).all(|(a, b)| Arc::ptr_eq(a, b)));
     let replaced = cached.each_ref().map(|rows| Arc::new((**rows).clone()));
@@ -304,32 +299,4 @@ fn character_shadow_empty_rows_strings_and_unselected_dynamic_rows_remain_exact(
             .zip(shared(&hit))
             .all(|(a, b)| Arc::ptr_eq(a, &b))
     );
-}
-
-#[test]
-fn character_shadow_capacity_and_counters_survive_invalidation_truthfully() {
-    let first = character_shadow_fixture(9);
-    let mut shadow = CharacterShadow::default();
-    let cached = shared(&inputs(&first, &mut shadow, None, 1));
-    shadow.characters.rows.reserve(20);
-    shadow.characters.bytes.reserve(31);
-    let stats = shadow.statistics();
-    assert_eq!(
-        stats[0].row_capacity_bytes,
-        shadow.characters.rows.capacity() * size_of::<ccharacter::Row>()
-    );
-    assert_eq!(
-        stats[0].arena_capacity_bytes,
-        shadow.characters.bytes.capacity()
-    );
-    assert_eq!(stats[1].arena_capacity_bytes, 0);
-    let _branch = inputs(&first, &mut shadow, None, 2);
-    for (before, after) in stats.into_iter().zip(shadow.statistics()) {
-        assert_eq!(after.hits, 0);
-        assert_eq!(after.misses, 2);
-        assert_eq!(before.row_capacity_bytes, after.row_capacity_bytes);
-        assert_eq!(before.arena_capacity_bytes, after.arena_capacity_bytes);
-    }
-    drop(cached);
-    assert!(shadow.characters.output.upgrade().is_some());
 }

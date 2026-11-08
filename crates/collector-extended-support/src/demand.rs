@@ -1,58 +1,7 @@
-//! Sizing-read contracts the extended capture families share: failed-observation
-//! counters, a census outcome's storage demand and the live world they read.
+//! Sizing-read contracts the extended capture families share: a census
+//! outcome's storage demand and the live world they read.
 
 use engine_native::{Memory, cgame_state, walk::Outcome};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
-};
-
-pub struct DemandFailures {
-    count: AtomicU64,
-    last_reason: Mutex<Option<&'static str>>,
-}
-
-impl Default for DemandFailures {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl DemandFailures {
-    pub const fn new() -> Self {
-        Self {
-            count: AtomicU64::new(0),
-            last_reason: Mutex::new(None),
-        }
-    }
-
-    /// An unreadable sizing observation adds no hint, preserving the existing
-    /// capacities. It is counted separately from a successful empty census.
-    pub fn observe<T>(&self, demand: Result<T, &'static str>) -> Result<T, &'static str> {
-        match demand {
-            Ok(demand) => Ok(demand),
-            Err(reason) => {
-                *self
-                    .last_reason
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
-                self.count.fetch_add(1, Ordering::Relaxed);
-                Err(reason)
-            }
-        }
-    }
-
-    pub fn diagnostics(&self) -> impl serde::Serialize {
-        let last_reason = *self
-            .last_reason
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::status::status!({
-            "failed_observations": self.count.load(Ordering::Relaxed),
-            "last_reason": last_reason,
-        })
-    }
-}
 
 pub fn rows(outcome: Outcome) -> Result<usize, &'static str> {
     match outcome {

@@ -24,10 +24,7 @@ use replay_data::rows::{
     DivisionStatusRow, NameOperands, Recorded, TableId, Witnessed, tables,
 };
 use replay_frame::frame::TableInput;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 mod daily_status;
 pub(crate) mod held_store;
@@ -49,77 +46,6 @@ pub(crate) fn status_parts_for(divisions: usize, workers: usize) -> usize {
 pub const N: usize = 7 + speed_terms::N;
 /// The passes inside the DivisionStatus acquisition span.
 pub(crate) const PHASES: usize = 23;
-pub(crate) const PHASE_NAMES: [&str; PHASES] = [
-    "status",
-    "dig_in",
-    "naming",
-    "prepare_sources",
-    "prepare_certify",
-    "prepare_native",
-    "sources_ordered",
-    "sources_prune",
-    "sources_variants",
-    "sources_publish",
-    "certify_setup",
-    "certify_ordered",
-    "certify_finish",
-    "prepare_attack_plan",
-    "decode_sources",
-    "decode_attack",
-    "decode_stitch",
-    "decode_scalars",
-    "decode_speed_terms",
-    "decode_movement",
-    "sources_owned_gate",
-    "sources_fallback",
-    "certification_native_fallback",
-];
-// The local-refusal count is a subset of owned admission, not another pass.
-static SOURCE_ADMISSIONS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
-/// Ordered hours by the first condition that refused owned settlement.
-const ORDERED_REASONS: [&str; 13] = [
-    "owned settlement off",
-    "preparation not ready",
-    "no divisions",
-    "no army stat store",
-    "no boundary",
-    "boundary failed",
-    "world epoch",
-    "lifetime epoch",
-    "retired variants",
-    "no variant capability",
-    "part sources not ready",
-    "part rows short",
-    "part reads incomplete",
-];
-static ORDERED_BY_REASON: [AtomicU64; ORDERED_REASONS.len()] =
-    [const { AtomicU64::new(0) }; ORDERED_REASONS.len()];
-fn count_ordered(reason: &'static str) {
-    if let Some(index) = ORDERED_REASONS.iter().position(|known| *known == reason) {
-        ORDERED_BY_REASON[index].fetch_add(1, Ordering::Relaxed);
-    }
-}
-pub(crate) fn source_admission_data() -> impl serde::Serialize {
-    let [owned, local_refusal, ordered, unavailable] =
-        SOURCE_ADMISSIONS
-            .each_ref()
-            .map(|count| count.load(Ordering::Relaxed));
-    crate::status::status!({
-        "owned": owned,
-        "owned_local_province_refusal": local_refusal,
-        "ordered": ordered,
-        "unavailable": unavailable,
-        "incomplete_reads": crate::status::map(
-            collector_division_parts::panel_sources::incomplete_read_counts().into_iter()
-        ),
-        "ordered_by_reason": crate::status::map(
-            ORDERED_REASONS
-                .iter()
-                .zip(&ORDERED_BY_REASON)
-                .map(|(reason, count)| (*reason, count.load(Ordering::Relaxed)))
-        ),
-    })
-}
 pub const TABLES: [TableId; N] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
@@ -149,39 +75,7 @@ pub const STATUS_TABLES: [TableId; N - 1] = [
     speed_terms::TABLES[3],
     speed_terms::TABLES[4],
 ];
-// Both depend on the shared division census; the combined source read group in
-// extended::read_groups includes their individually measured costs.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-
-static WITHDRAWAL_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static MOVEMENT_PRIORITY_REFUSALS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static ORGANISATION_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static BASE_SPEED_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static TRANSPORT_SPEED_REFUSALS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// The land movement speed operands' cumulative reads, carried rows and
-/// refusals per family ([`speed_terms`]).
-pub(crate) fn speed_term_data() -> impl serde::Serialize {
-    speed_terms::status_data()
-}
-
-/// The movement pass's cumulative reads and carried inputs ([`movement_carry`]).
-pub(crate) fn movement_read_data() -> impl serde::Serialize {
-    movement_carry::status_data()
-}
-
-pub(crate) fn movement_arrow_data() -> impl serde::Serialize {
-    crate::status::status!({
-        "withdrawal_refused": WITHDRAWAL_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "movement_priority_refused": MOVEMENT_PRIORITY_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "organisation_refused": ORGANISATION_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "base_speed_refused": BASE_SPEED_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "transport_speed_refused": TRANSPORT_SPEED_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "scope": "cumulative field-local division movement scalar refusals (arrow style and the base speed and conditional exact organisation of divisions with a route); established division movement remains available",
-    })
-}
+// Both depend on the shared division census, which measures their costs individually.
 
 // The status row's scalar fields. Stepped fields are rounded to their display steps (replay_data::display), as the
 // baseline holds them.
@@ -325,127 +219,6 @@ struct NamingRead {
     failure: Option<&'static str>,
     cached_name: Option<cname_group_member::Span>,
     cached_failure: Option<&'static str>,
-}
-
-#[derive(Default)]
-pub(crate) struct CounterWork {
-    captured: u64,
-    refused: u64,
-    hq_captured: u64,
-    hq_refused: u64,
-    pub(super) supply: super::supply_inputs::Work,
-    dig_in: super::dig_in::Work,
-}
-
-impl CounterWork {
-    pub(crate) fn observe_hq(&mut self, value: Option<i32>) {
-        if value.is_some() {
-            self.hq_captured = self.hq_captured.saturating_add(1);
-        } else {
-            self.hq_refused = self.hq_refused.saturating_add(1);
-        }
-    }
-
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "invalid_orders_reason": {
-                "captured": self.captured,
-                "refused": self.refused,
-                "refusal": "division invalid-order reason unreadable",
-            },
-            "hq_distance": {
-                "captured": self.hq_captured,
-                "refused": self.hq_refused,
-                "refusal": "orders group HQ distance unreadable",
-            },
-            "supply": self.supply.status(),
-            "dig_in_factor": self.dig_in.status(),
-        })
-    }
-}
-
-/// Off-thread accounting keeps every refusal's native reader reason.
-#[derive(Default)]
-pub(crate) struct NamingWork {
-    captured: u64,
-    ordinal_captured: u64,
-    ordinal_refused: u64,
-    refusals: Vec<(&'static str, u64)>,
-    required: usize,
-    capacity: usize,
-    cached_captured: u64,
-    cached_refused: u64,
-    cached_required: usize,
-    cached_capacity: usize,
-}
-
-impl NamingWork {
-    fn refuse(&mut self, reason: &'static str, count: u64) -> std::io::Result<()> {
-        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-            Ok(index) => index,
-            Err(index) => {
-                engine_allocation::reserve(&mut self.refusals, 1)?;
-                self.refusals.insert(index, (reason, 0));
-                index
-            }
-        };
-        self.refusals[index].1 = self.refusals[index].1.saturating_add(count);
-        Ok(())
-    }
-
-    fn observe(&mut self, capture: &Captured) -> std::io::Result<()> {
-        for row in &capture.naming.first[..capture.naming.len] {
-            if row.country_ordinal.is_some() {
-                self.ordinal_captured = self.ordinal_captured.saturating_add(1);
-            } else {
-                self.ordinal_refused = self.ordinal_refused.saturating_add(1);
-            }
-            if let Some(reason) = row.failure {
-                self.refuse(reason, 1)?;
-            } else {
-                self.captured = self.captured.saturating_add(1);
-            }
-            if let Some(reason) = row.cached_failure {
-                self.cached_refused = self.cached_refused.saturating_add(1);
-                self.refuse(reason, 1)?;
-            } else if row.cached_name.is_some() {
-                self.cached_captured = self.cached_captured.saturating_add(1);
-            }
-        }
-        let shortfall = capture.naming.required.saturating_sub(capture.naming.len);
-        if shortfall != 0 {
-            self.ordinal_refused = self.ordinal_refused.saturating_add(shortfall as u64);
-            self.refuse("division naming row capacity exceeded", shortfall as u64)?;
-            self.cached_refused = self.cached_refused.saturating_add(shortfall as u64);
-            self.refuse(
-                "division cached name row capacity exceeded",
-                shortfall as u64,
-            )?;
-        }
-        self.required = capture.names.required;
-        self.capacity = capture.names.first.len();
-        self.cached_required = capture.cached_names.required;
-        self.cached_capacity = capture.cached_names.first.len();
-        Ok(())
-    }
-
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "country_ordinal": {
-                "captured": self.ordinal_captured,
-                "refused": self.ordinal_refused,
-                "refusal": "division country roster ordinal not captured",
-            },
-            "captured": self.captured,
-            "refused": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
-            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
-            "bytes_required": self.required,
-            "bytes_capacity": self.capacity,
-            "cached_name": { "captured": self.cached_captured, "refused": self.cached_refused,
-                "bytes_required": self.cached_required, "bytes_capacity": self.cached_capacity },
-            "scope": "hourly generator operands and exact retained name cache for admitted DivisionStatus rows; each refused field is absent while the status prefix remains available",
-        })
-    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -760,7 +533,6 @@ impl MovementPass {
         }
         let transport = &mut self.transport;
         let mut ordinal = 0;
-        let mut stationary = 0;
         let movement = carmy::capture_movement_inputs_with_extra(
             memory,
             base,
@@ -777,17 +549,12 @@ impl MovementPass {
                 ordinal += 1;
                 if row.naval_transfer != 0 {
                     transport.push(memory, base, index, seed);
-                } else if row.path_total == 0 && row.alternate_total == 0 && row.combat_count == 0 {
-                    stationary += 1;
                 }
             },
         );
         let transport_inputs = &mut self.transport_inputs;
         self.transport
             .acquire(memory, base, state, |index, inputs| {
-                if inputs.is_err() {
-                    TRANSPORT_SPEED_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
                 transport_inputs.push((index, inputs.ok()));
             });
         self.movement.outcome = movement.outcome;
@@ -803,21 +570,6 @@ impl MovementPass {
                 .capture(memory, base, rows, Outcome::Rows { len: rows.len() });
             self.dig_in_ticks = qpc().saturating_sub(start).max(0) as u64;
         }
-        let [provinces_carried, provinces_read] = self.geometry.held_counts();
-        let [regions_carried, regions_read, owners, queries] = self.transport.counts();
-        movement_carry::record(&[
-            1,
-            ordinal as u64,
-            stationary,
-            provinces_carried,
-            provinces_read,
-            self.transport_inputs.len() as u64,
-            regions_carried,
-            regions_read,
-            owners,
-            queries,
-            if self.status { rows.len() as u64 } else { 0 },
-        ]);
         report.ticks[0] = movement_ticks;
         report.ticks[1] = self.dig_in_ticks;
         report.ticks[3] = self.land_ticks;
@@ -873,7 +625,7 @@ pub struct Captured {
     /// DivisionStatus.attack_stats and the attack witness
     /// ([`super::attack_stats`]), captured after the status pass.
     attack: super::attack_stats::Captured,
-    /// The DivisionStatus span by PHASE_NAMES, including nested ordered
+    /// The DivisionStatus span by pass, including nested ordered
     /// preparation sub-phases. Diagnostics only.
     phase_ticks: [u64; PHASES],
     membership: MembershipCapacity,
@@ -1261,6 +1013,7 @@ impl Captured {
         execution.swap_units(&mut self.order_transport);
     }
 
+    #[cfg(test)]
     pub(crate) fn order_transport_storage(&self) -> (usize, Outcome) {
         (
             self.order_transport.allocated_bytes(),
@@ -1460,25 +1213,6 @@ impl Captured {
         {
             self.name_groups = groups;
         }
-    }
-
-    pub(crate) fn observe_naming(&self, work: &mut NamingWork) -> std::io::Result<()> {
-        work.observe(self)
-    }
-
-    pub(crate) fn observe_counter_inputs(&self, work: &mut CounterWork) -> std::io::Result<()> {
-        for row in &self.status.rows[..self.status.outcome.len()] {
-            let (inputs, failure, _) = self.supply_sample(row);
-            work.supply.observe(inputs, failure);
-            if row.invalid_orders != 0 {
-                if row.invalid_orders_reason.is_some() {
-                    work.captured = work.captured.saturating_add(1);
-                } else {
-                    work.refused = work.refused.saturating_add(1);
-                }
-            }
-        }
-        work.dig_in.observe(&self.dig_in)
     }
 
     /// [`Self::capture_naming_holding`] without the `army_stat` store: every
@@ -1926,11 +1660,6 @@ impl Captured {
                 self.status_packet
                     .stitch_status_parts(&self.status_parts[..self.status_part_count])
             };
-            let refused = self.status_parts[..self.status_part_count]
-                .iter()
-                .map(|part| part.organisation_refused)
-                .sum::<u64>();
-            ORGANISATION_REFUSALS.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
             let named = qpc();
             self.capture_naming_holding(
                 memory,
@@ -2242,37 +1971,6 @@ impl Captured {
         let sources_ready = qpc();
         self.phase_ticks[20] = sources_ready.saturating_sub(start).max(0) as u64;
         let ordered_sources = !self.sources_deferred && army_stats.is_some();
-        if self.sources_deferred {
-            SOURCE_ADMISSIONS[0].fetch_add(1, Ordering::Relaxed);
-            if probes[..preparation_count]
-                .iter()
-                .any(|part| part.has_local_source_refusal())
-            {
-                SOURCE_ADMISSIONS[1].fetch_add(1, Ordering::Relaxed);
-            }
-        } else {
-            SOURCE_ADMISSIONS[if army_stats.is_some() { 2 } else { 3 }]
-                .fetch_add(1, Ordering::Relaxed);
-            if army_stats.is_some() {
-                count_ordered(if !self.owned_settlement {
-                    "owned settlement off"
-                } else if !ready {
-                    "preparation not ready"
-                } else if rows.is_empty() {
-                    "no divisions"
-                } else {
-                    army_stats
-                        .as_deref()
-                        .and_then(|store| store.sources.owned_refusal())
-                        .or_else(|| {
-                            probes[..preparation_count]
-                                .iter()
-                                .find_map(|part| part.source_refusal())
-                        })
-                        .unwrap_or("no army stat store")
-                });
-            }
-        }
         self.attack.sources = if self.sources_deferred {
             None
         } else {
@@ -2423,10 +2121,8 @@ impl Captured {
         if ordered_sources {
             self.phase_ticks[22] = self.phase_ticks[4] + self.phase_ticks[5];
         }
-        let refused = self
-            .status_packet
+        self.status_packet
             .capture_movement_organisation(memory, base, state, rows);
-        ORGANISATION_REFUSALS.fetch_add(refused, std::sync::atomic::Ordering::Relaxed);
         let named = qpc();
         self.capture_naming_holding(
             memory,
@@ -2456,7 +2152,8 @@ impl Captured {
         finished.saturating_sub(start).max(0) as u64
     }
 
-    /// This hour's DivisionStatus span by pass, in [`PHASE_NAMES`] order.
+    /// This hour's DivisionStatus span by pass.
+    #[cfg(test)]
     pub(crate) fn phase_ticks(&self) -> [u64; PHASES] {
         self.phase_ticks
     }
@@ -2549,13 +2246,6 @@ impl Captured {
                 false,
                 self.movement_packet.combat_references_required(),
                 self.movement_packet.combat_references_capacity(),
-            );
-            let (withdrawal, priority) = self.movement_packet.movement_style_refusals();
-            WITHDRAWAL_REFUSALS.fetch_add(withdrawal as u64, std::sync::atomic::Ordering::Relaxed);
-            MOVEMENT_PRIORITY_REFUSALS.fetch_add(priority as u64, std::sync::atomic::Ordering::Relaxed);
-            BASE_SPEED_REFUSALS.fetch_add(
-                self.movement_packet.base_speed_refusals() as u64,
-                std::sync::atomic::Ordering::Relaxed,
             );
             self.dig_in.settle(self.status.outcome);
             self.phase_ticks[19] += qpc().saturating_sub(started).max(0) as u64;
@@ -3102,25 +2792,10 @@ impl Captured {
         self.status_packet.commander_movement_at(index, division, block)
     }
 
-    fn status_index(&self, division: u64) -> usize {
-        self.status_packet
-            .status_index(division)
-            .unwrap_or(usize::MAX)
-    }
     fn status_index_at(&self, position: usize, division: u64) -> usize {
         self.status_packet
             .status_index_at(position, division)
             .unwrap_or(usize::MAX)
-    }
-    fn supply_sample(
-        &self,
-        row: &carmy::StatusRow,
-    ) -> (
-        Option<engine_native::cunit_supply_inputs::Inputs>,
-        Option<engine_native::cunit_supply_inputs::Failure>,
-        Option<&[engine_native::cunit_supply_inputs::Origin]>,
-    ) {
-        self.supply_sample_at(row, self.status_index(row.division))
     }
     fn supply_sample_at(
         &self,
@@ -3720,10 +3395,6 @@ mod tests {
                 .unwrap()
                 .is_some()
         }));
-        let mut work = NamingWork::default();
-        capture.observe_naming(&mut work).unwrap();
-        assert_eq!(work.captured, seeds.len() as u64);
-        assert!(work.refusals.is_empty());
     }
 
     #[test]
@@ -4044,10 +3715,6 @@ mod tests {
         captured.capture_naming(&memory, 0, &seeds);
         assert_eq!(captured.names.required, COUNTRIES * 2);
         assert_eq!(captured.naming.len, COUNTRIES);
-        let mut work = NamingWork::default();
-        captured.observe_naming(&mut work).unwrap();
-        assert!(work.refusals.is_empty());
-        assert_eq!(work.captured, COUNTRIES as u64);
         captured.grow(&mut capacity);
         captured.capture_naming(&memory, 0, &seeds);
         assert!(
@@ -4096,23 +3763,6 @@ mod tests {
         {
             row.naming = naming.inputs;
         }
-        let mut work = NamingWork::default();
-        captured.observe_naming(&mut work).unwrap();
-        assert_eq!(work.captured, (COUNTRIES - 3) as u64);
-        assert_eq!(work.cached_refused, 3);
-        assert_eq!(
-            work.refusals,
-            [
-                (
-                    "division cached name member identity unreadable or invalid",
-                    2
-                ),
-                ("division cached name member pointer unreadable", 1),
-                ("division name member pointer null", 1),
-                ("division name member pointer unreadable", 1),
-                ("division name unreadable", 1),
-            ]
-        );
         let TableView::Complete(TableRows::DivisionStatus(rows)) = captured.tables()[1].clone()
         else {
             panic!("three refused names do not drop their divisions");
@@ -4263,9 +3913,6 @@ mod tests {
             ..Default::default()
         };
         captured.status.outcome = Outcome::Rows { len: 1 };
-        let mut work = CounterWork::default();
-        captured.observe_counter_inputs(&mut work).unwrap();
-        assert_eq!((work.captured, work.refused), (1, 0));
         let mut baseline = std::array::from_fn(|_| unavailable("outside reason fixture"));
         baseline[TableId::DivisionStatus.index()] = captured.tables()[1].clone();
         let mut encoder = replay_frame::frame::FrameEncoder::new();
@@ -4309,13 +3956,9 @@ mod tests {
                     .custom,
                 b"X"
             );
-            captured.observe_counter_inputs(&mut work).unwrap();
         }
-        assert_eq!((work.captured, work.refused), (3, 1));
         captured.status.rows[0].invalid_orders = 0;
         captured.status.rows[0].invalid_orders_reason = None;
-        captured.observe_counter_inputs(&mut work).unwrap();
-        assert_eq!((work.captured, work.refused), (3, 1));
     }
 
     /// The row records what the camouflage category selector takes from the division, never the
@@ -4946,14 +4589,6 @@ mod tests {
                 if hour > 1 {
                     assert!(split.attack.held_maxima.iter().any(Option::is_some));
                 }
-                let mut serial_names = NamingWork::default();
-                let mut split_names = NamingWork::default();
-                serial.observe_naming(&mut serial_names).unwrap();
-                split.observe_naming(&mut split_names).unwrap();
-                assert_eq!(
-                    serde_json::to_value(split_names.status()).unwrap(),
-                    serde_json::to_value(serial_names.status()).unwrap()
-                );
                 assert!(!serial_changes.poisoned());
                 assert!(!split_changes.poisoned());
                 if hour >= 4 {

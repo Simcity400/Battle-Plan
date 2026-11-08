@@ -304,32 +304,6 @@ pub(crate) fn record(counts: &Counts, templates: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let hour = HOUR.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "template_changes"),
-        "fresh_only": Observer.fresh_only(),
-        "poisoned": WATCHES.registry.poisoned(),
-        "carried_templates": reads[0],
-        "read_templates": reads[1],
-        "name_rereads": reads[2],
-        "hour_carried_templates": hour[0],
-        "hour_read_templates": hour[1],
-        "unchanged_unit_type_writes": WATCHES.unchanged_unit_type_writes.load(Ordering::Relaxed),
-        "unchanged_ai_role_rebuilds": WATCHES.unchanged_ai_role_rebuilds.load(Ordering::Relaxed),
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "hq_source_bytes": HQ_SOURCE_BYTES.load(Ordering::Relaxed),
-        "scope": "cumulative since attach, hour_* for the latest capture; DivisionTemplates and DivisionTemplateIcons come from one hourly roster walk that authenticates every occurrence's object and handle; an occurrence whose object, handle and owner are those of its held read and whose template, owner and local-definition writer stamps are unchanged since that read publishes the held read (core, literal name and key, extensions, speed keys) and reads nothing more of the template (carried_templates); every other occurrence, and every occurrence while the family is fresh-only, after a load or on a refresh hour, is read in full and held when its stamps stood across the read (read_templates); a name the walk could not read is read again for the dictionary (name_rereads), whose failure refuses the table"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

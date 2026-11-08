@@ -1223,9 +1223,6 @@ mod tests {
                 for enabled in [true, false] {
                     assert_eq!(hooks.set_enabled(enabled), Ok(true));
                     assert_eq!(hooks.executable_ranges().count(), 0);
-                    let status = serde_json::to_value(crate::player_commands::status()).unwrap();
-                    assert_eq!(status["enabled"], false);
-                    assert_eq!(status["unhooked"], "command observer site unreadable");
                 }
                 let mut drain = crate::player_commands::Drain::default();
                 for final_drain in [false, true] {

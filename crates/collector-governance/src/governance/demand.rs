@@ -4,32 +4,6 @@ use super::{
     Capacities, Memory, ccountry, cdecision_status, cdynamic_modifier_container, cpolitical_party,
 };
 use crate::country_scale::{raise, rows};
-use collector_extended_support::demand::DemandFailures;
-
-static FAILURES: [DemandFailures; 14] = [const { DemandFailures::new() }; 14];
-
-pub fn status() -> impl serde::Serialize {
-    crate::status::map(
-        [
-            "countries",
-            "political_parties",
-            "dynamic_modifiers",
-            "decision_random_items",
-            "focus",
-            "research_slots",
-            "party_leaders",
-            "active_ideas",
-            "timed_ideas",
-            "decisions",
-            "preferred_tactics",
-            "technology_sharing",
-            "power_balances",
-            "research_inputs",
-        ]
-        .into_iter()
-        .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
-    )
-}
 
 pub(super) fn presize(
     capacity: &mut Capacities,
@@ -37,7 +11,7 @@ pub(super) fn presize(
     base: usize,
     state: usize,
 ) -> Result<(), &'static str> {
-    let countries = FAILURES[0].observe(ccountry::Reader::new(memory, base, state))?;
+    let countries = ccountry::Reader::new(memory, base, state)?;
     let mut parties = cpolitical_party::Demand::default();
     let mut modifiers = cdynamic_modifier_container::Demand::default();
     let mut refusal = None;
@@ -54,7 +28,7 @@ pub(super) fn presize(
     let modifier_context = engine_research::research_modifiers::Context::read(memory, base);
     let mut research_inputs = Vec::new();
     for slot in 1..countries.count() {
-        let country = match FAILURES[0].observe(countries.at(slot)) {
+        let country = match countries.at(slot) {
             Ok(Some(country)) => country,
             Ok(None) => continue,
             Err(reason) => {
@@ -75,7 +49,7 @@ pub(super) fn presize(
             .into_iter()
             .enumerate()
         {
-            if let Err(reason) = FAILURES[4].observe(add_rows(&mut focus_rows[index], outcome)) {
+            if let Err(reason) = add_rows(&mut focus_rows[index], outcome) {
                 refusal.get_or_insert(reason);
             }
         }
@@ -89,19 +63,19 @@ pub(super) fn presize(
             country.id,
             &mut [],
         );
-        if let Err(reason) = FAILURES[5].observe(add_rows(&mut slots, slot_demand)) {
+        if let Err(reason) = add_rows(&mut slots, slot_demand) {
             refusal.get_or_insert(reason);
         }
         match engine_native::cpolitical_status::Reader::new(memory, base, country.pointer) {
             Ok(reader) => {
-                if let Err(reason) = FAILURES[6].observe(add_rows(
+                if let Err(reason) = add_rows(
                     &mut leaders,
                     reader.party_leaders(country.id, &mut []),
-                )) {
+                ) {
                     refusal.get_or_insert(reason);
                 }
                 let active = reader.ideas(&mut [], &mut []);
-                if let Err(reason) = FAILURES[7].observe(add_rows(&mut ideas.rows, active.outcome))
+                if let Err(reason) = add_rows(&mut ideas.rows, active.outcome)
                 {
                     refusal.get_or_insert(reason);
                 }
@@ -111,14 +85,11 @@ pub(super) fn presize(
                     .ok_or("active idea sizing byte count overflow")?;
             }
             Err(reason) => {
-                for family in [6, 7] {
-                    FAILURES[family].observe::<()>(Err(reason)).ok();
-                }
                 refusal.get_or_insert(reason);
             }
         }
         let decision = cdecision_status::walk(memory, base, country.pointer, &mut [], &mut []);
-        if let Err(reason) = FAILURES[9].observe(add_rows(&mut decisions[0], decision.outcome)) {
+        if let Err(reason) = add_rows(&mut decisions[0], decision.outcome) {
             refusal.get_or_insert(reason);
         }
         decisions[1] = decisions[1]
@@ -131,10 +102,10 @@ pub(super) fn presize(
             country.id,
             &mut [],
         );
-        if let Err(reason) = FAILURES[10].observe(match tactic.outcome {
+        if let Err(reason) = match tactic.outcome {
             engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
             _ => Ok(()),
-        }) {
+        } {
             refusal.get_or_insert(reason);
         }
         tactic_bytes = tactic_bytes
@@ -167,7 +138,7 @@ pub(super) fn presize(
             ),
         };
         for (index, outcome) in [input, bonuses].into_iter().enumerate() {
-            if let Err(reason) = FAILURES[13].observe(add_rows(&mut research_rows[index], outcome))
+            if let Err(reason) = add_rows(&mut research_rows[index], outcome)
             {
                 refusal.get_or_insert(reason);
             }
@@ -182,7 +153,7 @@ pub(super) fn presize(
                 &research_inputs[..len],
                 &mut [],
             );
-            if let Err(reason) = FAILURES[13].observe(add_rows(&mut research_rows[2], modifiers)) {
+            if let Err(reason) = add_rows(&mut research_rows[2], modifiers) {
                 refusal.get_or_insert(reason);
             }
         }
@@ -200,7 +171,7 @@ pub(super) fn presize(
             parties = next;
             Ok(())
         });
-        if let Err(reason) = FAILURES[1].observe(party) {
+        if let Err(reason) = party {
             refusal.get_or_insert(reason);
         }
         let modifier =
@@ -223,7 +194,7 @@ pub(super) fn presize(
                     modifiers = next;
                     Ok(())
                 });
-        if let Err(reason) = FAILURES[2].observe(modifier) {
+        if let Err(reason) = modifier {
             refusal.get_or_insert(reason);
         }
     }
@@ -250,9 +221,9 @@ pub(super) fn presize(
     ] {
         raise(target, rows(count, 1));
     }
-    match FAILURES[8].observe(engine_native::cpolitical_status::timed_idea_demand(
+    match engine_native::cpolitical_status::timed_idea_demand(
         memory, base, state,
-    )) {
+    ) {
         Ok(timed) => {
             raise(&mut capacity.rows[23], rows(timed.rows, 1));
             raise(&mut capacity.timed_idea_text, rows(timed.bytes, 1));
@@ -265,7 +236,7 @@ pub(super) fn presize(
         engine_research::ctechnology_sharing_group::walk(memory, base, state, &mut [], &mut []);
     for (index, outcome) in [(12, sharing.groups), (13, sharing.members)] {
         let mut count = 0;
-        if let Err(reason) = FAILURES[11].observe(add_rows(&mut count, outcome)) {
+        if let Err(reason) = add_rows(&mut count, outcome) {
             refusal.get_or_insert(reason);
         }
         raise(&mut capacity.rows[index], rows(count, 1));
@@ -289,7 +260,7 @@ pub(super) fn presize(
         (17, balances.overrides),
     ] {
         let mut count = 0;
-        if let Err(reason) = FAILURES[12].observe(add_rows(&mut count, outcome)) {
+        if let Err(reason) = add_rows(&mut count, outcome) {
             refusal.get_or_insert(reason);
         }
         raise(&mut capacity.rows[index], rows(count, 1));
@@ -301,7 +272,7 @@ pub(super) fn presize(
     raise(&mut capacity.rows[10], rows(modifiers.rows, 1));
     raise(&mut capacity.modifier_text, rows(modifiers.bytes, 1));
     raise(&mut capacity.modifier_values, rows(modifiers.values, 1));
-    match FAILURES[3].observe(cdecision_status::random_item_demand(memory, base, state)) {
+    match cdecision_status::random_item_demand(memory, base, state) {
         Ok(random) => {
             raise(&mut capacity.rows[24], rows(random.rows, 1));
             raise(&mut capacity.random_item_text, rows(random.bytes, 1));

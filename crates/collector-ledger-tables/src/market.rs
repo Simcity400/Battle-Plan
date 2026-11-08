@@ -12,7 +12,6 @@ pub const TABLES: [TableId; N] = [
     TableId::LendLeaseAgreements,
     TableId::MarketEvents,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub type Capacities = usize;
 #[cfg(test)]
 #[path = "market/native_admission_tests.rs"]

@@ -177,6 +177,12 @@ pub fn active() -> usize {
     WATCHES.registry.active() + WATCHES.structure.active()
 }
 
+/// Slots of the installed manager table.
+#[cfg(test)]
+pub(crate) fn capacity() -> usize {
+    WATCHES.registry.capacity()
+}
+
 /// Game thread, in the hourly callback before any capture. `invalidate`
 /// after a load, gap or recovery: nothing observed before it certifies
 /// anything.
@@ -249,27 +255,6 @@ pub fn record(counts: &Counts, scopes: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "flag_changes"),
-        "poisoned": WATCHES.registry.poisoned() || WATCHES.structure.poisoned(),
-        "reused_managers": reads[0],
-        "read_managers": reads[1],
-        "reused_rows": reads[2],
-        "read_rows": reads[3],
-        "quiet_hours": reads[4],
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a ScriptFlags scope's rows are carried when its manager is the one held for the same scope and no hooked writer touched it since its read; scope identities and manager roots are read every hour unless the hour is quiet: when the flag domain's structure token (the manager constructor, release, destructor, clear, row assignment and save reader, and so every scope root writer), the character roster's token (crate::roster_changes) and the country census equal those taken before the latest complete walk and the hour's take of the marked managers returned its epoch, the walk publishes that walk's rows without reading any scope (quiet_hours), reading afresh only the managers a writer marked, whose rows replace the held ones; the daily expiry notifies (and counts in events) only for a manager holding a positive remaining duration, the only one it writes"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

@@ -107,15 +107,6 @@ pub fn collect() {
     WATCHES.collect();
 }
 
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "configured": CONFIGURED.load(Ordering::Acquire),
-        "enabled": ENABLED.load(Ordering::SeqCst),
-        "receivers": RECEIVERS.load(Ordering::Relaxed),
-        "events": crate::status::map(SITES.iter().zip(&CALLS).map(|(site, calls)| (site.name, calls.load(Ordering::Relaxed)))),
-        "watches": WATCHES.status(),
-    })
-}
 
 fn hook_error(site: &str, reason: &str) -> &'static str {
     Box::leak(format!("fleet_region_changes {site}: {reason}").into_boxed_str())

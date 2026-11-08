@@ -14,8 +14,6 @@ pub const TABLES: [TableId; N] = [
     TableId::NavalRepairBases,
     TableId::NavalRepairQueue,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("naval bases and changed repair work", 0, &[0, 1, 2])];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

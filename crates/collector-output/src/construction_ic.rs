@@ -602,7 +602,6 @@ pub fn status() -> impl serde::Serialize {
         "swaps": SWAPS.load(Ordering::Relaxed),
         "failed_offers": FAILED_OFFERS.load(Ordering::Relaxed),
         "rejected_entries": REJECTED.load(Ordering::Relaxed),
-        "sizing": demand::status(),
         "building_spends": counters[0],
         "other_speed_reads": counters[1],
         "railway_advances": counters[2],

@@ -10,9 +10,8 @@ use crate::{
     sampling::qpc,
     table_capture::{grow_capacity, grow_vec},
 };
-pub(crate) use collector_extended_support::outcomes::RaidReadCounts;
 use collector_extended_support::outcomes::{MISSING, elapsed, failed_capture, truncated_source};
-use engine_allocation::{copy_vec, filled, owned_vec};
+use engine_allocation::{filled, owned_vec};
 use engine_native::{Memory, cair_wing, cequipment_variant_pool::DivisionSource, walk::Outcome};
 use replay_data::rows::TABLE_COUNT;
 use replay_data::rows::TableId;
@@ -54,28 +53,6 @@ pub(crate) use packs::{
 };
 pub(crate) use production::registry::Registry;
 
-const DIVISION_SOURCE_TABLES: [TableId; 11] = [
-    TableId::DivisionLandInputs,
-    TableId::DivisionCensus,
-    TableId::DivisionEquipment,
-    TableId::ArmyUpgradeGroups,
-    TableId::ArmyUpgradeRequests,
-    TableId::ArmyUpgradeDeliveries,
-    TableId::ArmyUpgradeProduced,
-    TableId::DivisionMovement,
-    TableId::DivisionStatus,
-    TableId::DivisionPanelStats,
-    TableId::ArmyIconInputs,
-];
-const DIVISION_GROUP_MEMBERS: [TableId; DIVISION_SOURCE_TABLES.len() + 1] = {
-    let mut members = [TableId::Divisions; DIVISION_SOURCE_TABLES.len() + 1];
-    let mut index = 0;
-    while index < DIVISION_SOURCE_TABLES.len() {
-        members[index + 1] = DIVISION_SOURCE_TABLES[index];
-        index += 1;
-    }
-    members
-};
 /// Outputs supplied after pack conversion by the existing faction census.
 const FACTION_PROVIDER_TABLES: [TableId; 14] = {
     let mut tables = [TableId::LexicalTokens; 14];
@@ -95,15 +72,6 @@ const FACTION_PROVIDER_TABLES: [TableId; 14] = {
     assert!(next == tables.len());
     tables
 };
-pub type ReadGroup = (&'static str, TableId, &'static [TableId]);
-#[derive(Clone, Copy)]
-struct ReadGroupData {
-    name: &'static str,
-    anchor: TableId,
-    members: [TableId; TABLE_COUNT],
-    len: usize,
-}
-
 // Native conversion reuse stays within its pack's existing timing scope.
 macro_rules! spool_inputs {
     (combat_progress, $captured:expr, $conversion:expr) => {
@@ -215,12 +183,10 @@ macro_rules! spool_pack {
     (@convert $all:expr, $pack:ident; $destination:ident, $conversion:ident, $hour:ident, $slots:ident, $costs:ident) => {{
         crate::tick_gate::wait();
         let started = qpc();
-        let cycles = crate::spool_phases::thread_cycles();
         if crate::allocation::failed() { return $costs; }
         for (id, view) in $pack::TABLES.into_iter().zip(spool_inputs!($pack, $all.$pack, $conversion, $all, $hour)) { $destination[id.index()] = view; }
-        let (pack, slot) = $slots.next().unwrap();
+        let (_, slot) = $slots.next().unwrap();
         *slot = qpc() - started;
-        crate::spool_phases::SPOOL.record_pack(pack, crate::spool_phases::thread_cycles().saturating_sub(cycles));
     }};
 }
 
@@ -272,17 +238,12 @@ macro_rules! helper_pack {
     (@convert $out:ident, $slots:ident, $pack:ident, $inputs:expr) => {{
         crate::tick_gate::wait();
         let started = qpc();
-        let cycles = crate::spool_phases::thread_cycles();
-        let (pack, slot) = $slots.next().unwrap();
+        let (_, slot) = $slots.next().unwrap();
         if !crate::allocation::failed() {
             for (id, view) in $pack::TABLES.into_iter().zip($inputs) {
                 $out[id.index()] = Some(view);
             }
             *slot = qpc() - started;
-            crate::spool_phases::SPOOL.record_pack(
-                pack,
-                crate::spool_phases::thread_cycles().saturating_sub(cycles),
-            );
         }
     }};
 }
@@ -550,10 +511,10 @@ impl Captured {
             pub fn allocated_bytes(&self) -> usize {
                 0 $(+ self.$pack.allocated_bytes())+ + self.fuel_awards.allocated_bytes() + self.divisions.allocated_bytes() + self.registry.allocated_bytes() + self.spare_bytes()
             }
-            /// Spool-thread metadata for this buffer's native row and scratch
-            /// allocations. Excludes core tables, encoded frames and queues.
+            /// This buffer's native row and scratch allocations by pack.
+            #[cfg(test)]
             pub fn allocated_by_pack(&self) -> std::io::Result<Vec<(&'static str, usize)>> {
-                copy_vec(&[
+                engine_allocation::copy_vec(&[
                     $((stringify!($pack), self.$pack.allocated_bytes()),)+
                     ("fuel_awards", self.fuel_awards.allocated_bytes()),
                     ("division_sources", self.divisions.allocated_bytes()),
@@ -673,76 +634,6 @@ impl Captured {
                 output
             }
         }
-        const READ_GROUP_COUNT: usize = {
-            let mut count = 9;
-            $(let mut group = 0;
-            while group < $pack::READ_GROUPS.len() {
-                if $pack::TABLES[$pack::READ_GROUPS[group].1].index() != TableId::ArmyUpgradeGroups.index() { count += 1; }
-                group += 1;
-            })+
-            count
-        };
-        static READ_GROUP_DATA: [ReadGroupData; READ_GROUP_COUNT] = {
-            let empty = ReadGroupData { name: "", anchor: TableId::LexicalTokens,
-                members: [TableId::LexicalTokens; TABLE_COUNT], len: 0 };
-            let mut groups = [empty; READ_GROUP_COUNT];
-            let mut next = 0;
-            $(let mut group = 0;
-            while group < $pack::READ_GROUPS.len() {
-                let (name, anchor, members) = $pack::READ_GROUPS[group];
-                // Count the shared division graph only in its combined source group.
-                if $pack::TABLES[anchor].index() != TableId::ArmyUpgradeGroups.index() {
-                    let mut data = empty;
-                    data.name = name;
-                    data.anchor = $pack::TABLES[anchor];
-                    data.len = members.len();
-                    let mut member = 0;
-                    while member < members.len() {
-                        data.members[member] = $pack::TABLES[members[member]];
-                        member += 1;
-                    }
-                    groups[next] = data;
-                    next += 1;
-                }
-                group += 1;
-            })+
-            let extra: [(&str, TableId, &[TableId]); 9] = [
-                ("faction lists, member accounting and sharing", TableId::FactionRules, &crate::faction_companions::TABLES),
-                ("faction goals and held progress", TableId::FactionGoalEntries, &crate::faction_goals::TABLES),
-                ("divisions, coverage counts, equipment, upgrades, movement and counter status", TableId::Divisions,
-                    &DIVISION_GROUP_MEMBERS),
-                ("country census, appearance and supply trains", TableId::Countries,
-                    &[TableId::Countries, TableId::CountryAppearance, TableId::SupplyNodes, TableId::TrainInventory]),
-                ("navy country and fleet census with changed repair policy", TableId::Fleets,
-                    &[TableId::Fleets, TableId::NavalRepairCountries, TableId::NavalRepairFleets]),
-                ("task-force census and changed repair and composition policy", TableId::TaskForces,
-                    &[TableId::TaskForces, TableId::NavalRepairTaskForces, TableId::NavalTaskForceComposition, TableId::NavalRepairChildren]),
-                ("ship census, model operands and changed refit work", TableId::Ships,
-                    &[TableId::Ships, TableId::ShipModels, TableId::NavalRefitShips, TableId::NavalRefitProgress]),
-                ("states and hourly state flags", TableId::States, &[TableId::States, TableId::StateFlags]),
-                ("army order census, plan operands, group plans, front sections and invasion preparations", TableId::ArmyOrders,
-                    &[TableId::ArmyOrders, TableId::ArmyOrderPlans, TableId::OrdersGroupPlans, TableId::Fronts, TableId::InvasionPreparations]),
-            ];
-            let mut group = 0;
-            while group < extra.len() {
-                let (name, anchor, members) = extra[group];
-                let mut data = empty;
-                data.name = name;
-                data.anchor = anchor;
-                data.len = members.len();
-                let mut member = 0;
-                while member < members.len() { data.members[member] = members[member]; member += 1; }
-                groups[next] = data;
-                next += 1;
-                group += 1;
-            }
-            assert!(next == READ_GROUP_COUNT);
-            groups
-        };
-        /// Borrow the metadata graph; status never allocates its fixed catalogue.
-        pub fn read_groups() -> impl ExactSizeIterator<Item = ReadGroup> + Clone {
-            READ_GROUP_DATA.iter().map(|group| (group.name, group.anchor, &group.members[..group.len]))
-        }
     };
 }
 pub(crate) use collector_air_sorties::air_reference_witness;
@@ -771,9 +662,7 @@ pub use collector_output::construction_tables as construction_ic;
 pub use collector_slow_tables::country_factories;
 pub use collector_slow_tables::country_tactic_unlocks;
 pub use collector_stability::country_stability;
-pub(crate) use country_naval_movement_inputs::{
-    Capacities as PhysicalNavyCapacities, Work as PhysicalNavyWork,
-};
+pub(crate) use country_naval_movement_inputs::Capacities as PhysicalNavyCapacities;
 pub mod division_counts;
 pub mod division_model_inputs;
 pub mod division_presentation;
@@ -826,7 +715,6 @@ pub use collector_projects::projects;
 pub mod province_unit_order;
 pub(crate) mod roster_replay;
 pub use collector_map_tables::saved_event_targets;
-pub(crate) use collector_projects::raid_intel_carry;
 pub use collector_projects::raid_target_statuses;
 pub use collector_raids::raid_launch_inputs;
 pub use collector_raids::raid_state_inputs;
@@ -1165,9 +1053,6 @@ impl Captured {
     pub(crate) fn game_score_pilot(&mut self) -> &mut game_score::Captured {
         &mut self.game_score
     }
-    pub(crate) fn game_score_status(&self) -> &game_score::Captured {
-        &self.game_score
-    }
 }
 
 impl Captured {
@@ -1307,15 +1192,9 @@ impl Captured {
         let mut applied = [false; 2];
         if let Some(capacity) = land {
             applied[0] = self.combat_details.try_grow_hint(capacity).is_ok();
-            if !applied[0] {
-                crate::country_scale::note_combat_hint_failure(0);
-            }
         }
         if let Some(capacity) = naval {
             applied[1] = self.naval_details.try_grow_hint(capacity).is_ok();
-            if !applied[1] {
-                crate::country_scale::note_combat_hint_failure(1);
-            }
         }
         applied
     }
@@ -1421,80 +1300,6 @@ impl Captured {
     /// Project owned operands after their single live acquisition has finished.
     pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
         self.division_presentation.decode_inputs()
-    }
-
-    pub(crate) fn observe_division_naming(
-        &self,
-        work: &mut division_presentation::NamingWork,
-    ) -> std::io::Result<()> {
-        self.division_presentation.observe_naming(work)
-    }
-
-    pub(crate) fn observe_physical_navies(
-        &self,
-        work: &mut PhysicalNavyWork,
-    ) -> std::io::Result<()> {
-        self.country_counters
-            .observe_physical_navies(work, self.country_appearance.launch_sources())
-    }
-
-    pub(crate) fn observe_reserved_visibility(
-        &self,
-        work: &mut reserved_visibility::Work,
-    ) -> std::io::Result<()> {
-        self.country_appearance.observe_reverse_visibility(work)
-    }
-
-    pub(crate) fn observe_battle_plan_child_fronts(&self, work: &mut plans::ChildFrontWork) {
-        work.observe(&self.plans)
-    }
-
-    pub(crate) fn observe_battle_plan_execution(&self, work: &mut plans::ExecutionWork) {
-        let (bytes, outcome) = self.division_presentation.order_transport_storage();
-        work.observe(&self.plans, bytes, outcome);
-    }
-
-    pub(crate) fn observe_railway_inputs(
-        &self,
-        work: &mut crate::acquisition_states::InputWork,
-    ) -> std::io::Result<()> {
-        self.naval_history.observe_railway_inputs(work)
-    }
-
-    pub(crate) fn observe_counter_tooltip_inputs(
-        &self,
-        work: &mut division_presentation::CounterWork,
-    ) -> std::io::Result<()> {
-        self.division_presentation.observe_counter_inputs(work)?;
-        self.group_counters.observe_counter_inputs(work);
-        self.railway_guns.observe_supply(&mut work.supply);
-        self.naval_counters.observe_supply(&mut work.supply);
-        Ok(())
-    }
-
-    pub(crate) fn observe_country_rosters(
-        &self,
-        work: &mut country_counters::RosterWork,
-        frequency: u64,
-    ) -> std::io::Result<()> {
-        self.country_counters.observe_rosters(work, frequency)?;
-        self.construction.observe_occupied(work)
-    }
-
-    pub(crate) fn observe_character_naming(
-        &self,
-        work: &mut character_inputs::NamingWork,
-    ) -> std::io::Result<()> {
-        self.character_inputs.observe_naming(work)?;
-        self.characters.observe_naming(work)
-    }
-
-    pub(crate) fn observe_supply_vehicles(&self, work: &mut supply_trains::VehicleWork) {
-        self.supply_trains.observe_vehicles(work);
-    }
-
-    pub(crate) fn observe_variable_seeds(&self, work: &mut intel::SeedWork) {
-        self.intel.observe_seeds(work);
     }
 
     pub(crate) fn politics(&self) -> &politics::Captured {
@@ -1651,22 +1456,6 @@ impl Captured {
         );
     }
 
-    /// This hour's template rows whose model inputs failed, published in status.json.
-    pub(crate) fn template_model_failures(&self) -> division_templates::ModelFailures {
-        self.division_templates.model_failures()
-    }
-
-    /// This hour's DivisionStatus span by pass, published in status.json.
-    pub(crate) fn presentation_phase_ticks(&self) -> [u64; division_presentation::PHASES] {
-        self.division_presentation.phase_ticks()
-    }
-
-    /// This hour's CountryStabilityInputs span by walk phase, published in
-    /// status.json.
-    pub(crate) fn stability_phase_ticks(&self) -> [u64; 4] {
-        self.country_stability.phase_ticks()
-    }
-
     /// Loan the governance family's hourly research tables to their own job.
     /// Take before the family itself; restore after the family is restored.
     pub(crate) fn take_research_request(
@@ -1705,13 +1494,6 @@ impl Captured {
             NOT_RECORDED,
         );
         self.governance.restore_research(part);
-    }
-
-    pub(crate) fn weather_suspend_failure(&self) -> Option<&'static str> {
-        self.visibility.weather_suspend_failure()
-    }
-    pub(crate) fn weather_display_failure(&self) -> Option<&'static str> {
-        self.weather.display_failure()
     }
 
     /// Return the research rows and charge their costs to the family report.
@@ -1757,16 +1539,6 @@ impl Captured {
                 .invalidate(&mut request.fingerprints);
         }
         request.fingerprints
-    }
-
-    /// This hour's torn and refused raid reads: a path memo copy a game
-    /// writer overlapped is published unavailable, not retried.
-    pub(crate) fn raid_reads(&self) -> RaidReadCounts {
-        let projects = self.projects.raid_reads();
-        RaidReadCounts {
-            torn_memo_reads: projects.torn_memo_reads,
-            refused_leaders: projects.refused_leaders + self.raid_target_statuses.refused_leaders(),
-        }
     }
 
     /// One sliced family's read at this frame's hour (`slicing::FAMILIES`).
@@ -2767,8 +2539,7 @@ impl Captured {
 
     pub(crate) fn install_reserved_land_certificate(&mut self) {
         if !self.country_appearance.reserved_land_certificate_ready() {
-            self.naval_history
-                .withhold_reserved_land_certificate("reserved naming singleton prefix unavailable");
+            self.naval_history.withhold_reserved_land_certificate();
         }
         self.country_appearance
             .install_land_theatre_count(self.naval_history.reserved_land_count());

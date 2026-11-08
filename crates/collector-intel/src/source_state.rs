@@ -67,43 +67,6 @@ pub struct Owner {
 }
 
 impl Owner {
-    pub fn allocated_bytes(&self) -> usize {
-        self.allied.entries.capacity() * size_of::<native::DenseEntry>()
-            + self.cryptology.entries.capacity() * size_of::<native::DenseEntry>()
-            + self
-                .contributions
-                .iter()
-                .map(|pools| {
-                    pools.capacity() * size_of::<Vec<Lanes>>()
-                        + pools
-                            .iter()
-                            .map(|entries| entries.capacity() * size_of::<Lanes>())
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-            + self.statics.capacity() * size_of::<StaticPool>()
-            + self
-                .statics
-                .iter()
-                .map(|pool| {
-                    pool.sources.capacity() * size_of::<StaticSource>()
-                        + pool
-                            .sources
-                            .iter()
-                            .map(|source| source.entries.capacity() * size_of::<Lanes>())
-                            .sum::<usize>()
-                })
-                .sum::<usize>()
-            + self.dynamics.capacity() * size_of::<DynamicPool>()
-            + self
-                .dynamics
-                .iter()
-                .map(|pool| {
-                    (pool.values.capacity() + pool.accumulators.capacity()) * size_of::<Lanes>()
-                })
-                .sum::<usize>()
-            + self.accumulators.capacity() * size_of::<bool>()
-    }
 
     pub fn bootstrap(
         &mut self,

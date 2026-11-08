@@ -1,82 +1,8 @@
 //! Live storage hints for complete first samples, independently of countries.
 //! A failed census preserves previous storage; hints never supply recorded data.
-use super::DemandFailures;
 use crate::{extended, map_capture::MapCapacities};
 pub(crate) use collector_extended_support::demand::rows;
 use engine_native::Memory;
-
-const NAMES: &[&str] = &[
-    "world",
-    "air_wings",
-    "naval",
-    "province_supply",
-    "province_unit_order",
-    "governance",
-    "characters",
-    "projects",
-    "lexical",
-    "division_templates",
-    "industrial_organisations",
-    "division_equipment_and_upgrades",
-    "available_equipment_variants",
-    "task_force_map_motion",
-    "relation_opinions",
-    "country_stability",
-    "division_names",
-    "battle_plan_execution",
-    "weather",
-    "combat_progress",
-    "province_names",
-    "modifier_definitions",
-    "naval_bases",
-    "map_facilities",
-    "raid_launch_inputs",
-    "supply_trains",
-    "active_abilities",
-    "faction_theatres",
-    "logistics",
-    "appointed_advisors",
-    "raid_target_statuses",
-    "raid_state_inputs",
-    "combat_log",
-    "group_counters",
-    "air",
-    "naval_history",
-    "visibility",
-    "fog",
-    "country_tactic_unlocks",
-    "construction",
-    "economy",
-    "session",
-    "naval_mission_inputs",
-    "character_portraits",
-    "army_icon_inputs",
-    "leader_portraits",
-    "leader_paths",
-    "naval_result_details",
-    "naval_combat_sources",
-    "map_combats",
-];
-static FAILURES: [DemandFailures; NAMES.len()] = [const { DemandFailures::new() }; NAMES.len()];
-/// Calls and thread cycles of each part, charged from the previous part's end.
-static COSTS: [[std::sync::atomic::AtomicU64; 2]; NAMES.len()] =
-    [const { [const { std::sync::atomic::AtomicU64::new(0) }; 2] }; NAMES.len()];
-pub(crate) fn costs() -> impl Iterator<Item = (&'static str, u64, u64)> + Clone {
-    use std::sync::atomic::Ordering::Relaxed;
-    NAMES
-        .iter()
-        .zip(&COSTS)
-        .map(|(name, cost)| (*name, cost[0].load(Relaxed), cost[1].load(Relaxed)))
-}
-
-pub(crate) fn diagnostics() -> impl serde::Serialize {
-    crate::status::map(
-        NAMES
-            .iter()
-            .copied()
-            .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
-    )
-}
 
 pub(crate) fn presize(
     memory: &impl Memory,
@@ -94,32 +20,20 @@ pub(crate) fn presize_periodic(
     extended: &mut extended::Capacities,
     capacity_census: bool,
 ) -> Result<(), &'static str> {
-    let mut clock = crate::spool_phases::thread_cycles();
-    let mut charge = |index: usize| {
-        use std::sync::atomic::Ordering::Relaxed;
-        let now = crate::spool_phases::thread_cycles();
-        COSTS[index][0].fetch_add(1, Relaxed);
-        COSTS[index][1].fetch_add(now.saturating_sub(clock), Relaxed);
-        clock = now;
-    };
     // The dictionary is independent of the campaign root, including a failed
-    // or racing world hint. Count both failures without withholding its floor.
+    // or racing world hint, and keeps its floor when either fails.
     let dictionary = if capacity_census {
-        let dictionary = FAILURES[8].observe(extended.lexical.presize(memory, base, 0));
-        charge(8);
-        dictionary
+        extended.lexical.presize(memory, base, 0)
     } else {
         Ok(())
     };
-    let state = FAILURES[0].observe(super::demand_game_state(memory, base));
-    charge(0);
+    let state = super::demand_game_state(memory, base);
     let Some(state) = state? else {
         return dictionary;
     };
     let mut failure = dictionary.err();
-    let mut accept = |index: usize, result: Result<(), &'static str>| {
-        charge(index);
-        if let Err(reason) = FAILURES[index].observe(result) {
+    let mut accept = |result: Result<(), &'static str>| {
+        if let Err(reason) = result {
             failure.get_or_insert(reason);
         }
     };
@@ -127,7 +41,6 @@ pub(crate) fn presize_periodic(
     // preparation depends on their census, including the physical navy pass.
     if capacity_census {
         accept(
-            1,
             rows(engine_native::cair_wing::walk(memory, base, state, &mut []))
                 .map(|count| map.raise_air_wings(count)),
         );
@@ -136,7 +49,7 @@ pub(crate) fn presize_periodic(
             .into_iter()
             .enumerate()
         {
-            accept(2, rows(outcome).map(|count| map.raise_naval(index, count)));
+            accept(rows(outcome).map(|count| map.raise_naval(index, count)));
         }
     }
     // These mixed passes also prepare template/deployment, embedded variable/
@@ -146,7 +59,7 @@ pub(crate) fn presize_periodic(
     macro_rules! accept_hint {
         ($index:literal, $result:expr $(,)?) => {
             if capacity_census || matches!($index, 9 | 10 | 13 | 16 | 32 | 33 | 40) {
-                accept($index, $result);
+                accept($result);
             }
         };
     }
@@ -308,40 +221,6 @@ mod tests {
             }
             true
         }
-    }
-
-    #[test]
-    fn periodic_sizing_skips_capacity_censuses_but_keeps_observer_preparation() {
-        let memory = LargeMap {
-            slots: 2,
-            provinces: 9,
-        };
-        let mut sizing = super::super::Sizing::for_slots(1);
-        sizing.extended.economy.rows[2] = 0;
-        let failures = |index: usize| {
-            serde_json::to_value(FAILURES[index].diagnostics()).unwrap()["failed_observations"]
-                .as_u64()
-                .unwrap()
-        };
-        let before: Vec<_> = (0..NAMES.len()).map(failures).collect();
-        assert!(
-            presize_periodic(&memory, 0, &mut sizing.map, &mut sizing.extended, false).is_err()
-        );
-        for index in 1..NAMES.len() {
-            let prompt = matches!(index, 9 | 10 | 13 | 16 | 32 | 33 | 40);
-            if !prompt {
-                assert_eq!(failures(index), before[index], "{}", NAMES[index]);
-            }
-        }
-        assert_eq!(sizing.extended.economy.rows[2], 0);
-        assert!(failures(33) > before[33]);
-        // This fixture has no character manager: an admitted census must
-        // retain its ordinary named refusal, including the attach-time pass.
-        assert!(presize(&memory, 0, &mut sizing.map, &mut sizing.extended).is_err());
-        for index in [6, 8] {
-            assert_eq!(failures(index), before[index] + 1, "{}", NAMES[index]);
-        }
-        assert!(sizing.extended.economy.rows[2] >= 8);
     }
 
     #[test]

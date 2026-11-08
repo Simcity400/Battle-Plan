@@ -225,39 +225,6 @@ fn notify(site: usize) -> Notification<'static> {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&CALLS)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed)))
-            .chain(
-                ["construct_character_manager", "character_repair"]
-                    .into_iter()
-                    .zip(&FORWARDED)
-                    .map(|(name, n)| (name, n.load(Ordering::Relaxed))),
-            ),
-    );
-    let tables = crate::status::map(TABLES.iter().zip(&READS).map(|(&name, reads)| {
-        let reads = reads.each_ref().map(|value| value.load(Ordering::Relaxed));
-        (
-            name,
-            crate::status::status!({
-                "quiet_hours": reads[0],
-                "read_hours": reads[1],
-            }),
-        )
-    }));
-    crate::status::status!({
-        "configured": cfg!(feature = "roster_changes"),
-        "roster_observed": ROSTER.quiet().is_some() || ROSTER.active() != 0,
-        "scientists_observed": SCIENTISTS.quiet().is_some() || SCIENTISTS.active() != 0,
-        "poisoned": ROSTER.poisoned() || SCIENTISTS.poisoned(),
-        "tables": tables,
-        "events": events,
-        "scope": "cumulative since attach; the roster domain's token stands still while no character is appended to or cleared from the CCharacterManager arrays, no manager is built and no rostered character's id is repaired, the scientist domain's while no scientist role or trait array is written; Characters carries its rows and the role census's occurrences, and ScriptFlags its whole walk (with the flag domain and the country census), over a quiet roster hour, CharacterRoleTraits its scientist rows over a quiet scientist hour; quiet_hours counts hours carried so, read_hours hours read afresh"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

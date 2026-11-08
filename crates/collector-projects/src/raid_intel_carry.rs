@@ -194,16 +194,6 @@ impl<C: Certificates> Carry for Walk<'_, C> {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let counts = COUNTS.each_ref().map(|count| count.load(Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "raid_intel_changes"),
-        "carried_countries": counts[0],
-        "read_countries": counts[1],
-        "failed_walks": counts[2],
-        "scope": "cumulative since attach; RaidIntelInputs reads each country's modifier accumulator header every hour and skips its entries copy, answering CRYPTO_STRENGTH and INTELLIGENCE_AGENCY_DEFENSE from the held raw values, while the header, CCountry, id and naval tree country certificate (modifier recalculation, country appearance reset) are the held read's; effective values always use the current modifier definitions",
-    })
-}
 
 #[cfg(test)]
 mod tests {

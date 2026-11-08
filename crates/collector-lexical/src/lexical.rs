@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LexicalTokens];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[("global lexical dictionary", 0, &[0])];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

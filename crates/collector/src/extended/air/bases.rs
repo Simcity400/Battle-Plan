@@ -377,18 +377,6 @@ pub(crate) struct AirBasesMemoReport {
 // raw_memory's generic payload/index scope. No per-frame/pool memo allocation.
 static AIR_BASES_MEMO_MEMORY: crate::raw_memory::Tracker = crate::raw_memory::Tracker::new();
 
-pub(crate) fn air_bases_memo_memory() -> impl serde::Serialize {
-    let snapshot = AIR_BASES_MEMO_MEMORY.snapshot();
-    crate::status::status!({
-        "scope": "one worker-owned AirBases memo; actual input and native-output vector capacities, retained across misses",
-        "input_capacity_bytes": snapshot.current.payload_vectors,
-        "native_output_capacity_bytes": snapshot.current.auxiliary_vectors,
-        "current_capacity_bytes": snapshot.current.payload_vectors + snapshot.current.auxiliary_vectors,
-        "peak_capacity_bytes": snapshot.peak_total_lower_bound,
-        "excluded": ["inline memo metadata", "allocator rounding/metadata and transient reallocation overlap"],
-    })
-}
-
 /// Exactly one previous complete family result, owned independently of every
 /// pooled job/frame. Every capture still acquires current bytes before the game resumes.
 /// Equality never serves old observations to a Memory implementation: it only
@@ -750,7 +738,6 @@ pub(crate) struct AirBasesCopyReport {
     /// payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; AIR_BASES_N],
-    pub raw_bytes: [u64; AIR_BASES_N],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2433,9 +2420,6 @@ fn copy_air_bases_vectors(
         super::carrier_memory::ExactIndex::new(index)
     });
     *seed = super::carrier_memory::seed_census(carrier_log.get_mut(), log, &mut index.borrow_mut());
-    if let Err(reason) = *seed {
-        carrier::note_seed_refusal(reason);
-    }
     *required_index = index.borrow().required_slots();
     let (lengths, demand) = {
         let optional = super::carrier_memory::CaptureMemory::new(carrier_log, memory, &index);
@@ -2848,16 +2832,6 @@ pub(crate) fn copy_air_bases_refresh_growing(
     AirBasesCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: {
-            let extra = job.carrier.log.borrow().raw_bytes;
-            [
-                job.log.raw_bytes[0].saturating_add(extra[0]),
-                job.log.raw_bytes[1]
-                    .saturating_add(extra[1])
-                    .saturating_add(job.state_fuel.native_bytes),
-                job.log.raw_bytes[2],
-            ]
-        },
     }
 }
 
@@ -2879,16 +2853,6 @@ pub(crate) fn copy_air_bases_refresh(
     AirBasesCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: {
-            let extra = job.carrier.log.borrow().raw_bytes;
-            [
-                job.log.raw_bytes[0].saturating_add(extra[0]),
-                job.log.raw_bytes[1]
-                    .saturating_add(extra[1])
-                    .saturating_add(job.state_fuel.native_bytes),
-                job.log.raw_bytes[2],
-            ]
-        },
     }
 }
 

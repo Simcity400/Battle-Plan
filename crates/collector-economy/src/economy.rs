@@ -41,19 +41,6 @@ pub const TABLES: [TableId; N] = [
     TableId::FuelDemandParts,
 ];
 
-/// Definitions are authenticated once and reused by the two dependent walks.
-/// Their read time is charged to ResourceDefinitions, not charged again to each
-/// consumer. CountryResources, ResourceExchanges and the definitions are hourly
-/// (replay_data::cadence): the census is walked every hour for its two consumers
-/// and published with them. The consumers' own timings include their
-/// additional native reads.
-/// One fuel walk reads each country's status once for both its tables and is
-/// charged to CountryFuel.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("resource dictionary and consumers", 6, &[6, 7, 8]),
-    ("fuel status, consumers and demand parts", 0, &[0, 10, 11]),
-];
-
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],

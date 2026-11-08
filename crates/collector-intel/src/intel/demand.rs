@@ -2,34 +2,6 @@
 
 use super::*;
 use crate::country_scale::{raise, rows};
-use collector_extended_support::demand::DemandFailures;
-
-static FAILURES: [DemandFailures; 16] = [const { DemandFailures::new() }; 16];
-
-pub fn status() -> impl serde::Serialize {
-    crate::status::map(
-        [
-            "relations",
-            "subjects",
-            "autonomy",
-            "agencies",
-            "operatives",
-            "captured_operatives",
-            "cryptology",
-            "intel_networks",
-            "script_flags",
-            "script_variables",
-            "operations",
-            "operation_tokens",
-            "incoming_actions",
-            "operative_missions",
-            "strategic_operatives",
-            "agency_operation_buffers",
-        ]
-        .into_iter()
-        .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
-    )
-}
 
 impl Capacities {
     pub fn presize(
@@ -38,12 +10,10 @@ impl Capacities {
         base: usize,
         state: usize,
     ) -> Result<(), &'static str> {
-        let mut failure = FAILURES[0]
-            .observe(self.presize_relations(memory, base, state))
-            .err();
+        let mut failure = self.presize_relations(memory, base, state).err();
         macro_rules! count {
             ($family:literal, $index:literal, $outcome:expr) => {{
-                match FAILURES[$family].observe(count($outcome)) {
+                match count($outcome) {
                     Ok(count) => {
                         raise(&mut self.rows[$index], rows(count, 1));
                     }
@@ -62,7 +32,7 @@ impl Capacities {
         let agency = cintelligence_agency::walk(memory, base, state, &mut [], &mut []);
         count!(3, 3, agency.outcome);
         raise(&mut self.agency_names, rows(agency.required_bytes, 1));
-        match FAILURES[3].observe(agency_upgrade_levels::native_demand(memory, base, state)) {
+        match agency_upgrade_levels::native_demand(memory, base, state) {
             Ok(demand) => {
                 raise(&mut self.rows[17], rows(demand.rows, 1));
                 raise(

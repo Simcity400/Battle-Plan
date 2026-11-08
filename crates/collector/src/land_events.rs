@@ -10,7 +10,7 @@ use std::{
     ops::Range,
     ptr,
     sync::{
-        Mutex, OnceLock,
+        Mutex,
         atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering},
     },
 };
@@ -47,7 +47,6 @@ static LOG_CAPACITY: AtomicUsize = AtomicUsize::new(0);
 static LOG_REQUIRED: AtomicUsize = AtomicUsize::new(0);
 static OBSERVER_WORDS: AtomicUsize = AtomicUsize::new(0);
 static BASE_WORDS: AtomicUsize = AtomicUsize::new(0);
-static LOG_SWAPS: AtomicU64 = AtomicU64::new(0);
 static RESIZING: AtomicBool = AtomicBool::new(false);
 
 /// Runs `body`, or `diverted` when the calling thread is a test thread
@@ -153,7 +152,6 @@ fn install_offered_owned() {
         LOG.store(&mut *next, Ordering::SeqCst);
         LOG_CAPACITY.store(next.words.len(), Ordering::Release);
         swap.retired = swap.current.replace(next);
-        LOG_SWAPS.fetch_add(1, Ordering::Relaxed);
     }
     RESIZING.store(false, Ordering::SeqCst);
 }
@@ -226,7 +224,6 @@ static BASE: AtomicUsize = AtomicUsize::new(0);
 pub static ACTIVE: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
 // Hook lifetime protects unhooking; only append producers affect coverage.
 static PRODUCERS: Padded<AtomicUsize> = Padded(AtomicUsize::new(0));
-static LEADER_CALLS: Padded<AtomicU64> = Padded(AtomicU64::new(0));
 const FINALIZE: usize = 0;
 const DESTROYED: usize = 1;
 const BORDER_FINALIZE: usize = 2;
@@ -235,160 +232,9 @@ const DISPATCH_ORIGINAL: usize = 4;
 const WIPE_ORIGINAL: usize = 5;
 const DESTRUCTION_ORIGINAL: usize = 6;
 static ORIGINAL: [AtomicUsize; 7] = [const { AtomicUsize::new(0) }; 7];
-const LOSS_NAMES: [&str; 145] = [
-    "border final inputs unreadable",
-    "border final side backlink differs",
-    "border final side identity mismatch",
-    "border-war finalizer not observed",
-    "border-war finalizer verdict unobserved",
-    "canonical country slot points to a different object",
-    "capture buffer allocation failed",
-    "capture buffer length overflow",
-    "combat registry unreadable or invalid",
-    "combat wipe address overflow",
-    "combat wipe class unsupported",
-    "combat wipe countries invalid",
-    "combat wipe field unreadable",
-    "combat wipe game state unreadable",
-    "combat wipe null pointer",
-    "combat wipe null-country links invalid",
-    "combat wipe null-country offset overflow",
-    "combat wipe opposite backlink differs",
-    "combat wipe pointer identity differs",
-    "combat wipe remaining class unsupported",
-    "combat wipe remaining offset overflow",
-    "combat wipe remaining references invalid",
-    "combat wipe side discriminator differs",
-    "combat wipe triggering reference was not removed",
-    "combat wipe unit class unsupported",
-    "country array unreadable or invalid",
-    "country id is zero",
-    "country id unreadable",
-    "country link does not resolve to its canonical object",
-    "country link resolves to null country",
-    "country link unreadable or outside country table",
-    "country links have no sentinel slot",
-    "country links unreadable or invalid",
-    "country pointer differs from its canonical object",
-    "country pointer is null",
-    "country pointer unreadable or outside country table",
-    "country slot and object resolve to different countries",
-    "country table has no country slots",
-    "country vtable mismatch",
-    "destroyed combat address overflow",
-    "destroyed combat offset overflow",
-    "destroyed division combat class unsupported",
-    "destroyed division combat header invalid",
-    "destruction diplomacy owner differs",
-    "destruction relation address overflow",
-    "destruction relation offset overflow",
-    "destruction relation owner differs",
-    "destruction relation slot out of bounds",
-    "destruction relations invalid",
-    "equipment entry unreadable",
-    "equipment variant pointer overflow",
-    "history country count invalid",
-    "history first country null",
-    "history raw tag out of bounds",
-    "history side backlink differs",
-    "history side identity mismatch",
-    "history tag array invalid",
-    "history tags address overflow",
-    "land append escaped unwind",
-    "land border finalization flags or sides unreadable",
-    "land border finalization identity unavailable",
-    "land callback escaped unwind",
-    "land casualty snapshot read refused",
-    "land combat class unsupported",
-    "land decode detach drain panicked",
-    "land decode worker panicked",
-    "land destruction killer callback unpaired",
-    "land destruction returned without killer observation",
-    "land dispatch returned without both leader observations",
-    "land dispatch sides differ",
-    "land event country set invalid",
-    "land event drain capacity exceeded",
-    "land event field unreadable",
-    "land event game state null",
-    "land event log capacity exceeded",
-    "land event log changed during drain",
-    "land event object identity mismatch",
-    "land event producer active at boundary",
-    "land event record word count differs",
-    "land event sizing address overflow",
-    "land event sizing combat pointer unreadable",
-    "land event sizing combat registry changed",
-    "land event sizing division address overflow",
-    "land event sizing division pointer unreadable",
-    "land event sizing division roster changed",
-    "land event sizing division roster invalid",
-    "land event sizing overflow",
-    "land event storage handoff overlaps producer",
-    "land final spool flush failed",
-    "land frame conversion failed",
-    "land frame decode queue full",
-    "land loss arena capacity exceeded",
-    "land loss count overflow",
-    "land loss entry bytes overflow",
-    "land loss equipment address overflow",
-    "land loss equipment entries unreadable",
-    "land loss event words overflow",
-    "land loss observer address overflow",
-    "land loss observer header unreadable",
-    "land loss observer headers unreadable",
-    "land loss observer vtable address overflow",
-    "land loss observer vtable mismatch",
-    "land loss pool array invalid",
-    "land loss pool vtable address overflow",
-    "land loss pool vtable mismatch",
-    "land loss side backlink differs",
-    "land loss side null",
-    "land loss sides alias",
-    "land loss variant identities unreadable",
-    "land loss variant pointer overflow",
-    "land loss variant vtable address overflow",
-    "land native verdict caller or side invalid",
-    "land observer worker drain lost",
-    "land observer frame not captured",
-    "land prepared spool write failed",
-    "land recycled spool write failed",
-    "land result combatant blocks unreadable",
-    "land result country set changed",
-    "land result country set short",
-    "land result side backlink mismatch",
-    "land result side identity mismatch",
-    "land result size overflow",
-    "land result unit header invalid",
-    "land result unit offset overflow",
-    "land verdict resolver escaped unwind",
-    "module address overflow",
-    "null history tag absent",
-    "null history tag array invalid",
-    "raw country link observation context mismatch",
-    "raw country selecting link controls unobserved",
-    "reserved country id is not zero",
-    "reserved country module address overflow",
-    "reserved country object identity mismatch",
-    "reserved country slot absent or unreadable",
-    "reserved country slot is null",
-    "string bytes unreadable",
-    "string header invalid",
-    "string header unreadable",
-    "string heap pointer invalid",
-    "string length overflow",
-    "string offset overflow",
-    "string terminator unreadable or invalid",
-    "variant identity unreadable",
-    "variant module address overflow",
-    "variant vtable or reference type mismatch",
-];
-static LOSS_REASONS: [AtomicU64; LOSS_NAMES.len()] =
-    [const { AtomicU64::new(0) }; LOSS_NAMES.len()];
-static UNLISTED_LOSS: OnceLock<&'static str> = OnceLock::new();
-static UNLISTED_LOSSES: AtomicU64 = AtomicU64::new(0);
 static LOST: AtomicU64 = AtomicU64::new(0);
-// This thread's bumps of `LOST` and `LEADER_CALLS`, in test builds only.
-// Both counters are process-wide, and other modules' tests (dropped frames,
+// This thread's losses and verdict-resolver tap calls, in test builds only.
+// `LOST` is process-wide, and other modules' tests (dropped frames,
 // a full decode queue, observer-boundary drains while a land test enables
 // observation) bump `LOST` from their own threads while the parallel suite
 // runs. A synthetic tap runs its observer body on the calling thread, so a
@@ -422,24 +268,6 @@ fn count_on_thread(lost: u64, leader_calls: u64) {
     #[cfg(not(test))]
     let _ = (lost, leader_calls);
 }
-static EVENTS: AtomicU64 = AtomicU64::new(0);
-static HOOK_TICKS: AtomicU64 = AtomicU64::new(0);
-static MAX_HOOK_TICKS: AtomicU64 = AtomicU64::new(0);
-static DRAIN_CAPACITY_FAILURES: AtomicU64 = AtomicU64::new(0);
-static LOG_CAPACITY_FAILURES: AtomicU64 = AtomicU64::new(0);
-static WIPE_UNSUPPORTED_CLASSES: [(&str, AtomicU64); 5] = [
-    ("combat wipe class unsupported", AtomicU64::new(0)),
-    ("combat wipe unit class unsupported", AtomicU64::new(0)),
-    ("combat wipe remaining class unsupported", AtomicU64::new(0)),
-    ("land combat class unsupported", AtomicU64::new(0)),
-    (
-        "destroyed division combat class unsupported",
-        AtomicU64::new(0),
-    ),
-];
-static DRAIN_CAPACITY: AtomicUsize = AtomicUsize::new(0);
-static DRAIN_REQUIRED: AtomicUsize = AtomicUsize::new(0);
-static UNHOOKED: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[derive(Clone, Copy)]
 struct Border {
@@ -573,23 +401,16 @@ impl Drop for Call {
         if !self.completed.get() || std::thread::panicking() {
             CALL_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
             ENABLED.store(false, Ordering::SeqCst);
-            fail("land callback escaped unwind");
+            fail();
             return;
         }
         ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 }
-pub(crate) fn fail(reason: &'static str) {
-    unless_foreign(|| (), || fail_owned(reason));
+pub(crate) fn fail() {
+    unless_foreign(|| (), fail_owned);
 }
-fn fail_owned(reason: &'static str) {
-    if let Some(index) = LOSS_NAMES.iter().position(|name| *name == reason) {
-        LOSS_REASONS[index].fetch_add(1, Ordering::Relaxed);
-    } else {
-        let _ = UNLISTED_LOSS.set(reason);
-        UNLISTED_LOSSES.fetch_add(1, Ordering::Relaxed);
-    }
-
+fn fail_owned() {
     count_on_thread(1, 0);
     LOST.fetch_add(1, Ordering::Relaxed);
     advance_epoch();
@@ -600,11 +421,6 @@ pub(crate) fn lost_casualty_reads(count: u64) -> u64 {
     unless_foreign(|| count, || lost_casualty_reads_owned(count))
 }
 fn lost_casualty_reads_owned(count: u64) -> u64 {
-    let index = LOSS_NAMES
-        .iter()
-        .position(|name| *name == "land casualty snapshot read refused")
-        .unwrap();
-    LOSS_REASONS[index].fetch_add(count, Ordering::Relaxed);
     count_on_thread(count, 0);
     LOST.fetch_add(count, Ordering::Relaxed)
         .saturating_add(count)
@@ -631,7 +447,7 @@ fn append_owned(
     impl Drop for Producer {
         fn drop(&mut self) {
             if self.uncommitted {
-                fail("land append escaped unwind");
+                fail();
             }
             PRODUCERS.fetch_sub(1, Ordering::SeqCst);
         }
@@ -643,12 +459,11 @@ fn append_owned(
     let required = CURSOR.load(Ordering::SeqCst).wrapping_sub(consumed) as usize;
     LOG_REQUIRED.fetch_max(required.max(size), Ordering::Relaxed);
     if RESIZING.load(Ordering::SeqCst) {
-        fail("land event storage handoff overlaps producer");
+        fail();
         return;
     }
     let Some(log) = log().filter(|s| s.words.len() >= required && s.words.len() >= size) else {
-        LOG_CAPACITY_FAILURES.fetch_add(1, Ordering::Relaxed);
-        fail("land event log capacity exceeded");
+        fail();
         return;
     };
     let capacity = log.words.len() as u64;
@@ -664,22 +479,11 @@ fn append_owned(
     });
     producer.uncommitted = false;
     let lapped = CURSOR.load(Ordering::SeqCst).wrapping_sub(first) > capacity;
-    if lapped {
-        LOG_CAPACITY_FAILURES.fetch_add(1, Ordering::Relaxed);
-    }
-    if let Err(reason) = result {
-        count_class_refusal(reason);
-    }
     if result.is_err() || written != size || lapped {
-        fail(
-            result
-                .err()
-                .unwrap_or("land event record word count differs"),
-        );
+        fail();
         return;
     }
     log.words[(first % capacity) as usize].store(size as u64, Ordering::Release);
-    EVENTS.fetch_add(1, Ordering::Relaxed);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -716,7 +520,7 @@ pub(crate) fn lost_drain(hour: i32, reason: &'static str) -> Drain {
     unless_foreign(|| diverted_drain(hour), || lost_drain_owned(hour, reason))
 }
 fn lost_drain_owned(hour: i32, reason: &'static str) -> Drain {
-    fail_owned("land observer worker drain lost");
+    fail_owned();
     let first = CONSUMED.load(Ordering::SeqCst);
     Drain {
         epoch: EPOCH.load(Ordering::SeqCst),
@@ -770,8 +574,6 @@ fn drain_owned(
     let from = LAST_HOUR.swap(hour as u64, Ordering::Relaxed) as i32;
     let required = end.wrapping_sub(first) as usize;
     LOG_REQUIRED.fetch_max(required, Ordering::Relaxed);
-    DRAIN_CAPACITY.store(output.len(), Ordering::Relaxed);
-    DRAIN_REQUIRED.store(required, Ordering::Relaxed);
     let mut result = Drain {
         epoch,
         first,
@@ -804,26 +606,16 @@ fn drain_owned(
     if required <= LOG_CAPACITY.load(Ordering::Acquire)
         && let Err(reason) = output.ensure(required)
     {
-        fail(reason);
+        fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
         result.reason = reason;
         return result;
     }
-    DRAIN_CAPACITY.store(output.len(), Ordering::Relaxed);
     if required > LOG_CAPACITY.load(Ordering::Acquire) || required > output.len() {
         let log_overflow = required > LOG_CAPACITY.load(Ordering::Acquire);
-        if !log_overflow {
-            DRAIN_CAPACITY_FAILURES.fetch_add(1, Ordering::Relaxed);
-        }
-        // Log shortages were already counted by the refusing append. Drain
-        // shortages and the discarded interval are counted here as well.
-        fail(if log_overflow {
-            "land event log capacity exceeded"
-        } else {
-            "land event drain capacity exceeded"
-        });
+        fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -839,7 +631,7 @@ fn drain_owned(
         return result;
     }
     if PRODUCERS.load(Ordering::SeqCst) != 0 {
-        fail("land event producer active at boundary");
+        fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -857,7 +649,7 @@ fn drain_owned(
         || EPOCH.load(Ordering::SeqCst) != epoch
         || CURSOR.load(Ordering::SeqCst) != end
     {
-        fail("land event log changed during drain");
+        fail();
         result.epoch = EPOCH.load(Ordering::SeqCst);
         result.lost = LOST.load(Ordering::Relaxed);
         OBSERVED_EPOCH.store(result.epoch, Ordering::SeqCst);
@@ -873,7 +665,6 @@ fn observe(combat: usize) {
     if !observing() {
         return;
     }
-    let start = crate::sampling::qpc();
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     let border = BORDER.get();
@@ -895,7 +686,7 @@ fn observe(combat: usize) {
                     Ok(())
                 });
             }
-            Err(reason) => refusal(reason),
+            Err(_) => fail(),
         }
     } else {
         match native::ResultPlan::read(&memory, base, combat, None) {
@@ -907,15 +698,9 @@ fn observe(combat: usize) {
                 };
                 append(plan.words, |put| plan.copy(&memory, base, put));
             }
-            Err(reason) => refusal(reason),
+            Err(_) => fail(),
         }
     }
-    timing(start);
-}
-fn timing(start: i64) {
-    let ticks = crate::sampling::qpc().saturating_sub(start).max(0) as u64;
-    HOOK_TICKS.fetch_add(ticks, Ordering::Relaxed);
-    MAX_HOOK_TICKS.fetch_max(ticks, Ordering::Relaxed);
 }
 unsafe extern "system-unwind" fn finalize(combat: usize) {
     let _call = Call::enter();
@@ -924,7 +709,6 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
         unsafe { std::mem::transmute(ORIGINAL[FINALIZE].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(combat) });
     if observing() {
-        let start = crate::sampling::qpc();
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::LossesPlan::read(&memory, base, combat) {
@@ -932,7 +716,7 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
                 append(plan.words, |put| plan.copy(&memory, base, put));
                 let (handle, sides) = plan.observer_sources();
                 for (side, pointer) in sides.into_iter().enumerate() {
-                    if let Err(reason) = engine_land_inputs::combat_log_events::observer(
+                    if engine_land_inputs::combat_log_events::observer(
                         &memory,
                         base,
                         pointer,
@@ -949,18 +733,19 @@ unsafe extern "system-unwind" fn finalize(combat: usize) {
                                 Ok(())
                             });
                         },
-                    ) {
-                        refusal(reason);
+                    )
+                    .is_err()
+                    {
+                        fail();
                     }
                 }
             }
-            Err(reason) => refusal(reason),
+            Err(_) => fail(),
         }
         match native::HistoryPlan::read(&memory, base, combat) {
             Ok(plan) => append(plan.words, |put| plan.copy(&memory, put)),
-            Err(reason) => refusal(reason),
+            Err(_) => fail(),
         }
-        timing(start);
     }
     _call.finish();
 }
@@ -1002,17 +787,15 @@ unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
         _call.finish();
         return;
     }
-    let start = crate::sampling::qpc();
     let memory = unsafe { engine_native::memory::LiveMemory::new() };
     let base = BASE.load(Ordering::Relaxed);
     match engine_land_inputs::land_wipe::WipePlan::read(&memory, base, combatant, army) {
         Ok(Some(plan)) => append(plan.words, |put| plan.copy(&memory, base, put)),
         Ok(None) => {}
-        Err(reason) => {
-            refusal(reason);
+        Err(_) => {
+            fail();
         }
     }
-    timing(start);
     #[cfg(test)]
     if WIPE_TEST_CLOBBER_XMM.load(Ordering::Relaxed) {
         unsafe {
@@ -1028,18 +811,6 @@ unsafe extern "system-unwind" fn observe_wipe(combatant: usize, army: usize) {
 }
 #[cfg(test)]
 static WIPE_TEST_CLOBBER_XMM: AtomicBool = AtomicBool::new(false);
-fn refusal(reason: &'static str) {
-    count_class_refusal(reason);
-    fail(reason);
-}
-fn count_class_refusal(reason: &str) {
-    if let Some((_, count)) = WIPE_UNSUPPORTED_CLASSES
-        .iter()
-        .find(|(name, _)| *name == reason)
-    {
-        count.fetch_add(1, Ordering::Relaxed);
-    }
-}
 unsafe extern "system-unwind" fn destroyed(
     from: usize,
     to: usize,
@@ -1049,7 +820,6 @@ unsafe extern "system-unwind" fn destroyed(
 ) {
     let _call = Call::enter();
     if observing() {
-        let start = crate::sampling::qpc();
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         let mut context = DESTRUCTION.get();
@@ -1064,19 +834,18 @@ unsafe extern "system-unwind" fn destroyed(
                         put(handle);
                         Ok(())
                     }),
-                    Err(reason) => refusal(reason),
+                    Err(_) => fail(),
                 }
                 context.seen = true;
                 DESTRUCTION.set(context);
             } else {
-                fail("land destruction killer callback unpaired");
+                fail();
                 if matches {
                     context.failed = true;
                     DESTRUCTION.set(context);
                 }
             }
         }
-        timing(start);
     }
     let original: unsafe extern "system-unwind" fn(usize, usize, usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[DESTROYED].load(Ordering::Acquire)) };
@@ -1087,7 +856,6 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
     let _call = Call::enter();
     let _restore = Restore::new(&DESTRUCTION);
     if observing() {
-        let start = crate::sampling::qpc();
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         let base = BASE.load(Ordering::Relaxed);
         match native::DestructionPlan::read(&memory, base, from, to, army, 0) {
@@ -1111,8 +879,8 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
                     plan.copy(&memory, base, put)
                 });
             }
-            Err(reason) => {
-                refusal(reason);
+            Err(_) => {
+                fail();
                 DESTRUCTION.set(Destruction {
                     army,
                     from,
@@ -1122,21 +890,17 @@ unsafe extern "system-unwind" fn destruction(army: usize, from: usize, to: usize
                 });
             }
         }
-        timing(start);
     }
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[DESTRUCTION_ORIGINAL].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(army, from, to) });
-    let start = crate::sampling::qpc();
     if observing() && !DESTRUCTION.get().seen && !DESTRUCTION.get().failed {
-        fail("land destruction returned without killer observation");
+        fail();
     }
-    timing(start);
     _call.finish();
 }
 unsafe extern "system-unwind" fn border_finalize(combat: usize) {
     let _call = Call::enter();
-    let start = crate::sampling::qpc();
     let _restore = Restore::new(&BORDER);
     if observing() {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -1164,7 +928,7 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                 terminating: [255; 2],
             });
         } else {
-            fail("land border finalization flags or sides unreadable");
+            fail();
             BORDER.set(NO_BORDER);
         }
     }
@@ -1182,13 +946,12 @@ unsafe extern "system-unwind" fn border_finalize(combat: usize) {
                     };
                     append(plan.words, |put| plan.copy(&memory, base, put));
                 }
-                Err(reason) => refusal(reason),
+                Err(_) => fail(),
             }
         } else {
-            fail("land border finalization identity unavailable");
+            fail();
         }
     }
-    timing(start);
     let original: unsafe extern "system-unwind" fn(usize) =
         unsafe { std::mem::transmute(ORIGINAL[BORDER_FINALIZE].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(combat) });
@@ -1238,7 +1001,7 @@ unsafe extern "system-unwind" fn leader_tap_body(
                 // Rust frame. Only its normal return may retire that flight.
                 TAP_ESCAPED_UNWINDS.fetch_add(1, Ordering::SeqCst);
                 ENABLED.store(false, Ordering::SeqCst);
-                fail("land verdict resolver escaped unwind");
+                fail();
             }
         }
     }
@@ -1254,7 +1017,6 @@ unsafe extern "system-unwind" fn border_terminate(side: usize, caller: usize) ->
     let original: unsafe extern "system-unwind" fn(usize) -> u8 =
         unsafe { std::mem::transmute(ORIGINAL[BORDER_TERMINATE].load(Ordering::Acquire)) };
     let result = _call.original(|| unsafe { original(side) });
-    let start = crate::sampling::qpc();
     let mut border = BORDER.get();
     if observing() {
         match border.slot(side, caller, BASE.load(Ordering::Relaxed)) {
@@ -1263,17 +1025,15 @@ unsafe extern "system-unwind" fn border_terminate(side: usize, caller: usize) ->
                 BORDER.set(border);
             }
             Ok(None) => {}
-            Err(()) => fail("land native verdict caller or side invalid"),
+            Err(()) => fail(),
         }
     }
-    timing(start);
     _call.finish();
     result
 }
 
 unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: usize) {
     let _call = Call::enter();
-    let start = crate::sampling::qpc();
     let _restore = Restore::new(&DISPATCH);
     if observing() {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -1303,20 +1063,18 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                             plan.copy(&memory, BASE.load(Ordering::Relaxed), put)
                         });
                     }
-                    Err(reason) => refusal(reason),
+                    Err(_) => fail(),
                 }
             }
-            Err(reason) => {
-                refusal(reason);
+            Err(_) => {
+                fail();
                 DISPATCH.set(NO_DISPATCH);
             }
         }
     }
-    timing(start);
     let original: unsafe extern "system-unwind" fn(usize, usize, usize) =
         unsafe { std::mem::transmute(ORIGINAL[DISPATCH_ORIGINAL].load(Ordering::Acquire)) };
     _call.original(|| unsafe { original(combat, loser, winner) });
-    let start = crate::sampling::qpc();
     let observed = DISPATCH.get();
     if observing() {
         if observed.combat != 0 && observed.seen == [true; 2] {
@@ -1330,16 +1088,14 @@ unsafe extern "system-unwind" fn dispatch(combat: usize, loser: usize, winner: u
                 Ok(())
             });
         } else {
-            fail("land dispatch returned without both leader observations");
+            fail();
         }
     }
-    timing(start);
     _call.finish();
 }
 unsafe extern "system-unwind" fn leader_tap(side: usize, caller: usize, target: usize) -> usize {
     let _call = Call::enter();
     count_on_thread(0, 1);
-    LEADER_CALLS.fetch_add(1, Ordering::Relaxed);
     let result = unsafe { leader_observation(&_call, side, caller, target) };
     _call.finish();
     result
@@ -1350,7 +1106,6 @@ unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: us
     let result = call.original(|| unsafe { original(side) });
     let mut observed = DISPATCH.get();
     if observing() && observed.combat != 0 {
-        let start = crate::sampling::qpc();
         match observed.slot(side, caller, BASE.load(Ordering::Relaxed)) {
             Ok(Some(n)) => {
                 let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -1360,13 +1115,12 @@ unsafe fn leader_observation(call: &Call, side: usize, caller: usize, target: us
                         observed.seen[n] = true;
                         DISPATCH.set(observed);
                     }
-                    Err(reason) => refusal(reason),
+                    Err(_) => fail(),
                 }
             }
             Ok(None) => {}
-            Err(()) => fail("land native verdict caller or side invalid"),
+            Err(()) => fail(),
         }
-        timing(start);
     }
     result
 }
@@ -1384,7 +1138,6 @@ impl Hooks {
                 None,
                 &reason,
             );
-            let _ = UNHOOKED.set(reason);
             Vec::new()
         });
         Self {
@@ -1483,7 +1236,6 @@ impl Hooks {
                     None,
                     &reason,
                 );
-                let _ = UNHOOKED.set(format!("land hook family enable refused: {reason}"));
                 return Ok(true);
             }
             Err(reason) => return Err(reason),
@@ -1515,43 +1267,6 @@ impl Drop for Hooks {
             let _ = release();
         }
     }
-}
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "enabled": observing(),
-        "unhooked": UNHOOKED.get(),
-        "epoch": EPOCH.load(Ordering::Relaxed),
-        "events": EVENTS.load(Ordering::Relaxed),
-        "lost_events": LOST.load(Ordering::Relaxed),
-        "loss_reasons": crate::status::map(LOSS_NAMES.into_iter().zip(LOSS_REASONS.iter().map(|count| count.load(Ordering::Relaxed))).filter(|(_, count)| *count != 0)),
-        "first_unlisted_loss_reason": UNLISTED_LOSS.get().copied(),
-        "unlisted_loss_reasons": UNLISTED_LOSSES.load(Ordering::Relaxed),
-        "leader_resolver_calls": LEADER_CALLS.load(Ordering::Relaxed),
-        "verdict_taps_in_flight": TAP_IN_FLIGHT.load(Ordering::SeqCst),
-        "verdict_tap_escaped_unwinds": TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst),
-        "verdict_tap_retention_reason": (TAP_ESCAPED_UNWINDS.load(Ordering::SeqCst) != 0).then_some(TAP_UNWIND_RETENTION),
-        "callback_escaped_unwinds": CALL_ESCAPED_UNWINDS.load(Ordering::SeqCst),
-        "callback_retention_reason": (CALL_ESCAPED_UNWINDS.load(Ordering::SeqCst) != 0).then_some(CALL_UNWIND_RETENTION),
-        "hook_ticks": HOOK_TICKS.load(Ordering::Relaxed),
-        "max_hook_ticks": MAX_HOOK_TICKS.load(Ordering::Relaxed),
-        "log_words": LOG_CAPACITY.load(Ordering::Acquire),
-        "log_required_words": LOG_REQUIRED.load(Ordering::Relaxed),
-        "log_swaps": LOG_SWAPS.load(Ordering::Relaxed),
-        "drain_words": DRAIN_CAPACITY.load(Ordering::Relaxed),
-        "drain_required_words": DRAIN_REQUIRED.load(Ordering::Relaxed),
-        "drain_capacity_failures": DRAIN_CAPACITY_FAILURES.load(Ordering::Relaxed),
-        "log_capacity_failures": LOG_CAPACITY_FAILURES.load(Ordering::Relaxed),
-        "wipe_unsupported_classes": {
-            "combat wipe class unsupported": WIPE_UNSUPPORTED_CLASSES[0].1.load(Ordering::Relaxed),
-            "combat wipe unit class unsupported": WIPE_UNSUPPORTED_CLASSES[1].1.load(Ordering::Relaxed),
-            "combat wipe remaining class unsupported": WIPE_UNSUPPORTED_CLASSES[2].1.load(Ordering::Relaxed),
-        },
-        "land_unsupported_classes": {
-            "land combat class unsupported": WIPE_UNSUPPORTED_CLASSES[3].1.load(Ordering::Relaxed),
-            "destroyed division combat class unsupported": WIPE_UNSUPPORTED_CLASSES[4].1.load(Ordering::Relaxed),
-        },
-        "scope": "cumulative since attach; land_unsupported_classes counts named combat-class refusals, included in lost_events; wipe_unsupported_classes counts named unsupported-class refusals from wipe reads and copies, included in lost_events, not all read failures; leader_resolver_calls counts only the two DispatchLeaderOnActions verdict call-site tap hits (loser and winner), not UI/AI/script resolver calls; hook ticks are QPC observation work, decoding is off-thread; first sample, loads, gaps and failed intervals are unknown"
-    })
 }
 
 /// Each leader call site with its verified bytes; it must still be the vtable-slot CALL it replaces.
@@ -1675,7 +1390,6 @@ pub(crate) mod test_support {
         LOG.store(&mut *storage, Ordering::SeqCst);
         LOG_CAPACITY.store(words, Ordering::SeqCst);
         LOG_REQUIRED.store(0, Ordering::SeqCst);
-        LOG_SWAPS.store(0, Ordering::SeqCst);
         RESIZING.store(false, Ordering::SeqCst);
         swap.current = Some(storage);
         CURSOR.store(0, Ordering::SeqCst);
@@ -1688,11 +1402,6 @@ pub(crate) mod test_support {
         CALL_ESCAPED_UNWINDS.store(0, Ordering::SeqCst);
         PRODUCERS.store(0, Ordering::SeqCst);
         LAST_DISPATCHED.set((0, 0, 0));
-        DRAIN_CAPACITY_FAILURES.store(0, Ordering::SeqCst);
-        LOG_CAPACITY_FAILURES.store(0, Ordering::SeqCst);
-        for (_, count) in &WIPE_UNSUPPORTED_CLASSES {
-            count.store(0, Ordering::SeqCst);
-        }
         ENABLED.store(true, Ordering::SeqCst);
     }
     pub fn append_record(payload: &[u64]) {
@@ -1710,7 +1419,7 @@ pub(crate) mod test_support {
     pub fn thread_lost() -> u64 {
         THREAD_COUNTS.with(|counts| counts.get()[0])
     }
-    /// This thread's verdict-resolver tap calls (`LEADER_CALLS` bumps).
+    /// This thread's verdict-resolver tap calls.
     pub fn thread_leader_calls() -> u64 {
         THREAD_COUNTS.with(|counts| counts.get()[1])
     }
@@ -1743,13 +1452,13 @@ mod tests {
         );
     }
     #[test]
-    fn read_losses_and_publication_losses_keep_separate_named_counts() {
+    fn losses_count_on_the_thread_that_records_them() {
         let _guard = exclusive();
         reset();
         let before = test_support::thread_lost();
         crate::test_support::with_allocations_denied(|| {
-            refusal("land event field unreadable");
-            fail("land frame decode queue full");
+            fail();
+            fail();
         });
         assert_eq!(test_support::thread_lost(), before + 2);
         // Another thread's loss, like another module's test in the parallel
@@ -1758,27 +1467,13 @@ mod tests {
         let calls = test_support::thread_leader_calls();
         std::thread::spawn(|| {
             test_support::adopt();
-            fail("land frame decode queue full")
+            fail()
         })
         .join()
         .unwrap();
         assert!(LOST.load(Ordering::Relaxed) > global);
         assert_eq!(test_support::thread_lost(), before + 2);
         assert_eq!(test_support::thread_leader_calls(), calls);
-        let value = serde_json::to_value(status()).unwrap();
-        assert!(
-            value["loss_reasons"]["land event field unreadable"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert!(
-            value["loss_reasons"]["land frame decode queue full"]
-                .as_u64()
-                .unwrap()
-                > 0
-        );
-        assert_eq!(value["log_capacity_failures"], 0);
         ENABLED.store(false, Ordering::SeqCst);
     }
 
@@ -2333,7 +2028,7 @@ mod tests {
         test_support::disable();
     }
     #[test]
-    fn wipe_unsupported_class_refusals_are_named_counted_and_keep_interval_unknown() {
+    fn wipe_unsupported_class_refusals_keep_interval_unknown() {
         let _guard = exclusive();
         reset();
         let old_base = BASE.swap(0, Ordering::SeqCst);
@@ -2350,33 +2045,19 @@ mod tests {
                 unsupported_unit.as_ptr() as usize,
             );
         }
-        // Copy errors follow the same append refusal path; no partial record
-        // may become complete just because its diagnostic was counted.
+        // Copy errors follow the same append refusal path; no partial record may become complete.
         append(2, |_| Err("combat wipe remaining class unsupported"));
-        refusal("land combat class unsupported");
-        refusal("destroyed division combat class unsupported");
+        fail();
+        fail();
         unsafe {
             observe_wipe(0, 0);
-        } // Ordinary short/null read is not a class refusal.
-        let observed = serde_json::to_value(status()).unwrap();
+        }
         let interval = drain(&mut output, 11, false);
         BASE.store(old_base, Ordering::SeqCst);
         test_support::disable();
-        for (reason, _) in &WIPE_UNSUPPORTED_CLASSES[..3] {
-            assert_eq!(observed["wipe_unsupported_classes"][*reason], 1);
-        }
-        for (reason, _) in &WIPE_UNSUPPORTED_CLASSES[3..] {
-            assert_eq!(observed["land_unsupported_classes"][*reason], 1);
-        }
         assert_eq!(test_support::thread_lost() - lost, 6);
         assert!(interval.lost >= 6);
         assert!(!interval.complete);
-        assert!(
-            observed["scope"]
-                .as_str()
-                .unwrap()
-                .contains("not all read failures")
-        );
     }
     #[test]
     fn win64_observation_entries_preserve_native_argument_and_return() {
@@ -3031,8 +2712,6 @@ mod tests {
         let short = drain(&mut [], 22, false);
         assert!(!short.complete);
         assert_eq!(short.reason, "land event drain capacity exceeded");
-        assert_eq!(DRAIN_CAPACITY_FAILURES.load(Ordering::SeqCst), 1);
-        assert_eq!(LOG_CAPACITY_FAILURES.load(Ordering::SeqCst), 0);
         drain(&mut out, 23, true);
         PRODUCERS.store(1, Ordering::SeqCst);
         assert!(!drain(&mut out, 24, false).complete);
@@ -3052,7 +2731,6 @@ mod tests {
         let overflow = drain(&mut out, 11, false);
         assert!(!overflow.complete);
         assert_eq!(overflow.reason, "land event log capacity exceeded");
-        assert_eq!(LOG_CAPACITY_FAILURES.load(Ordering::SeqCst), 1);
         assert!(overflow.lost > 0);
         let lost = test_support::thread_lost();
         assert_eq!(overflow.required, demand);
@@ -3096,8 +2774,6 @@ mod tests {
         let observed = drain(&mut out, 11, false);
         assert!(observed.complete);
         assert_eq!(observed.words, 50_005);
-        assert_eq!(LOG_CAPACITY_FAILURES.load(Ordering::Relaxed), 0);
-        assert_eq!(DRAIN_CAPACITY_FAILURES.load(Ordering::Relaxed), 0);
         ENABLED.store(false, Ordering::SeqCst);
     }
 
@@ -3119,8 +2795,6 @@ mod tests {
             assert_eq!(LOG_REQUIRED.load(Ordering::Relaxed), 9);
             assert_eq!(LOG_CAPACITY.load(Ordering::Acquire), 16);
         }
-        assert_eq!(LOG_CAPACITY_FAILURES.load(Ordering::Relaxed), 0);
-        assert_eq!(DRAIN_CAPACITY_FAILURES.load(Ordering::Relaxed), 0);
         ENABLED.store(false, Ordering::SeqCst);
     }
 
@@ -3198,7 +2872,7 @@ mod ownership_tests {
         let epoch = EPOCH.load(Ordering::SeqCst);
         let capacity = LOG_CAPACITY.load(Ordering::SeqCst);
         std::thread::spawn(|| {
-            fail("land frame decode queue full");
+            fail();
             assert_eq!(lost_casualty_reads(3), 3);
             let drained = lost_drain(11, "land observer frame not captured");
             assert!(!drained.complete);
@@ -3219,7 +2893,7 @@ mod ownership_tests {
         // An adopted thread is the owner's.
         std::thread::spawn(|| {
             adopt();
-            fail("land frame decode queue full");
+            fail();
         })
         .join()
         .unwrap();

@@ -43,10 +43,7 @@ use replay_data::{
 use replay_frame::frame::TableInput;
 #[cfg(test)]
 use replay_frame::frame::TableView;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering::Relaxed},
-};
+use std::sync::Mutex;
 
 use crate::country_input_changes::{self as changes, Changes, Counts, Table};
 
@@ -61,36 +58,9 @@ pub const TABLES: [TableId; N] = [
     TableId::DivisionTransportSpeeds,
 ];
 
-/// The status families: the five tables, then DivisionStatus.combat_movement.
+/// The count families: the five tables, then DivisionStatus.combat_movement.
 const FAMILIES: usize = N + 1;
-const FAMILY_NAMES: [&str; FAMILIES] = [
-    "movement_state_terms",
-    "core_supply_access",
-    "country_unit_speed_entries",
-    "river_relations",
-    "division_transport_speeds",
-    "combat_movement",
-];
 const COMBAT: usize = N;
-/// Per family, cumulative: reads, carried, refusals.
-static COUNTS: [[AtomicU64; 3]; FAMILIES] = [const { [const { AtomicU64::new(0) }; 3] }; FAMILIES];
-
-pub(crate) fn status_data() -> impl serde::Serialize {
-    let column = |column: usize| {
-        crate::status::map(
-            FAMILY_NAMES
-                .iter()
-                .zip(&COUNTS)
-                .map(move |(&name, counts)| (name, counts[column].load(Relaxed))),
-        )
-    };
-    crate::status::status!({
-        "reads": column(0),
-        "carried": column(1),
-        "refusals": column(2),
-        "scope": "cumulative land movement speed operands of the hour's movers, one per sharing key (rows read afresh, rows carried from the held read, refused rows and keys that could not be formed); combat_movement counts only movers with an edge that reads the combat operand",
-    })
-}
 
 /// The ordered state block keys: army speed, controller speed, enemy speed,
 /// attack speed.
@@ -638,7 +608,6 @@ impl SpeedTerms {
         }
         self.index_combat();
         self.speed_cache.finish();
-        self.publish();
         self.held.return_complete();
         crate::sampling::qpc().saturating_sub(started).max(0) as u64
     }
@@ -736,14 +705,6 @@ impl SpeedTerms {
         // Region pointers never outlive the acquisition.
         self.regions.clear();
         ticks
-    }
-
-    fn publish(&self) {
-        for (family, counts) in COUNTS.iter().zip(&self.counts) {
-            for (total, count) in family.iter().zip(counts) {
-                total.fetch_add(*count, Relaxed);
-            }
-        }
     }
 
     /// The unit speed set's hourly take: its epoch, whether every mark was

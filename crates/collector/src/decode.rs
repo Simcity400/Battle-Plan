@@ -28,18 +28,7 @@
 //! process memory and per-family span/byte capacities require live measurement;
 //! a sum of byte arenas alone is not a bound on aggregate allocation.
 //!
-//! Calibration: per-raw-family-table copy ns, decode ns and raw bytes are monotonic
-//! additive counters readable from status (`calibration_json`, merged into the
-//! runtime status additively). Per-frame copy-only ns also stays in the
-//! existing `table_ns` slots for the staged tables.
-//!
-//! Counter semantics: `JOBS` counts every FIFO item enqueued (one per frame,
-//! including skip-hour ordering placeholders that carry no payload).
-//! `REFRESH_JOBS` counts every family-refresh payload decoded (one per moved
-//! family per refresh hour, so several increments per frame when families
-//! coincide). `FULL_REFRESH_JOBS` counts frames with `force_full` set.
-//! `DROPS` counts queue-full whole-frame drops (the `LossBatch` gap path),
-//! never staging overflows (those take the typed fallback with no gap).
+//! Per-frame copy-only ns stays in the `table_ns` slots for the staged tables.
 
 use crate::{
     extended::{
@@ -61,21 +50,14 @@ use crate::{
 };
 use replay_data::rows::TableId;
 
-static CAPTURE_TAIL_DECODE_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static CENSUS_TAIL_DECODE_NS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
-static MISSION_TAIL_DECODE_NS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-
 use crossbeam_queue::ArrayQueue;
 use std::cell::UnsafeCell;
 use std::sync::{
     Mutex,
     atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering},
 };
-mod diagnostics;
 mod pools;
-mod service;
 
-pub(crate) use diagnostics::*;
 pub use pools::*;
 
 /// Relations family in calibration/report order: [opinions, tuples]. The
@@ -231,21 +213,6 @@ pub const ECONOMY_REST: [TableId; crate::extended::economy::N] = [
     TableId::CountryFuelConsumers,
     TableId::FuelDemandParts,
 ];
-/// [`ECONOMY_REST`]'s names, for the calibration status's positional arrays.
-pub const ECONOMY_REST_NAMES: [&str; crate::extended::economy::N] = [
-    "CountryFuel",
-    "CountryExperience",
-    "ProvinceSupply",
-    "HubMotorization",
-    "DisruptedSupply",
-    "ForeignHomebases",
-    "ResourceDefinitions",
-    "CountryResources",
-    "ResourceExchanges",
-    "PurchaseContracts",
-    "CountryFuelConsumers",
-    "FuelDemandParts",
-];
 
 /// Hourly weather family in calibration/report order: [regions, provinces].
 /// Hourly like every Tier-H table (no refresh gate). The manager header is
@@ -311,198 +278,7 @@ pub struct DecodeJob {
     pub weather_payload: Option<WeatherJob>,
     pub capitulation_payload: Option<CapitulationJob>,
 }
-static RELATIONS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static RELATIONS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static RELATIONS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static CHARACTERS_COPY_NS: [AtomicU64; CHARACTERS.len()] =
-    [const { AtomicU64::new(0) }; CHARACTERS.len()];
-static CHARACTERS_DECODE_NS: [AtomicU64; CHARACTERS.len()] =
-    [const { AtomicU64::new(0) }; CHARACTERS.len()];
-static CHARACTERS_RAW_BYTES: [AtomicU64; CHARACTERS.len()] =
-    [const { AtomicU64::new(0) }; CHARACTERS.len()];
-static PROJECTS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static PROJECTS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static PROJECTS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static LEXICAL_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static LEXICAL_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static LEXICAL_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static DIVISIONS_COPY_NS: [AtomicU64; 6] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static DIVISIONS_DECODE_NS: [AtomicU64; 6] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static DIVISION_PRESENTATION_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static DIVISIONS_RAW_BYTES: [AtomicU64; 6] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static AIR_WING_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_WING_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_WING_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_STATS_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static AIR_STATS_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static AIR_STATS_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static NAVAL_COPY_NS: [AtomicU64; 9] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static NAVAL_DECODE_NS: [AtomicU64; 9] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static NAVAL_RAW_BYTES: [AtomicU64; 9] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static PLAYERS_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static PLAYERS_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static PLAYERS_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static SESSION_COPY_NS: [AtomicU64; 3] = [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static SESSION_DECODE_NS: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static SESSION_RAW_BYTES: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static PRODUCTION_REST_COPY_NS: [AtomicU64; 8] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static PRODUCTION_REST_DECODE_NS: [AtomicU64; 8] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static PRODUCTION_REST_RAW_BYTES: [AtomicU64; 8] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static CONSTRUCTION_REST_COPY_NS: [AtomicU64; 10] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static CONSTRUCTION_REST_DECODE_NS: [AtomicU64; 10] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static CONSTRUCTION_REST_RAW_BYTES: [AtomicU64; 10] = [
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-    AtomicU64::new(0),
-];
-static ECONOMY_REST_COPY_NS: [AtomicU64; crate::extended::economy::N] =
-    [const { AtomicU64::new(0) }; crate::extended::economy::N];
-static ECONOMY_REST_DECODE_NS: [AtomicU64; crate::extended::economy::N] =
-    [const { AtomicU64::new(0) }; crate::extended::economy::N];
-static ECONOMY_REST_RAW_BYTES: [AtomicU64; crate::extended::economy::N] =
-    [const { AtomicU64::new(0) }; crate::extended::economy::N];
-static AIR_BASES_COPY_NS: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
 // hits, misses, ineligible, comparisons, installs, compare/restore/install ns.
-static AIR_BASES_MEMO: [AtomicU64; 8] = [const { AtomicU64::new(0) }; 8];
-static AIR_BASES_DECODE_NS: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static AIR_BASES_RAW_BYTES: [AtomicU64; 3] =
-    [AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)];
-static SUPREMACY_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static SUPREMACY_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static SUPREMACY_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static SUNK_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static SUNK_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static SUNK_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static RADAR_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static RADAR_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static RADAR_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static INTEL_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static INTEL_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static INTEL_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static WEATHER_COPY_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static WEATHER_DECODE_NS: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static WEATHER_RAW_BYTES: [AtomicU64; 2] = [AtomicU64::new(0), AtomicU64::new(0)];
-static CAPITULATION_COPY_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static CAPITULATION_DECODE_NS: [AtomicU64; 1] = [AtomicU64::new(0)];
-static CAPITULATION_RAW_BYTES: [AtomicU64; 1] = [AtomicU64::new(0)];
-static QUEUE_HIGH_WATER: AtomicU64 = AtomicU64::new(0);
-static JOBS: AtomicU64 = AtomicU64::new(0);
-static REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
-static FULL_REFRESH_JOBS: AtomicU64 = AtomicU64::new(0);
-static DROPS: AtomicU64 = AtomicU64::new(0);
-static LAST_SEQ: AtomicU64 = AtomicU64::new(0);
-static LAST_HOUR: AtomicU64 = AtomicU64::new(0);
 static SEQ: AtomicU64 = AtomicU64::new(0);
 static STOP: AtomicBool = AtomicBool::new(false);
 static WORKER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
@@ -757,6 +533,13 @@ fn defer_payload(payload: RetiredPayload) {
         queue.push(payload).is_ok(),
         "owned-frame retirement bound exceeded"
     );
+    // A payload retired without a queued frame still reaches the parked worker.
+    let shared = sampling::SHARED.load(Ordering::Acquire);
+    if !shared.is_null()
+        && let Some(worker) = unsafe { &*shared }.decode_waker.get()
+    {
+        worker.unpark();
+    }
 }
 
 fn reclaim_payloads() {
@@ -839,11 +622,6 @@ fn enqueued(shared: &Shared) {
     if let Some(worker) = shared.decode_waker.get() {
         worker.unpark();
     }
-    JOBS.fetch_add(1, Ordering::Relaxed);
-    // Decode-queue depth high-water for live backlog visibility.
-    // Records the deepest observed FIFO occupancy (bounded by BUFFERS).
-    let depth = shared.decode_queue.len() as u64;
-    QUEUE_HIGH_WATER.fetch_max(depth, Ordering::Relaxed);
 }
 
 fn refused() {
@@ -852,8 +630,7 @@ fn refused() {
     crate::air_losses::lost_drain();
     crate::building_bombing::lost_drain();
     crate::nuclear_strikes::lost_drain();
-    crate::land_events::fail("land frame decode queue full");
-    DROPS.fetch_add(1, Ordering::Relaxed);
+    crate::land_events::fail();
 }
 
 /// Return an unqueued job's payloads to their pools.
@@ -953,7 +730,7 @@ fn decode_loop() {
                 let _phase = crate::allocation::enter(crate::allocation::Phase::Decode);
                 crate::allocation::attempted_hour(None);
                 reclaim_payloads();
-                std::thread::park_timeout(std::time::Duration::from_millis(1));
+                std::thread::park();
             }
         }
     }
@@ -974,7 +751,6 @@ pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
-    let mut service = service::Service::start(shared, &job);
     let failure_scope = failure::Scope::frame(failure::Frame {
         index: job.index,
         seq: job.seq,
@@ -1008,10 +784,9 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
     failure::stage("frame retirement", None);
     reclaim_payloads();
     if !crate::allocation::failed() {
-        process_job(shared, &mut job, air_bases_memo, &mut service);
+        process_job(shared, &mut job, air_bases_memo);
     }
 
-    service.decoded();
     // Return even a terminally skipped frame's loan. Its Drop forgets an
     // incomplete settlement, so later acquisition never carries a partial tree.
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
@@ -1107,7 +882,6 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
         shared.wake_spool();
     }
     crate::allocation::attempted_hour(None);
-    service.finish();
 }
 
 fn publish_ready(
@@ -1335,7 +1109,6 @@ fn process_job(
     shared: &Shared,
     job: &mut DecodeJob,
     air_bases_memo: &mut AirBasesMemo,
-    service: &mut service::Service,
 ) {
     failure::stage("missing payload verdicts", None);
     if !job.air_bases_refresh || job.air_bases_payload.is_none() {
@@ -1344,38 +1117,19 @@ fn process_job(
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     fail_missing_payloads(frame, job);
     // Return presentation's cross-frame store before independent publication.
-    service.presentation_begin();
-    let store_returned = decode_presentation(shared, job.index);
-    service.presentation_returned(store_returned);
+    decode_presentation(shared, job.index);
     failure::stage("owned capture tails", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-    let ticks = frame.extended.decode_capture_tails();
-    for (total, ticks) in CAPTURE_TAIL_DECODE_NS.iter().zip(ticks) {
-        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-    }
+    frame.extended.decode_capture_tails();
     failure::stage("owned census publication", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
-    let start = sampling::qpc();
     frame.map.naval.decode_owned();
-    let ships = sampling::qpc().saturating_sub(start).max(0) as u64;
-    let [map, governance, tasks, projects] = frame.extended.decode_owned_censuses();
-    for (total, ticks) in CENSUS_TAIL_DECODE_NS.iter().zip([ships, map, governance, tasks, projects]) {
-        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-    }
-    crate::attach_diagnostics::project_variables_decoded(frame.qpc, shared.ns(projects as i64));
+    frame.extended.decode_owned_censuses();
     failure::stage("owned mission tails", None);
-    let ticks = frame.extended.decode_mission_tails();
-    for (total, ticks) in MISSION_TAIL_DECODE_NS.iter().zip(ticks) {
-        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-    }
+    frame.extended.decode_mission_tails();
     failure::stage("air copies", None);
     let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
     frame.extended.decode_air_copies();
-    LAST_SEQ.store(job.seq, Ordering::Relaxed);
-    LAST_HOUR.store(job.hour as u64, Ordering::Relaxed);
-    if job.force_full {
-        FULL_REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
-    }
 
     if job.relations_refresh
         && let Some(payload) = job.relations_payload.as_ref()
@@ -1387,12 +1141,6 @@ fn process_job(
             .extended
             .relations_pilot()
             .decode_relations_payload(payload, &mut decode_ticks);
-        for (total, ticks) in RELATIONS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     for (part, (refresh, payload)) in job
         .characters_refresh
@@ -1409,12 +1157,6 @@ fn process_job(
         let characters = frame.extended.characters_pilot();
         characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
         characters.remember_templates(payload);
-        for (total, ticks) in CHARACTERS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.projects_refresh
         && let Some(payload) = job.projects_payload.as_ref()
@@ -1427,12 +1169,6 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
-        for (total, ticks) in PROJECTS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.lexical_refresh
         && let Some(payload) = job.lexical_payload.as_ref()
@@ -1444,12 +1180,6 @@ fn process_job(
             .extended
             .lexical_pilot()
             .decode_lexical_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in LEXICAL_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
 
     if job.divisions_refresh
@@ -1459,12 +1189,6 @@ fn process_job(
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
         sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in DIVISIONS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.air_wing_refresh
         && let Some(payload) = job.air_wing_payload.as_mut()
@@ -1482,12 +1206,6 @@ fn process_job(
             .game_score_pilot()
             .install_air(&mut payload.game_score);
         payload.update_capacity_charge();
-        for (total, ticks) in AIR_WING_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.air_stats_refresh
         && let Some(payload) = job.air_stats_payload.as_ref()
@@ -1501,12 +1219,6 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
-        for (total, ticks) in AIR_STATS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.naval_refresh
         && let Some(payload) = job.naval_payload.as_ref()
@@ -1517,12 +1229,6 @@ fn process_job(
         frame
             .extended
             .decode_naval_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in NAVAL_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.players_refresh
         && let Some(payload) = job.players_payload.as_ref()
@@ -1533,12 +1239,6 @@ fn process_job(
         frame
             .map
             .decode_players_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in PLAYERS_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.session_refresh
         && let Some(payload) = job.session_payload.as_ref()
@@ -1551,12 +1251,6 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
-        for (total, ticks) in SESSION_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.production_rest_refresh
         && let Some(payload) = job.production_rest_payload.as_ref()
@@ -1573,12 +1267,6 @@ fn process_job(
                 payload,
                 &mut decode_ticks,
             );
-        for (total, ticks) in PRODUCTION_REST_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.construction_rest_refresh
         && let Some(payload) = job.construction_rest_payload.as_ref()
@@ -1592,12 +1280,6 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
-        for (total, ticks) in CONSTRUCTION_REST_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.economy_rest_refresh
         && let Some(payload) = job.economy_rest_payload.as_ref()
@@ -1609,12 +1291,6 @@ fn process_job(
             .extended
             .economy_rest_pilot()
             .decode_economy_rest_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in ECONOMY_REST_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
@@ -1622,7 +1298,7 @@ fn process_job(
         failure::stage("air_bases", None);
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 3];
-        let report = frame.extended.decode_air_bases_payload(
+        frame.extended.decode_air_bases_payload(
             shared.base,
             payload,
             air_bases_memo,
@@ -1635,26 +1311,6 @@ fn process_job(
             },
             &mut decode_ticks,
         );
-        // Once per worker refresh, never on a game read. These costs are also
-        // included in the family's existing decode timers, not claimed as free.
-        for (cell, value) in AIR_BASES_MEMO.iter().zip([
-            u64::from(report.hit),
-            u64::from(!report.hit),
-            u64::from(!report.eligible),
-            u64::from(report.compared),
-            u64::from(report.installed),
-            shared.ns(report.compare_ticks as i64),
-            shared.ns(report.restore_ticks as i64),
-            shared.ns(report.install_ticks as i64),
-        ]) {
-            cell.fetch_add(value, Ordering::Relaxed);
-        }
-        for (total, ticks) in AIR_BASES_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.supremacy_refresh
         && let Some(payload) = job.supremacy_payload.as_ref()
@@ -1667,12 +1323,6 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
-        for (total, ticks) in SUPREMACY_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.sunk_refresh
         && let Some(payload) = job.sunk_payload.as_ref()
@@ -1684,12 +1334,6 @@ fn process_job(
             .extended
             .sunk_pilot()
             .decode_sunk_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in SUNK_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.radar_refresh
         && let Some(payload) = job.radar_payload.as_ref()
@@ -1701,12 +1345,6 @@ fn process_job(
             .extended
             .radar_pilot()
             .decode_radar_payload(payload, &mut decode_ticks);
-        for (total, ticks) in RADAR_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.intel_refresh
         && let Some(payload) = job.intel_payload.as_ref()
@@ -1718,12 +1356,6 @@ fn process_job(
             .extended
             .intel_pilot()
             .decode_intel_payload(payload, &mut decode_ticks);
-        for (total, ticks) in INTEL_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.weather_refresh
         && let Some(payload) = job.weather_payload.as_ref()
@@ -1742,12 +1374,6 @@ fn process_job(
             &mut tracker,
             &mut decode_ticks,
         );
-        for (total, ticks) in WEATHER_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
     if job.capitulation_refresh
         && let Some(payload) = job.capitulation_payload.as_ref()
@@ -1759,34 +1385,17 @@ fn process_job(
             .extended
             .capitulation_pilot()
             .decode_capitulation_payload(shared.base, payload, &mut decode_ticks);
-        for (total, ticks) in CAPITULATION_DECODE_NS.iter().zip(decode_ticks) {
-            if ticks != 0 {
-                total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-            }
-        }
-        REFRESH_JOBS.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 /// The FIFO worker owns the frame; this packet has no raw decode dependency.
 /// Return its held-store loan before unrelated families can delay the next hour.
-fn decode_presentation(shared: &Shared, index: usize) -> bool {
+fn decode_presentation(shared: &Shared, index: usize) {
     failure::stage("division presentation", None);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    let before = frame.extended.presentation_phase_ticks();
-    for (total, ticks) in DIVISION_PRESENTATION_DECODE_NS
-        .iter()
-        .zip(frame.extended.decode_division_presentation_inputs())
-    {
-        total.fetch_add(shared.ns(ticks as i64), Ordering::Relaxed);
-    }
-    let after = frame.extended.presentation_phase_ticks();
-    shared.record_owned_presentation(std::array::from_fn(|i| after[i].saturating_sub(before[i])));
+    frame.extended.decode_division_presentation_inputs();
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
-        true
-    } else {
-        false
     }
 }
 
@@ -1805,6 +1414,9 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
             Some("decode worker lock poisoned"),
         ),
     };
+    if let Some(handle) = &worker {
+        handle.thread().unpark();
+    }
     #[cfg(feature = "worker_sampler")]
     if worker.is_some() {
         crate::worker_sampler::stop_before_thread_exit();
@@ -1817,7 +1429,7 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
         crate::nuclear_strikes::lost_drain();
-        crate::land_events::fail("land decode worker panicked");
+        crate::land_events::fail();
         error = Some(failure::joined(
             payload,
             "decode worker panicked; its in-flight frame may be incomplete",
@@ -1847,7 +1459,7 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
         crate::air_losses::lost_drain();
         crate::building_bombing::lost_drain();
         crate::nuclear_strikes::lost_drain();
-        crate::land_events::fail("land decode detach drain panicked");
+        crate::land_events::fail();
         let reason = failure::joined(
             payload,
             "decode detach drain panicked; queued frames remain incomplete",
@@ -1856,420 +1468,6 @@ pub fn detach_drain(mut drained: impl FnMut(u64)) -> Result<(), &'static str> {
     }
     STOP.store(false, Ordering::Release);
     panic_failure().or(error).map_or(Ok(()), Err)
-}
-
-/// Additive calibration snapshot. Every counter is monotonic since attach.
-pub fn calibration() -> Calibration {
-    Calibration {
-        mission_tail_decode_ns: MISSION_TAIL_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        census_tail_decode_ns: CENSUS_TAIL_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        capture_tail_decode_ns: CAPTURE_TAIL_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        jobs: JOBS.load(Ordering::Relaxed),
-        refresh_jobs: REFRESH_JOBS.load(Ordering::Relaxed),
-        full_refresh_jobs: FULL_REFRESH_JOBS.load(Ordering::Relaxed),
-        drops: DROPS.load(Ordering::Relaxed),
-        last_seq: LAST_SEQ.load(Ordering::Relaxed),
-        last_hour: LAST_HOUR.load(Ordering::Relaxed) as i32,
-        relations_copy_ns: RELATIONS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        relations_decode_ns: RELATIONS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        relations_raw_bytes: RELATIONS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        characters_copy_ns: CHARACTERS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        characters_decode_ns: CHARACTERS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        characters_raw_bytes: CHARACTERS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        projects_copy_ns: PROJECTS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        projects_decode_ns: PROJECTS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        projects_raw_bytes: PROJECTS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        lexical_copy_ns: LEXICAL_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        lexical_decode_ns: LEXICAL_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        lexical_raw_bytes: LEXICAL_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        divisions_copy_ns: DIVISIONS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        divisions_decode_ns: DIVISIONS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        division_presentation_decode_ns: DIVISION_PRESENTATION_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        divisions_raw_bytes: DIVISIONS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_wing_copy_ns: AIR_WING_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_wing_decode_ns: AIR_WING_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_wing_raw_bytes: AIR_WING_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_stats_copy_ns: AIR_STATS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_stats_decode_ns: AIR_STATS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_stats_raw_bytes: AIR_STATS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        naval_copy_ns: NAVAL_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        naval_decode_ns: NAVAL_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        naval_raw_bytes: NAVAL_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        players_copy_ns: PLAYERS_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        players_decode_ns: PLAYERS_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        players_raw_bytes: PLAYERS_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        session_copy_ns: SESSION_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        session_decode_ns: SESSION_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        session_raw_bytes: SESSION_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        production_rest_copy_ns: PRODUCTION_REST_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        production_rest_decode_ns: PRODUCTION_REST_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        production_rest_raw_bytes: PRODUCTION_REST_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        construction_rest_copy_ns: CONSTRUCTION_REST_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        construction_rest_decode_ns: CONSTRUCTION_REST_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        construction_rest_raw_bytes: CONSTRUCTION_REST_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        economy_rest_copy_ns: ECONOMY_REST_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        economy_rest_decode_ns: ECONOMY_REST_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        economy_rest_raw_bytes: ECONOMY_REST_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_bases_copy_ns: AIR_BASES_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_bases_decode_ns: AIR_BASES_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        air_bases_raw_bytes: AIR_BASES_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        supremacy_copy_ns: SUPREMACY_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        supremacy_decode_ns: SUPREMACY_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        supremacy_raw_bytes: SUPREMACY_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        sunk_copy_ns: SUNK_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        sunk_decode_ns: SUNK_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        sunk_raw_bytes: SUNK_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        radar_copy_ns: RADAR_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        radar_decode_ns: RADAR_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        radar_raw_bytes: RADAR_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        intel_copy_ns: INTEL_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        intel_decode_ns: INTEL_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        intel_raw_bytes: INTEL_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        weather_copy_ns: WEATHER_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        weather_decode_ns: WEATHER_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        weather_raw_bytes: WEATHER_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        capitulation_copy_ns: CAPITULATION_COPY_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        capitulation_decode_ns: CAPITULATION_DECODE_NS
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        capitulation_raw_bytes: CAPITULATION_RAW_BYTES
-            .each_ref()
-            .map(|cell| cell.load(Ordering::Relaxed)),
-        queue_high_water: QUEUE_HIGH_WATER.load(Ordering::Relaxed),
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Calibration {
-    pub mission_tail_decode_ns: [u64; 2],
-    pub census_tail_decode_ns: [u64; 5],
-    pub capture_tail_decode_ns: [u64; 5],
-    pub jobs: u64,
-    pub refresh_jobs: u64,
-    pub full_refresh_jobs: u64,
-    pub drops: u64,
-    pub last_seq: u64,
-    pub last_hour: i32,
-    pub relations_copy_ns: [u64; 2],
-    pub relations_decode_ns: [u64; 2],
-    pub relations_raw_bytes: [u64; 2],
-    pub characters_copy_ns: [u64; CHARACTERS.len()],
-    pub characters_decode_ns: [u64; CHARACTERS.len()],
-    pub characters_raw_bytes: [u64; CHARACTERS.len()],
-    pub projects_copy_ns: [u64; 2],
-    pub projects_decode_ns: [u64; 2],
-    pub projects_raw_bytes: [u64; 2],
-    pub lexical_copy_ns: [u64; 1],
-    pub lexical_decode_ns: [u64; 1],
-    pub lexical_raw_bytes: [u64; 1],
-    pub divisions_copy_ns: [u64; 6],
-    pub divisions_decode_ns: [u64; 6],
-    pub division_presentation_decode_ns: [u64; 2],
-    pub divisions_raw_bytes: [u64; 6],
-    pub air_wing_copy_ns: [u64; 2],
-    pub air_wing_decode_ns: [u64; 2],
-    pub air_wing_raw_bytes: [u64; 2],
-    pub air_stats_copy_ns: [u64; 1],
-    pub air_stats_decode_ns: [u64; 1],
-    pub air_stats_raw_bytes: [u64; 1],
-    pub naval_copy_ns: [u64; 9],
-    pub naval_decode_ns: [u64; 9],
-    pub naval_raw_bytes: [u64; 9],
-    pub players_copy_ns: [u64; 2],
-    pub players_decode_ns: [u64; 2],
-    pub players_raw_bytes: [u64; 2],
-    pub session_copy_ns: [u64; 3],
-    pub session_decode_ns: [u64; 3],
-    pub session_raw_bytes: [u64; 3],
-    pub production_rest_copy_ns: [u64; 8],
-    pub production_rest_decode_ns: [u64; 8],
-    pub production_rest_raw_bytes: [u64; 8],
-    pub construction_rest_copy_ns: [u64; 10],
-    pub construction_rest_decode_ns: [u64; 10],
-    pub construction_rest_raw_bytes: [u64; 10],
-    pub economy_rest_copy_ns: [u64; crate::extended::economy::N],
-    pub economy_rest_decode_ns: [u64; crate::extended::economy::N],
-    pub economy_rest_raw_bytes: [u64; crate::extended::economy::N],
-    pub air_bases_copy_ns: [u64; 3],
-    pub air_bases_decode_ns: [u64; 3],
-    pub air_bases_raw_bytes: [u64; 3],
-    pub supremacy_copy_ns: [u64; 1],
-    pub supremacy_decode_ns: [u64; 1],
-    pub supremacy_raw_bytes: [u64; 1],
-    pub sunk_copy_ns: [u64; 1],
-    pub sunk_decode_ns: [u64; 1],
-    pub sunk_raw_bytes: [u64; 1],
-    pub radar_copy_ns: [u64; 1],
-    pub radar_decode_ns: [u64; 1],
-    pub radar_raw_bytes: [u64; 1],
-    pub intel_copy_ns: [u64; 1],
-    pub intel_decode_ns: [u64; 1],
-    pub intel_raw_bytes: [u64; 1],
-    pub weather_copy_ns: [u64; 2],
-    pub weather_decode_ns: [u64; 2],
-    pub weather_raw_bytes: [u64; 2],
-    pub capitulation_copy_ns: [u64; 1],
-    pub capitulation_decode_ns: [u64; 1],
-    pub capitulation_raw_bytes: [u64; 1],
-    pub queue_high_water: u64,
-}
-
-impl Calibration {
-    #[cfg(test)]
-    pub fn json(&self) -> serde_json::Value {
-        serde_json::to_value((*self).status()).unwrap()
-    }
-
-    pub fn status(self) -> crate::status::Object<impl crate::status::Fields> {
-        crate::status::status!({
-            "scope": "decode worker totals since attach; monotonic counters except live capacity fields",
-            "frame_service": service::status(),
-            "raw_growth": crate::raw::growth_diagnostics(),
-            "raw_indexes": crate::raw::index_diagnostics(),
-            "read_plans": crate::raw::read_plan_diagnostics(),
-            "raw_memory": crate::raw_memory::diagnostics(),
-
-            "carrier_capture": crate::extended::air::carrier_capture_status(),
-            "air_bases_memo": {
-                "hits": AIR_BASES_MEMO[0].load(Ordering::Relaxed),
-                "misses": AIR_BASES_MEMO[1].load(Ordering::Relaxed),
-                "ineligible": AIR_BASES_MEMO[2].load(Ordering::Relaxed),
-                "comparisons": AIR_BASES_MEMO[3].load(Ordering::Relaxed),
-                "installs": AIR_BASES_MEMO[4].load(Ordering::Relaxed),
-                "compare_ns": AIR_BASES_MEMO[5].load(Ordering::Relaxed),
-                "restore_ns": AIR_BASES_MEMO[6].load(Ordering::Relaxed),
-                "install_ns": AIR_BASES_MEMO[7].load(Ordering::Relaxed),
-                "memory": crate::extended::air::air_bases_memo_memory(),
-            },
-            "jobs": self.jobs,
-            "refresh_jobs": self.refresh_jobs,
-            "full_refresh_jobs": self.full_refresh_jobs,
-            "drops": self.drops,
-            "last_seq": self.last_seq,
-            "last_hour": self.last_hour,
-            "capture_tail_decode_ns": self.capture_tail_decode_ns,
-            "census_tail_decode_ns": self.census_tail_decode_ns,
-            "mission_tail_decode_ns": self.mission_tail_decode_ns,
-            "mission_tail_roles": ["OrdinaryNavies", "RailwayGuns"],
-            "census_tail_roles": ["ShipModels", "OrdinaryMap", "Governance", "OrdinaryTaskForces", "ProjectVariables"],
-            "capture_tail_roles": ["Templates", "ShipModelDetails", "RaidState", "Variants", "OrdinaryCombat"],
-            "relations_copy_ns": self.relations_copy_ns,
-            "relations_decode_ns": self.relations_decode_ns,
-            "relations_raw_bytes": self.relations_raw_bytes,
-            "relations_tables": ["RelationOpinions", "RelationTuples"],
-            "characters_copy_ns": self.characters_copy_ns,
-            "characters_decode_ns": self.characters_decode_ns,
-            "characters_raw_bytes": self.characters_raw_bytes,
-            "characters_tables": ["Characters", "CountryLeaderRoles", "AdvisorRoles", "UnitLeaders", "UnitLeaderTraits"],
-            "projects_copy_ns": self.projects_copy_ns,
-            "projects_decode_ns": self.projects_decode_ns,
-            "projects_raw_bytes": self.projects_raw_bytes,
-            "projects_tables": ["ProjectPrograms", "Projects", "ProjectHistory", "ProjectBreakthroughs"],
-            "lexical_copy_ns": self.lexical_copy_ns,
-            "lexical_decode_ns": self.lexical_decode_ns,
-            "lexical_raw_bytes": self.lexical_raw_bytes,
-            "lexical_tables": ["LexicalTokens"],
-            "divisions_copy_ns": self.divisions_copy_ns,
-            "divisions_decode_ns": self.divisions_decode_ns,
-            "division_presentation_decode_ns": self.division_presentation_decode_ns,
-            "division_presentation_tables": ["DivisionMovement", "DivisionStatus"],
-            "divisions_raw_bytes": self.divisions_raw_bytes,
-            "divisions_tables": ["Divisions", "DivisionEquipment", "ArmyUpgradeGroups", "ArmyUpgradeRequests", "ArmyUpgradeDeliveries", "ArmyUpgradeProduced"],
-            "air_wing_copy_ns": self.air_wing_copy_ns,
-            "air_wing_decode_ns": self.air_wing_decode_ns,
-            "air_wing_raw_bytes": self.air_wing_raw_bytes,
-            "air_wing_tables": ["WingEquipment", "WingCumulative"],
-            "air_stats_copy_ns": self.air_stats_copy_ns,
-            "air_stats_decode_ns": self.air_stats_decode_ns,
-            "air_stats_raw_bytes": self.air_stats_raw_bytes,
-            "air_stats_tables": ["AirStatistics"],
-            "naval_copy_ns": self.naval_copy_ns,
-            "naval_decode_ns": self.naval_decode_ns,
-            "naval_raw_bytes": self.naval_raw_bytes,
-            "naval_tables": ["LandTheatres", "LandTheatreGroups", "LandTheatreMembers", "AirTheatres", "AirTheatreGroups", "AirTheatreMembers", "OrdersGroups", "OrdersGroupMembers", "ArmyGroupMembers"],
-            "players_copy_ns": self.players_copy_ns,
-            "players_decode_ns": self.players_decode_ns,
-            "players_raw_bytes": self.players_raw_bytes,
-            "players_tables": ["Players", "HumanControllers"],
-            "session_copy_ns": self.session_copy_ns,
-            "session_decode_ns": self.session_decode_ns,
-            "session_raw_bytes": self.session_raw_bytes,
-            "session_tables": ["WorldTension", "ThreatSources", "ThreatCountryAggregates"],
-            "production_rest_copy_ns": self.production_rest_copy_ns,
-            "production_rest_decode_ns": self.production_rest_decode_ns,
-            "production_rest_raw_bytes": self.production_rest_raw_bytes,
-            "production_rest_tables": ["ProductionLines", "Stockpiles", "ProductionLicenses", "DeploymentConveyors", "DeploymentLines", "DeploymentManpower", "DeploymentEquipment", "ProductionLicenseRecords"],
-            "construction_rest_copy_ns": self.construction_rest_copy_ns,
-            "construction_rest_decode_ns": self.construction_rest_decode_ns,
-            "construction_rest_raw_bytes": self.construction_rest_raw_bytes,
-            "construction_rest_tables": ["StateBaseResources", "BuildingConstruction", "RailwayConstruction", "OccupationSettings", "StateOccupationLaws", "StateGarrisons", "StateAssignedManpower", "CountryOccupationReserveManpower", "StateResistance", "CountryCollaboration"],
-            "economy_rest_copy_ns": self.economy_rest_copy_ns,
-            "economy_rest_decode_ns": self.economy_rest_decode_ns,
-            "economy_rest_raw_bytes": self.economy_rest_raw_bytes,
-            "economy_rest_tables": ECONOMY_REST_NAMES,
-            "air_bases_copy_ns": self.air_bases_copy_ns,
-            "air_bases_decode_ns": self.air_bases_decode_ns,
-            "air_bases_raw_bytes": self.air_bases_raw_bytes,
-            "air_bases_tables": ["AirBases", "AirBaseRegistrations", "AirAces"],
-            "supremacy_copy_ns": self.supremacy_copy_ns,
-            "supremacy_decode_ns": self.supremacy_decode_ns,
-            "supremacy_raw_bytes": self.supremacy_raw_bytes,
-            "supremacy_tables": ["NavalSupremacy"],
-            "sunk_copy_ns": self.sunk_copy_ns,
-            "sunk_decode_ns": self.sunk_decode_ns,
-            "sunk_raw_bytes": self.sunk_raw_bytes,
-            "sunk_tables": ["SunkShips"],
-            "radar_copy_ns": self.radar_copy_ns,
-            "radar_decode_ns": self.radar_decode_ns,
-            "radar_raw_bytes": self.radar_raw_bytes,
-            "radar_tables": ["RadarCoverage"],
-            "intel_copy_ns": self.intel_copy_ns,
-            "intel_decode_ns": self.intel_decode_ns,
-            "intel_raw_bytes": self.intel_raw_bytes,
-            "intel_tables": ["UnitIntel"],
-            "weather_copy_ns": self.weather_copy_ns,
-            "weather_decode_ns": self.weather_decode_ns,
-            "weather_raw_bytes": self.weather_raw_bytes,
-            "weather_tables": ["WeatherRegions", "WeatherProvinces"],
-            "capitulation_copy_ns": self.capitulation_copy_ns,
-            "capitulation_decode_ns": self.capitulation_decode_ns,
-            "capitulation_raw_bytes": self.capitulation_raw_bytes,
-            "capitulation_tables": ["Capitulation"],
-            "queue_high_water": self.queue_high_water,
-            "queue_capacity": BUFFERS,
-        })
-    }
-}
-
-/// Additive status merge for the runtime statuswriters. Existing keys survive.
-pub fn calibration_json() -> impl serde::Serialize {
-    calibration().status().join(crate::status::status!({
-        "characters_acquisition": crate::extended::characters::acquisition_diagnostics(),
-    }))
 }
 
 /// The bounded decode FIFO. Each job is filled in place in a preallocated
@@ -2330,6 +1528,7 @@ impl DecodeQueue {
         Some(job)
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.ready.len()
     }
@@ -2396,85 +1595,12 @@ pub fn new_queue() -> DecodeQueue {
 }
 
 #[cfg(test)]
-pub(crate) fn reset_calibration_for_test() {
+pub(crate) fn reset_for_test() {
     prepare_retirement();
     reclaim_payloads();
     // Production prepares bounded payload storage before installing the hook.
     // Tests exercise that lifecycle rather than relying on cold tick allocation.
     std::mem::forget(prepare_payload_pools(false));
-    for cell in RELATIONS_COPY_NS
-        .iter()
-        .chain(RELATIONS_DECODE_NS.iter())
-        .chain(RELATIONS_RAW_BYTES.iter())
-        .chain(CHARACTERS_COPY_NS.iter())
-        .chain(CHARACTERS_DECODE_NS.iter())
-        .chain(CHARACTERS_RAW_BYTES.iter())
-        .chain(PROJECTS_COPY_NS.iter())
-        .chain(PROJECTS_DECODE_NS.iter())
-        .chain(PROJECTS_RAW_BYTES.iter())
-        .chain(LEXICAL_COPY_NS.iter())
-        .chain(LEXICAL_DECODE_NS.iter())
-        .chain(LEXICAL_RAW_BYTES.iter())
-        .chain(DIVISIONS_COPY_NS.iter())
-        .chain(DIVISIONS_DECODE_NS.iter())
-        .chain(DIVISION_PRESENTATION_DECODE_NS.iter())
-        .chain(DIVISIONS_RAW_BYTES.iter())
-        .chain(AIR_WING_COPY_NS.iter())
-        .chain(AIR_WING_DECODE_NS.iter())
-        .chain(AIR_WING_RAW_BYTES.iter())
-        .chain(AIR_STATS_COPY_NS.iter())
-        .chain(AIR_STATS_DECODE_NS.iter())
-        .chain(AIR_STATS_RAW_BYTES.iter())
-        .chain(NAVAL_COPY_NS.iter())
-        .chain(NAVAL_DECODE_NS.iter())
-        .chain(NAVAL_RAW_BYTES.iter())
-        .chain(PLAYERS_COPY_NS.iter())
-        .chain(PLAYERS_DECODE_NS.iter())
-        .chain(PLAYERS_RAW_BYTES.iter())
-        .chain(SESSION_COPY_NS.iter())
-        .chain(SESSION_DECODE_NS.iter())
-        .chain(SESSION_RAW_BYTES.iter())
-        .chain(PRODUCTION_REST_COPY_NS.iter())
-        .chain(PRODUCTION_REST_DECODE_NS.iter())
-        .chain(PRODUCTION_REST_RAW_BYTES.iter())
-        .chain(CONSTRUCTION_REST_COPY_NS.iter())
-        .chain(CONSTRUCTION_REST_DECODE_NS.iter())
-        .chain(CONSTRUCTION_REST_RAW_BYTES.iter())
-        .chain(ECONOMY_REST_COPY_NS.iter())
-        .chain(ECONOMY_REST_DECODE_NS.iter())
-        .chain(ECONOMY_REST_RAW_BYTES.iter())
-        .chain(AIR_BASES_COPY_NS.iter())
-        .chain(AIR_BASES_DECODE_NS.iter())
-        .chain(AIR_BASES_MEMO.iter())
-        .chain(AIR_BASES_RAW_BYTES.iter())
-        .chain(SUPREMACY_COPY_NS.iter())
-        .chain(SUPREMACY_DECODE_NS.iter())
-        .chain(SUPREMACY_RAW_BYTES.iter())
-        .chain(SUNK_COPY_NS.iter())
-        .chain(SUNK_DECODE_NS.iter())
-        .chain(SUNK_RAW_BYTES.iter())
-        .chain(RADAR_COPY_NS.iter())
-        .chain(RADAR_DECODE_NS.iter())
-        .chain(RADAR_RAW_BYTES.iter())
-        .chain(INTEL_COPY_NS.iter())
-        .chain(INTEL_DECODE_NS.iter())
-        .chain(INTEL_RAW_BYTES.iter())
-        .chain(WEATHER_COPY_NS.iter())
-        .chain(WEATHER_DECODE_NS.iter())
-        .chain(WEATHER_RAW_BYTES.iter())
-        .chain(CAPITULATION_COPY_NS.iter())
-        .chain(CAPITULATION_DECODE_NS.iter())
-        .chain(CAPITULATION_RAW_BYTES.iter())
-    {
-        cell.store(0, Ordering::Relaxed);
-    }
-    QUEUE_HIGH_WATER.store(0, Ordering::Relaxed);
-    JOBS.store(0, Ordering::Relaxed);
-    REFRESH_JOBS.store(0, Ordering::Relaxed);
-    FULL_REFRESH_JOBS.store(0, Ordering::Relaxed);
-    DROPS.store(0, Ordering::Relaxed);
-    LAST_SEQ.store(0, Ordering::Relaxed);
-    LAST_HOUR.store(0, Ordering::Relaxed);
     SEQ.store(0, Ordering::Relaxed);
 }
 

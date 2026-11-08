@@ -42,14 +42,6 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryCollaboration,
 ];
 
-/// Name, local cost anchor, and local member indices. Reporting sums all member
-/// ticks; physically shared walks assign their full read/check cost to the anchor.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("Buildings", 0, &[0, 1]),
-    ("ConstructionQueue", 3, &[3, 4]),
-    ("Occupation", 5, &[5, 6, 7, 8, 9]),
-];
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     rows: [usize; N],
@@ -245,18 +237,6 @@ pub struct Captured {
 }
 
 impl Captured {
-    pub fn observe_occupied(
-        &self,
-        work: &mut super::country_counters::RosterWork,
-    ) -> std::io::Result<()> {
-        let rows = self
-            .settings
-            .rows
-            .get(..self.settings.outcome.len())
-            .ok_or_else(|| std::io::Error::other("occupation settings row count exceeds buffer"))?;
-        work.observe_occupied(rows, &self.occupied)
-    }
-
     /// Buildings belong to Governance; staged rest rows belong to World.
     pub fn fail_gated_capture(&mut self, hour: i32, force_full: bool, reason: &'static str) {
         if !self.rest_raw_mode {

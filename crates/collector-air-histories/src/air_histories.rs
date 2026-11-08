@@ -19,7 +19,6 @@ use std::sync::{
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::AirNavalPatrolHistories];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// Pool jobs splitting the copies; slot `s` belongs to part `s % PARTS`.
 pub const PARTS: usize = 8;

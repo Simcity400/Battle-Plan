@@ -260,10 +260,6 @@ fn production_callbacks_defer_attribution_and_preserve_unattributable_damage() {
     assert_eq!(output[0].attacker, None);
     assert_eq!(UNATTRIBUTED.load(Ordering::Relaxed), 2);
     assert_eq!(ATTRIBUTION_FAILURES.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        serde_json::to_value(status()).unwrap()["attribution_failures"],
-        1
-    );
     world.health(2, 4_000_000);
     let token = world.pre(world.at(SOURCE), 1, native::Cause::AirMission);
     world.word(STATE, 0); // Invalid location must not be followed on a no-op.
@@ -538,14 +534,14 @@ fn building_bombing_scale_bench() {
         samples.sort_by(f64::total_cmp);
         drains.sort_by(f64::total_cmp);
         eprintln!(
-            "building bombing countries={countries} events={countries} callback_us p50={:.1} p95={:.1} drain_us p50={:.1} p95={:.1} event_bytes={} writer_ns={} max_hour_writer_ns={}",
+            "building bombing countries={countries} events={countries} callback_us p50={:.1} p95={:.1} drain_us p50={:.1} p95={:.1} event_bytes={} writer_ticks={} max_hour_writer_ticks={}",
             samples[10],
             samples[19],
             drains[10],
             drains[19],
             std::mem::size_of::<Entry>(),
-            ns(WRITER_TICKS.load(Ordering::Relaxed)),
-            ns(MAX_HOUR_TICKS.load(Ordering::Relaxed))
+            WRITER_TICKS.load(Ordering::Relaxed),
+            MAX_HOUR_TICKS.load(Ordering::Relaxed)
         );
     }
 }

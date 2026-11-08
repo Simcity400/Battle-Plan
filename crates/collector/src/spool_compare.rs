@@ -30,16 +30,17 @@
 //! found densely changed is left complete for the next [`DENSE_RETRY_HOURS`]
 //! hours before it is compared again.
 
-use crate::spool_phases::{HELPER, Phase, SPOOL, thread_cycles};
-use crate::status::{sequence, status};
+use crate::spool_phases::{HELPER, Phase, SPOOL};
 use replay_data::{
     BranchId, Hour, rows::RowCodec, rows::TableId, rows::TableRows, rows::TableSchema, rows::tables,
 };
 use replay_frame::{frame::FrameEncoder, frame::FrameInput, frame::TableInput, frame::TableView};
 use std::sync::{
     Mutex, PoisonError,
-    atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicI64, AtomicUsize, Ordering},
 };
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 
 /// The frame the encoder writes next: its branch and hour, and whether it
 /// restarts the spool, which makes every table a snapshot.
@@ -379,50 +380,46 @@ compared_tables!(
     WorldTension,
 );
 
-/// Cumulative per-table decisions and the comparing threads' cycles, and the
-/// hour each table was last found densely changed.
+/// The hour each table was last found densely changed, and in tests each table's decisions.
 pub(crate) struct Counters {
-    tables: [[AtomicU64; 8]; TABLES.len()],
+    #[cfg(test)]
+    tables: [[AtomicU64; 6]; TABLES.len()],
     dense_at: [AtomicI64; TABLES.len()],
 }
 
-const COMPARED: usize = 0;
-const EQUAL: usize = 1;
-const CHANGES: usize = 2;
-const CHANGED_ROWS: usize = 3;
-const KEPT: usize = 4;
-const DENSE: usize = 5;
-const DEFERRED: usize = 6;
-const CYCLES: usize = 7;
+#[cfg(test)]
+const EQUAL: usize = 0;
+#[cfg(test)]
+const CHANGES: usize = 1;
+#[cfg(test)]
+const KEPT: usize = 2;
+#[cfg(test)]
+const DENSE: usize = 3;
+#[cfg(test)]
+const DEFERRED: usize = 4;
 
 impl Default for Counters {
     fn default() -> Self {
         Self {
-            tables: [const { [const { AtomicU64::new(0) }; 8] }; TABLES.len()],
+            #[cfg(test)]
+            tables: [const { [const { AtomicU64::new(0) }; 6] }; TABLES.len()],
             dense_at: [const { AtomicI64::new(i64::MIN) }; TABLES.len()],
         }
     }
 }
 
+#[cfg(test)]
 impl Counters {
-    fn record(&self, index: usize, outcome: Outcome, cycles: u64) {
-        let slot = &self.tables[index];
-        let add = |counter: usize, value: u64| {
-            slot[counter].fetch_add(value, Ordering::Relaxed);
-        };
-        match outcome {
+    fn record(&self, index: usize, outcome: Outcome) {
+        let counter = match outcome {
             Outcome::Skipped | Outcome::NoBaseline => return,
-            Outcome::Deferred => return add(DEFERRED, 1),
-            Outcome::Equal => add(EQUAL, 1),
-            Outcome::Changes(rows) => {
-                add(CHANGES, 1);
-                add(CHANGED_ROWS, rows as u64);
-            }
-            Outcome::Kept => add(KEPT, 1),
-            Outcome::Dense => add(DENSE, 1),
-        }
-        add(COMPARED, 1);
-        add(CYCLES, cycles);
+            Outcome::Deferred => DEFERRED,
+            Outcome::Equal => EQUAL,
+            Outcome::Changes(_) => CHANGES,
+            Outcome::Kept => KEPT,
+            Outcome::Dense => DENSE,
+        };
+        self.tables[index][counter].fetch_add(1, Ordering::Relaxed);
     }
 
     fn load(&self, index: usize, counter: usize) -> u64 {
@@ -430,53 +427,9 @@ impl Counters {
     }
 
     /// (equal, changes, kept, dense, deferred) decisions of one listed table.
-    #[cfg(test)]
     pub(crate) fn decisions(&self, table: TableId) -> [u64; 5] {
         let index = TABLES.iter().position(|listed| *listed == table).unwrap();
         [EQUAL, CHANGES, KEPT, DENSE, DEFERRED].map(|counter| self.load(index, counter))
-    }
-
-    /// (equal, changes, kept) decisions over every listed table.
-    #[cfg(test)]
-    pub(crate) fn total_decisions(&self) -> (u64, u64, u64) {
-        let total = |counter| {
-            (0..TABLES.len())
-                .map(|index| self.load(index, counter))
-                .sum()
-        };
-        (total(EQUAL), total(CHANGES), total(KEPT))
-    }
-
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        let hz = crate::hook_timing::tsc_hz();
-        let total = |counter| {
-            (0..TABLES.len())
-                .map(|index| self.load(index, counter))
-                .sum::<u64>()
-        };
-        status!({
-            "scope": "cumulative decisions of the comparison before encoding: complete hourly tables with a baseline for exactly their hour, compared on the spool thread and its conversion helpers; equal become ComparedEqual, changes carry only the differing rows, kept stay complete (membership change, a refused row update or a failure), dense stay complete with more than three quarters of their rows differing, and deferred are such tables left uncompared for dense_retry_hours; cycles are the comparing threads' own",
-            "dense_retry_hours": DENSE_RETRY_HOURS,
-            "compared": total(COMPARED),
-            "equal": total(EQUAL),
-            "changes": total(CHANGES),
-            "changed_rows": total(CHANGED_ROWS),
-            "kept": total(KEPT),
-            "dense": total(DENSE),
-            "deferred": total(DEFERRED),
-            "cycle_ns": crate::hook_timing::ticks_to_ns(total(CYCLES), hz),
-            "tables": sequence((0..TABLES.len()).filter(move |&index| self.load(index, COMPARED) != 0).map(move |index| status!({
-                "table": crate::status::DebugValue(TABLES[index]),
-                "compared": self.load(index, COMPARED),
-                "equal": self.load(index, EQUAL),
-                "changes": self.load(index, CHANGES),
-                "changed_rows": self.load(index, CHANGED_ROWS),
-                "kept": self.load(index, KEPT),
-                "dense": self.load(index, DENSE),
-                "deferred": self.load(index, DEFERRED),
-                "cycle_ns": crate::hook_timing::ticks_to_ns(self.load(index, CYCLES), hz),
-            }))),
-        })
     }
 }
 
@@ -514,8 +467,7 @@ pub(crate) fn compare_frame(
                 break;
             }
             let mut input = slots[index].lock().unwrap_or_else(PoisonError::into_inner);
-            let cycles = thread_cycles();
-            let outcome = COMPARE[index](
+            let _outcome = COMPARE[index](
                 encoder,
                 target,
                 &mut input,
@@ -523,7 +475,8 @@ pub(crate) fn compare_frame(
                 &counters.dense_at[index],
             );
             drop(input);
-            counters.record(index, outcome, thread_cycles().saturating_sub(cycles));
+            #[cfg(test)]
+            counters.record(index, _outcome);
         }
     };
     let span = SPOOL.span(Phase::Compare);

@@ -14,7 +14,6 @@ struct State {
     published: usize,
     required: usize,
     failed: bool,
-    last_publish: i64,
     request: Option<crate::extended::FinalInputsRequest>,
     pending: Option<RangeTicket>,
 }
@@ -33,12 +32,12 @@ impl FinalInputsDispatch {
         }
     }
     pub(in crate::acquisition_jobs) fn open(&self) {
-        let mut state = lock_callback(&self.state, Site::FinalInputs);
+        let mut state = lock_unpoisoned(&self.state);
         assert!(state.closed && state.request.is_none() && state.pending.is_none());
         *state = State::default();
     }
     pub(super) fn store(&self, part: usize, report: &Result<Report, Failure>) {
-        let mut state = lock_callback(&self.state, Site::FinalInputs);
+        let mut state = lock_unpoisoned(&self.state);
         if state.closed {
             return;
         }
@@ -51,13 +50,11 @@ impl FinalInputsDispatch {
         &self,
         request: crate::extended::FinalInputsRequest,
         required: usize,
-        last_publish: i64,
     ) {
-        let mut state = lock_callback(&self.state, Site::FinalInputs);
+        let mut state = lock_unpoisoned(&self.state);
         assert!(!state.closed && state.request.is_none() && state.pending.is_none());
         state.request = Some(request);
         state.required = required;
-        state.last_publish = state.last_publish.max(last_publish);
         let wake = self.dispatch(&mut state);
         drop(state);
         if let Some(executor) = wake {
@@ -80,8 +77,6 @@ impl FinalInputsDispatch {
             &executor,
             &self.calibration,
             Job::FinalInputs(request),
-            state.last_publish,
-            3,
         );
         let wake = !pending.parked;
         state.pending = Some(pending);
@@ -90,17 +85,17 @@ impl FinalInputsDispatch {
     pub(crate) fn take(
         &self,
     ) -> (Option<RangeTicket>, Option<crate::extended::FinalInputsRequest>) {
-        let mut state = lock_callback(&self.state, Site::FinalInputs);
+        let mut state = lock_unpoisoned(&self.state);
         state.closed = true;
         (state.pending.take(), state.request.take())
     }
     pub(crate) fn close(&self) {
-        lock_callback(&self.state, Site::FinalInputs).closed = true;
+        lock_unpoisoned(&self.state).closed = true;
     }
     pub(crate) fn drain(&self) {
-        let pending = lock_callback(&self.state, Site::FinalInputs).pending.take();
+        let pending = lock_unpoisoned(&self.state).pending.take();
         super::drain(&self.executor, &self.calibration, pending);
-        *lock_callback(&self.state, Site::FinalInputs) = State {
+        *lock_unpoisoned(&self.state) = State {
             closed: true,
             ..Default::default()
         };
@@ -108,16 +103,15 @@ impl FinalInputsDispatch {
 }
 impl acquisition::Publication for FinalInputsDispatch {
     fn failed(&self) {
-        let mut state = lock_callback(&self.state, Site::FinalInputs);
+        let mut state = lock_unpoisoned(&self.state);
         state.failed = true;
     }
-    fn published(&self, at: i64) {
-        let mut state = lock_callback(&self.state, Site::FinalInputs);
+    fn published(&self) {
+        let mut state = lock_unpoisoned(&self.state);
         if state.closed {
             return;
         }
         state.published += 1;
-        state.last_publish = state.last_publish.max(at);
         let wake = self.dispatch(&mut state);
         drop(state);
         if let Some(executor) = wake {

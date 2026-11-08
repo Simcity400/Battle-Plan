@@ -86,7 +86,6 @@ pub const TABLES: [TableId; N] = [
     TableId::NavalRegionAccess,
     TableId::LocalPlayer,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

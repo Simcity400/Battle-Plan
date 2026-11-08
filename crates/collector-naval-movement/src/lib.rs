@@ -2,7 +2,6 @@
 
 use collector_primitives::country_slots as country_scale;
 use collector_primitives::table_capture;
-use collector_status::status;
 #[cfg(test)]
 use collector_test_support as _;
 

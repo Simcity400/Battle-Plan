@@ -75,28 +75,6 @@ static ORIGINAL: [AtomicUsize; 2] = [const { AtomicUsize::new(0) }; 2];
 pub(crate) fn active() -> usize {
     ACTIVE.load(Ordering::Acquire)
 }
-pub(crate) fn status() -> impl serde::Serialize {
-    let (wings, allocated_bytes) = CACHE
-        .get()
-        .map(|cache| {
-            let cache = cache
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            (
-                cache.values.len(),
-                cache.values.capacity() * std::mem::size_of::<(usize, Value)>()
-                    + cache.identities.capacity() * std::mem::size_of::<(u64, usize)>(),
-            )
-        })
-        .unwrap_or_default();
-    crate::status::status!({
-        "available": AVAILABLE.load(Ordering::Acquire),
-        "epoch": EPOCH.load(Ordering::Acquire),
-        "wings": wings,
-        "allocated_bytes": allocated_bytes,
-        "scope": "one saved replacement byte per new or invalidated wing binding in the existing worker visit; no quiet native read"
-    })
-}
 fn refresh() {
     let next = OWN.load(Ordering::Acquire)
         && PUBLICATION.load(Ordering::Acquire)

@@ -16,7 +16,7 @@ use std::{
     io,
     ops::Range,
     sync::{
-        Mutex, OnceLock,
+        Mutex,
         atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering, fence},
     },
 };
@@ -144,12 +144,10 @@ struct Live {
     closed_order: AtomicU64,
     closed_world: AtomicU64,
     failed: AtomicU64,
-    refusal_reasons: Reasons<32>,
     failed_qpc: AtomicU64,
     capacity_demand: AtomicUsize,
     name_demand: AtomicUsize,
     player_capacity: AtomicUsize,
-    buffer_bytes: AtomicUsize,
 }
 
 // The callback's exclusive, nonwaiting admission owns producer; lanes publish immutable records.
@@ -160,92 +158,6 @@ static LIVE: AtomicPtr<Live> = AtomicPtr::new(std::ptr::null_mut());
 static STORE: Mutex<Option<Box<Live>>> = Mutex::new(None);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicUsize = AtomicUsize::new(0);
-static UNHOOKED: OnceLock<Cow<'static, str>> = OnceLock::new();
-static CAPTURED: AtomicU64 = AtomicU64::new(0);
-static AUTOMATIC: AtomicU64 = AtomicU64::new(0);
-static UNRESOLVED_FIELDS: AtomicU64 = AtomicU64::new(0);
-static UNRESOLVED_REASONS: Reasons<32> = Reasons::new();
-
-struct Reasons<const N: usize> {
-    slots: [(AtomicPtr<u8>, AtomicUsize, AtomicU64); N],
-    overflow: AtomicU64,
-}
-
-impl<const N: usize> Reasons<N> {
-    const fn new() -> Self {
-        Self {
-            slots: [const {
-                (
-                    AtomicPtr::new(std::ptr::null_mut()),
-                    AtomicUsize::new(0),
-                    AtomicU64::new(0),
-                )
-            }; N],
-            overflow: AtomicU64::new(0),
-        }
-    }
-
-    fn note(&self, reason: &'static str) {
-        let pointer = reason.as_ptr().cast_mut();
-        for (slot, length, count) in &self.slots {
-            let mut current = slot.load(Ordering::Acquire);
-            if current.is_null() {
-                match slot.compare_exchange(
-                    std::ptr::null_mut(),
-                    pointer,
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                ) {
-                    Ok(_) => {
-                        length.store(reason.len() + 1, Ordering::Release);
-                        count.fetch_add(1, Ordering::Relaxed);
-                        return;
-                    }
-                    Err(owner) => current = owner,
-                }
-            }
-            // An unfinished claim is skipped so a callback never waits for another observer.
-            if current == pointer && length.load(Ordering::Acquire) == reason.len() + 1 {
-                count.fetch_add(1, Ordering::Relaxed);
-                return;
-            }
-        }
-        self.overflow.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn counts(&self) -> BTreeMap<&'static str, u64> {
-        let mut counts = BTreeMap::new();
-        for (pointer, length, count) in &self.slots {
-            let length = length.load(Ordering::Acquire);
-            let count = count.load(Ordering::Relaxed);
-            if length == 0 || count == 0 {
-                continue;
-            }
-            // The length publishes an immutable static string; concurrent claims may duplicate it.
-            let reason = unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                    pointer.load(Ordering::Relaxed),
-                    length - 1,
-                ))
-            };
-            *counts.entry(reason).or_default() += count;
-        }
-        let overflow = self.overflow.load(Ordering::Relaxed);
-        if overflow != 0 {
-            *counts.entry("command reason table overflow").or_default() += overflow;
-        }
-        counts
-    }
-
-    fn status(&self) -> impl serde::Serialize + use<N> {
-        crate::status::owned_sequence(
-            self.counts()
-                .into_iter()
-                .map(|(reason, count)| crate::status::status!({ "reason": reason, "count": count }))
-                .collect(),
-        )
-    }
-}
 
 impl Live {
     fn new(memory: &impl Memory, base: usize) -> io::Result<Self> {
@@ -362,7 +274,6 @@ impl Live {
             slots.checked_mul(2).ok_or_else(engine_allocation::oom)?,
             names.max(64),
         )?;
-        let buffer_bytes = events.allocated_bytes() + actors.allocated_bytes();
         Ok(Self {
             base,
             capture: u64::try_from(qpc())
@@ -394,12 +305,10 @@ impl Live {
             closed_order: AtomicU64::new(0),
             closed_world: AtomicU64::new(0),
             failed: AtomicU64::new(0),
-            refusal_reasons: Reasons::new(),
             failed_qpc: AtomicU64::new(0),
             capacity_demand: AtomicUsize::new(slots),
             name_demand: AtomicUsize::new(names),
             player_capacity: AtomicUsize::new(slots),
-            buffer_bytes: AtomicUsize::new(buffer_bytes),
         })
     }
 
@@ -485,10 +394,6 @@ impl Live {
                 changed.1 = true;
             }
             producer.dirty = true;
-            self.buffer_bytes.store(
-                self.events().allocated_bytes() + self.metadata().allocated_bytes(),
-                Ordering::Relaxed,
-            );
         }
         self.version.fetch_add(1, Ordering::Release);
         self.occupied.store(false, Ordering::Release);
@@ -496,8 +401,7 @@ impl Live {
         Ok(changed)
     }
 
-    fn fail(&self, reason: &'static str) {
-        self.refusal_reasons.note(reason);
+    fn fail(&self) {
         self.failed_qpc
             .fetch_max(qpc().max(0) as u64, Ordering::Relaxed);
         self.failed.fetch_add(1, Ordering::Release);
@@ -907,8 +811,8 @@ impl Live {
                 if kind.is_none_or(Descriptor::captured) {
                     let roster_ready = match self.roster(memory, producer, order, time) {
                         Ok(()) => true,
-                        Err(reason) => {
-                            self.fail(reason);
+                        Err(_) => {
+                            self.fail();
                             false
                         }
                     };
@@ -937,11 +841,7 @@ impl Live {
                         header.player,
                         found.country,
                     )
-                    .unwrap_or_else(|reason| {
-                        UNRESOLVED_REASONS.note(reason);
-                        UNRESOLVED_FIELDS.fetch_add(1, Ordering::Relaxed);
-                        native::Resolution::Unknown
-                    });
+                    .unwrap_or(native::Resolution::Unknown);
                     let target = if let native::Resolution::Country(country) = resolution {
                         Some(country)
                     } else {
@@ -970,9 +870,7 @@ impl Live {
                         native::Resolution::Automatic => Origin::AutonomousCountry,
                         native::Resolution::Unknown => Origin::Unresolved,
                     };
-                    if origin == Origin::AutonomousCountry {
-                        AUTOMATIC.fetch_add(1, Ordering::Relaxed);
-                    } else {
+                    if origin != Origin::AutonomousCountry {
                         self.publish(Entry {
                             order,
                             world: producer.world,
@@ -988,7 +886,6 @@ impl Live {
                             target_present: target.is_some(),
                             ..Entry::default()
                         })?;
-                        CAPTURED.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -1030,7 +927,7 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        live.fail("command observer busy");
+        live.fail();
         return;
     }
     struct Writer<'a>(&'a Live);
@@ -1042,8 +939,8 @@ unsafe extern "system-unwind" fn observe(registers: &Registers, site: usize) {
     }
     live.version.fetch_add(1, Ordering::AcqRel);
     let _writer = Writer(live);
-    if let Err(reason) = live.observe(registers, site) {
-        live.fail(reason);
+    if live.observe(registers, site).is_err() {
+        live.fail();
         let producer = unsafe { &mut *live.producer.get() };
         live.closed_qpc
             .store(qpc().max(0) as u64, Ordering::Relaxed);
@@ -1068,13 +965,6 @@ pub(crate) fn urgent() -> bool {
     let live = unsafe { &*pointer };
     live.events().pending() >= live.events().len() * 3 / 4
         || live.metadata().pending() >= live.metadata().len() * 3 / 4
-}
-
-pub(crate) fn status() -> impl serde::Serialize {
-    use crate::status::status;
-    let pointer = LIVE.load(Ordering::Acquire);
-    let live = (!pointer.is_null()).then(|| unsafe { &*pointer });
-    status!({ "enabled": ENABLED.load(Ordering::Acquire), "unhooked": UNHOOKED.get().map(|reason| reason.as_ref()), "commands": CAPTURED.load(Ordering::Relaxed), "autonomous_excluded": AUTOMATIC.load(Ordering::Relaxed), "unresolved_fields": UNRESOLVED_FIELDS.load(Ordering::Relaxed), "unresolved_field_reasons": UNRESOLVED_REASONS.status(), "refusals": live.map_or(0, |live| live.failed.load(Ordering::Relaxed)), "refusal_reasons": live.map(|live| live.refusal_reasons.status()), "buffer_bytes": live.map_or(0, |live| live.buffer_bytes.load(Ordering::Relaxed)), "scope": "player-issued synchronized orders; individual session keys; automatic execution excluded; ambiguous provenance retained" })
 }
 
 pub(crate) struct Drained {
@@ -1411,7 +1301,6 @@ impl Hooks {
                     None,
                     reason.as_ref(),
                 );
-                let _ = UNHOOKED.set(reason);
                 Vec::new()
             }),
             publication_attempted: false,
@@ -1493,12 +1382,10 @@ pub(crate) mod tests {
             closed_order: AtomicU64::new(1),
             closed_world: AtomicU64::new(1),
             failed: AtomicU64::new(0),
-            refusal_reasons: Reasons::new(),
             failed_qpc: AtomicU64::new(0),
             capacity_demand: AtomicUsize::new(2),
             name_demand: AtomicUsize::new(0),
             player_capacity: AtomicUsize::new(2),
-            buffer_bytes: AtomicUsize::new(0),
         }
     }
 
@@ -1563,8 +1450,8 @@ pub(crate) mod tests {
     ) -> Result<(), &'static str> {
         let producer = unsafe { &mut *live.producer.get() };
         let result = live.mode(memory, producer, world, 0x1000, time, order);
-        if let Err(reason) = result {
-            live.fail(reason);
+        if result.is_err() {
+            live.fail();
         }
         live.closed_qpc.store(time, Ordering::Relaxed);
         live.closed_order.store(order, Ordering::Relaxed);
@@ -1625,8 +1512,8 @@ pub(crate) mod tests {
         registers.rsi = if site == 1 { 0x6000 } else { 0x1000 };
         registers.rdi = 0x7000;
         let result = live.observe_at(memory, &registers, site, world, time);
-        if let Err(reason) = result {
-            live.fail(reason);
+        if result.is_err() {
+            live.fail();
             live.failed_qpc.store(time, Ordering::Relaxed);
             let producer = unsafe { &*live.producer.get() };
             live.closed_qpc.store(time, Ordering::Relaxed);
@@ -1658,7 +1545,6 @@ pub(crate) mod tests {
                     );
                     assert_eq!(loading.headers.get(), 1);
                     assert_eq!(live.failed.load(Ordering::Acquire), 1);
-                    assert_eq!(live.refusal_reasons.counts(), BTreeMap::from([(reason, 1)]));
                     assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
                     let mut drain = Drain::default();
                     assert!(drain.take_live(&live, false).unwrap().is_empty());
@@ -1696,7 +1582,6 @@ pub(crate) mod tests {
                 }
                 assert_eq!(loading.headers.get(), 2);
                 assert_eq!(live.failed.load(Ordering::Acquire), 0);
-                assert!(live.refusal_reasons.counts().is_empty());
                 assert_eq!((live.metadata().pending(), live.events().pending()), (0, 0));
             }
         }
@@ -2094,7 +1979,6 @@ pub(crate) mod tests {
                     (0, 0)
                 );
                 assert_eq!(live.failed.load(Ordering::Acquire), 0);
-                assert!(live.refusal_reasons.counts().is_empty());
             }
         }
         attempt_mode(&live, &Fixture::new(), 1, 100, 9).unwrap();
@@ -2148,10 +2032,6 @@ pub(crate) mod tests {
             );
             assert!(!unsafe { (*live.producer.get()).active });
             assert_eq!(live.failed.load(Ordering::Acquire), 1);
-            assert_eq!(
-                live.refusal_reasons.counts(),
-                BTreeMap::from([("command pause state unreadable", 1)])
-            );
         }
     }
 
@@ -2201,7 +2081,6 @@ pub(crate) mod tests {
             );
             assert!(!unsafe { (*live.producer.get()).active });
             assert_eq!(live.failed.load(Ordering::Acquire), 1);
-            assert_eq!(live.refusal_reasons.counts(), BTreeMap::from([(reason, 1)]));
             if metadata_full {
                 assert!(live.metadata().required_entries() > live.metadata().len());
             } else {
@@ -2259,7 +2138,7 @@ pub(crate) mod tests {
             attempt_mode(&live, &memory, 1, 100, 1).unwrap();
             attempt_mode(&live, &memory, 2, 105, 2).unwrap();
             for _ in 0..3 {
-                live.fail("synthetic command refusal");
+                live.fail();
             }
             live.failed_qpc.store(107, Ordering::Relaxed);
             if leave {
@@ -2294,59 +2173,6 @@ pub(crate) mod tests {
                     .all(|span| span.complete)
             );
         }
-    }
-
-    #[test]
-    fn named_reasons_distinguish_lengths_and_count_overflow() {
-        let reasons = Reasons::<2>::new();
-        let reason = "synthetic reason";
-        let prefix = &reason[..9];
-        assert_eq!(reason.as_ptr(), prefix.as_ptr());
-        reasons.note(reason);
-        reasons.note(prefix);
-        reasons.note(reason);
-        reasons.note("another reason");
-        reasons.note("another reason");
-        assert_eq!(
-            reasons.counts(),
-            BTreeMap::from([
-                (reason, 2),
-                (prefix, 1),
-                ("command reason table overflow", 2)
-            ])
-        );
-        let status = serde_json::to_value(reasons.status()).unwrap();
-        assert_eq!(status.as_array().unwrap().len(), 3);
-        assert_eq!(
-            status
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|row| row["count"].as_u64().unwrap())
-                .sum::<u64>(),
-            5
-        );
-        let empty = Reasons::<1>::new();
-        empty.note("");
-        empty.note("");
-        assert_eq!(empty.counts(), BTreeMap::from([("", 2)]));
-    }
-
-    #[test]
-    fn unfinished_reason_claim_never_blocks_and_duplicate_names_are_combined() {
-        let reasons = Reasons::<2>::new();
-        let reason = "synthetic reason";
-        reasons.slots[0]
-            .0
-            .store(reason.as_ptr().cast_mut(), Ordering::Relaxed);
-        reasons.note(reason);
-        assert_eq!(reasons.counts(), BTreeMap::from([(reason, 1)]));
-        reasons.slots[0]
-            .1
-            .store(reason.len() + 1, Ordering::Release);
-        reasons.slots[0].2.fetch_add(1, Ordering::Relaxed);
-        assert_eq!(reasons.counts(), BTreeMap::from([(reason, 2)]));
-        assert_eq!(reasons.overflow.load(Ordering::Relaxed), 0);
     }
 
     #[test]

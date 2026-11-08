@@ -1,6 +1,5 @@
 use super::*;
 use engine_native::carmy;
-use std::collections::BTreeSet;
 
 #[test]
 fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() {
@@ -10,25 +9,13 @@ fn periodic_live_input_sizing_keeps_land_events_prompt_and_skips_worker_hints() 
             false
         }
     }
-    let failures = || {
-        let status = serde_json::to_value(crate::country_scale::demand_diagnostics()).unwrap();
-        [
-            "advisor_modifiers",
-            "production_modifiers",
-            "land_event_words",
-        ]
-        .map(|name| status[name]["failed_observations"].as_u64().unwrap())
-    };
     let mut capacities = Capacities::default();
-    let before = failures();
     assert!(
         capacities
             .presize_live_inputs_periodic(&Unreadable, 0, false)
             .is_err()
     );
-    assert_eq!(failures(), [before[0], before[1], before[2] + 1]);
     assert!(capacities.presize_live_inputs(&Unreadable, 0).is_err());
-    assert_eq!(failures(), [before[0] + 1, before[1] + 1, before[2] + 2]);
 }
 
 #[test]
@@ -500,18 +487,8 @@ fn retired_division_tables_are_never_scheduled() {
         TableId::AttritionModifierBreakdowns,
     ] {
         assert!(!TABLES.contains(&retired), "{retired:?}");
-        assert!(!DIVISION_SOURCE_TABLES.contains(&retired), "{retired:?}");
-        assert!(
-            !read_groups()
-                .any(|(_, anchor, members)| anchor == retired || members.contains(&retired)),
-            "{retired:?}"
-        );
     }
     assert!(!PACK_NAMES.contains(&"division_eta_inputs"));
-    assert!(
-        !division_presentation::PHASE_NAMES.contains(&"attack"),
-        "the presentation pass has no selected-attack phase"
-    );
 }
 
 #[test]
@@ -2212,47 +2189,7 @@ fn peace_settlement_packs_are_registered_without_inventing_empty_data() {
 }
 
 #[test]
-fn metadata_partitions_every_extended_table_once_and_preserves_cost_membership() {
-    // BorderConflicts is the Provinces walk's second output, set by the core
-    // spool. Retired tables are not recorded, so no pack produces them.
-    let current = replay_data::format::FormatVersion::CURRENT.version();
-    let retired = TableId::ALL
-        .into_iter()
-        .filter(|table| !table.last_change().present(current))
-        .count();
-    // Four inputs, five hover-only, oracle-only and wargoal tables and the nine
-    // selected-transport split tables, plus retired NavalMineLevels.
-    assert_eq!(retired, 19);
-    assert_eq!(N, replay_data::rows::TABLE_COUNT - 21 - retired);
-    let actual: BTreeSet<_> = TABLES.into_iter().collect();
-    assert_eq!(actual.len(), N);
-    let expected: BTreeSet<_> = TableId::ALL
-        .into_iter()
-        .filter(|table| {
-            table.index() >= 20
-                && *table != TableId::BorderConflicts
-                && table.last_change().present(current)
-        })
-        .collect();
-    assert_eq!(actual, expected);
-    for (name, anchor, members) in read_groups() {
-        assert!(!name.is_empty());
-        assert!(members.contains(&anchor));
-    }
-    let groups: Vec<_> = read_groups().collect();
-    for table in DIVISION_SOURCE_TABLES {
-        assert_eq!(
-            groups
-                .iter()
-                .filter(|(_, _, members)| members.contains(&table))
-                .count(),
-            1,
-            "shared division cost counted more than once for {table:?}"
-        );
-    }
-}
-#[test]
-fn faction_provider_inventory_matches_spooling_and_costs_exactly_once() {
+fn faction_provider_inventory_matches_spooling() {
     for table in super::FACTION_PROVIDER_TABLES {
         assert!(
             !super::PACK_TABLES.contains(&table),
@@ -2263,58 +2200,7 @@ fn faction_provider_inventory_matches_spooling_and_costs_exactly_once() {
             1,
             "{table:?}"
         );
-        assert_eq!(
-            read_groups()
-                .filter(|(_, _, members)| members.contains(&table))
-                .count(),
-            1,
-            "{table:?}"
-        );
     }
-}
-#[test]
-fn naval_management_outputs_have_one_inventory_and_the_existing_census_costs() {
-    let groups: Vec<_> = read_groups().collect();
-    for (anchor, outputs) in [
-        (
-            TableId::Fleets,
-            &[TableId::NavalRepairCountries, TableId::NavalRepairFleets][..],
-        ),
-        (
-            TableId::TaskForces,
-            &[
-                TableId::NavalRepairTaskForces,
-                TableId::NavalTaskForceComposition,
-                TableId::NavalRepairChildren,
-            ][..],
-        ),
-        (
-            TableId::Ships,
-            &[TableId::NavalRefitShips, TableId::NavalRefitProgress][..],
-        ),
-        (
-            TableId::NavalBases,
-            &collector_naval_management::bases::TABLES[..],
-        ),
-    ] {
-        for &table in outputs {
-            assert_eq!(
-                TABLES.iter().filter(|&&id| id == table).count(),
-                1,
-                "{table:?}"
-            );
-            let owners: Vec<_> = groups
-                .iter()
-                .filter(|(_, _, members)| members.contains(&table))
-                .collect();
-            assert_eq!(owners.len(), 1, "{table:?}");
-            assert_eq!(owners[0].1, anchor, "{table:?}");
-        }
-    }
-    assert!(
-        !PACK_NAMES.contains(&"naval_management"),
-        "census outputs must not create another capture pack"
-    );
 }
 #[test]
 fn division_sources_preserve_census_identity_and_reject_an_incomplete_parent() {

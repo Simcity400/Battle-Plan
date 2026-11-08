@@ -76,19 +76,6 @@ impl Site {
         Self::ScientistClear,
     ];
 
-    fn name(self) -> &'static str {
-        match self {
-            Self::LeaderMapInsert => "leader_map_insert",
-            Self::AdvisorMapInsert => "advisor_map_insert",
-            Self::AdvisorMapMove => "advisor_map_move",
-            Self::AdvisorMapErase => "advisor_map_erase",
-            Self::Merge => "merge_character",
-            Self::Parse => "read_character",
-            Self::Destroy => "destroy_character",
-            Self::ScientistAttach => "scientist_attach",
-            Self::ScientistClear => "scientist_clear",
-        }
-    }
 }
 
 /// What the roster job sees of the domain.
@@ -170,26 +157,6 @@ pub fn record(counts: &Counts) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .map(|site| site.name)
-            .zip(&CALLS)
-            .chain(Site::ALL.iter().map(|site| site.name()).zip(&FORWARDED))
-            .map(|(name, calls)| (name, calls.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "census_changes"),
-        "observed": CENSUS.quiet().is_some() || CENSUS.active() != 0,
-        "poisoned": CENSUS.poisoned(),
-        "carried_hours": reads[0],
-        "gathered_hours": reads[1],
-        "events": events,
-        "scope": "cumulative since attach; the roster job keeps its role census (country and role span of every rostered character) without gathering it when the census domain's token (this family's writers and the forwarded advisor-family map, parser, merge and destructor sites and roster-family scientist sites; events counts each one's calls) equals the one taken before the latest complete gather and the hour's occurrences, ids, scope and historical length are the held census's (carried_hours); other hours gather the whole census (gathered_hours)"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

@@ -187,32 +187,6 @@ pub(crate) fn hook_failure(
     Box::leak(message.into_boxed_str())
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|(site, n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "mission_changes"),
-        "publication_error": PUBLICATION_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
-        "ground_crews": crate::ground_crew_changes::status(),
-        "naval_map": crate::naval_map_changes::status(),
-        "fleet_regions": collector_observers::fleet_region_changes::status(),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_countries": reads[0],
-        "read_countries": reads[1],
-        "reused_rows": reads[2],
-        "read_rows": reads[3],
-        "quiet_hours": reads[4],
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "radar_symbols": crate::radar_changes::status(),
-        "scope": "cumulative since attach; a country's AirRegionalMissions registrations are carried when its country air object has the address, canonical slot and gathered mission-vector header bytes of the held read and no hooked writer touched it since, and each carried registration's wing in this hour's census still names the object's country and the registration's region (otherwise the country is read afresh); every object's headers and the wing census are read every hour; quiet_hours counts walks whose certificates held by the domain's unchanged quiet token alone, without a per-country lookup"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

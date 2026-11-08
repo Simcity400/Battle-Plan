@@ -1219,22 +1219,6 @@ impl Hooks {
             .chain(self.taps.iter().flat_map(Tap::executable_ranges))
     }
 }
-pub fn status() -> impl serde::Serialize {
-    let times = AMENDMENT_TIMES
-        .lock()
-        .ok()
-        .and_then(|times| times.as_ref().and_then(|times| times.status().ok()));
-    crate::status::status!({
-        "enabled": ENABLED.load(Ordering::SeqCst), "unhooked": UNHOOKED.get(),
-        "forwarded_variables": VARIABLES_FORWARDED.load(Ordering::SeqCst), "forwarded_resets": RESET_FORWARDED.load(Ordering::SeqCst), "active": active(),
-        "writer_sites": OBSERVED_SITES.len(), "delivery_amount_refusals": DELIVERY_AMOUNT_REFUSALS.load(Ordering::Relaxed), "final_snapshots": FINAL_SNAPSHOTS.load(Ordering::Relaxed), "final_items": FINAL_ITEMS.load(Ordering::Relaxed),
-        "amendments": AMENDMENTS.load(Ordering::Relaxed), "amendment_items": AMENDMENT_ITEMS.load(Ordering::Relaxed),
-        "amendment_callback": times, "events": LEDGER.events.load(Ordering::Relaxed),
-        "refusals": LEDGER.refusals.load(Ordering::Relaxed), "overflow": LEDGER.overflow.load(Ordering::Relaxed),
-        "lost_events": LEDGER.lost_events.load(Ordering::Relaxed), "lost_events_unknown": LEDGER.lost_events_unknown.load(Ordering::Relaxed),
-        "entry_demand": capacity(), "prices": WATCHES[PRICES].status(), "subsidies": WATCHES[SUBSIDIES].status(), "automation": WATCHES[AUTOMATION].status()
-    })
-}
 
 /// Synthetic owned-census support; no native addresses escape into recordings.
 #[cfg(any(test, feature = "test-support"))]
@@ -1309,6 +1293,9 @@ pub mod test_support {
         }
         pub fn collect_country_domain(&self, domain: usize) {
             WATCHES.get(domain).unwrap_or(&RESET_WATCH).collect();
+        }
+        pub fn country_domain_capacity(&self, domain: usize) -> usize {
+            WATCHES[domain].capacity()
         }
         pub fn inventory(&self, memory: &impl Memory, owner: u32) {
             let event = root(

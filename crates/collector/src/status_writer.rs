@@ -1,5 +1,5 @@
 //! Coalesced checked status snapshots with reusable byte buffers.
-use crate::{allocation, status::status};
+use crate::allocation;
 use std::{
     io,
     path::{Path, PathBuf},
@@ -22,11 +22,6 @@ struct State {
     recycled: Vec<Pending>,
     stop: bool,
     error: Option<&'static str>,
-    writes: u64,
-    failures: u64,
-    coalesced: u64,
-    write_ns_total: u64,
-    write_ns_max: u64,
 }
 struct Inner {
     state: Mutex<State>,
@@ -65,7 +60,6 @@ impl StatusHandle {
         let mut state = self.inner.lock();
         let position = state.pending.iter().position(|p| p.path == path);
         let mut pending = if let Some(index) = position {
-            state.coalesced += 1;
             state.pending.remove(index)
         } else if let Some(index) = state.recycled.iter().position(|p| p.path == path) {
             state.recycled.swap_remove(index)
@@ -97,18 +91,6 @@ impl StatusHandle {
     pub(crate) fn take_error(&self) -> Option<&'static str> {
         self.inner.lock().error.take()
     }
-    pub(crate) fn status(&self) -> impl serde::Serialize {
-        let state = self.inner.lock();
-        status!({
-            "writes":state.writes,"failures":state.failures,"coalesced":state.coalesced,
-            "pending":state.pending.len(),"write_ns_total":state.write_ns_total,"write_ns_max":state.write_ns_max,
-            "scope":"status and content files written on their own thread; the spool thread only hands the latest snapshot over; spool_bytes is measured on this thread; a failed write is retried later unless a newer snapshot replaced it (coalesced); write time includes that measurement; cumulative since attach",
-        })
-    }
-    #[cfg(test)]
-    fn json(&self) -> serde_json::Value {
-        serde_json::to_value(self.status()).unwrap()
-    }
 }
 pub(crate) struct StatusWriter {
     handle: StatusHandle,
@@ -125,7 +107,10 @@ impl StatusWriter {
         let worker = inner.clone();
         let thread = std::thread::Builder::new()
             .name("collector-status".into())
-            .spawn(move || run(&worker, &write))?;
+            .spawn(move || {
+                crate::runtime::OwnPriority::new().follow(false);
+                run(&worker, &write)
+            })?;
         Ok(Self {
             handle: StatusHandle { inner },
             thread: Some(thread),
@@ -229,15 +214,10 @@ fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
         }
         let mut pending = state.pending.remove(0);
         drop(state);
-        let started = Instant::now();
         let result = measure(&mut pending).and_then(|()| write(&pending.path, &pending.bytes));
-        let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let mut state = inner.lock();
-        state.write_ns_total = state.write_ns_total.saturating_add(ns);
-        state.write_ns_max = state.write_ns_max.max(ns);
         match result {
             Ok(()) => {
-                state.writes += 1;
                 pending.bytes.clear();
                 if let Some(old) = state.recycled.iter_mut().find(|p| p.path == pending.path) {
                     if pending.bytes.capacity() > old.bytes.capacity() {
@@ -250,11 +230,8 @@ fn run(inner: &Inner, write: &impl Fn(&Path, &[u8]) -> io::Result<()>) {
             }
             Err(error) => {
                 allocation::observe(&error);
-                state.failures += 1;
                 state.error = Some("status write failed");
-                if state.pending.iter().any(|entry| entry.path == pending.path) {
-                    state.coalesced += 1;
-                } else {
+                if !state.pending.iter().any(|entry| entry.path == pending.path) {
                     if engine_allocation::reserve(&mut state.pending, 1).is_err() {
                         return;
                     }
@@ -310,7 +287,7 @@ impl AllocationProbe {
         directories.push(self.directory.clone());
         let published = self.writer.handle().publish_measured(
             &self.status,
-            status!({"state":"recording","hours":2u64}),
+            crate::status::status!({"state":"recording","hours":2u64}),
             directories,
         );
         self.writer.finish();
@@ -414,8 +391,6 @@ mod tests {
                 (content.to_path_buf(), json!({ "hour": 1000 })),
             ]
         );
-        assert_eq!(handle.json()["writes"], 3);
-        assert_eq!(handle.json()["coalesced"], 1998);
     }
 
     /// The spool thread ending early (an error return drops its handle) never
@@ -480,14 +455,12 @@ mod tests {
             .expect("the retry succeeds");
         writer.finish();
         assert_eq!(*attempts.lock().unwrap(), 3);
-        assert_eq!(handle.json()["failures"], 2);
-        assert_eq!(handle.json()["writes"], 1);
         let error = handle.take_error().expect("the failure is reported");
         assert!(error == "status write failed", "{error}");
     }
 
     /// A newer snapshot published while a write is failing supersedes it: the
-    /// failed one is not retried, and it counts as coalesced.
+    /// failed one is not retried.
     #[test]
     fn a_newer_snapshot_supersedes_a_failed_write() {
         let (entered_tx, entered) = mpsc::channel();
@@ -531,8 +504,6 @@ mod tests {
             *attempts.lock().unwrap(),
             [json!({ "hour": 1 }), json!({ "hour": 2 })]
         );
-        assert_eq!(handle.json()["coalesced"], 1);
-        assert_eq!(handle.json()["failures"], 1);
     }
 
     /// `publish_measured` reports the `spool.*` bytes of its directories,

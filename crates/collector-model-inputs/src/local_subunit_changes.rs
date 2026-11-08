@@ -180,27 +180,6 @@ pub fn record(counts: &Counts, countries: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "local_subunit_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_countries": reads[0],
-        "read_countries": reads[1],
-        "reused_rows": reads[2],
-        "read_rows": reads[3],
-        "quiet_hours": reads[4],
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; CountryLocalSubunits is walked every hour: a country's rows are carried when its country object is that of the held walk and either the domain's quiet token is unchanged since before that walk (quiet_hours; no deployment status is read) or no hooked writer touched its deployment status since the held walk registered it and the status and clone vector header read this hour are the held ones; every other country is read afresh; a walk is held only when no hooked writer ran during it"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

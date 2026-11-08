@@ -74,19 +74,6 @@ pub fn sequence<I>(iter: I) -> Sequence<I> {
     Sequence(iter)
 }
 
-pub struct OwnedSequence<T>(Vec<T>);
-pub fn owned_sequence<T>(values: Vec<T>) -> OwnedSequence<T> {
-    OwnedSequence(values)
-}
-impl<T: Serialize> Serialize for OwnedSequence<T> {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-        for item in &self.0 {
-            seq.serialize_element(item)?;
-        }
-        seq.end()
-    }
-}
 impl<I> Serialize for Sequence<I>
 where
     I: Clone + Iterator,

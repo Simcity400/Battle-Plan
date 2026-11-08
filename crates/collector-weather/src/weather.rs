@@ -28,24 +28,13 @@ mod display;
 pub mod entries;
 pub mod temperature;
 use display::DisplayCapture;
-static DISPLAY_DEMAND_FAILURES: collector_extended_support::demand::DemandFailures =
-    collector_extended_support::demand::DemandFailures::new();
 
 pub fn observe_display_capacity(memory: &impl Memory, base: usize) -> Result<usize, &'static str> {
-    display::observe_capacity(memory, base, &DISPLAY_DEMAND_FAILURES)
-}
-
-pub fn display_demand_diagnostics() -> impl serde::Serialize {
-    DISPLAY_DEMAND_FAILURES.diagnostics()
+    display::observe_capacity(memory, base)
 }
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::WeatherRegions, TableId::WeatherProvinces];
-
-/// Manager authentication is charged once to regions for each acquisition pass.
-/// The two dense arrays retain their own read times and outcomes.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("weather manager and dense tables", 0, &[0, 1])];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

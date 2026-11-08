@@ -20,8 +20,6 @@ pub const TABLES: [TableId; N] = [
     TableId::EquipmentDestruction,
     TableId::DivisionEquipmentDeletions,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("equipment destruction event drain", 0, &[0, 1])];
 pub type Capacities = usize;
 pub struct Captured {
     rows: CaptureRows<producer::Entry>,

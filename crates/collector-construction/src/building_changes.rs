@@ -284,32 +284,6 @@ pub fn record(counts: &Counts, statuses: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "building_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_statuses": reads[0],
-        "read_statuses": reads[1],
-        "reused_rows": reads[2],
-        "read_rows": reads[3],
-        "empty_statuses": reads[4],
-        "quiet_hours": reads[5],
-        "marked_statuses": reads[6],
-        "settled_hours": reads[7],
-        "events": events,
-        "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
-        "structure_poisoned": WATCHES.structure.load(Ordering::Relaxed) != 0,
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a walk reads every location's identity and status headers and carries a state's or province's StateBuildings or ProvinceBuildings rows when its status, identity and vector headers are those of the held read and no hooked writer touched the status since; settled_hours counts hours that walked no location, because the latest walk certified every status (empty_statuses, without buildings, too), the watch epoch held and both location table headers are unchanged: they read afresh only the statuses a hooked writer marked since the previous hour (marked_statuses, from the status alone, its identity unchanged) and carry every other; quiet_hours counts the settled hours that marked none; structure_poisoned: entering nudge mode (enter_nudge_mode) disabled reuse for the attachment"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

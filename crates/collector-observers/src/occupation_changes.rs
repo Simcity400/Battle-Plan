@@ -104,9 +104,6 @@ pub fn prepare() {
     }
     WATCHES.collect();
 }
-pub fn status() -> impl serde::Serialize {
-    WATCHES.status()
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

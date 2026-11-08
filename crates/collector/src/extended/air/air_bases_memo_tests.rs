@@ -78,7 +78,7 @@ fn daily_aces_are_excluded_from_hourly_memo_inputs_and_outputs() {
             }
         );
         if !active {
-            assert_eq!((copy.copy_ticks[2], copy.raw_bytes[2], ticks[2]), (0, 0, 0));
+            assert_eq!((copy.copy_ticks[2], ticks[2]), (0, 0));
             assert_eq!(job.log.fault[2], hour == 23);
             assert_eq!((air.names.len, air.names.required), (0, 0));
             air.fail_air_bases_capture("worker failed");

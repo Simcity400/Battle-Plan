@@ -483,28 +483,5 @@ impl Hooks {
         self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "installed": INSTALLED.load(Ordering::Acquire), "enabled": ENABLED.load(Ordering::SeqCst),
-        "active": active(), "stranded": LEDGER.stranded.load(Ordering::SeqCst), "unhooked": UNHOOKED.get(),
-        "branch_unavailable": LEDGER.poisoned.load(Ordering::SeqCst),
-        // The counters wrap as their atomics do; so do their sums.
-        "calls": LEDGER.calls.load(Ordering::Relaxed).wrapping_add(FAST_ZERO_WRITES.load(Ordering::Relaxed)),
-        "events": LEDGER.events.load(Ordering::Relaxed),
-        "zero_writes": LEDGER.zero_writes.load(Ordering::Relaxed).wrapping_add(FAST_ZERO_WRITES.load(Ordering::Relaxed)),
-        "fast_zero_writes": FAST_ZERO_WRITES.load(Ordering::Relaxed),
-        "overflow": LEDGER.overflow.load(Ordering::Relaxed), "refusals": LEDGER.refusals.load(Ordering::Relaxed),
-        "lost_events": LEDGER.lost_events.load(Ordering::Relaxed), "lost_events_unknown": LEDGER.lost_events_unknown.load(Ordering::Relaxed),
-        "lost_drains": LEDGER.lost_drains.load(Ordering::Relaxed), "overlaps": LEDGER.overlaps.load(Ordering::Relaxed),
-        "drains": LEDGER.drains.load(Ordering::Relaxed), "handed_over": LEDGER.handed_over.load(Ordering::Relaxed),
-        "event_capacity": LEDGER.capacity.load(Ordering::Acquire), "event_required": capacity(), "pending_claim_capacity": 1,
-        "prepare_failures": LEDGER.prepare_failures.load(Ordering::Relaxed), "wing_count": WINGS.load(Ordering::Acquire),
-        "serial_fallbacks": SERIAL_FALLBACKS.load(Ordering::Relaxed),
-        "prepare_last_refusal": LEDGER.prepare_last_refusal(),
-        "partial_intervals": LEDGER.partial_intervals.load(Ordering::Relaxed), "partial_events": LEDGER.partial_events.load(Ordering::Relaxed),
-        "hourly_peak_events": LEDGER.hourly_peak_events.load(Ordering::Relaxed), "hourly_peak_capacity": LEDGER.hourly_peak_capacity.load(Ordering::Relaxed),
-        "scope": "since attach; first/recovery partial intervals withheld; calls and zero_writes include fast_zero_writes, the calls the writer makes no write for, which go straight to it without entering the observer, so hook_timing.families.air_losses counts and times only the other calls"
-    })
-}
 #[cfg(test)]
 mod tests;

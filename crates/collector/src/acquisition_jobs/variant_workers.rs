@@ -3,7 +3,6 @@ use std::sync::Weak;
 
 pub(crate) struct Request {
     pub base: usize,
-    pub index: usize,
     pub part: Work,
 }
 pub(crate) enum Work {
@@ -32,31 +31,6 @@ impl Work {
             _ => Role::Variants,
         }
     }
-    pub(super) fn kind(&self) -> u8 {
-        match self {
-            Self::Variant(_) => 1,
-            Self::Context(part) => {
-                if part.seed_work() {
-                    7
-                } else {
-                    2
-                }
-            }
-            Self::Technology(_) => 4,
-            Self::Projects { part, .. } => {
-                if part.runtime_phase() {
-                    8
-                } else {
-                    5
-                }
-            }
-            Self::Setup(_) => 6,
-            Self::Storage { .. } => 9,
-            Self::Snapshots(_) => 10,
-            #[cfg(test)]
-            Self::Probe(_) => 9,
-        }
-    }
     pub(super) fn capture(&mut self, memory: &impl engine_native::Memory, base: usize) {
         match self {
             Self::Variant(part) => part.capture(memory, base),
@@ -77,16 +51,8 @@ impl Work {
         }
     }
 }
-#[derive(Clone, Copy)]
-pub(crate) struct ChildHandoff {
-    pub identity: crate::acquisition_diagnostics::Identity,
-    pub timeline: acquisition::Timeline,
-    pub succeeded: bool,
-}
 #[derive(Default)]
 pub(crate) struct Dispatch {
-    handoffs: std::cell::RefCell<Option<Vec<ChildHandoff>>>,
-    handoffs_complete: std::cell::Cell<bool>,
     executor: Weak<acquisition::Pool<Job, Report>>,
     calibration: Option<Arc<SharedCalibration>>,
     workers: usize,
@@ -97,38 +63,15 @@ impl Dispatch {
         self.executor = Arc::downgrade(&pool.executor);
         self.calibration = Some(Arc::clone(&pool.calibration));
         self.workers = pool.worker_count;
-        if crate::attach_diagnostics::measuring() {
-            *self.handoffs.get_mut() = engine_allocation::advisory(|| {
-                engine_allocation::vec(6 * acquisition::MAX_WORKERS).ok()
-            });
-            self.handoffs_complete
-                .set(self.handoffs.get_mut().is_some());
-        }
     }
     fn fork(&self) -> Self {
-        let mut fork = Self {
+        Self {
             executor: self.executor.clone(),
             calibration: self.calibration.clone(),
             workers: self.workers,
             // Owned warmup must not get ahead of queued native critical-path parts.
             priority: 2,
             ..Default::default()
-        };
-        if crate::attach_diagnostics::measuring() {
-            *fork.handoffs.get_mut() = engine_allocation::advisory(|| {
-                engine_allocation::vec(6 * acquisition::MAX_WORKERS).ok()
-            });
-            fork.handoffs_complete
-                .set(fork.handoffs.get_mut().is_some());
-        }
-        fork
-    }
-    fn storage_handoffs(&self, work: &Work) {
-        if let Work::Storage { workers, .. } = work {
-            let complete = workers.for_each_handoff(|handoff| self.handoff(handoff));
-            if !complete {
-                self.handoffs_complete.set(false);
-            }
         }
     }
     pub(super) fn storage_during(
@@ -169,7 +112,6 @@ impl Dispatch {
             };
             let mut request = Some(Job::VariantPart(Request {
                 base,
-                index: 0,
                 part: work,
             }));
             // SAFETY: this parent drains the storage child before returning its live lease.
@@ -180,17 +122,7 @@ impl Dispatch {
                     let mut completed = None;
                     executor.finish_worker_into(pending.tickets[0].take().unwrap(), &mut completed);
                     if let Some(completed) = completed {
-                        self.handoff(ChildHandoff {
-                            identity: completed.request.diagnostic_identity(),
-                            timeline: completed.timeline,
-                            succeeded: completed.report.is_ok(),
-                        });
                         account_completion(pending.calibration, &completed);
-                        if let Job::VariantPart(request) = completed.request {
-                            self.storage_handoffs(&request.part);
-                        }
-                    } else {
-                        self.handoffs_complete.set(false);
                     }
                     return;
                 }
@@ -202,71 +134,8 @@ impl Dispatch {
                 }
             }
         }
-        self.local(&mut work, 0, memory, base);
-        self.storage_handoffs(&work);
-        run();
-    }
-    pub(crate) fn for_each_handoff(&self, mut visit: impl FnMut(ChildHandoff)) -> bool {
-        let Ok(handoffs) = self.handoffs.try_borrow() else {
-            return false;
-        };
-        if let Some(handoffs) = handoffs.as_ref() {
-            for &handoff in handoffs {
-                visit(handoff);
-            }
-        }
-        self.handoffs_complete.get()
-    }
-    fn handoff(&self, handoff: ChildHandoff) {
-        let Ok(mut handoffs) = self.handoffs.try_borrow_mut() else {
-            self.handoffs_complete.set(false);
-            return;
-        };
-        if let Some(handoffs) = handoffs.as_mut() {
-            if handoffs.len() < handoffs.capacity() {
-                handoffs.push(handoff);
-            } else {
-                self.handoffs_complete.set(false);
-            }
-        }
-    }
-    fn local(
-        &self,
-        work: &mut Work,
-        index: usize,
-        memory: &impl engine_native::Memory,
-        base: usize,
-    ) {
-        if !crate::attach_diagnostics::measuring() {
-            work.capture(memory, base);
-            return;
-        }
-        let begin = sampling::qpc();
-        let before = engine_allocation::growths();
-        let thread = crate::attach_diagnostics::thread_work();
         work.capture(memory, base);
-        let end = sampling::qpc();
-        self.handoff(ChildHandoff {
-            identity: crate::acquisition_diagnostics::Identity {
-                role: work.role() as usize,
-                kind: work.kind(),
-                part: Some(index),
-                partition: None,
-            },
-            timeline: acquisition::Timeline {
-                queued_qpc: begin,
-                body_begin_qpc: begin,
-                body_end_qpc: end,
-                published_qpc: end,
-                collected_qpc: end,
-                growths: engine_allocation::growths().saturating_sub(before),
-                thread_work: thread.and_then(|start| {
-                    crate::attach_diagnostics::thread_work().and_then(|end| start.delta(end))
-                }),
-                ..Default::default()
-            },
-            succeeded: true,
-        });
+        run();
     }
     pub(super) fn lanes(&self) -> usize {
         self.workers.max(1)
@@ -403,8 +272,8 @@ impl Dispatch {
         let calibration = self.calibration.as_deref().unwrap();
         let Some(_fanout) = Fanout::enter(&calibration.cold_parents, self.workers) else {
             let mut parts = parts;
-            for (index, part) in parts.iter_mut().enumerate() {
-                self.local(part, index, memory, base);
+            for part in &mut parts {
+                part.capture(memory, base);
             }
             return Ok(parts);
         };
@@ -419,11 +288,10 @@ impl Dispatch {
         let mut parts = parts.into_iter();
         let local = parts.next();
         let mut failure = None;
-        for (index, part) in parts.enumerate() {
+        for part in parts {
             let role = part.role();
             let mut request = Some(Job::VariantPart(Request {
                 base,
-                index: index + 1,
                 part,
             }));
             // SAFETY: the worker parent drains every child before returning its live lease.
@@ -436,7 +304,7 @@ impl Dispatch {
                     let Some(Job::VariantPart(mut request)) = request else {
                         unreachable!()
                     };
-                    self.local(&mut request.part, request.index, memory, base);
+                    request.part.capture(memory, base);
                     output.push(request.part);
                 }
                 Err(_) => failure = Some("variant partition admission stopped before reading"),
@@ -445,7 +313,7 @@ impl Dispatch {
         if failure.is_none()
             && let Some(mut local) = local
         {
-            self.local(&mut local, 0, memory, base);
+            local.capture(memory, base);
             output.push(local);
         }
         for index in 0..pending.tickets.len() {
@@ -456,11 +324,6 @@ impl Dispatch {
                 failure = Some("variant partition completion missing");
                 continue;
             };
-            self.handoff(ChildHandoff {
-                identity: completed.request.diagnostic_identity(),
-                timeline: completed.timeline,
-                succeeded: completed.report.is_ok(),
-            });
             account_completion(pending.calibration, &completed);
             match completed.report {
                 Ok(Report::VariantPart) => {

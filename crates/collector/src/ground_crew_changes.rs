@@ -261,9 +261,6 @@ pub(crate) fn active() -> usize {
 pub(crate) fn collect() {
     WATCHES.collect();
 }
-pub(crate) fn status() -> impl serde::Serialize {
-    WATCHES.status()
-}
 
 pub(crate) struct Hooks {
     hooks: Vec<Hook>,

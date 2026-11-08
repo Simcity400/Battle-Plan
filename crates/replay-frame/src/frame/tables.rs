@@ -2,10 +2,7 @@
 //! its rows; a columnar walk's views build each row of the fields its reader names alone
 //! ([`Rowset`]). Readers shared by both paths read through it.
 
-use super::{
-    ColumnFrame, Columns, DecodedFrame, DecodedSource, Metrics, OperandStatus, RecordedSource,
-    TableView,
-};
+use super::{ColumnFrame, Columns, DecodedFrame, DecodedSource, Metrics, OperandStatus, TableView};
 use crate::{
     BranchId, Hour,
     rows::{RowCodec, TableId, TableSchema},

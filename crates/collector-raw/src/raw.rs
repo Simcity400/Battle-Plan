@@ -39,7 +39,6 @@ mod recorded;
 
 pub use country_slots::CountrySlots;
 use recorded::RecordedIndex;
-pub use recorded::index_diagnostics;
 pub use recorded::{Recorded, RecordedCache};
 
 pub fn read_plan_diagnostics() -> impl serde::Serialize {

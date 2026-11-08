@@ -56,15 +56,6 @@ pub const TABLES: [TableId; N] = [
     TableId::ArmyGroupMembers,
 ];
 
-/// Shared traversals are charged once to their first table. The separately
-/// acquired reverse censuses are included in these totals.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("railway state", 2, &[2, 3]),
-    ("land and air theatres", 4, &[4, 5, 6, 7, 8, 9]),
-    ("retained naval results", 10, &[10, 11, 12]),
-    ("army order of battle", 14, &[14, 15, 16]),
-];
-
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],
@@ -403,11 +394,6 @@ pub struct Captured {
     land: CaptureRows<ctheatre::Row>,
     reserved_land_count: Option<u32>,
     reserved_land_required_rows: usize,
-    reserved_land_first_failure: Option<&'static str>,
-    reserved_land_native_count: Option<u32>,
-    reserved_land_typed_capacity_short: bool,
-    reserved_land_raw_capacity_short: bool,
-    reserved_land_raw_demand: Option<(usize, usize)>,
     land_groups: CaptureRows<ctheater_group::Row>,
     land_members: CaptureRows<ctheater_group::MemberRow>,
     air: CaptureRows<cair_theatre::Row>,
@@ -469,67 +455,6 @@ fn reserved_raw_demand(count: Option<u32>) -> Option<(usize, usize)> {
     ))
 }
 
-#[derive(Clone, Copy, serde::Serialize)]
-struct ReservedLandObservations {
-    conversions: u64,
-    empty: u64,
-    nonempty: u64,
-    refused: u64,
-    typed_capacity_refused: u64,
-    raw_capacity_refused: u64,
-    last_certificate: Option<u32>,
-    last_native_count: Option<u32>,
-    last_raw_demand: Option<(usize, usize)>,
-    max_required_rows: usize,
-    last_first_reason: Option<&'static str>,
-}
-
-static RESERVED_LAND_OBSERVATIONS: std::sync::Mutex<ReservedLandObservations> =
-    std::sync::Mutex::new(ReservedLandObservations {
-        conversions: 0,
-        empty: 0,
-        nonempty: 0,
-        refused: 0,
-        typed_capacity_refused: 0,
-        raw_capacity_refused: 0,
-        last_certificate: None,
-        last_native_count: None,
-        last_raw_demand: None,
-        max_required_rows: 0,
-        last_first_reason: None,
-    });
-
-pub(crate) fn reserved_land_data() -> impl serde::Serialize {
-    RESERVED_LAND_OBSERVATIONS.lock().ok().map(|data| *data)
-}
-
-// Called only by off-thread table conversion: no callback allocation/lock.
-fn observe_reserved_land(captured: &Captured) {
-    if let Ok(mut data) = RESERVED_LAND_OBSERVATIONS.lock() {
-        data.conversions = data.conversions.saturating_add(1);
-        match captured.reserved_land_count {
-            Some(0) => data.empty = data.empty.saturating_add(1),
-            Some(_) => data.nonempty = data.nonempty.saturating_add(1),
-            None => data.refused = data.refused.saturating_add(1),
-        }
-        data.typed_capacity_refused = data
-            .typed_capacity_refused
-            .saturating_add(u64::from(captured.reserved_land_typed_capacity_short));
-        data.raw_capacity_refused = data
-            .raw_capacity_refused
-            .saturating_add(u64::from(captured.reserved_land_raw_capacity_short));
-        data.last_certificate = captured.reserved_land_count;
-        data.last_native_count = captured.reserved_land_native_count;
-        data.last_raw_demand = captured.reserved_land_raw_demand;
-        data.max_required_rows = data.max_required_rows.max(
-            captured
-                .reserved_land_native_count
-                .map_or(0, |count| count as usize),
-        );
-        data.last_first_reason = captured.reserved_land_first_failure;
-    }
-}
-
 fn failed(active: bool, reason: &'static str) -> Outcome {
     if active {
         Outcome::Unavailable { reason }
@@ -545,11 +470,6 @@ impl Captured {
         self.prepare_hour(hour, force_full);
         self.reserved_land_count = None;
         self.reserved_land_required_rows = 0;
-        self.reserved_land_first_failure = Some(reason);
-        self.reserved_land_native_count = None;
-        self.reserved_land_typed_capacity_short = false;
-        self.reserved_land_raw_capacity_short = false;
-        self.reserved_land_raw_demand = None;
         if !self.supremacy_raw_mode {
             self.supremacy.fail(failed(self.active[0], reason));
         }
@@ -605,11 +525,6 @@ impl Captured {
             land: CaptureRows::new(capacity.rows[4]),
             reserved_land_count: None,
             reserved_land_required_rows: 0,
-            reserved_land_first_failure: None,
-            reserved_land_native_count: None,
-            reserved_land_typed_capacity_short: false,
-            reserved_land_raw_capacity_short: false,
-            reserved_land_raw_demand: None,
             land_groups: CaptureRows::new(capacity.rows[5]),
             land_members: CaptureRows::new(capacity.rows[6]),
             air: CaptureRows::new(capacity.rows[7]),
@@ -695,11 +610,6 @@ impl Captured {
         self.land.reset();
         self.reserved_land_count = None;
         self.reserved_land_required_rows = 0;
-        self.reserved_land_first_failure = None;
-        self.reserved_land_native_count = None;
-        self.reserved_land_typed_capacity_short = false;
-        self.reserved_land_raw_capacity_short = false;
-        self.reserved_land_raw_demand = None;
         self.land_groups.reset();
         self.land_members.reset();
         self.air.reset();
@@ -788,36 +698,6 @@ impl Captured {
         self.sunk_names.grow(&mut capacity.sunk_names);
         self.orders_sources.grow(&mut capacity.orders_sources);
         self.wing_sources.grow(&mut capacity.wing_sources);
-    }
-
-    pub(crate) fn observe_railway_inputs(
-        &self,
-        work: &mut crate::acquisition_states::InputWork,
-    ) -> std::io::Result<()> {
-        work.observe(
-            self.rail_buildings.outcome,
-            self.rail_buildings_required,
-            self.rail_buildings.rows.len(),
-            self.rail_buildings.rows[..self.rail_buildings.outcome.len()]
-                .iter()
-                .map(|row| row.building.map(|building| building.is_some())),
-        )?;
-        let captured = &self.rail_buildings.rows[..self.rail_buildings.outcome.len()];
-        for field in 0..3 {
-            work.observe(
-                self.rail_buildings.outcome,
-                self.rail_buildings_required,
-                self.rail_buildings.rows.len(),
-                captured.iter().filter_map(|row| {
-                    row.selection.map(|selected| match field {
-                        0 => selected.levels.map(|_| true),
-                        1 => selected.pair_count.map(|_| true),
-                        _ => selected.building_level.map(|value| value.is_some()),
-                    })
-                }),
-            )?;
-        }
-        Ok(())
     }
 
     fn railway_building(&self, province: u32) -> Option<rows::RailwayBuildingState> {
@@ -1304,7 +1184,7 @@ impl Captured {
     /// Final assembly cannot expose a zero suffix without its singleton.
     /// Only this private successful count identifies the committed tail;
     /// unavailable payloads and incomplete positives never have such a count.
-    pub(crate) fn withhold_reserved_land_certificate(&mut self, reason: &'static str) {
+    pub(crate) fn withhold_reserved_land_certificate(&mut self) {
         let Some(count) = self.reserved_land_count.take() else {
             return;
         };
@@ -1315,7 +1195,6 @@ impl Captured {
             self.land.rows[start..len].fill(ctheatre::Row::default());
             self.land.outcome = Outcome::Rows { len: start };
         }
-        self.reserved_land_first_failure.get_or_insert(reason);
     }
 
     fn capture_reserved_land(
@@ -1340,9 +1219,6 @@ impl Captured {
         growing: bool,
     ) {
         self.reserved_land_count = None;
-        self.reserved_land_typed_capacity_short = false;
-        self.reserved_land_raw_capacity_short = false;
-        self.reserved_land_raw_demand = root.is_ok().then_some((16, 1));
         let positive_len = match self.land.outcome {
             Outcome::Rows { len } if len <= self.land.rows.len() => len,
             _ => {
@@ -1356,16 +1232,6 @@ impl Captured {
                     |_, _| Ok(()),
                 );
                 self.reserved_land_required_rows = walk.required_rows;
-                self.reserved_land_native_count = walk.native_count;
-                self.reserved_land_first_failure = root.err().or_else(|| {
-                    if walk.native_count.is_none() {
-                        walk.len.err()
-                    } else {
-                        Some("positive land theatres incomplete")
-                    }
-                });
-                self.reserved_land_raw_demand =
-                    reserved_raw_demand(walk.native_count).or(self.reserved_land_raw_demand);
                 return;
             }
         };
@@ -1373,7 +1239,6 @@ impl Captured {
         let groups_outcome = self.groups.outcome;
         let groups = &self.groups.rows;
         let scratch = &self.roster_scratch.first;
-        let mut extra_headers = 0usize;
         let walk = ctheatre::walk_reserved_land_headers_buffer(
             memory,
             base,
@@ -1414,9 +1279,6 @@ impl Captured {
                     let bytes = match prior {
                         Some(bytes) => bytes,
                         None => {
-                            extra_headers = extra_headers
-                                .checked_add(1)
-                                .ok_or("reserved land group header count overflow")?;
                             let mut bytes = [0; 16];
                             if !memory.copy(address, &mut bytes) {
                                 return Err("reserved land group roster header unreadable");
@@ -1434,22 +1296,10 @@ impl Captured {
             },
         );
         self.reserved_land_required_rows = walk.required_rows;
-        self.reserved_land_first_failure = walk.len.err();
-        self.reserved_land_native_count = walk.native_count;
-        self.reserved_land_typed_capacity_short = walk.capacity_short;
-        self.reserved_land_raw_demand = reserved_raw_demand(walk.native_count)
-            .and_then(|(bytes, spans)| {
-                Some((
-                    bytes.checked_add(extra_headers.checked_mul(16)?)?,
-                    spans.checked_add(extra_headers)?,
-                ))
-            })
-            .or(self.reserved_land_raw_demand);
         let (Ok(len), Some(count)) = (walk.len, walk.native_count) else {
             return;
         };
         if len != count as usize {
-            self.reserved_land_first_failure = Some("reserved land count differs from rows");
             return;
         }
         let (positive, spare) = self.land.rows.split_at_mut(positive_len);
@@ -1463,7 +1313,6 @@ impl Captured {
                 .any(|row| zero.binary_search_by_key(&row.id, |row| row.id).is_ok());
         if duplicate {
             zero.fill(ctheatre::Row::default());
-            self.reserved_land_first_failure = Some("reserved land duplicate theatre handle");
             return;
         }
         zero.sort_unstable_by_key(|row| row.ordinal);
@@ -1473,17 +1322,14 @@ impl Captured {
             .any(|(ordinal, row)| row.owner != 0 || row.ordinal as usize != ordinal)
         {
             zero.fill(ctheatre::Row::default());
-            self.reserved_land_first_failure = Some("reserved land native ordinal invalid");
             return;
         }
         let Some(total) = positive_len.checked_add(len) else {
             zero.fill(ctheatre::Row::default());
-            self.reserved_land_first_failure = Some("reserved land row count overflow");
             return;
         };
-        if let Some(reason) = staging_refusal {
+        if staging_refusal.is_some() {
             zero.fill(ctheatre::Row::default());
-            self.reserved_land_first_failure = Some(reason);
             return;
         }
         self.land.outcome = Outcome::Rows { len: total };
@@ -1558,7 +1404,6 @@ impl Captured {
 
     /// Off-thread only: exact native source joins, byte copies and replay rows.
     pub fn tables(&self) -> [TableView; N] {
-        observe_reserved_land(self);
         let mut outcomes = self.outcomes();
         if let Some(reason) = membership_issue(
             outcomes[6],

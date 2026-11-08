@@ -49,13 +49,6 @@ pub const TABLES: [TableId; N] = [
     TableId::NavalDominanceTaskForceRanges,
     TableId::NavalPatrolMissionInputs,
 ];
-/// Every table follows the task-force walk, which is charged to NavalMissionTaskForces; each
-/// table's own reads are charged to it.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "naval mission task forces, ledgers, countries and commanders",
-    0,
-    &[0, 1, 2, 3, 4, 5, 6, 7],
-)];
 /// Indices of the `naval_missions` sliced family's tables in [`TABLES`].
 pub(crate) const SLICED: [usize; 2] = [2, 3];
 

@@ -23,7 +23,6 @@ pub use store::{AppearanceStore, Carry};
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::CountryAppearance, TableId::ReservedCountryNaming];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 static ORIGINAL_TAG_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static POSITIVE_ORIGINAL_TAG_REFUSALS: std::sync::atomic::AtomicU64 =
@@ -616,13 +615,6 @@ impl Captured {
 
     pub fn reverse_visibility_ticks(&self) -> u64 {
         self.reverse_visibility.ticks()
-    }
-
-    pub fn observe_reverse_visibility(
-        &self,
-        work: &mut reserved_visibility::Work,
-    ) -> std::io::Result<()> {
-        self.reverse_visibility.observe(work)
     }
 
     /// Appends each positive original reference's tag bytes to the naming

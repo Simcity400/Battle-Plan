@@ -393,33 +393,6 @@ impl Drop for Hooks {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    collector_status::status::status!({
-        "enabled": enabled(),
-        "publication_error": PUBLICATION_ERROR.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone(),
-        "calls": CALLS.load(Ordering::Relaxed),
-        "refused_registrations": REFUSED.load(Ordering::Relaxed),
-        "force_takes": FORCES.takes(),
-        "registered_force_receivers": FORCES.registered(),
-        "registered_base_receivers": BASES.registered(),
-        "base_takes": BASES.takes(),
-        "sites": SITES.len() + METHODS.len(),
-        "authentication_refusals": SITES.iter().map(|site| site.name).chain(METHODS.iter().map(|site| site.name))
-            .zip(AUTHENTICATION_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))
-            .filter(|(_, count)| *count != 0).collect::<Vec<_>>(),
-        "read_refusals": {
-            "countries": READ_REFUSALS[0].load(Ordering::Relaxed),
-            "fleets": READ_REFUSALS[1].load(Ordering::Relaxed),
-            "task_forces": READ_REFUSALS[2].load(Ordering::Relaxed),
-            "composition": READ_REFUSALS[3].load(Ordering::Relaxed),
-            "refit_ships": READ_REFUSALS[4].load(Ordering::Relaxed),
-            "refit_progress": READ_REFUSALS[5].load(Ordering::Relaxed),
-            "repair_children": READ_REFUSALS[6].load(Ordering::Relaxed),
-            "bases": READ_REFUSALS[7].load(Ordering::Relaxed),
-            "queues": READ_REFUSALS[8].load(Ordering::Relaxed),
-        },
-    })
-}
 
 #[cfg(test)]
 mod tests {

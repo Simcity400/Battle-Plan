@@ -115,7 +115,8 @@ fn varint(out: &mut [u8; 10], mut value: u64) -> &[u8] {
 }
 
 /// Appends a capture's journal, a segment at a time. Every record reaches the file as it is
-/// written; a segment is made durable when it ends.
+/// written; an ended segment goes back to the caller to make durable, so the next one opens
+/// without waiting on the disk.
 pub struct JournalWriter {
     directory: PathBuf,
     capture: u32,
@@ -182,26 +183,30 @@ impl JournalWriter {
         self.capture
     }
 
-    /// Ends the segment, durable, and starts the next; nothing when the segment holds nothing
-    /// past its magic.
-    pub fn next_segment(&mut self) -> io::Result<()> {
+    /// Ends the segment and starts the next; nothing when the segment holds nothing past its
+    /// magic. The ended segment's file is the caller's to make durable (`sync_data`).
+    #[must_use = "an ended segment is durable only once its file is synced"]
+    pub fn next_segment(&mut self) -> io::Result<Option<File>> {
         if !self.used {
-            return Ok(());
+            return Ok(None);
         }
         self.append(NEXT, &[])?;
-        self.file.get_ref().sync_data()?;
         self.segment = self
             .segment
             .checked_add(1)
             .ok_or_else(|| invalid("A journal's segments pass 2^32"))?;
-        self.file = Self::open(&self.directory, self.capture, self.segment)?;
+        let next = Self::open(&self.directory, self.capture, self.segment)?;
+        let ended = std::mem::replace(&mut self.file, next);
         self.used = false;
-        Ok(())
+        ended.into_inner().map(Some).map_err(io::IntoInnerError::into_error)
     }
 
-    /// A run starting with the next hour, in a segment of its own.
+    /// A run starting with the next hour, in a segment of its own: after [`Self::next_segment`],
+    /// so the segment it ended is the caller's to sync even when this append fails.
     pub fn run(&mut self, branch: u64, epoch: u8, first_hour: i32) -> io::Result<()> {
-        self.next_segment()?;
+        if self.used {
+            return Err(invalid("A run starts in a segment of its own"));
+        }
         let mut branch_bytes = [0; 10];
         let mut hour_bytes = [0; 10];
         let branch = varint(&mut branch_bytes, branch);

@@ -31,7 +31,6 @@ struct Checks {
 unsafe impl Send for Checks {}
 impl Checks {
     fn capture(&mut self) {
-        let _phase = profile::Timer::new(profile::Phase::SpeculateRetained);
         // SAFETY: see `Send`; both outlive this part and nothing writes them meanwhile.
         let (batch, retained) = unsafe { (&*self.batch, &*self.retained) };
         // Optional work: a refusal leaves these events to the ordered pass.
@@ -264,7 +263,6 @@ fn check(
     engine_allocation::reserve(&mut checks, batch.events.len()).ok()?;
     checks.resize_with(batch.events.len(), Check::default);
     if indices.len() < MIN_CHECKS {
-        let _phase = profile::Timer::new(profile::Phase::SpeculateRetained);
         for &index in &indices {
             checks[index] =
                 check_retained(retained, &batch.log, &batch.events[index], &mut planned.scratch);

@@ -13,45 +13,13 @@
 pub use crate::country_slots::{census_rows, note_slots, raise, reserve_census, rows};
 use crate::{extended, map_capture::MapCapacities, sampling};
 use engine_native::{Memory, cgame_state, country_memory::Cache};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 mod navies;
 pub(crate) mod source_demand;
 pub(crate) mod table_demand;
 pub(crate) use table_demand::presize as presize_table_inputs;
 
-pub(crate) use collector_extended_support::demand::{
-    DemandFailures, demand_air_game_state, demand_game_state,
-};
-
-static AGENCY_UPGRADE_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static OPERATION_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static FUEL_UNIT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static ADVISOR_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static PRODUCTION_MODIFIER_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static LAND_EVENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static POLITICS_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-static CO_BELLIGERENT_DEMAND_FAILURES: DemandFailures = DemandFailures::new();
-
-pub(crate) fn demand_diagnostics() -> impl serde::Serialize {
-    crate::status::status!({
-        "scope": "cumulative failed off-thread sizing read attempts; table and live-input hints are read once outside the capacity mutex and max-merged with concurrent demand; failed operands add no fabricated demand; existing capacities retained",
-        "agency_upgrade_levels": AGENCY_UPGRADE_DEMAND_FAILURES.diagnostics(),
-        "operations": OPERATION_DEMAND_FAILURES.diagnostics(),
-        "fuel_unit_demand": FUEL_UNIT_DEMAND_FAILURES.diagnostics(),
-        "advisor_modifiers": ADVISOR_MODIFIER_DEMAND_FAILURES.diagnostics(),
-        "production_modifiers": PRODUCTION_MODIFIER_DEMAND_FAILURES.diagnostics(),
-        "land_event_words": LAND_EVENT_DEMAND_FAILURES.diagnostics(),
-        "politics_records": POLITICS_DEMAND_FAILURES.diagnostics(),
-        "co_belligerents": CO_BELLIGERENT_DEMAND_FAILURES.diagnostics(),
-        "weather_display": extended::weather::display_demand_diagnostics(),
-        "table_storage": table_demand::diagnostics(),
-        "source_storage": source_demand::diagnostics(),
-        "observer_boundary": extended::observer_boundary::status(),
-        "intel_tables": extended::intel::demand_status(),
-        "governance_tables": extended::governance::demand_status(),
-        "character_traits": extended::characters::demand_status(),
-    })
-}
+pub(crate) use collector_extended_support::demand::{demand_air_game_state, demand_game_state};
 
 /// Tests that raise the registry, carrier or wing-name hints, or measure
 /// buffers they size, hold this so a parallel test cannot move them
@@ -339,25 +307,6 @@ pub fn observe_production_output(memory: &impl Memory, base: usize) -> Option<us
         }
     }
 }
-static COMBAT_HINT_FAILURES: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-
-pub(crate) fn note_combat_hint_failure(index: usize) {
-    COMBAT_HINT_FAILURES[index].fetch_add(1, Ordering::Relaxed);
-}
-
-#[derive(serde::Serialize)]
-pub(crate) struct CombatHintStatus {
-    land_skipped: u64,
-    naval_skipped: u64,
-}
-
-pub(crate) fn combat_hint_status() -> CombatHintStatus {
-    CombatHintStatus {
-        land_skipped: COMBAT_HINT_FAILURES[0].load(Ordering::Relaxed),
-        naval_skipped: COMBAT_HINT_FAILURES[1].load(Ordering::Relaxed),
-    }
-}
-
 /// Shared count-only land details with mutable-header consistency checks.
 pub fn observe_land_details(
     memory: &impl Memory,
@@ -366,9 +315,7 @@ pub fn observe_land_details(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_native::cland_combat::detail_demand(memory, base, state)
-        .map(Some)
-        .inspect_err(|_| note_combat_hint_failure(0))
+    engine_native::cland_combat::detail_demand(memory, base, state).map(Some)
 }
 /// The naval combat details' live header demand.
 pub fn observe_naval_details(
@@ -378,9 +325,7 @@ pub fn observe_naval_details(
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
-    engine_naval_history::naval_combat_demand::demand(memory, base, state)
-        .map(Some)
-        .inspect_err(|_| note_combat_hint_failure(1))
+    engine_naval_history::naval_combat_demand::demand(memory, base, state).map(Some)
 }
 /// The raid arenas whose per-country demand content decides, not the slot
 /// count: the raid type tokens of every raid parent and of the player cache,
@@ -501,54 +446,53 @@ pub(crate) fn observe_politics_demand(
     base: usize,
     slots: usize,
 ) -> Option<usize> {
-    POLITICS_DEMAND_FAILURES
-        .observe((|| {
-            let mut records = slots
-                .checked_mul(engine_events::politics_sites::DAILY_RECORDS)
-                .ok_or("politics staging record demand overflow")?;
-            if let Some(state) = demand_game_state(memory, base)? {
-                records = records.max(engine_events::politics_sites::daily_record_demand(
-                    memory, base, state,
-                )?);
-            }
-            records
-                .checked_mul(sampling::BUFFERS)
-                .ok_or("politics staging backlog demand overflow")
-        })())
-        .ok()
+    (|| {
+        let mut records = slots
+            .checked_mul(engine_events::politics_sites::DAILY_RECORDS)
+            .ok_or("politics staging record demand overflow")?;
+        if let Some(state) = demand_game_state(memory, base)? {
+            records = records.max(engine_events::politics_sites::daily_record_demand(
+                memory, base, state,
+            )?);
+        }
+        records
+            .checked_mul(sampling::BUFFERS)
+            .ok_or("politics staging backlog demand overflow")
+    })()
+    .ok()
 }
 
 pub(crate) fn observe_advisor_modifiers(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Option<engine_native::cadvisor::ModifierDemand>, &'static str> {
-    ADVISOR_MODIFIER_DEMAND_FAILURES.observe(demand_game_state(memory, base).and_then(|state| {
+    demand_game_state(memory, base).and_then(|state| {
         state
             .map(|state| engine_native::cadvisor::modifier_demand(memory, base, state))
             .transpose()
-    }))
+    })
 }
 
 pub(crate) fn observe_production_modifiers(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Option<engine_production::production_modifiers::Demand>, &'static str> {
-    PRODUCTION_MODIFIER_DEMAND_FAILURES.observe(demand_game_state(memory, base).and_then(|state| {
+    demand_game_state(memory, base).and_then(|state| {
         state
             .map(|state| engine_production::production_modifiers::demand(memory, base, state))
             .transpose()
-    }))
+    })
 }
 
 pub(crate) fn observe_land_event_words(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Option<usize>, &'static str> {
-    LAND_EVENT_DEMAND_FAILURES.observe(demand_game_state(memory, base).and_then(|state| {
+    demand_game_state(memory, base).and_then(|state| {
         state
             .map(|state| engine_land_inputs::land_events::word_demand(memory, base, state))
             .transpose()
-    }))
+    })
 }
 
 /// Current unit/site/context headers and name lengths; hints are never values.
@@ -556,11 +500,11 @@ pub(crate) fn observe_fuel_unit_demand(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Option<[usize; 12]>, &'static str> {
-    FUEL_UNIT_DEMAND_FAILURES.observe(demand_air_game_state(memory, base).and_then(|state| {
+    demand_air_game_state(memory, base).and_then(|state| {
         state
             .map(|state| engine_fuel::fuel_demand::demand(memory, base, state))
             .transpose()
-    }))
+    })
 }
 
 /// Live demand of the political and character tables whose per-country
@@ -786,20 +730,6 @@ pub fn observe_politics(
     memory: &impl Memory,
     base: usize,
 ) -> Result<Option<PoliticsDemand>, &'static str> {
-    observe_politics_with_failures(
-        memory,
-        base,
-        &AGENCY_UPGRADE_DEMAND_FAILURES,
-        &OPERATION_DEMAND_FAILURES,
-    )
-}
-
-fn observe_politics_with_failures(
-    memory: &impl Memory,
-    base: usize,
-    upgrade_failures: &DemandFailures,
-    operation_failures: &DemandFailures,
-) -> Result<Option<PoliticsDemand>, &'static str> {
     let Some(state) = demand_game_state(memory, base)? else {
         return Ok(None);
     };
@@ -855,23 +785,14 @@ fn observe_politics_with_failures(
             }
         },
     )?;
-    let upgrades = upgrade_failures.observe(
-        engine_native::agency_upgrade_levels::native_demand(memory, base, state),
-    )?;
-    let operations = operation_failures.observe(
-        engine_intelligence::ccountry_operation_manager::demand(memory, base, state),
-    )?;
+    let upgrades = engine_native::agency_upgrade_levels::native_demand(memory, base, state)?;
+    let operations = engine_intelligence::ccountry_operation_manager::demand(memory, base, state)?;
     let reserved_naming_bytes =
         engine_native::ccountry::read_country_naming_demand(memory, base, state);
     let original_tag_lists = engine_stability::original_tag_lists::demand(memory, state);
     let country_array = engine_stability::country_roster::demand(memory, base, state);
     let (co_belligerents, co_belligerent_failure) =
-        extended::country_counters::co_belligerent_demand(
-            memory,
-            base,
-            state,
-            &CO_BELLIGERENT_DEMAND_FAILURES,
-        );
+        extended::country_counters::co_belligerent_demand(memory, base, state);
     Ok(Some(PoliticsDemand {
         war_overview: engine_native::cwar_relation::overview::demand(memory, base, state)?,
         agency_name_bytes: agencies.required_bytes,
@@ -1124,37 +1045,6 @@ mod tests {
             bytes: &[],
         };
         assert_eq!(observe_politics_demand(&unreadable, 0, 5_001), None);
-    }
-
-    #[test]
-    fn politics_sizing_read_failures_are_named_counted_and_preserve_capacities() {
-        let failures = DemandFailures::new();
-        let mut sizing = Sizing::for_slots(COUNTRIES + 1);
-        let before = sizing.extended;
-        let refused: Result<engine_native::agency_upgrade_levels::Demand, _> =
-            failures.observe(Err("agency field unreadable"));
-        assert_eq!(refused.unwrap_err(), "agency field unreadable");
-        let upgrades = engine_native::agency_upgrade_levels::Demand::default();
-        sizing.extended.raise_for_politics(PoliticsDemand {
-            agency_upgrade_rows: upgrades.rows,
-            agency_upgrade_definitions: upgrades.catalog,
-            ..Default::default()
-        });
-        assert!(sizing.extended == before);
-        assert_eq!(
-            serde_json::to_value(failures.diagnostics()).unwrap()["failed_observations"],
-            1
-        );
-        assert_eq!(
-            serde_json::to_value(failures.diagnostics()).unwrap()["last_reason"],
-            "agency field unreadable"
-        );
-        let _: engine_native::agency_upgrade_levels::Demand =
-            failures.observe(Ok(Default::default())).unwrap();
-        assert_eq!(
-            serde_json::to_value(failures.diagnostics()).unwrap()["failed_observations"],
-            1
-        );
     }
 
     /// The #63 attach hour: 440 countries whose raid type lists need more
@@ -2503,6 +2393,7 @@ mod tests {
             Watches::enabled(countries + 1, air.regions.len()),
             Watches::enabled(countries + 1, air.regions.len()),
         );
+        let installed = watches.capacity();
         let mut capacity = hour::capacities(countries + 1);
         let mut serial_capacity = capacity;
         let (mut frame, mut serial_frame) = (hour::frame(&capacity), hour::frame(&capacity));
@@ -2577,10 +2468,8 @@ mod tests {
                 Outcome::Rows { len } => len.to_string(),
                 other => format!("{other:?}"),
             };
-            let refused =
-                serde_json::to_value(watches.status()).unwrap()["refused_registrations"].clone();
             eprintln!(
-                "naval patrol, {countries} countries, {patrolled} regions, 1/{every} with history, {label}: {} guarded calls; parts wall {:?} on {PARTS} threads ({spawn:?} of it spawning); serial {:?}, pool of 3 {:?}, pool of 8 {:?}; decode {:?}; {emitted} of {} rows emitted; {} read, {} advanced, {} refreshed; {refused} refused watches",
+                "naval patrol, {countries} countries, {patrolled} regions, 1/{every} with history, {label}: {} guarded calls; parts wall {:?} on {PARTS} threads ({spawn:?} of it spawning); serial {:?}, pool of 3 {:?}, pool of 8 {:?}; decode {:?}; {emitted} of {} rows emitted; {} read, {} advanced, {} refreshed",
                 result.calls,
                 result.wall,
                 one.wall,
@@ -2600,14 +2489,7 @@ mod tests {
         // No hour, not even one wanting a new region, installed a larger
         // table and so started an epoch that copies everything again.
         for watches in [&watches, &serial_watches] {
-            assert_eq!(
-                serde_json::to_value(watches.status()).unwrap()["installs"],
-                1
-            );
-            assert_eq!(
-                serde_json::to_value(watches.status()).unwrap()["refused_registrations"],
-                0
-            );
+            assert_eq!(watches.capacity(), installed);
         }
         let mut fresh = Hour::new();
         let unobserved = crate::history_changes::Unobserved;

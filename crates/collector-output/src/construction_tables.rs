@@ -35,7 +35,6 @@ pub fn identity_conflicts() -> u64 {
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ConstructionLineOutput];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// The spool replaces this placeholder with the published table.
 pub const ASSEMBLED_BY_SPOOL: &str =

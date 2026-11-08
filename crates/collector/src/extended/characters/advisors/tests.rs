@@ -397,31 +397,6 @@ fn optional_cache_capacity_shortfall_keeps_roles_and_definition_certificates() {
 }
 
 #[test]
-fn advisor_raw_bytes_charge_current_reads_once_even_after_a_root_fault() {
-    use super::super::tests::WaveMemory;
-    let bytes = super::super::tests::section_fixture();
-    let observer = Observer::new();
-    let mut cache = cache_for(&bytes);
-    warm(&mut cache, &bytes, &observer);
-    let source = WaveMemory::new(&bytes, None);
-    cache.capture(&source, context(), &observer, None);
-    assert_eq!(
-        cache.raw_bytes,
-        source
-            .reads
-            .borrow()
-            .iter()
-            .map(|&(_, len)| len as u64)
-            .sum::<u64>()
-    );
-    let fault = ADDRESS + cgame_state::CHARACTER_MANAGER;
-    let source = WaveMemory::new(&bytes, Some(fault));
-    cache.capture(&source, context(), &observer, None);
-    assert!(matches!(cache.result.outcome, Outcome::Unavailable { .. }));
-    assert_eq!(cache.raw_bytes, 0);
-    assert!(cache.sections.iter().all(|section| section.raw_bytes == 0));
-}
-#[test]
 fn independent_plans_refresh_country_mutations_aliases_and_roster_growth() {
     use super::super::tests::{MANAGER, array};
     let mut bytes = super::super::tests::section_fixture();
@@ -761,7 +736,6 @@ fn unchanged_roles_skip_payload_reads_but_country_stays_current() {
     let observer = Observer::new();
     cache.capture(&kit::memory(&bytes), context(), &observer);
     assert_fresh(&cache, &bytes);
-    let cold = cache.raw_bytes;
     put(
         &mut bytes,
         CHARACTERS[0] + ccharacter::COUNTRY,
@@ -773,7 +747,6 @@ fn unchanged_roles_skip_payload_reads_but_country_stays_current() {
         (cache.counts.reused, cache.counts.read, cache.counts.roles),
         (3, 0, 1)
     );
-    assert!(cache.raw_bytes < cold);
     assert_eq!(cache.current.rows[0].country, 99);
     // Decode uses only owned bytes, even after all source storage disappears.
     bytes.fill(0);

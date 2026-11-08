@@ -18,7 +18,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::FactionTheatres, TableId::FactionAdvisors];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// Starting allocations only; live hints and worker walks grow every arena
 /// from the acquired native headers before publication.

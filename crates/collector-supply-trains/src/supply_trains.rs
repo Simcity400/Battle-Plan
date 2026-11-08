@@ -26,7 +26,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::SupplyNodes, TableId::TrainInventory];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 /// Country-slot shares, each its own pool job. Keeping the census together
 /// lets countries reuse current-hour route and endpoint observations instead
 /// of acquiring the same global edges in separate workers.
@@ -237,14 +236,6 @@ pub struct VehicleWork {
 }
 
 impl VehicleWork {
-    pub fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "rows": self.rows,
-            "refused": self.failures.iter().fold(0_u64, |sum, count| sum.saturating_add(*count)),
-            "refusals": crate::status::map(ccountry_supply_system::VEHICLE_READ_FAILURES.into_iter().zip(self.failures)),
-            "scope": "stored supply-vehicle operands of the countries each hour read (one country slice a day each); a refused scalar is absent while the inventory row remains available",
-        })
-    }
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -973,7 +964,7 @@ mod tests {
     }
 
     #[test]
-    fn supply_vehicle_projection_and_named_fault_counts_scale_from_the_live_census() {
+    fn supply_vehicle_projection_scales_from_the_live_census() {
         const COUNTRIES: usize = 5000;
         let mut capacities = Capacities {
             nodes: 0,
@@ -1024,28 +1015,6 @@ mod tests {
                 Recorded::Value((index % 2 == 0).then_some(i32::MAX))
             );
         }
-        let mut work = VehicleWork::default();
-        capture.observe_vehicles(&mut work);
-        let status = serde_json::to_value(work.status()).unwrap();
-        assert_eq!(status["rows"], COUNTRIES);
-        assert_eq!(status["refused"], 7500);
-        for reason in ccountry_supply_system::VEHICLE_READ_FAILURES {
-            assert_eq!(status["refusals"][reason], 2500);
-        }
-        // An unrelated row shortfall retains the admitted prefix's failures.
-        capture.trains.countries.outcome = Outcome::Truncated {
-            len: COUNTRIES,
-            unread_rows: 1,
-        };
-        let mut partial_work = VehicleWork::default();
-        capture.observe_vehicles(&mut partial_work);
-        assert_eq!(serde_json::to_value(partial_work.status()).unwrap(), status);
-        capture.terminal_failure = Some("owned supply acquisition failed");
-        capture.observe_vehicles(&mut work);
-        assert_eq!(serde_json::to_value(work.status()).unwrap(), status);
-        capture.reset();
-        capture.observe_vehicles(&mut work);
-        assert_eq!(serde_json::to_value(work.status()).unwrap(), status);
     }
 
     #[test]

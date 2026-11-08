@@ -208,21 +208,6 @@ impl Drop for Hooks {
         INSTALL.store(false, Ordering::Release);
     }
 }
-#[derive(serde::Serialize)]
-pub(super) struct Status {
-    enabled: bool,
-    active: usize,
-    calls: [u64; 4],
-    unnamed: u64,
-}
-pub(super) fn status() -> Status {
-    Status {
-        enabled: ENABLED.load(Ordering::Acquire),
-        active: active(),
-        calls: CALLS.each_ref().map(|value| value.load(Ordering::Relaxed)),
-        unnamed: UNNAMED.load(Ordering::Relaxed),
-    }
-}
 
 #[cfg(test)]
 mod tests {

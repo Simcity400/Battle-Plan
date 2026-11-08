@@ -27,14 +27,12 @@ static TEST_ALLOCATOR: crate::test_support::FailingAllocator =
 
 mod acquisition;
 mod acquisition_countries;
-mod acquisition_diagnostics;
 mod acquisition_factions;
 mod acquisition_gather;
 mod acquisition_jobs;
 mod acquisition_states;
 mod acquisition_wars;
 mod advisor_changes;
-mod attach_diagnostics;
 mod columnar;
 mod crew_store;
 mod faction_accounts;
@@ -56,7 +54,6 @@ mod allocation_failure_tests;
 mod private_heap;
 pub(crate) use collector_construction::building_changes;
 pub(crate) use collector_division_parts::army_stat_changes;
-pub(crate) use collector_observers::area_changes;
 pub(crate) use collector_observers::building_bombing;
 #[cfg(feature = "callback_profile")]
 mod callback_profile;
@@ -157,7 +154,6 @@ pub(crate) use collector_snapshots::snapshot_plan;
 mod snapshot_integration_tests;
 mod spool_compare;
 mod spool_helper;
-mod sizing_steps;
 mod spool_phases;
 mod spool_segments;
 mod spool_writer;
@@ -178,7 +174,6 @@ pub(crate) use collector_observers::province_combat_changes;
 pub(crate) use collector_production::production::design_changes;
 mod frame_priority;
 mod thread_cpu;
-mod thread_diagnostics;
 pub(crate) use collector_observers::unit_leader_changes;
 pub(crate) use collector_observers::unit_leader_trait_changes;
 #[cfg(test)]

@@ -21,30 +21,6 @@ mod templates;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::OrdersGroupCounterInputs];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-
-static COOLDOWN_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static BORDER_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static INVASION_DISTANCE_REFUSALS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-static HQ_NEAREST_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HQ_CONTEXT_REFUSALS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static HQ_CONTEXT_REASON: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
-static COMMANDER_ATTACK_REFUSALS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-pub(crate) fn tooltip_data() -> impl serde::Serialize {
-    crate::status::status!({
-        "leader_enroute_days_refused": COOLDOWN_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "border_war_presence_refused": BORDER_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "invasion_source_distance_refused": INVASION_DISTANCE_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "hq_nearest_front_refused": HQ_NEAREST_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "hq_template_context_refused": HQ_CONTEXT_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "hq_template_context_last_refusal": *HQ_CONTEXT_REASON.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
-        "commander_attack_refused": COMMANDER_ATTACK_REFUSALS.load(std::sync::atomic::Ordering::Relaxed),
-        "scope": "cumulative independent orders-group tooltip input refusals; existing withdrawing and HQ-distance operands remain available",
-    })
-}
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -213,23 +189,11 @@ impl Captured {
         let len = self.rows.outcome.len();
         crate::template_changes::record_hq_groups(len);
         for (row, root) in self.rows.rows[..len].iter().zip(&self.roots) {
-            if row.hq_nearest_front.is_none() {
-                HQ_NEAREST_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            if let Err(reason) =
-                self.templates
-                    .read(memory, base, *root, &crate::template_changes::Observer)
-            {
-                HQ_CONTEXT_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                *HQ_CONTEXT_REASON
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reason);
-            }
-            let commander = commander(memory, base, *root);
-            if commander.is_none() {
-                COMMANDER_ATTACK_REFUSALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            self.commanders.push((row.group, commander));
+            let _ = self
+                .templates
+                .read(memory, base, *root, &crate::template_changes::Observer);
+            self.commanders
+                .push((row.group, commander(memory, base, *root)));
         }
         if matches!(self.rows.outcome, Outcome::Rows { .. }) {
             // Pruning unregisters held receivers; keep it before resume.
@@ -247,37 +211,9 @@ impl Captured {
         self.commanders.sort_unstable_by_key(|(group, _)| *group);
         // No later consumer borrows the root controls.
         self.roots.fill(Default::default());
-        let rows = &self.rows.rows[..self.rows.outcome.len()];
-        COOLDOWN_REFUSALS.fetch_add(
-            rows.iter()
-                .filter(|row| row.leader_enroute_days.is_none())
-                .count() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        BORDER_REFUSALS.fetch_add(
-            rows.iter()
-                .filter(|row| row.border_war_presence.is_none())
-                .count() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        INVASION_DISTANCE_REFUSALS.fetch_add(
-            rows.iter()
-                .filter(|row| row.invasion_source_distance.is_none())
-                .count() as u64,
-            std::sync::atomic::Ordering::Relaxed,
-        );
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome]
-    }
-
-    pub(crate) fn observe_counter_inputs(
-        &self,
-        work: &mut super::division_presentation::CounterWork,
-    ) {
-        for row in &self.rows.rows[..self.rows.outcome.len()] {
-            work.observe_hq(row.hq_distance);
-        }
     }
 
     fn commander_attack(&self, group: u64) -> Option<Option<CommanderAttackStats>> {
@@ -328,25 +264,6 @@ impl Captured {
 mod tests {
     use super::*;
 
-    #[test]
-    fn sibling_failure_reset_settles_completed_group_diagnostics_once() {
-        use std::sync::atomic::Ordering::Relaxed;
-        let counts = || [
-            COOLDOWN_REFUSALS.load(Relaxed),
-            BORDER_REFUSALS.load(Relaxed),
-            INVASION_DISTANCE_REFUSALS.load(Relaxed),
-        ];
-        let before = counts();
-        let mut captured = Captured::vacant();
-        captured.rows.rows.push(Default::default());
-        captured.rows.outcome = Outcome::Rows { len: 1 };
-        captured.owned_pending = true;
-        captured.reset();
-        assert_eq!(counts(), before.map(|count| count + 1));
-        captured.reset();
-        captured.decode_owned();
-        assert_eq!(counts(), before.map(|count| count + 1));
-    }
     use engine_native::memory::SliceMemory;
     #[test]
     fn missing_registry_and_capacity_pressure_preserve_primary_rows() {
@@ -406,15 +323,6 @@ mod tests {
                 terrain: vec![-3, 4],
             })))
         );
-        capture.commanders.clear();
-        let mut work = super::super::division_presentation::CounterWork::default();
-        capture.observe_counter_inputs(&mut work);
-        let status = serde_json::to_value(work.status()).unwrap();
-        assert_eq!(status["hq_distance"]["captured"], 1);
-        capture.rows.rows[0].hq_distance = None;
-        capture.observe_counter_inputs(&mut work);
-        let status = serde_json::to_value(work.status()).unwrap();
-        assert_eq!(status["hq_distance"]["refused"], 1);
         capture.required = 9;
         capture.grow(&mut capacity);
         assert!(capacity.rows >= 9 && capture.roots.len() >= 9);

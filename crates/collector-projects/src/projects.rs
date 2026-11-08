@@ -118,16 +118,6 @@ pub const FAMILY: [usize; 2] = [1, 2];
 /// The daily tables the raw-copy job acquires, in calibration order.
 pub const RAW: [TableId; 2] = [TableId::ProjectPrograms, TableId::ProjectBreakthroughs];
 
-/// Each rooted walk produces two independently bounded tables.
-/// Its entire cost is attributed once to the anchor named by each group.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("project pool and reward histories", 1, &[1, 2]),
-    // RaidTargets is the raid instance walk's second projection: the same rows
-    // carry the map icon's operands, so it joins that walk's cost group.
-    ("raid countries and instances", 5, &[5, 6, 10, 11]),
-    ("scientist rosters and specializations", 8, &[8, 9, 19]),
-];
-
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],

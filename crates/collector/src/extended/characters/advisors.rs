@@ -3,6 +3,7 @@
 //! later cache keys or forcing the rest of the roster to be reacquired.
 use super::*;
 use engine_allocation::{default_vec, owned_vec, reserve, reserve_exact, resize, vec};
+#[cfg(any(test, feature = "advisor_profile"))]
 use std::cell::Cell;
 #[cfg(feature = "advisor_profile")]
 const DIAGNOSTIC_SLOTS: usize = 5;
@@ -66,7 +67,6 @@ struct Section {
     scope: (usize, usize),
     observation: Option<(u64, u64)>,
     pub(super) result: ReadResult,
-    pub(super) raw_bytes: u64,
     pub(super) counts: Counts,
     characters: usize,
     charge: crate::raw_memory::Charge,
@@ -99,7 +99,6 @@ impl Section {
             scope: (0, 0),
             observation: None,
             result: ReadResult::rows(Outcome::Rows { len: 0 }),
-            raw_bytes: 0,
             counts: Counts::default(),
             characters: 0,
             charge: Default::default(),
@@ -284,7 +283,6 @@ impl Section {
             {
                 self.diagnostic = counted.plan.get();
             }
-            self.raw_bytes = counted.bytes.get();
             if before != observer.quiet() {
                 self.valid = false;
                 self.result = ReadResult::rows(Outcome::Unavailable {
@@ -598,7 +596,6 @@ impl Section {
                 reason: "advisor plan prefix differs",
             });
         }
-        self.raw_bytes = counted.bytes.get();
         self.valid = matches!(self.result.outcome, Outcome::Rows { .. })
             && before.is_some()
             && self.current.entries.len() == self.characters;
@@ -701,26 +698,6 @@ pub(crate) fn live_modifier_demand() -> cadvisor::ModifierDemand {
         bytes: LIVE_MODIFIER_BYTES.load(Relaxed),
         tooltip_bytes: LIVE_TOOLTIP_BYTES.load(Relaxed),
     }
-}
-
-pub(super) fn modifier_status() -> impl serde::Serialize {
-    use std::sync::atomic::Ordering::Relaxed;
-    let failures = owned_vec(engine_allocation::copy_vec(
-        &TOOLTIP_FAILURES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-    ));
-    crate::status::status!({
-        "tooltip_captured": TOOLTIP_CAPTURED.load(Relaxed),
-        "tooltip_refused": TOOLTIP_REFUSED.load(Relaxed),
-        "tooltip_refusals": crate::status::map(failures.into_iter()),
-        "captured": MODIFIER_CAPTURED.load(Relaxed),
-        "refused": MODIFIER_REFUSED.load(Relaxed),
-        "refusals": {
-            "advisor modifier cache exceeds admitted capacity": MODIFIER_REFUSED.load(Relaxed),
-        },
-        "scope": "cumulative hourly advisor modifier inputs; capacity refusals leave modifier_cache absent and retain AdvisorRoles and definition certificates",
-    })
 }
 
 pub(super) fn record_modifiers(rows: &[cadvisor::Row]) {
@@ -1091,7 +1068,6 @@ pub(crate) struct Cache {
     sections: [Section; 2],
     modifiers: Modifiers,
     pub(super) result: ReadResult,
-    pub(super) raw_bytes: u64,
     pub(super) counts: Counts,
     /// What lets a quiet hour carry the whole table ([`Quiet`]).
     quiet: Option<Quiet>,
@@ -1166,7 +1142,6 @@ impl Cache {
             ],
             modifiers: Modifiers::with_demand(demand),
             result: ReadResult::rows(Outcome::Rows { len: 0 }),
-            raw_bytes: 0,
             counts: Counts::default(),
             quiet: None,
             content: fresh_content(),
@@ -1249,10 +1224,6 @@ impl Cache {
         growing: bool,
     ) {
         self.counts = Counts::default();
-        self.raw_bytes = 0;
-        for section in &mut self.sections {
-            section.raw_bytes = 0;
-        }
         let counted = Counted::new(memory);
         // Taken before any registration or read this capture certifies.
         let before = observer.quiet();
@@ -1274,7 +1245,6 @@ impl Cache {
             && self.quiet == quiet
             && self.carry_quiet(observer, before)
         {
-            self.raw_bytes = counted.bytes.get();
             return;
         }
         self.quiet = None;
@@ -1412,12 +1382,6 @@ impl Cache {
             }
             self.modifiers.update_charge();
         }
-        self.raw_bytes = self
-            .sections
-            .iter()
-            .map(|section| section.raw_bytes)
-            .sum::<u64>()
-            + counted.bytes.get();
         // Everything this capture published was certified from the census,
         // with no writer running: later quiet hours carry it.
         self.quiet = quiet.filter(|_| {
@@ -1593,7 +1557,6 @@ impl<M: Memory> Memory for Prefetched<'_, M> {
 
 struct Counted<'a, M> {
     memory: &'a M,
-    bytes: Cell<u64>,
     #[cfg(feature = "advisor_profile")]
     plan: Cell<[u64; DIAGNOSTIC_SLOTS]>,
 }
@@ -1601,7 +1564,6 @@ impl<'a, M> Counted<'a, M> {
     fn new(memory: &'a M) -> Self {
         Self {
             memory,
-            bytes: Cell::new(0),
             #[cfg(feature = "advisor_profile")]
             plan: Cell::new([0; DIAGNOSTIC_SLOTS]),
         }
@@ -1616,6 +1578,7 @@ impl<M: Memory> Memory for Counted<'_, M> {
         plan: &engine_native::read_plan::PreparedPlan,
         destination: &mut [u8],
     ) -> Option<engine_native::read_plan::Outcome> {
+        #[cfg(feature = "advisor_profile")]
         use engine_native::read_plan::Outcome as PlanOutcome;
         #[cfg(feature = "advisor_profile")]
         let stamp = profile::Stamp::start();
@@ -1644,56 +1607,24 @@ impl<M: Memory> Memory for Counted<'_, M> {
                 read.map_or(0, |r| r.len as u64),
             ]);
         }
-        let bytes = match result {
-            Some(PlanOutcome::Complete) => plan.destination_len(),
-            Some(
-                PlanOutcome::ControlChanged { completed_reads }
-                | PlanOutcome::ReadFailed { completed_reads },
-            ) => plan.reads()[..completed_reads]
-                .iter()
-                .map(|read| read.len)
-                .sum(),
-            None => 0,
-        };
-        self.bytes.set(self.bytes.get() + bytes as u64);
         result
     }
     fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        let ok = self.memory.copy(address, output);
-        if ok {
-            self.bytes.set(self.bytes.get() + output.len() as u64);
-        }
-        ok
+        self.memory.copy(address, output)
     }
     fn copy_scattered<const N: usize>(
         &self,
         addresses: [usize; N],
         outputs: &mut [&mut [u8]; N],
     ) -> usize {
-        let copied = self.memory.copy_scattered(addresses, outputs);
-        self.bytes.set(
-            self.bytes.get()
-                + outputs[..copied]
-                    .iter()
-                    .map(|output| output.len() as u64)
-                    .sum::<u64>(),
-        );
-        copied
+        self.memory.copy_scattered(addresses, outputs)
     }
     fn copy_scattered_prefetched<const N: usize>(
         &self,
         addresses: [usize; N],
         outputs: &mut [&mut [u8]; N],
     ) -> usize {
-        let copied = self.memory.copy_scattered_prefetched(addresses, outputs);
-        self.bytes.set(
-            self.bytes.get()
-                + outputs[..copied]
-                    .iter()
-                    .map(|output| output.len() as u64)
-                    .sum::<u64>(),
-        );
-        copied
+        self.memory.copy_scattered_prefetched(addresses, outputs)
     }
     fn copy_records(
         &self,
@@ -1701,10 +1632,7 @@ impl<M: Memory> Memory for Counted<'_, M> {
         layout: &engine_native::memory::RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
-        let copied = self.memory.copy_records(sources, layout, destination);
-        self.bytes
-            .set(self.bytes.get() + layout.completed_bytes(copied) as u64);
-        copied
+        self.memory.copy_records(sources, layout, destination)
     }
 }
 

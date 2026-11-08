@@ -96,30 +96,6 @@ pub fn record_work(work: &Work) {
     }
 }
 
-fn work_status() -> impl serde::Serialize {
-    let work = WORK.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let mut frequency = 0;
-    // SAFETY: an out pointer to a live local.
-    let known = unsafe {
-        windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
-    } != 0;
-    let ns = |ticks: u64| {
-        (known && frequency > 0)
-            .then(|| (u128::from(ticks) * 1_000_000_000 / frequency as u128) as u64)
-    };
-    crate::status::status!({
-        "uncarried_bases": work[0],
-        "uncarried_ns": ns(work[3]),
-        "carried_bases": work[1],
-        "carried_ns": ns(work[4]),
-        "fresh_state_bases": work[2],
-        "fresh_state_ns": ns(work[5]),
-        "spliced_spans": work[6],
-        "spliced_bytes": work[7],
-        "scope": "cumulative since attach: AirBaseRegistrations acquisition by base, each base's time from the start of its registrations to its log: uncarried are host bases and every base without a store, read afresh with their carrier observer work; carried are state bases spliced from the store, with their certificate, link checks and splice (spliced_spans, spliced_bytes); fresh_state are state bases read afresh and held",
-    })
-}
-
 /// One observation domain: the watched base handles and each writer site's
 /// calls.
 pub struct Watches {
@@ -368,47 +344,6 @@ pub fn record_decoded(reused: u64, walked: u64) {
     DECODED[1].fetch_add(walked, Ordering::Relaxed);
 }
 
-fn census_status() -> impl serde::Serialize {
-    let census = CENSUS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let per_pass = |value: u64| value.checked_div(census[6]);
-    crate::status::status!({
-        "passes": census[6],
-        "carried_slot_arrays": census[0],
-        "read_slot_arrays": census[1],
-        "carried_rows": census[2],
-        "read_rows": census[3],
-        "read_spans": census[4],
-        "spliced_spans": census[5],
-        "read_spans_per_pass": per_pass(census[4]),
-        "spliced_spans_per_pass": per_pass(census[5]),
-        "scope": "cumulative since attach: the AirBases census of state bases. The manager's three state base slot arrays are carried (carried_slot_arrays) when their headers read as held and no state base creator or base destruction ran since the held read; a state base's row (identity, host, state, province, capacity, kind and the state and province identities) is carried (carried_rows) when the base is at the held slot and no hooked writer (capacity refresh, destruction or a registration writer) touched its handle since; read_spans are the census spans read from the game, spliced_spans those spliced from the held reads, and the per-pass values their whole-pass averages; stateless bases are read every hour",
-    })
-}
-
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "census": census_status(),
-        "configured": cfg!(feature = "air_base_carry_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "carried_bases": reads[0],
-        "read_bases": reads[1],
-        "decoded_reused_bases": DECODED[0].load(Ordering::Relaxed),
-        "decoded_walked_bases": DECODED[1].load(Ordering::Relaxed),
-        "registration_work": work_status(),
-        "events": events,
-        "forwarded_capacities": WATCHES.capacities.load(Ordering::Relaxed),
-        "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a state air base's AirBaseRegistrations subtree (slot vector, dense list, containers, pools, wings) is carried (carried_bases) by splicing the log spans its latest fresh read took into the hour's air bases log, when the base is at the same address, no hooked writer touched its handle since that read registered it and the hour takes its slots as that read did; its container countries' links are resolved afresh and must still name the held slots; host bases and every other base are read afresh (read_bases); the decode worker appends a base's rows from its walk of the same held segment in an earlier hour (decoded_reused_bases) and keeps the rows of each reported base it walks (decoded_walked_bases)"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

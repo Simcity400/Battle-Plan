@@ -9,10 +9,7 @@ use engine_native::{
     memory::RecordLayout, memory::RecordSources, read, walk::Outcome,
 };
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 const BATCH: usize = 64;
 
@@ -119,7 +116,6 @@ pub(crate) struct Census {
     /// Every native roster slot of every canonical country, including nulls.
     required_slots: usize,
     pub overflowed: bool,
-    bytes: u64,
     core_roots: Option<CoreRoots>,
     core_captured: bool,
     growing: bool,
@@ -209,37 +205,6 @@ where
     }
 }
 
-/// Since attach, in [`shared_source_data`] order.
-static SHARED_SOURCES: [AtomicU64; 9] = [const { AtomicU64::new(0) }; 9];
-
-pub(crate) fn shared_source_data() -> impl serde::Serialize {
-    let [
-        captures,
-        divisions,
-        movers,
-        groups,
-        carried_groups,
-        leaders,
-        carried,
-        calls,
-        failed,
-    ] = SHARED_SOURCES
-        .each_ref()
-        .map(|count| count.load(Ordering::Relaxed));
-    crate::status::status!({
-        "captures": captures,
-        "divisions": divisions,
-        "movers": movers,
-        "groups": groups,
-        "carried_groups": carried_groups,
-        "leaders": leaders,
-        "carried_leaders": carried,
-        "calls": calls,
-        "failed_captures": failed,
-        "scope": "cumulative division census source packet (one capture per census part each hour): the movers' route head and location id and each distinct group's leader, training byte and commander block are read once there for status, panel sources, retreat bans, organisation and speed terms, which read none of them again; divisions counts every division of each capture, so calls / divisions is the selector record batches per division per hour; a group whose orders-group certificate holds is carried without a read (its identity, leader word, training byte and HQ provider word), as is a leader whose unit leader certificate holds",
-    })
-}
-
 /// Every seed's commander selection; a group's fields and a leader's identity carry while
 /// their certificates hold.
 fn select(
@@ -266,12 +231,7 @@ fn select(
             group_changes,
         },
     );
-    let movers = seeds
-        .iter()
-        .filter(|seed| seed.route_head.is_some())
-        .count() as u64;
     let Ok(counts) = result else {
-        SHARED_SOURCES[8].fetch_add(1, Ordering::Relaxed);
         return;
     };
     let HeldLeaders { held, next, fresh } = leaders;
@@ -290,18 +250,6 @@ fn select(
         carried: counts.carried_groups,
         read: counts.groups - counts.carried_groups,
     });
-    for (total, value) in SHARED_SOURCES.iter().zip([
-        1,
-        seeds.len() as u64,
-        movers,
-        counts.groups,
-        counts.carried_groups,
-        counts.leaders,
-        counts.carried,
-        counts.calls,
-    ]) {
-        total.fetch_add(value, Ordering::Relaxed);
-    }
 }
 
 impl Default for Census {
@@ -322,7 +270,6 @@ impl Default for Census {
             required: 0,
             required_slots: 0,
             overflowed: false,
-            bytes: 0,
             core_roots: None,
             core_captured: false,
             growing: false,
@@ -377,7 +324,6 @@ impl Census {
         self.required = 0;
         self.required_slots = 0;
         self.overflowed = false;
-        self.bytes = 0;
         self.core_roots = None;
         self.core_captured = false;
         self.growing = false;
@@ -393,9 +339,6 @@ impl Census {
             + crate::raw_memory::vector_bytes(&self.rows)
             + crate::raw_memory::vector_bytes(&self.sources)
             + crate::raw_memory::vector_bytes(&self.slot_ends)
-    }
-    pub fn payload_bytes(&self) -> u64 {
-        self.bytes
     }
     pub(crate) fn growing(&self) -> bool {
         self.growing
@@ -556,13 +499,11 @@ impl Census {
         slots: Option<(u32, u32)>,
     ) {
         self.clear();
-        let counted = crate::division_detail::CountedMemory::new(memory);
         self.growing = growing;
         if growing && self.unit_inputs.is_none() {
             self.unit_inputs = Some(Arc::new(UnitInputs::new(0)));
         }
-        let result = self.capture_inputs_inner(&counted, base, state, slots);
-        self.bytes = counted.bytes();
+        let result = self.capture_inputs_inner(memory, base, state, slots);
         if let Err(reason) = result {
             if matches!(self.census_result, Outcome::Rows { .. }) {
                 self.row_error = Some(reason);
@@ -593,7 +534,6 @@ impl Census {
         }
         self.required = self.required.saturating_add(part.required);
         self.required_slots = self.required_slots.saturating_add(part.required_slots);
-        self.bytes = self.bytes.saturating_add(part.bytes);
         let inputs = self
             .unit_inputs
             .as_mut()
@@ -735,10 +675,7 @@ impl Census {
         let Some(roots) = self.core_roots.take() else {
             return;
         };
-        let counted = crate::division_detail::CountedMemory::new(memory);
-        let bytes_before = self.bytes;
-        let result = self.capture_core_inner(&counted, roots, capacity);
-        self.bytes = bytes_before.saturating_add(counted.bytes());
+        let result = self.capture_core_inner(memory, roots, capacity);
         if let Err(reason) = result {
             self.row_error = Some(reason);
         }

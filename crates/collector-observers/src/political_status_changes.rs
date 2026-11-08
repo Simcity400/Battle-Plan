@@ -336,51 +336,6 @@ impl Changes for Watches {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    // Each domain's sites, with the shared sites forwarded to it.
-    let events = |structure: bool| {
-        let forwarded = FORWARDED.each_ref().map(|n| n.load(Ordering::Relaxed));
-        crate::status::map(
-            MUTATIONS
-                .iter()
-                .zip(&CALLS)
-                .filter(move |((_, _, domain), _)| {
-                    if structure {
-                        domain.structure()
-                    } else {
-                        domain.popularity()
-                    }
-                })
-                .map(|((site, _, _), n)| (site.name, n.load(Ordering::Relaxed)))
-                .chain(structure.then(|| {
-                    (
-                        "set_capital_changes",
-                        CAPITAL_CHANGES.load(Ordering::Relaxed),
-                    )
-                }))
-                .chain([
-                    ("reset_country", forwarded[0]),
-                    if structure {
-                        ("politics_daily_elections", forwarded[2])
-                    } else {
-                        ("politics_daily", forwarded[1])
-                    },
-                ]),
-        )
-    };
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "political_status_changes"),
-        "observed": STRUCTURE.quiet().is_some() || STRUCTURE.active() != 0,
-        "poisoned": STRUCTURE.poisoned() || POPULARITY.poisoned(),
-        "quiet_hours": reads[0],
-        "popularity_refresh_hours": reads[1],
-        "read_hours": reads[2],
-        "structure_events": events(true),
-        "popularity_events": events(false),
-        "scope": "cumulative since attach; the structure token stands still while no capital, last election, ruling party or party or idea array writer runs, the popularity token while no party popularity writer runs (the daily update moves popularity every day, and the structure only when it changed a last election: politics_daily_elections; the capital setter only when it changed a capital: set_capital_changes); when the structure, party and party-leader tokens, every held leader's character certificate and the country census are those of the latest complete walk, the Politics walk carries Politics, PoliticalParties, ActiveIdeas and PartyLeaders whole without reading any country (quiet_hours), or, when only the popularity token moved, carries them with every held party's popularity gathered afresh in one batch (popularity_refresh_hours); otherwise it reads (read_hours)"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

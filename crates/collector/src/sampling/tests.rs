@@ -72,7 +72,6 @@ fn rejected_division_inputs_keep_the_original_owner_and_cannot_retry_native_inpu
     let report = copy_divisions_core_refresh(&NoDivisionReads, context, &mut request.payload);
     assert!(!report.raw_ok);
     assert!(request.payload.core_finished);
-    assert_eq!(request.payload.payload_bytes(), [0; 6]);
     assert!(Arc::ptr_eq(
         &owner,
         request.payload.census.unit_inputs().unwrap()
@@ -738,7 +737,6 @@ fn failed_division_inputs_keep_the_original_roster_fault_through_core_and_decode
     assert_eq!(job.details.outcomes(), [unavailable; 5]);
     assert!(Arc::ptr_eq(&owner, job.census.unit_inputs().unwrap()));
     let repeated = copy_divisions_core_refresh(&NoDivisionReads, context, &mut job);
-    assert_eq!(repeated.raw_bytes, report.raw_bytes);
     assert_eq!(repeated.copy_ticks, report.copy_ticks);
     assert_eq!(memory.attempts.get(), 1);
     let mut frame = Captured::new();
@@ -1003,39 +1001,6 @@ fn failed_division_job_publishes_hourly_census_reason_even_without_details() {
 }
 
 #[test]
-fn template_model_failures_fold_by_reason_and_keep_the_first() {
-    use extended::division_templates::{MODEL_REASONS, ModelFailures};
-    let hour = |reasons: &[(&'static str, u32)]| {
-        let mut failures = ModelFailures::default();
-        for (slot, reason) in failures.reasons.iter_mut().zip(reasons) {
-            *slot = *reason;
-            failures.rows += reason.1;
-        }
-        failures
-    };
-    let mut stats = TemplateModelStats::default();
-    stats.fold(hour(&[]));
-    assert_eq!((stats.hours, stats.rows, stats.first_reason), (0, 0, None));
-    stats.fold(hour(&[("unreadable database", 3)]));
-    stats.fold(hour(&[("bad exclusion", 1), ("unreadable database", 2)]));
-    assert_eq!((stats.hours, stats.rows), (2, 6));
-    assert_eq!(stats.first_reason, Some("unreadable database"));
-    assert_eq!(
-        &stats.reasons[..2],
-        &[("unreadable database", 5), ("bad exclusion", 1)]
-    );
-    // Reasons past the named slots are counted together.
-    let names: Vec<&'static str> = (0..MODEL_REASONS + 2)
-        .map(|index| &*Box::leak(format!("reason {index}").into_boxed_str()))
-        .collect();
-    let mut full = TemplateModelStats::default();
-    for name in names {
-        full.fold(hour(&[(name, 1)]));
-    }
-    assert_eq!((full.rows, full.other), (MODEL_REASONS as u64 + 2, 2));
-}
-
-#[test]
 fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type() {
     use extended::new_divisions::{Counters, Mark};
     struct Counterset(i32, u32);
@@ -1092,95 +1057,6 @@ fn the_daily_hour_stores_both_id_counters_and_later_hours_compare_by_handle_type
         new_division_mark(&shared, &Counterset(1, 1), false),
         Mark::Unknown
     );
-}
-
-#[test]
-fn order_counter_capture_gates_and_clears_recycled_metadata_without_allocation() {
-    let mut bytes = vec![0_u8; 0x4000];
-    let mut put = |address: usize, value: &[u8]| {
-        bytes[address - 0x1000..address - 0x1000 + value.len()].copy_from_slice(value);
-    };
-    for (offset, data, count) in [
-        (cgame_state::COUNTRIES, 0x1500_u64, 2_u32),
-        (cgame_state::COUNTRY_LINKS, 0x1600, 2),
-    ] {
-        put(0x1000 + offset, &data.to_le_bytes());
-        put(0x1000 + offset + 8, &count.to_le_bytes());
-        put(0x1000 + offset + 12, &count.to_le_bytes());
-    }
-    put(0x1508, &0x2000_u64.to_le_bytes());
-    put(0x1604, &1_u32.to_le_bytes());
-    put(0x2000, &(ccountry::VTABLE_RVA.0 as u64).to_le_bytes());
-    put(0x2008, &1_u32.to_le_bytes());
-    put(
-        0x2000 + ccountry::ORDER_INSTANCE_COUNTER,
-        &3812_u32.to_le_bytes(),
-    );
-    let memory = engine_native::memory::SliceMemory {
-        base: 0x1000,
-        bytes: &bytes,
-    };
-    let mut cache = Cache::try_with_capacity(32).unwrap();
-    let cached = cache.prepare(&memory, 0, 0x1000);
-    assert_eq!(cached.seed_status(), SeedStatus::Ready);
-    let mut sample = OrderCounterCapture::with_capacity(2);
-    let pointer = sample.rows.as_ptr();
-    let capacity = sample.rows.capacity();
-    sample.capture(
-        true,
-        &memory,
-        engine_native::Memory::authenticated_countries(&cached, 0, 0x1000),
-    );
-    assert!(sample.forced);
-    assert!(sample.read.unwrap().complete());
-    assert_eq!(sample.read.unwrap().len, 1);
-    assert_eq!(sample.rows[0].value, Some(3812));
-    sample.qpc_begin = 10;
-    sample.qpc_end = 12;
-    sample.elapsed_ns = 20;
-    sample.capture(
-        false,
-        &memory,
-        engine_native::Memory::authenticated_countries(&cached, 0, 0x1000),
-    );
-    assert!(!sample.forced);
-    assert_eq!(sample.read, None);
-    assert_eq!(
-        (sample.qpc_begin, sample.qpc_end, sample.elapsed_ns),
-        (0, 0, 0)
-    );
-    sample.capture(true, &memory, None);
-    assert!(sample.forced);
-    assert_eq!(sample.read, None);
-    assert_eq!(sample.rows.as_ptr(), pointer);
-    assert_eq!(sample.rows.capacity(), capacity);
-}
-
-#[test]
-fn order_counter_capture_accounts_actual_capacity_and_grows_only_its_storage() {
-    let mut sample = OrderCounterCapture::with_capacity(2);
-    assert_eq!(
-        sample.allocated_bytes(),
-        sample.rows.capacity() * size_of::<ccountry::OrderInstanceCounter>()
-    );
-    sample.read = Some(ccountry::OrderInstanceCounterRead {
-        len: 2,
-        required: 5,
-        unreadable: 0,
-    });
-    let original = sample.allocated_bytes();
-    sample.grow(3);
-    assert_eq!(sample.rows.len(), 5);
-    assert!(sample.allocated_bytes() > original);
-    assert_eq!(
-        sample.allocated_bytes(),
-        sample.rows.capacity() * size_of::<ccountry::OrderInstanceCounter>()
-    );
-    let grown = sample.allocated_bytes();
-    sample.reset();
-    sample.grow(1);
-    assert_eq!(sample.allocated_bytes(), grown);
-    assert_eq!(sample.rows.len(), 5);
 }
 
 #[test]
@@ -1518,8 +1394,7 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
     assert!(pending);
     let (index, wait_ns) = result.unwrap();
     assert_eq!(index, Some(held[0]));
-    assert_eq!(wait_ns, shared.buffer_wait_ns.load(Ordering::Relaxed));
-    assert_eq!(wait_ns, shared.buffer_wait_max_ns.load(Ordering::Relaxed));
+    assert!(wait_ns > 0);
     assert_eq!(shared.frames[held[0]].load(Ordering::Acquire), original);
     assert_eq!(unsafe { (*original).qpc }, 42);
     assert_eq!(shared.pool_owned(), bytes);
@@ -1528,49 +1403,6 @@ fn exhausted_pool_reuses_a_returned_frame_without_allocating_or_dropping() {
         shared.recycle_frame(index);
     }
     assert_eq!(shared.free.len(), BUFFERS);
-}
-
-#[test]
-fn hourly_join_tally_keeps_first_slowest_counts_stalls_and_resets() {
-    let record = |role, wait, stall| {
-        record_hour_join(
-            role,
-            wait,
-            stall,
-            #[cfg(feature = "callback_profile")]
-            crate::acquisition::Profile::default(),
-            #[cfg(feature = "callback_profile")]
-            None,
-        )
-    };
-    reset_hour_joins();
-    assert_eq!(take_hour_joins(), HourJoins::default());
-    record(0, 10, JoinCosts::STALL_NS[1] - 1);
-    record(1, 9, JoinCosts::STALL_NS[1]);
-    record(2, 10, JoinCosts::STALL_NS[1] * 4);
-    let joins = take_hour_joins();
-    assert_eq!(
-        joins.slowest,
-        Some(SlowestJoin {
-            role: Some(0),
-            readiness: false,
-            wait_ns: 10,
-            collect_stall_ns: JoinCosts::STALL_NS[1] - 1,
-        })
-    );
-    assert_eq!(joins.collect_stalls_over_1ms, 2);
-    assert_eq!(take_hour_joins(), HourJoins::default());
-    #[cfg(feature = "callback_profile")]
-    assert_eq!(take_profile_join().role, Some(0));
-    record(3, 11, 0);
-    record(4, 12, 0);
-    record(5, 12, 0);
-    assert_eq!(take_hour_joins().slowest.unwrap().role, Some(4));
-    record(6, 13, JoinCosts::STALL_NS[1]);
-    reset_hour_joins();
-    assert_eq!(take_hour_joins(), HourJoins::default());
-    #[cfg(feature = "callback_profile")]
-    assert!(take_profile_join().role.is_none());
 }
 
 #[test]
@@ -2524,12 +2356,10 @@ fn divisions_seeded_worker_preserves_primary_trace_and_never_repeats_core() {
     assert!(Arc::ptr_eq(&inputs, payload.census.unit_inputs().unwrap()));
     let accounted = read_accounting::snapshot();
     let repeated = copy_divisions_core_refresh(&NoRead, ctx, &mut payload);
-    assert_eq!(repeated.raw_bytes, report.raw_bytes);
     assert_eq!(repeated.copy_ticks, report.copy_ticks);
     assert_eq!(read_accounting::snapshot(), accounted);
     let mut composed = DivisionsJob::new();
-    let original = copy_divisions_refresh(&composed_memory, ctx, &mut composed);
-    assert_eq!(report.raw_bytes, original.raw_bytes);
+    copy_divisions_refresh(&composed_memory, ctx, &mut composed);
     assert_eq!(
         payload.census.rows(ctx.row_capacity),
         composed.census.rows(ctx.row_capacity)
@@ -2606,13 +2436,11 @@ fn divisions_seeded_worker_rejects_changed_context_without_reacquiring_inputs() 
         &mut job,
     ));
     let lease = Arc::clone(job.census.unit_inputs().unwrap());
-    let before = job.payload_bytes();
     let changed = DivisionsCopyContext {
         row_capacity: 0,
         ..context
     };
     assert!(!copy_divisions_core_refresh(&NoRead, changed, &mut job).raw_ok);
-    assert_eq!(job.payload_bytes(), before);
     assert!(Arc::ptr_eq(&lease, job.census.unit_inputs().unwrap()));
     assert!(!copy_divisions_core_refresh(&NoRead, context, &mut job).raw_ok);
 }
@@ -2686,7 +2514,6 @@ fn inactive_division_details_skip_capacity_reads_and_decode_installation() {
     };
     assert_eq!(job.details.outcomes(), [skipped; 5]);
     assert_eq!(report.copy_ticks[1..], [0; 5]);
-    assert_eq!(report.raw_bytes[1..], [0; 5]);
     let counts = reads.finish();
     assert!(counts[TableId::Divisions.index()].spans > 0);
     for (index, counts) in counts.iter().enumerate() {
@@ -2799,8 +2626,6 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
                 index,
                 entry: Some(clock(41, 7).borrowed()),
                 entry_ticks: 0,
-                buffer_wait_ns: 0,
-                free_frames: 0,
                 dispatched: 0,
             },
         );
@@ -3039,10 +2864,6 @@ fn campaign_clock_optional_preparation_denial_is_named_and_nonterminal() {
         shared.prepare_clock_capture(&memory).unwrap();
     });
     assert!(!crate::allocation::failed());
-    assert_eq!(
-        shared.clock_status(),
-        (0, 1, Some("clock preparation advisory allocation failed"))
-    );
     shared.prepare_clock_capture(&memory).unwrap();
     assert_eq!(shared.clock_capture.lock().unwrap().prepared, 5_001);
 }
@@ -3085,25 +2906,6 @@ fn callback_priority_raises_the_acquisition_and_restores_the_game_priority() {
     });
     assert!(result.is_err());
     assert_eq!(current(), THREAD_PRIORITY_NORMAL);
-}
-
-#[test]
-fn early_step_timing_counts_continued_handlers_without_charging_join_waits() {
-    let shared = Shared::new(0, 0, 1);
-    for (index, step) in EarlyStep::ALL.into_iter().enumerate() {
-        assert_eq!(step as usize, index);
-        shared.acquisition_wait_ns.store(0, Ordering::Relaxed);
-        let _step = EarlyStepTimer::new(&shared, &shared.presentation.early_steps[index], step);
-        // Saturate away wall time without relying on the clock's resolution.
-        shared.acquisition_wait_ns.store(u64::MAX, Ordering::Relaxed);
-        if matches!(step, EarlyStep::FinalInputs) {
-            continue;
-        }
-    }
-    for stats in &shared.presentation.early_steps {
-        assert_eq!(stats.calls.load(Ordering::Relaxed), 1);
-        assert_eq!(stats.ns.load(Ordering::Relaxed), 0);
-    }
 }
 
 #[test]

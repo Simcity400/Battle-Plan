@@ -115,12 +115,6 @@ fn observation_unavailable(
         "native world observation is disabled"
     })
 }
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "generation": generation(), "enabled": ENABLED.load(Ordering::SeqCst),
-        "admitted": token(), "unavailable": unavailable_reason(),
-    })
-}
 unsafe extern "system-unwind" fn observe(_: &Registers, _: usize) {
     let _timing = crate::hook_timing::enter(crate::hook_timing::Family::WorldLifetime);
     SIGNAL.invalidate();

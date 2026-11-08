@@ -70,7 +70,6 @@ pub(crate) struct SupremacyCopyReport {
     /// payload.
     pub raw_ok: bool,
     pub copy_ticks: [u64; SUPREMACY_N],
-    pub raw_bytes: [u64; SUPREMACY_N],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -334,7 +333,6 @@ pub(crate) fn copy_supremacy_refresh_growing(
     SupremacyCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 
@@ -353,7 +351,6 @@ pub(crate) fn copy_supremacy_refresh(
     SupremacyCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 

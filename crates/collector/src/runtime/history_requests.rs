@@ -204,6 +204,7 @@ impl HistoryWorker {
         let thread = std::thread::Builder::new()
             .name("hoi4-history".into())
             .spawn(move || {
+                crate::runtime::OwnPriority::new().follow(false);
                 worker_id.store(
                     unsafe { windows_sys::Win32::System::Threading::GetCurrentThreadId() },
                     Ordering::Release,

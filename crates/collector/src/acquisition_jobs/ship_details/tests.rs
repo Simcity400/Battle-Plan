@@ -169,7 +169,7 @@ fn callback_winning_the_publication_race_retains_the_original_detail_fallback() 
     dispatch.store(&mut request.captured, &Ok(Report::ShipModels));
     assert_eq!(request.captured.allocated_bytes(), 0);
     assert!(dispatch.take(&mut request.captured).unwrap().is_none());
-    acquisition::Publication::published(&*dispatch, 0);
+    acquisition::Publication::published(&*dispatch);
     assert!(dispatch.lock().pending.iter().all(Option::is_none));
     assert_eq!(request.captured.census_len(), 1200);
     assert_eq!(
@@ -194,7 +194,7 @@ fn failed_census_never_releases_details_and_retains_its_original_capture() {
         batch.arm_ship_details(&mut request);
         let dispatch = request.details.take().unwrap();
         dispatch.store(&mut request.captured, &Err(failure));
-        acquisition::Publication::published(&*dispatch, 0);
+        acquisition::Publication::published(&*dispatch);
         assert!(dispatch.take(&mut request.captured).unwrap().is_none());
         assert_eq!(request.captured.allocated_bytes(), bytes);
         assert_eq!(request.captured.census_len(), 1200);
@@ -210,7 +210,7 @@ fn rejected_detail_continuations_are_retained_and_unadopted_children_drain() {
         let dispatch = request.details.take().unwrap();
         dispatch.store(&mut request.captured, &Ok(Report::ShipModels));
         pool.executor.stop_for_contained_panic();
-        acquisition::Publication::published(&*dispatch, 0);
+        acquisition::Publication::published(&*dispatch);
         let state = dispatch.lock();
         assert!(state.dispatched);
         assert_eq!(state.pending.iter().flatten().count(), 3);

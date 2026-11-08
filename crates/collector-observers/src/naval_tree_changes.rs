@@ -271,38 +271,6 @@ pub fn failed() {
     READS[3].fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&CALLS)
-            .map(|(site, n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "naval_tree_changes"),
-        "oracle": ORACLE,
-        "poisoned": WATCHES.poisoned(),
-        "reused_trees": reads[0],
-        "read_trees": reads[1],
-        "uncarried_trees": reads[2],
-        "failed_captures": reads[3],
-        "missions": crate::status::status!({
-            "receivers": MISSION_RECEIVERS.load(Ordering::Relaxed),
-            "ship_model_receivers": SHIP_MODEL_RECEIVERS.load(Ordering::Relaxed),
-            "raid_intel_receivers": RAID_INTEL_RECEIVERS.load(Ordering::Relaxed),
-            "operative_effect_receivers": OPERATIVE_EFFECT_RECEIVERS.load(Ordering::Relaxed),
-            "scope": "cumulative since attach; a naval mission country is read within the hour its certificate (its own and its fleet leaders' tree certificates, its navy's stored hubs and its headquarters commanders' skill objects) moves",
-        }),
-        "counter_censuses": crate::status::status!({
-            "served": CENSUSES.load(Ordering::Relaxed),
-            "scope": "cumulative since attach; the task-force counter walk's fresh ETA censuses of roster countries' and fleet leaders' modifier trees served from the frame's held capture while the receiver's certificate is still the one taken before the held census was read; a failed Ordinary family holds none",
-        }),
-        "events": events,
-        "watches": WATCHES.status(),
-        "scope": "cumulative since attach; a country's or commander's modifier tree a live naval combat reaches is carried while its receiver's certificate holds (no hooked writer touched it since the held read, same accumulator); every other reached tree (uncarried_trees) is read each hour a live combat reaches it"
-    })
-}
 
 /// Observe while this family's patches and every forwarder's are enabled.
 /// Enabling starts a new epoch, so nothing held from before a gap certifies.

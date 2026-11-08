@@ -1,18 +1,16 @@
 //! Conversion, differencing and durable output. Nothing here runs on the game thread.
 
-use crate::decode;
-use crate::extended::characters::{CharacterConversion, CharacterShadow, CharacterShadowStats};
+use crate::extended::characters::{CharacterConversion, CharacterShadow};
 use crate::extended::intel::{
-    IntelConversion, IntelShadow, IntelShadowStats, ScriptVariableComparison,
+    IntelConversion, IntelShadow, ScriptVariableComparison,
 };
 use crate::extended::lexical::{LexicalConversion, LexicalConversionStats};
 use crate::history::PreparedCampaigns;
 use crate::projection::{Projection, ProjectionScratch, project_table, scalar_table};
-use crate::sampling::{Captured, LossBatch, LostObservation, qpc as current_qpc};
-use crate::status::{Choice, DebugValue, LossyBytes, map as status_map, sequence, status};
+use crate::sampling::{Captured, LossBatch, LostObservation};
+use crate::status::status;
 use engine_native::{
-    cgame_state::Clock, memory::ReadCounts, save_allocation_counters::AllocationCounters,
-    walk::Outcome,
+    cgame_state::Clock, walk::Outcome,
 };
 #[cfg(test)]
 use replay::spool::SegmentedSpool;
@@ -247,7 +245,6 @@ impl ReadHours {
 fn set_aside_in_context(
     id: &str,
     campaign: &mut Campaign,
-    counters: &mut OrderCounterWitness,
     storage: Option<crate::spool_writer::ReceiptStorage>,
 ) -> io::Result<()> {
     let caller = crate::allocation::context();
@@ -259,8 +256,7 @@ fn set_aside_in_context(
     });
     let result = campaign.set_aside(storage);
     crate::allocation::set_context(caller);
-    if let Err(error) = &result {
-        counters.invalidate_write(id, error);
+    if result.is_err() {
         campaign.disk_branch = None;
         campaign.encoder = FrameEncoder::new();
     }
@@ -336,39 +332,6 @@ pub(crate) fn committed_spool_record(segment: u32, bytes: u64, complete_hour: bo
 
 pub(crate) use collector_extended_support::distribution::Distribution;
 
-/// Cumulative wall of a cost reported every hour without percentiles: its
-/// storage and status cost stay fixed however many hours are recorded.
-#[derive(Clone, Copy, Default)]
-pub(crate) struct WallTotals {
-    calls: u64,
-    total_ns: u64,
-    max_ns: u64,
-}
-
-impl WallTotals {
-    pub(crate) fn merge(&mut self, other: Self) {
-        self.calls = self.calls.saturating_add(other.calls);
-        self.total_ns = self.total_ns.saturating_add(other.total_ns);
-        self.max_ns = self.max_ns.max(other.max_ns);
-    }
-
-    pub(crate) fn record_ticks(&mut self, ticks: i64, frequency: u64) {
-        let ns = ((ticks.max(0) as u128 * 1_000_000_000) / u128::from(frequency)) as u64;
-        self.calls = self.calls.saturating_add(1);
-        self.total_ns = self.total_ns.saturating_add(ns);
-        self.max_ns = self.max_ns.max(ns);
-    }
-
-    pub(crate) fn status(&self) -> impl Serialize + use<> {
-        status!({
-            "calls": self.calls,
-            "total_ns": self.total_ns,
-            "mean_ns": if self.calls == 0 { 0.0 } else { self.total_ns as f64 / self.calls as f64 },
-            "max_ns": self.max_ns,
-        })
-    }
-}
-
 struct PendingBranch {
     start: BranchStart,
     gaps: Vec<Gap>,
@@ -382,8 +345,6 @@ struct WorkSample {
     staged: Option<crate::spool_writer::StagedFrame>,
     validation_refused: bool,
     validation_families: u32,
-    conversion: i64,
-    frame_encoding: Option<i64>,
     viewed: Option<ViewedFlag>,
     line_output_receipt: crate::extended::line_output::Receipt,
     construction_ic_receipt: crate::extended::construction_ic::Receipt,
@@ -410,24 +371,6 @@ impl CachedTable {
     }
 }
 
-fn lexical_conversion_status<'a>(
-    statistics: impl IntoIterator<Item = &'a LexicalConversionStats>,
-) -> impl Serialize {
-    let mut total = LexicalConversionStats::default();
-    for current in statistics {
-        total.hits = total.hits.saturating_add(current.hits);
-        total.misses = total.misses.saturating_add(current.misses);
-    }
-    status!({
-        "hits": total.hits,
-        "misses": total.misses,
-        "counter_scope": "cumulative conversion decisions across retained campaigns, including later rejected or failed writes; genuine skipped inputs excluded",
-        "cost_scope": "comparison and fallback conversion included in spool_work.conversion_packs lexical",
-        "additional_native_dictionary_capacity_bytes": 0,
-        "allocation_scope": "no native shadow or extra dictionary allocation; shares existing complete spool/encoder replay storage",
-    })
-}
-
 fn lexical_cache(
     cache: &TableCache<CachedTable>,
     cached_branch: Option<BranchId>,
@@ -440,32 +383,6 @@ fn lexical_cache(
         Some(CachedTable::Complete(rows)) => Some(rows),
         _ => None,
     }
-}
-
-fn intel_shadow_status<'a>(shadows: impl IntoIterator<Item = &'a IntelShadow>) -> impl Serialize {
-    let mut total = IntelShadowStats::default();
-    let mut campaigns = 0usize;
-    for shadow in shadows {
-        campaigns += 1;
-        let current = shadow.statistics();
-        total.hits = total.hits.saturating_add(current.hits);
-        total.misses = total.misses.saturating_add(current.misses);
-        total.republished = total.republished.saturating_add(current.republished);
-        total.row_capacity_bytes += current.row_capacity_bytes;
-        total.replay_capacity_bytes += current.replay_capacity_bytes;
-    }
-    status!({
-        "campaigns": campaigns,
-        "table": "ScriptFlags",
-        "hits": total.hits,
-        "misses": total.misses,
-        "republished": total.republished,
-        "retained_native_capacity_bytes": total.row_capacity_bytes,
-        "retained_replay_capacity_bytes": total.replay_capacity_bytes,
-        "allocation_scope": "current native row Vec capacities plus strongly retained immutable replay Vec capacities across retained campaigns; replay bytes may also be shared with encoder and are not additive to its storage; excludes Arc control blocks and allocator overhead; separate from raw/pool accounting",
-        "counter_scope": "cumulative hourly conversion decisions including later rejected or failed writes; faults count as misses when conversion runs; republished hours published the previous hour's rows on an equal held-rows generation without comparing; enclosing clock failure clears shadows without conversion",
-        "cost_scope": "native comparison, snapshot installation and fallback conversion included in spool_work.conversion_packs intel",
-    })
 }
 
 /// The tables the row spool's frames hold beside those [`crate::history`] reads back: the
@@ -519,85 +436,6 @@ const REPUBLISHING: [(&str, TableId); 9] = [
     ("ship_models", TableId::ShipModels),
 ];
 
-fn quiet_republish_status<'a>(
-    scratches: impl IntoIterator<Item = &'a ProjectionScratch>,
-    intel: impl IntoIterator<Item = &'a IntelShadow>,
-) -> impl Serialize {
-    let mut counts = [[0_u64; 2]; REPUBLISHING.len()];
-    for scratch in scratches {
-        for (total, (_, table)) in counts.iter_mut().zip(REPUBLISHING) {
-            let [republished, converted] = scratch.republish_counts(table);
-            total[0] = total[0].saturating_add(republished);
-            total[1] = total[1].saturating_add(converted);
-        }
-    }
-    let mut flags = [0_u64; 2];
-    for shadow in intel {
-        let current = shadow.statistics();
-        flags[0] = flags[0].saturating_add(current.republished);
-        flags[1] = flags[1].saturating_add(current.hits.saturating_add(current.misses));
-    }
-    let tables = REPUBLISHING
-        .into_iter()
-        .zip(counts)
-        .chain(std::iter::once((("intel", TableId::ScriptFlags), flags)));
-    status!({
-        "scope": "cumulative hours across retained campaigns, including later rejected or failed writes: republished compared equal without a projection because this hour's capture published the previous hour's rows unchanged and its witness (writer tokens or held-rows generation) equals the previous hour's on this branch, whose frame committed the encoder's baseline (ScriptFlags: published the previous hour's shared rows uncompared); converted ran the table's projection or comparison",
-        "tables": sequence(tables.map(|((pack, table), [republished, converted])| status!({
-            "pack": pack,
-            "table": DebugValue(table),
-            "republished": republished,
-            "converted": converted,
-        }))),
-    })
-}
-
-fn character_shadow_status<'a>(
-    shadows: impl IntoIterator<Item = &'a CharacterShadow>,
-) -> impl Serialize {
-    let mut totals = [CharacterShadowStats::default(); 4];
-    let mut campaigns = 0usize;
-    for shadow in shadows {
-        campaigns += 1;
-        for (total, current) in totals.iter_mut().zip(shadow.statistics()) {
-            total.hits = total.hits.saturating_add(current.hits);
-            total.misses = total.misses.saturating_add(current.misses);
-            total.row_capacity_bytes += current.row_capacity_bytes;
-            total.arena_capacity_bytes += current.arena_capacity_bytes;
-        }
-    }
-    let bytes: usize = totals
-        .iter()
-        .map(|table| table.row_capacity_bytes + table.arena_capacity_bytes)
-        .sum();
-    let tables = sequence(
-        [
-            "Characters",
-            "CountryLeaderRoles",
-            "AdvisorRoles",
-            "UnitLeaderTraits",
-        ]
-        .into_iter()
-        .zip(totals)
-        .map(|(name, table)| {
-            status!({
-                "name": name,
-                "hits": table.hits,
-                "misses": table.misses,
-                "row_capacity_bytes": table.row_capacity_bytes,
-                "arena_capacity_bytes": table.arena_capacity_bytes,
-            })
-        }),
-    );
-    status!({
-        "allocation_scope": "current native row/text Vec capacities across retained campaigns; excludes shared replay rows, Arc control blocks and allocator overhead; separate from raw/pool accounting",
-        "counter_scope": "cumulative conversion decisions across retained campaigns, including later rejected or failed writes; genuine skipped inputs excluded; non-skip fallback/fault inputs count as misses",
-        "campaigns": campaigns,
-        "retained_capacity_bytes": bytes,
-        "tables": tables,
-    })
-}
-
 fn character_cache(
     cache: &TableCache<CachedTable>,
     cached_branch: Option<BranchId>,
@@ -614,27 +452,15 @@ fn character_cache(
     })
 }
 
-#[derive(Serialize)]
+/// A refused table, column and reason, logged once.
 struct ValidationRefusal {
     table: String,
     column: Option<String>,
     reason: String,
-    detail: String,
-    first_hour: i32,
-    last_hour: i32,
-    count: u64,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct ValidationRefusals(Arc<std::sync::Mutex<Vec<ValidationRefusal>>>);
-impl Serialize for ValidationRefusals {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .serialize(serializer)
-    }
-}
 
 fn validation_refusal(
     failures: &mut Vec<ValidationRefusal>,
@@ -655,22 +481,15 @@ fn validation_refusal(
             |(column, reason)| (Some(column), reason),
         );
     let table_name = replay_data::codec::try_format(format_args!("{table:?}"))?;
-    if let Some(failure) = failures
-        .iter_mut()
-        .find(|f| f.table == table_name && f.column.as_deref() == column && f.reason == reason)
+    if !failures
+        .iter()
+        .any(|f| f.table == table_name && f.column.as_deref() == column && f.reason == reason)
     {
-        failure.last_hour = hour;
-        failure.count += 1;
-    } else {
         engine_allocation::reserve(failures, 1)?;
         failures.push(ValidationRefusal {
             table: table_name,
             column: column.map(engine_allocation::string).transpose()?,
             reason: engine_allocation::string(reason)?,
-            detail: engine_allocation::string(&detail)?,
-            first_hour: hour,
-            last_hour: hour,
-            count: 1,
         });
         crate::hook_failures::log(
             directory.parent().unwrap_or(directory),
@@ -745,6 +564,7 @@ impl Campaign {
         id: &str,
         session: &SessionStart,
         spool: crate::spool_writer::Output,
+        durability: &std::sync::Arc<crate::columnar::Durability>,
     ) -> io::Result<Self> {
         let directory = root.join(id);
         // An attach has its own root. Reusing an unfinalized root would conceal
@@ -764,7 +584,7 @@ impl Campaign {
         }
         let world_generation = history.campaign_world_generation(id);
         let (tracker, history_file) = history.take(id, session)?;
-        let columnar = crate::columnar::Columnar::open(&directory, id, session);
+        let columnar = crate::columnar::Columnar::open(&directory, id, session, durability);
         Ok(Self {
             validation_refusals: ValidationRefusals::default(),
             directory,
@@ -1512,7 +1332,6 @@ impl<B: SegmentBackend> Campaign<B> {
         if restarting {
             self.encoder = FrameEncoder::new();
         }
-        let encoding_started = current_qpc();
         let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Encode);
         let frame = {
             let _phase = crate::allocation::enter(crate::allocation::Phase::Encode);
@@ -1560,7 +1379,6 @@ impl<B: SegmentBackend> Campaign<B> {
                     Ok(reason)
                 })
         };
-        work.frame_encoding = Some(current_qpc() - encoding_started);
         let mut prepared = frame?;
         let span = span.switch(crate::spool_phases::Phase::Columnar);
         let lanes = crate::columnar::Lanes::new(helpers);
@@ -1793,343 +1611,6 @@ impl<B: SegmentBackend> Campaign<B> {
     }
 }
 
-#[derive(Default)]
-struct OrderCounterWitness {
-    sample: Option<BoundOrderCounterSample>,
-    rows: Vec<engine_native::ccountry::OrderInstanceCounter>,
-}
-
-struct BoundOrderCounterSample {
-    seq: u64,
-    branch: Option<BranchId>,
-    clock: Option<Clock>,
-    callback_qpc: i64,
-    begin: i64,
-    end: i64,
-    elapsed_ns: u64,
-    allocation_counters: Option<AllocationCounters>,
-    read: Option<engine_native::ccountry::OrderInstanceCounterRead>,
-    source_range_valid: bool,
-    source_capacity_bytes: usize,
-    cache_status: engine_native::country_memory::SeedStatus,
-    frame_write_succeeded: bool,
-    frame_write_error: Option<Cow<'static, str>>,
-    subsequent_io_error: Option<Cow<'static, str>>,
-}
-
-impl OrderCounterWitness {
-    fn observe(&mut self, captured: &Captured, branch: Option<BranchId>, result: &io::Result<()>) {
-        self.observe_error(captured, branch, result.as_ref().err());
-    }
-
-    fn observe_error(
-        &mut self,
-        captured: &Captured,
-        branch: Option<BranchId>,
-        error: Option<&io::Error>,
-    ) {
-        if error.is_some_and(|error| error.kind() == io::ErrorKind::OutOfMemory) {
-            if let Some(sample) = &mut self.sample {
-                sample.frame_write_succeeded = false;
-                sample
-                    .frame_write_error
-                    .get_or_insert(Cow::Borrowed("collector allocation failed"));
-            }
-            return;
-        }
-        let source = &captured.order_counters;
-        if !source.forced {
-            // A failed later append can also fail while closing its segment.
-            // Keep the old sample's identity, but conservatively revoke its
-            // write binding just as periodic sync/detach failures do.
-            if let Some(error) = error
-                && let Some(clock) = captured.clock.as_ref()
-                && let Ok(campaign) = std::str::from_utf8(clock.campaign_id.as_bytes())
-            {
-                self.invalidate_write(campaign, error);
-            }
-            return;
-        }
-        let rows = source.read.and_then(|read| source.rows.get(..read.len));
-        self.rows.clear();
-        let source_range_valid = rows.is_some();
-        let rows = rows.unwrap_or_default();
-        if engine_allocation::reserve(&mut self.rows, rows.len()).is_err() {
-            return;
-        }
-        self.rows.extend_from_slice(rows);
-        self.sample = Some(BoundOrderCounterSample {
-            seq: captured.capture_seq,
-            branch,
-            clock: captured
-                .clock
-                .as_ref()
-                .and_then(|clock| clock.copy_owned().ok()),
-            callback_qpc: captured.qpc,
-            begin: source.qpc_begin,
-            end: source.qpc_end,
-            elapsed_ns: source.elapsed_ns,
-            allocation_counters: captured.counters,
-            read: source.read,
-            source_range_valid,
-            source_capacity_bytes: source.allocated_bytes(),
-            cache_status: captured.country_cache_status,
-            frame_write_succeeded: error.is_none(),
-            frame_write_error: error.map(error_reason),
-            subsequent_io_error: None,
-        });
-    }
-
-    fn invalidate_write(&mut self, campaign: &str, error: &io::Error) {
-        if let Some(sample) = &mut self.sample
-            && sample
-                .clock
-                .as_ref()
-                .is_some_and(|clock| clock.campaign_id.as_bytes() == campaign.as_bytes())
-        {
-            sample
-                .subsequent_io_error
-                .get_or_insert_with(|| error_reason(error));
-        }
-    }
-
-    fn status(&self) -> impl Serialize + '_ {
-        let capacity = self.rows.capacity()
-            * std::mem::size_of::<engine_native::ccountry::OrderInstanceCounter>();
-        let Some(sample) = &self.sample else {
-            return Choice::First(
-                status!({"sample": Option::<()>::None, "retained_capacity_bytes": capacity}),
-            );
-        };
-        let cache_valid = sample.cache_status == engine_native::country_memory::SeedStatus::Ready;
-        let read_complete = sample.source_range_valid
-            && sample.read.is_some_and(|read| {
-                read.complete()
-                    && read.len == self.rows.len()
-                    && self.rows.iter().all(|row| row.value.is_some())
-            });
-        let sample_valid = sample.clock.is_some()
-            && cache_valid
-            && read_complete
-            && sample.begin >= sample.callback_qpc
-            && sample.begin > 0
-            && sample.end >= sample.begin;
-        let clock = sample.clock.as_ref().map(|clock| {
-            status!({
-                "campaign": LossyBytes(clock.campaign_id.as_bytes()),
-                "game_state": clock.game_state, "hour": clock.hour,
-                "load_signal": clock.play_session_started_at,
-                "play_time": clock.play_time, "tick_busy": clock.tick_busy,
-            })
-        });
-        let allocation_counters = |counters: Option<AllocationCounters>| {
-            counters.map(|counters| {
-                status!({
-                    "debug_current_ref_id": counters.debug_current_ref_id,
-                    "unit": counters.unit,
-                    "order_index": counters.order_index,
-                    "front_index": counters.front_index,
-                    "theatre_index": counters.theatre_index,
-                    "theater_group_index": counters.theater_group_index,
-                    "military_deployment_line_index": counters.military_deployment_line_index,
-                    "military_deployment_conveyor_index": counters.military_deployment_conveyor_index,
-                    "equipment_variant_index": counters.equipment_variant_index,
-                    "country_leader_index": counters.country_leader_index,
-                    "navy_id": counters.navy_id,
-                    "land_combat_id": counters.land_combat_id,
-                    "multiplayer_random_count": counters.multiplayer_random_count,
-                })
-            })
-        };
-        Choice::Second(status!({
-            "scope": "latest consumed force_full callback, bound to its sequence, entry clock, branch and frame-write result; not the latest status hour",
-            "counter_epoch": "no universal no-reset, no-load or no-wrap proof",
-            "allocation_counters_scope": "the recorded beginning-of-acquisition sample; missing counter values are null. Counter metadata does not change the order-counter sample validity checks.",
-            "retained_capacity_bytes": capacity,
-            "sample": {
-                "sequence": sample.seq, "branch": sample.branch,
-                "clock": clock,
-                "callback_qpc": sample.callback_qpc,
-                "read_begin_qpc": sample.begin, "read_end_qpc": sample.end,
-                "read_ns": sample.elapsed_ns,
-                "allocation_counters": allocation_counters(sample.allocation_counters),
-                "country_cache_status": DebugValue(sample.cache_status),
-                "country_cache_valid": cache_valid,
-                "read_complete": read_complete,
-                "stored": self.rows.len(),
-                "required": sample.read.map(|read| read.required),
-                "unreadable": sample.read.map(|read| read.unreadable),
-                "source_range_valid": sample.source_range_valid,
-                "source_capacity_bytes": sample.source_capacity_bytes,
-                "sample_valid": sample_valid,
-                "frame_write_succeeded": sample.frame_write_succeeded,
-                "frame_write_error": &sample.frame_write_error,
-                "subsequent_io_error": &sample.subsequent_io_error,
-                "usable_with_recorded_frame": sample_valid && sample.branch.is_some()
-                    && sample.frame_write_succeeded && sample.subsequent_io_error.is_none(),
-                "durability": "frame write result; not an independent replay-recovery verification",
-                "countries": sequence(self.rows.iter().map(|row| status!({
-                    "country": row.country, "canonical_slot": row.canonical_slot,
-                    "pointer": row.pointer, "counter": row.value,
-                }))),
-            },
-        }))
-    }
-    #[cfg(test)]
-    fn json(&self) -> Value {
-        serde_json::to_value(self.status()).unwrap()
-    }
-}
-
-#[derive(Default)]
-struct WarSnapshotWork {
-    passes: u64,
-    totals: [u64; 6],
-    max_required: [usize; 3],
-    peak_frame_bytes: usize,
-    last: Option<(
-        engine_native::cwar_relation::OwnedSnapshotStats,
-        engine_native::cwar_relation::OwnedSnapshotCapacity,
-    )>,
-}
-
-impl WarSnapshotWork {
-    fn observe(
-        &mut self,
-        sampled: bool,
-        stats: engine_native::cwar_relation::OwnedSnapshotStats,
-        capacity: engine_native::cwar_relation::OwnedSnapshotCapacity,
-    ) {
-        if !sampled {
-            return;
-        }
-        self.passes = self.passes.saturating_add(1);
-        for (total, current) in self.totals.iter_mut().zip([
-            stats.queries,
-            stats.hits,
-            stats.installed,
-            stats.fallbacks,
-            stats.acquisition_headers,
-            stats.acquisition_words,
-        ]) {
-            *total = total.saturating_add(current as u64);
-        }
-        for (maximum, current) in self.max_required.iter_mut().zip([
-            stats.required_vectors,
-            stats.required_words,
-            stats.required_cells,
-        ]) {
-            *maximum = (*maximum).max(current);
-        }
-        self.peak_frame_bytes = self.peak_frame_bytes.max(capacity.allocated_bytes);
-        self.last = Some((stats, capacity));
-    }
-
-    fn status(&self) -> impl Serialize + '_ {
-        status!({
-            "scope": "processor-lifetime cumulative across campaigns: consumed optimized first-pass work, including failed/unwritten frames; not replay acceptance",
-            "passes": self.passes,
-            "queries": self.totals[0], "hits": self.totals[1],
-            "installed": self.totals[2], "fallbacks": self.totals[3],
-            "acquisition_header_attempts": self.totals[4],
-            "acquisition_consumed_nonnull_words": self.totals[5],
-            "word_counter_scope": "interpreted prefixes, not physical native reads; guarded batches may read a later suffix",
-            "maximum_required": {
-                "vectors": self.max_required[0], "words": self.max_required[1],
-                "count_cells": self.max_required[2],
-            },
-            "requirement_scope": "observed growth demand; may be a lower bound when root metadata is full",
-            "latest": self.last.map(|(stats, capacity)| status!({
-                "required_vectors": stats.required_vectors,
-                "required_words": stats.required_words,
-                "required_count_cells": stats.required_cells,
-                "capacity": {
-                    "vectors": capacity.vectors,
-                    "initialized_root_slots": capacity.root_slots,
-                    "root_capacity": capacity.root_capacity,
-                    "words": capacity.words,
-                    "initialized_count_cells": capacity.initialized_count_cells,
-                    "count_capacity": capacity.count_capacity,
-                    "allocated_bytes": capacity.allocated_bytes,
-                },
-            })),
-            "peak_sampled_frame_capacity_bytes": self.peak_frame_bytes,
-            "capacity_scope": "last sampled frame before off-thread growth; peak is one frame, not whole-pool ownership; heap bytes also included in pool_bytes",
-            "accounted_in": "WarRelations callback cost",
-        })
-    }
-    #[cfg(test)]
-    fn json(&self) -> Value {
-        serde_json::to_value(self.status()).unwrap()
-    }
-}
-
-fn read_counts_status(counts: ReadCounts) -> impl Serialize {
-    status!({
-        "copy_calls": counts.copy_calls,
-        "scattered_calls": counts.scattered_calls,
-        "record_calls": counts.record_calls,
-        "plan_calls": counts.plan_calls,
-        "spans": counts.spans,
-        "bytes": counts.bytes,
-    })
-}
-
-#[cfg(test)]
-fn read_counts_json(counts: ReadCounts) -> Value {
-    serde_json::to_value(read_counts_status(counts)).unwrap()
-}
-
-/// One sliced family's reads and fingerprint scans, per recorded frame.
-#[derive(Default)]
-struct SliceWork {
-    frames: u64,
-    full_frames: u64,
-    scanned: u64,
-    out_of_range: u64,
-    out_of_range_max: u32,
-    early: u64,
-    early_max: u32,
-    scan_ticks: u64,
-    scan_ticks_max: u64,
-}
-
-impl SliceWork {
-    fn observe(&mut self, selection: &crate::slicing::SliceSelection) {
-        self.frames += 1;
-        self.full_frames += u64::from(selection.force_full);
-        self.scanned += u64::from(selection.scanned);
-        self.out_of_range += u64::from(selection.out_of_range);
-        self.out_of_range_max = self.out_of_range_max.max(selection.out_of_range);
-        self.early += u64::from(selection.early_count);
-        self.early_max = self.early_max.max(selection.early_count);
-        self.scan_ticks = self.scan_ticks.saturating_add(selection.scan_ticks);
-        self.scan_ticks_max = self.scan_ticks_max.max(selection.scan_ticks);
-    }
-
-    fn status(&self, frequency: u64) -> crate::status::Object<impl crate::status::Fields + '_> {
-        let ns = |ticks: u64| {
-            (u128::from(ticks) * 1_000_000_000)
-                .checked_div(u128::from(frequency))
-                .unwrap_or(0)
-                .min(u128::from(u64::MAX)) as u64
-        };
-        status!({
-            "frames": self.frames,
-            "full_frames": self.full_frames,
-            "owners_scanned": self.scanned,
-            "owners_out_of_fingerprint_range": self.out_of_range,
-            "owners_out_of_fingerprint_range_max": self.out_of_range_max,
-            "early_reads": self.early,
-            "early_reads_max": self.early_max,
-            "scan_ns": ns(self.scan_ticks),
-            "scan_mean_ns": ns(self.scan_ticks).checked_div(self.frames).unwrap_or(0),
-            "scan_max_ns": ns(self.scan_ticks_max),
-            "scope": "a sliced family reads one owner slice per hour plus owners whose change fingerprint changed (early reads); scan time is the fingerprint pass inside the family's worker job, not game-thread time; full frames read every owner; owners out of fingerprint range (ID >= 65536) have no fingerprint and are read at every hour",
-        })
-    }
-}
-
 /// A daily table that truncated waits for its slot otherwise; a static table
 /// that failed would wait for the next full hour.
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
@@ -2212,21 +1693,6 @@ fn set_viewed(
 
 struct Statistics {
     validation_refusals: ValidationRefusals,
-    game_score: crate::extended::game_score::Work,
-    country_rosters: crate::extended::country_counters::RosterWork,
-    reserved_visibility: crate::extended::reserved_visibility::Work,
-    state_map_inputs: crate::acquisition_states::InputWork,
-    railway_map_inputs: crate::acquisition_states::InputWork,
-    physical_navies: crate::extended::PhysicalNavyWork,
-    battle_plan_child_fronts: crate::extended::plans::ChildFrontWork,
-    battle_plan_execution: crate::extended::plans::ExecutionWork,
-    division_naming: crate::extended::division_presentation::NamingWork,
-    counter_tooltip_inputs: crate::extended::division_presentation::CounterWork,
-    character_naming: crate::extended::character_inputs::NamingWork,
-    supply_vehicles: crate::extended::supply_trains::VehicleWork,
-    variable_seeds: crate::extended::intel::SeedWork,
-    war_snapshots: WarSnapshotWork,
-    order_counters: OrderCounterWitness,
     hours: u64,
     campaign: Option<String>,
     last_hour: Option<i32>,
@@ -2235,24 +1701,9 @@ struct Statistics {
     total_ns: u64,
     callback: Distribution,
     callback_tail: crate::slow_hours::Recorder,
-    table_ns: [u64; TABLE_COUNT],
-    table_total_ns: [u64; TABLE_COUNT],
-    /// Cumulative successful-frame Stability job phase ticks, including its
-    /// countries that refused. Inputs includes setup and per-country folding.
-    stability_walk_ticks: [u64; 4],
-    table_reads: [ReadCounts; TABLE_COUNT],
-    table_total_reads: [ReadCounts; TABLE_COUNT],
     dropped_frames: u64,
     truncated_tables: usize,
-    country_cache_fallbacks: u64,
-    country_cache_entries: usize,
-    country_cache_status: engine_native::country_memory::SeedStatus,
-    country_cache_cost: Distribution,
     pool_bytes: u64,
-    sampled_buffer_bytes: usize,
-    sampled_buffer_parts: Vec<(&'static str, usize)>,
-    staggered_skipped: [u64; TABLE_COUNT],
-    staggered_walked: [u64; TABLE_COUNT],
     previous: Option<(String, BranchId, i32, i64)>,
     interval_hours: u64,
     interval_qpc: u64,
@@ -2260,38 +1711,12 @@ struct Statistics {
     last_error: Option<Cow<'static, str>>,
     input_demand_errors: u64,
     input_demand_last_error: Option<&'static str>,
-    conversion: Distribution,
-    conversion_packs: [WallTotals; crate::extended::PACK_NAMES.len()],
-    frame_encoding: Distribution,
-    slices: [SliceWork; crate::slicing::FAMILIES.len()],
-    /// Cumulative torn memo copies and refused raid rows.
-    raid_torn_memo_reads: u64,
-    raid_refused_leaders: u64,
-    weather_suspend_failures: u64,
-    weather_suspend_last_failure: Option<&'static str>,
-    weather_display_failures: u64,
-    weather_display_last_failure: Option<&'static str>,
 }
 
 impl Default for Statistics {
     fn default() -> Self {
         Self {
             validation_refusals: ValidationRefusals::default(),
-            country_rosters: crate::extended::country_counters::RosterWork::default(),
-            reserved_visibility: crate::extended::reserved_visibility::Work::default(),
-            state_map_inputs: crate::acquisition_states::InputWork::default(),
-            railway_map_inputs: crate::acquisition_states::InputWork::default(),
-            physical_navies: crate::extended::PhysicalNavyWork::default(),
-            battle_plan_child_fronts: crate::extended::plans::ChildFrontWork::default(),
-            battle_plan_execution: crate::extended::plans::ExecutionWork::default(),
-            division_naming: crate::extended::division_presentation::NamingWork::default(),
-            counter_tooltip_inputs: crate::extended::division_presentation::CounterWork::default(),
-            character_naming: crate::extended::character_inputs::NamingWork::default(),
-            supply_vehicles: crate::extended::supply_trains::VehicleWork::default(),
-            variable_seeds: crate::extended::intel::SeedWork::default(),
-            game_score: Default::default(),
-            order_counters: OrderCounterWitness::default(),
-            war_snapshots: WarSnapshotWork::default(),
             hours: 0,
             campaign: None,
             last_hour: None,
@@ -2299,63 +1724,16 @@ impl Default for Statistics {
             total_ns: 0,
             callback: Distribution::default(),
             callback_tail: crate::slow_hours::Recorder::default(),
-            table_ns: [0; TABLE_COUNT],
-            table_total_ns: [0; TABLE_COUNT],
-            stability_walk_ticks: [0; 4],
-            table_reads: [ReadCounts::ZERO; TABLE_COUNT],
-            table_total_reads: [ReadCounts::ZERO; TABLE_COUNT],
             dropped_frames: 0,
             truncated_tables: 0,
-            country_cache_fallbacks: 0,
-            country_cache_entries: 0,
-            country_cache_status: engine_native::country_memory::SeedStatus::Unavailable {
-                reason: "no observation",
-            },
-            country_cache_cost: Distribution::default(),
             pool_bytes: 0,
-            sampled_buffer_bytes: 0,
-            sampled_buffer_parts: Vec::new(),
             previous: None,
-            staggered_skipped: [0; TABLE_COUNT],
-            staggered_walked: [0; TABLE_COUNT],
             interval_hours: 0,
             interval_qpc: 0,
             errors: 0,
             last_error: None,
             input_demand_errors: 0,
             input_demand_last_error: None,
-            conversion: Distribution::default(),
-            conversion_packs: [WallTotals::default(); crate::extended::PACK_NAMES.len()],
-            frame_encoding: Distribution::default(),
-            slices: std::array::from_fn(|_| SliceWork::default()),
-            raid_torn_memo_reads: 0,
-            raid_refused_leaders: 0,
-            weather_suspend_failures: 0,
-            weather_suspend_last_failure: None,
-            weather_display_failures: 0,
-            weather_display_last_failure: None,
-        }
-    }
-}
-
-impl Statistics {
-    fn observe_stability_walk_ticks(&mut self, latest: [u64; 4]) {
-        for (total, ticks) in self.stability_walk_ticks.iter_mut().zip(latest) {
-            *total = total.saturating_add(ticks);
-        }
-    }
-
-    fn observe_table_costs(&mut self, latest: [u64; TABLE_COUNT]) {
-        self.table_ns = latest;
-        for (total, ns) in self.table_total_ns.iter_mut().zip(latest) {
-            *total = total.saturating_add(ns);
-        }
-    }
-
-    fn observe_table_reads(&mut self, latest: [ReadCounts; TABLE_COUNT]) {
-        self.table_reads = latest;
-        for (total, counts) in self.table_total_reads.iter_mut().zip(latest) {
-            *total += counts;
         }
     }
 }
@@ -2373,11 +1751,8 @@ pub(crate) struct PreparedFrame {
     retry_full: bool,
     /// Sliced families whose read conversion or merging withheld (bit per family).
     unpublished_families: u32,
-    skipped: [bool; TABLE_COUNT],
     work: WorkSample,
-    pack_ticks: [Option<i64>; crate::extended::PACK_NAMES.len()],
     sampled: CapturedStatistics,
-    witness: PreparedOrderWitness,
     operation_publication: Option<crate::extended::operation_outcomes::Publication>,
     map_event_publication: Option<crate::extended::map_events::Publication>,
     event_feed_publication: Option<crate::event_feed_history::Prepared>,
@@ -2396,36 +1771,13 @@ impl PreparedFrame {
 /// Everything success accounting needs after the capture slot has been reused.
 struct CapturedStatistics {
     total_ns: u64,
-    hour: i32,
-    qpc: i64,
-    hour_cost: crate::sampling::HourCost,
-    table_ns: [u64; TABLE_COUNT],
-    table_reads: [ReadCounts; TABLE_COUNT],
-    stability_walk_ticks: [u64; 4],
     pool_bytes: u64,
     dropped_frames: u64,
-    sampled_buffer_bytes: usize,
-    sampled_buffer_parts: Vec<(&'static str, usize)>,
     truncated_tables: usize,
-    country_cache_status: engine_native::country_memory::SeedStatus,
-    country_cache_entries: usize,
-    country_cache_ns: u64,
-    raid_reads: crate::extended::RaidReadCounts,
-    weather_suspend_failure: Option<&'static str>,
-    weather_display_failure: Option<&'static str>,
 }
 
 impl CapturedStatistics {
     fn capture(captured: &Captured) -> io::Result<Self> {
-        let mut sampled_buffer_parts = captured.extended.allocated_by_pack()?;
-        let extended_bytes: usize = sampled_buffer_parts.iter().map(|(_, bytes)| *bytes).sum();
-        let map_bytes = captured.map.allocated_bytes();
-        let core_bytes = captured.core_allocated_bytes();
-        let sampled_buffer_bytes = core_bytes + map_bytes + extended_bytes;
-        engine_allocation::reserve(&mut sampled_buffer_parts, 2)?;
-        sampled_buffer_parts.push(("map", map_bytes));
-        sampled_buffer_parts.push(("core", core_bytes));
-        let raid_reads = captured.extended.raid_reads();
         let extended_outcomes = captured.extended.outcomes();
         let truncated_tables = [
             captured.countries_result,
@@ -2451,104 +1803,19 @@ impl CapturedStatistics {
         .count();
         Ok(Self {
             total_ns: captured.total_ns,
-            hour: captured
-                .clock
-                .as_ref()
-                .expect("recorded frame has a clock")
-                .hour,
-            qpc: captured.qpc,
-            hour_cost: captured.hour_cost,
-            table_ns: captured.table_ns,
-            table_reads: captured.table_reads,
-            stability_walk_ticks: captured.extended.stability_phase_ticks(),
             pool_bytes: captured.pool_bytes,
             dropped_frames: captured.dropped_frames,
-            sampled_buffer_bytes,
-            sampled_buffer_parts,
             truncated_tables,
-            country_cache_status: captured.country_cache_status,
-            country_cache_entries: captured.country_cache_entries,
-            country_cache_ns: captured.country_cache_ns,
-            raid_reads,
-            weather_suspend_failure: captured.extended.weather_suspend_failure(),
-            weather_display_failure: captured.extended.weather_display_failure(),
         })
     }
 
     fn record(self, stats: &mut Statistics) {
         stats.total_ns = self.total_ns;
         stats.callback.record_ns(self.total_ns);
-        stats
-            .callback_tail
-            .record(self.hour, self.qpc, self.total_ns, self.hour_cost);
-        stats.observe_table_costs(self.table_ns);
-        stats.observe_table_reads(self.table_reads);
-        stats.observe_stability_walk_ticks(self.stability_walk_ticks);
+        stats.callback_tail.record(self.total_ns);
         stats.pool_bytes = self.pool_bytes;
-        stats.sampled_buffer_bytes = self.sampled_buffer_bytes;
-        stats.sampled_buffer_parts = self.sampled_buffer_parts;
         stats.dropped_frames = self.dropped_frames;
-        stats.country_cache_fallbacks += u64::from(
-            self.country_cache_status != engine_native::country_memory::SeedStatus::Ready,
-        );
-        stats.country_cache_entries = self.country_cache_entries;
-        stats.country_cache_status = self.country_cache_status;
-        stats.country_cache_cost.record_ns(self.country_cache_ns);
         stats.truncated_tables = self.truncated_tables;
-        if let Some(reason) = self.weather_display_failure {
-            stats.weather_display_failures = stats.weather_display_failures.saturating_add(1);
-            stats.weather_display_last_failure = Some(reason);
-        }
-        if let Some(reason) = self.weather_suspend_failure {
-            stats.weather_suspend_failures = stats.weather_suspend_failures.saturating_add(1);
-            stats.weather_suspend_last_failure = Some(reason);
-        }
-        stats.raid_torn_memo_reads = stats
-            .raid_torn_memo_reads
-            .saturating_add(u64::from(self.raid_reads.torn_memo_reads));
-        stats.raid_refused_leaders = stats
-            .raid_refused_leaders
-            .saturating_add(u64::from(self.raid_reads.refused_leaders));
-    }
-}
-
-/// Deferred diagnostics own their witness before the capture slot is reused.
-struct PreparedOrderWitness {
-    clock: Option<Clock>,
-    forced: Option<OrderCounterWitness>,
-}
-
-impl PreparedOrderWitness {
-    fn capture(captured: &Captured, branch: Option<BranchId>) -> Self {
-        let forced = captured.order_counters.forced.then(|| {
-            let mut witness = OrderCounterWitness::default();
-            witness.observe(captured, branch, &Ok(()));
-            witness
-        });
-        Self {
-            clock: captured
-                .clock
-                .as_ref()
-                .and_then(|clock| clock.copy_owned().ok()),
-            forced,
-        }
-    }
-
-    fn bind(self, target: &mut OrderCounterWitness, result: &io::Result<()>) {
-        if let Some(mut witness) = self.forced {
-            let sample = witness
-                .sample
-                .as_mut()
-                .expect("forced witness owns its sample");
-            sample.frame_write_succeeded = result.is_ok();
-            sample.frame_write_error = result.as_ref().err().map(error_reason);
-            *target = witness;
-        } else if let Err(error) = result
-            && let Some(clock) = self.clock
-            && let Ok(campaign) = std::str::from_utf8(clock.campaign_id.as_bytes())
-        {
-            target.invalidate_write(campaign, error);
-        }
     }
 }
 
@@ -2571,7 +1838,6 @@ struct QueuedFrame {
     clock: Clock,
     qpc: i64,
     sampled: CapturedStatistics,
-    witness: PreparedOrderWitness,
     operation_publication: Option<crate::extended::operation_outcomes::Publication>,
     map_event_publication: Option<crate::extended::map_events::Publication>,
     event_feed_publication: PublicationReceipt,
@@ -2600,28 +1866,6 @@ impl QueuedFrame {
             + self.id.capacity()
             + self.clock.campaign_id.allocated_bytes()
             + pending_storage(&self.context, self.context.capacity())
-            + self.sampled.sampled_buffer_parts.capacity() * size_of::<(&'static str, usize)>()
-            + self
-                .witness
-                .clock
-                .as_ref()
-                .map_or(0, |clock| clock.campaign_id.allocated_bytes())
-            + self.witness.forced.as_ref().map_or(0, |witness| {
-                witness.rows.capacity() * size_of::<engine_native::ccountry::OrderInstanceCounter>()
-                    + witness.sample.as_ref().map_or(0, |sample| {
-                        sample
-                            .clock
-                            .as_ref()
-                            .map_or(0, |clock| clock.campaign_id.allocated_bytes())
-                            + [&sample.frame_write_error, &sample.subsequent_io_error]
-                                .into_iter()
-                                .map(|error| match error {
-                                    Some(Cow::Owned(text)) => text.capacity(),
-                                    _ => 0,
-                                })
-                                .sum::<usize>()
-                    })
-            })
             + self
                 .operation_publication
                 .as_ref()
@@ -2686,6 +1930,8 @@ pub struct Processor {
     /// Decisions of the comparison before encoding.
     comparison: Box<crate::spool_compare::Counters>,
     writer: crate::spool_writer::Writer,
+    /// Makes the campaigns' ended journal segments durable.
+    durability: std::sync::Arc<crate::columnar::Durability>,
     queued: std::collections::VecDeque<Box<QueuedFrame>>,
     flight: Option<(String, BranchId)>,
     writer_error: Option<io::ErrorKind>,
@@ -2775,7 +2021,7 @@ impl Processor {
     fn set_aside_campaign(&mut self, id: &str) -> io::Result<()> {
         let storage = self.close_storage(id)?;
         if let Some(campaign) = self.campaigns.get_mut(id) {
-            set_aside_in_context(id, campaign, &mut self.stats.order_counters, storage)?;
+            set_aside_in_context(id, campaign, storage)?;
         }
         self.account_ledger();
         Ok(())
@@ -2804,21 +2050,12 @@ impl Processor {
             self.writer.wait_receipt_progress()?;
         }
     }
-    pub(crate) fn validation_refusals(&self) -> ValidationRefusals {
-        self.stats.validation_refusals.clone()
-    }
-    pub(crate) fn observe_game_score_sizing(
-        &mut self,
-        sizing: &engine_native::game_score_inputs::ArenaSizing,
-    ) -> io::Result<()> {
-        let _details = replay_data::codec::error_details_scope();
-        self.stats.game_score.observe_sizing(sizing)
-    }
     pub fn new(root: &Path, history: PreparedCampaigns, session: SessionStart) -> io::Result<Self> {
         let _details = replay_data::codec::error_details_scope();
         session.validate()?;
         fs::create_dir_all(root).map_err(engine_allocation::allocation_error)?;
-        let writer = crate::spool_writer::Writer::start(root.into(), session.qpc_frequency)?;
+        let writer = crate::spool_writer::Writer::start(root.into())?;
+        let durability = crate::columnar::Durability::start()?;
         Ok(Self {
             root: root.into(),
             history,
@@ -2835,6 +2072,7 @@ impl Processor {
             backlogged: false,
             comparison: Box::default(),
             writer,
+            durability,
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -2890,7 +2128,14 @@ impl Processor {
                 .map_err(|_| invalid("invalid campaign identity"))?;
             let output = self.writer.output(campaign_id);
             let mut campaign =
-                Campaign::open(&self.root, &mut self.history, id, &self.session, output)?;
+                Campaign::open(
+                    &self.root,
+                    &mut self.history,
+                    id,
+                    &self.session,
+                    output,
+                    &self.durability,
+                )?;
             campaign.validation_refusals = self.stats.validation_refusals.clone();
             self.campaigns
                 .insert(engine_allocation::string(id)?, campaign)?;
@@ -3094,61 +2339,6 @@ impl Processor {
         } else {
             crate::allocation::set_context(Default::default());
         }
-        if captured.clock.is_some() {
-            captured
-                .state_inputs
-                .observe(&mut self.stats.state_map_inputs)?;
-            captured
-                .extended
-                .observe_railway_inputs(&mut self.stats.railway_map_inputs)?;
-            captured
-                .extended
-                .observe_physical_navies(&mut self.stats.physical_navies)?;
-            captured
-                .extended
-                .observe_battle_plan_child_fronts(&mut self.stats.battle_plan_child_fronts);
-            captured
-                .extended
-                .observe_battle_plan_execution(&mut self.stats.battle_plan_execution);
-            self.stats
-                .game_score
-                .observe(captured.extended.game_score_status())?;
-            captured.extended.observe_country_rosters(
-                &mut self.stats.country_rosters,
-                self.session.qpc_frequency,
-            )?;
-            captured
-                .extended
-                .observe_reserved_visibility(&mut self.stats.reserved_visibility)?;
-            captured
-                .extended
-                .observe_division_naming(&mut self.stats.division_naming)?;
-            captured
-                .extended
-                .observe_counter_tooltip_inputs(&mut self.stats.counter_tooltip_inputs)?;
-            captured
-                .extended
-                .observe_character_naming(&mut self.stats.character_naming)?;
-            captured
-                .extended
-                .observe_supply_vehicles(&mut self.stats.supply_vehicles);
-            captured
-                .extended
-                .observe_variable_seeds(&mut self.stats.variable_seeds);
-        }
-        // A clockless frame read nothing; its selections belong to an older hour.
-        for (index, _family) in crate::slicing::FAMILIES
-            .iter()
-            .enumerate()
-            .filter(|_| captured.clock.is_some())
-        {
-            self.stats.slices[index].observe(captured.extended.family_selection(index));
-        }
-        self.stats.war_snapshots.observe(
-            captured.wars_snapshot_sampled,
-            captured.wars_snapshot.stats(),
-            captured.wars_snapshot.capacity(),
-        );
         let mut branch = None;
         let result = self
             .prepare_frame_inner(captured, &mut branch, span)
@@ -3167,11 +2357,7 @@ impl Processor {
     ) -> io::Result<PreparedFrame> {
         if let Err(error) = &result {
             self.error(error);
-            let completed = self.drain_writer();
-            self.stats
-                .order_counters
-                .observe_error(captured, branch, Some(error));
-            completed?;
+            self.drain_writer()?;
             if error.kind() != io::ErrorKind::OutOfMemory
                 && !crate::allocation::failed()
                 && let (Some(branch), Some(clock)) = (branch, &captured.clock)
@@ -3270,7 +2456,6 @@ impl Processor {
                 (qpc, clock.hour, clock.play_session_started_at),
             );
         }
-        let conversion_started = current_qpc();
         let variables_baseline = campaign
             .encoder
             .comparison_baseline::<tables::ScriptVariables>(
@@ -3278,7 +2463,7 @@ impl Processor {
                 clock.hour,
                 !campaign.spool.is_open(),
             );
-        if captured.hour_cost.force_full {
+        if captured.force_full {
             for (_, table) in REPUBLISHING {
                 campaign.projection_scratch.forget(table);
             }
@@ -3301,7 +2486,7 @@ impl Processor {
             &campaign.projection_scratch,
         );
         span.finish();
-        let (mut source, pack_ticks) = decoded_with_costs(
+        let (mut source, _) = decoded_with_costs(
             captured,
             clock.borrowed(),
             branch,
@@ -3364,19 +2549,15 @@ impl Processor {
             &mut source.tables,
         )?;
         let retry_full = needs_retry(&source.tables) || sliced_retry;
-        let skipped = campaign
+        campaign
             .try_apply_staggered_inputs(&mut source, captured.extended.country_intel_sample())?;
         campaign.assemble_reserved_intel_sample(&mut source);
         if let Some(layout) = &captured.fixed_layout {
             crate::fixed_layout::apply(&mut source.tables, layout)?;
         }
-        let work = WorkSample {
-            conversion: current_qpc() - conversion_started,
-            ..WorkSample::default()
-        };
+        let work = WorkSample::default();
         let span = span.switch(crate::spool_phases::Phase::Statistics);
         let sampled = CapturedStatistics::capture(captured)?;
-        let witness = PreparedOrderWitness::capture(captured, Some(branch));
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
         }
@@ -3391,11 +2572,8 @@ impl Processor {
             unknown,
             retry_full,
             unpublished_families,
-            skipped,
             work,
-            pack_ticks,
             sampled,
-            witness,
             operation_publication,
             map_event_publication,
             event_feed_publication,
@@ -3420,11 +2598,8 @@ impl Processor {
             unknown,
             retry_full,
             unpublished_families,
-            skipped,
             mut work,
-            pack_ticks,
             sampled,
-            witness,
             operation_publication,
             map_event_publication,
             event_feed_publication,
@@ -3454,13 +2629,7 @@ impl Processor {
         if let Some(reason) = campaign.columnar.halted() {
             let reason = engine_allocation::string(reason)?;
             campaign.gap(branch, clock.hour, clock.hour, reason)?;
-            // Older queued frames complete first, so this hour's failure is the witness kept.
-            let completed = self.drain_writer();
-            witness.bind(
-                &mut self.stats.order_counters,
-                &Err(io::ErrorKind::Other.into()),
-            );
-            return completed;
+            return self.drain_writer();
         }
         // Compare before encoding with the same restart verdict the write uses.
         let helpers = self
@@ -3497,35 +2666,11 @@ impl Processor {
         if let Err(error) = &result {
             self.error(error);
         }
-        for table in replay_data::rows::TableId::ALL {
-            let index = table.index();
-            if replay_data::cadence::is_staggered(table) {
-                if skipped[index] {
-                    self.stats.staggered_skipped[index] += 1;
-                } else {
-                    self.stats.staggered_walked[index] += 1;
-                }
-            }
-        }
-        let frequency = self.session.qpc_frequency;
-        self.stats
-            .conversion
-            .record_ticks(work.conversion, frequency);
-        for (cost, ticks) in self.stats.conversion_packs.iter_mut().zip(pack_ticks) {
-            if let Some(ticks) = ticks {
-                cost.record_ticks(ticks, frequency);
-            }
-        }
-        if let Some(ticks) = work.frame_encoding {
-            self.stats.frame_encoding.record_ticks(ticks, frequency);
-        }
         if result.is_err() {
             if crate::allocation::failed() {
                 return result;
             }
-            let completed = self.drain_writer();
-            witness.bind(&mut self.stats.order_counters, &result);
-            completed?;
+            self.drain_writer()?;
             let campaign = self.campaigns.get_mut(&id).unwrap();
             campaign.reset_after_write_failure();
             if !crate::allocation::failed() {
@@ -3550,7 +2695,6 @@ impl Processor {
             clock,
             qpc,
             sampled,
-            witness,
             operation_publication,
             map_event_publication,
             event_feed_publication,
@@ -3580,9 +2724,7 @@ impl Processor {
                 return result;
             }
             self.error(error);
-            let completed = self.drain_writer();
-            frame.witness.bind(&mut self.stats.order_counters, &result);
-            completed?;
+            self.drain_writer()?;
             let campaign = self.campaigns.get_mut(&frame.id).unwrap();
             campaign.lose_hour(frame.branch, frame.clock.hour)?;
             campaign.restore_context(std::mem::take(&mut frame.context))?;
@@ -3627,7 +2769,6 @@ impl Processor {
             clock,
             qpc,
             sampled,
-            witness,
             operation_publication,
             map_event_publication,
             mut event_feed_publication,
@@ -3650,7 +2791,6 @@ impl Processor {
         campaign.construction_ic.written(construction_ic_receipt);
         campaign.tracker.record_hour(branch, clock.hour)?;
         campaign.columnar.complete(branch, clock.hour);
-        witness.bind(&mut self.stats.order_counters, &Ok(()));
         #[cfg(feature = "alloc-fault-injection")]
         crate::allocation::committed_hour();
         let stats = &mut self.stats;
@@ -3751,7 +2891,6 @@ impl Processor {
                 if let Some(id) = completion.context.campaign_id {
                     let id = std::str::from_utf8(&id)
                         .map_err(|_| invalid("writer completion has invalid campaign identity"))?;
-                    self.stats.order_counters.invalidate_write(id, &error);
                     if let Some(campaign) = self.campaigns.get_mut(id) {
                         campaign.reset_after_write_failure();
                     }
@@ -4359,7 +3498,6 @@ impl Processor {
                 Ok(()) if unknown != 0 => self.unknown_pending = 0,
                 Ok(()) => {}
                 Err(error) => {
-                    self.stats.order_counters.invalidate_write(id, &error);
                     first_error.get_or_insert(error);
                 }
             }
@@ -4420,9 +3558,10 @@ impl Processor {
     /// writer (`status_writer::StatusHandle`).
     #[cfg(test)]
     pub fn status(&self) -> io::Result<impl Serialize + '_> {
-        self.status_with_work(status!({}))
+        self.status_fields()
     }
 
+    #[cfg(test)]
     pub(crate) fn recorded_hours(&self) -> u64 {
         self.stats.hours
     }
@@ -4442,10 +3581,7 @@ impl Processor {
         Some((baseline, campaign.spool.committed_watermark()?))
     }
 
-    pub(crate) fn status_with_work<'a, T: crate::status::Fields + 'a>(
-        &'a self,
-        work: crate::status::Object<T>,
-    ) -> io::Result<impl Serialize + 'a> {
+    pub(crate) fn status_fields(&self) -> io::Result<impl Serialize + '_> {
         let _details = replay_data::codec::error_details_scope();
         let _phase = crate::allocation::enter(crate::allocation::Phase::Status);
         crate::allocation::attempted_hour(None);
@@ -4455,300 +3591,24 @@ impl Processor {
         let stats = &self.stats;
         let callback = stats.callback.try_percentiles()?;
         let callback_work = stats.callback.status()?;
-        let country_cache_cost = stats.country_cache_cost.status()?;
-        let conversion = stats.conversion.status()?;
-        let frame_encoding = stats.frame_encoding.status()?;
-
-        let country_rosters = stats.country_rosters.status()?;
-        // Per-family copy-only mirrors, built outside the status `json!` so
-        // the macro stays under its recursion limit as families move over.
-        let research_walk_ns = [
-            stats.table_ns[replay_data::rows::TableId::ResearchTechnologies.index()],
-            stats.table_ns[replay_data::rows::TableId::ResearchSlots.index()],
-            stats.table_ns[replay_data::rows::TableId::TechnologyDefinitions.index()],
-        ];
-        let stability_walk_ns = stats.stability_walk_ticks.map(|ticks| {
-            (u128::from(ticks) * 1_000_000_000)
-                .checked_div(u128::from(self.session.qpc_frequency))
-                .unwrap_or(0)
-                .min(u128::from(u64::MAX)) as u64
-        });
-        let relations_copy_ns = [
-            stats.table_ns[replay_data::rows::TableId::RelationOpinions.index()],
-            stats.table_ns[replay_data::rows::TableId::RelationTuples.index()],
-        ];
-        let characters_copy_ns = [
-            stats.table_ns[replay_data::rows::TableId::Characters.index()],
-            stats.table_ns[replay_data::rows::TableId::CountryLeaderRoles.index()],
-            stats.table_ns[replay_data::rows::TableId::AdvisorRoles.index()],
-            stats.table_ns[replay_data::rows::TableId::UnitLeaders.index()],
-            stats.table_ns[replay_data::rows::TableId::UnitLeaderTraits.index()],
-        ];
-        let projects_copy_ns = decode::PROJECTS.map(|table| stats.table_ns[table.index()]);
-        let lexical_copy_ns = [stats.table_ns[replay_data::rows::TableId::LexicalTokens.index()]];
-        let variants_walk_ns = [
-            stats.table_ns[replay_data::rows::TableId::VariantDefinitions.index()],
-            stats.table_ns[replay_data::rows::TableId::VariantModules.index()],
-            stats.table_ns[replay_data::rows::TableId::VariantStats.index()],
-            stats.table_ns[replay_data::rows::TableId::VariantUpgrades.index()],
-        ];
-        // The shared state/province walk is charged to StateBuildings; the
-        // hourly detection walk beside it is the third entry.
-        let buildings_walk_ns = [
-            stats.table_ns[replay_data::rows::TableId::StateBuildings.index()],
-            stats.table_ns[replay_data::rows::TableId::ProvinceBuildings.index()],
-            stats.table_ns[replay_data::rows::TableId::RaidTargetStatuses.index()],
-        ];
-        // The owned war-vector acquisition is charged to WarRelations.
-        let wars_walk_ns = [stats.table_ns[replay_data::rows::TableId::WarRelations.index()]];
-        let divisions_copy_ns = [
-            stats.table_ns[decode::DIVISIONS[0].index()],
-            stats.table_ns[decode::DIVISIONS[1].index()],
-            stats.table_ns[decode::DIVISIONS[2].index()],
-            stats.table_ns[decode::DIVISIONS[3].index()],
-            stats.table_ns[decode::DIVISIONS[4].index()],
-            stats.table_ns[decode::DIVISIONS[5].index()],
-        ];
-        let production_rest_copy_ns = [
-            stats.table_ns[decode::PRODUCTION_REST[0].index()],
-            stats.table_ns[decode::PRODUCTION_REST[1].index()],
-            stats.table_ns[decode::PRODUCTION_REST[2].index()],
-            stats.table_ns[decode::PRODUCTION_REST[3].index()],
-            stats.table_ns[decode::PRODUCTION_REST[4].index()],
-            stats.table_ns[decode::PRODUCTION_REST[5].index()],
-            stats.table_ns[decode::PRODUCTION_REST[6].index()],
-            stats.table_ns[decode::PRODUCTION_REST[7].index()],
-        ];
-        let construction_rest_copy_ns = [
-            stats.table_ns[decode::CONSTRUCTION_REST[0].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[1].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[2].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[3].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[4].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[5].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[6].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[7].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[8].index()],
-            stats.table_ns[decode::CONSTRUCTION_REST[9].index()],
-        ];
-        // Map-pack coupled unit, wing-fed air pair, source-fed naval block,
-        // players pair and session family: game-thread copy-only mirrors.
-        // Each mirrors its `table_ns` slots (copy-only ns for moved
-        // families; `decode_ns` lives in the decode calibration, so this is
-        // not comparable across threads — see the PLAN appendix).
-        let map_walk_ns = [
-            stats.table_ns[replay_data::rows::TableId::LandCombats.index()],
-            stats.table_ns[replay_data::rows::TableId::Fleets.index()],
-            stats.table_ns[replay_data::rows::TableId::TaskForces.index()],
-            stats.table_ns[replay_data::rows::TableId::Ships.index()],
-            stats.table_ns[replay_data::rows::TableId::NavalCombats.index()],
-            stats.table_ns[replay_data::rows::TableId::NavalCombatParticipants.index()],
-            stats.table_ns[replay_data::rows::TableId::AirWings.index()],
-            stats.table_ns[replay_data::rows::TableId::ArmyOrders.index()],
-        ];
-        let air_wing_copy_ns = [
-            stats.table_ns[decode::AIR_WING[0].index()],
-            stats.table_ns[decode::AIR_WING[1].index()],
-        ];
-        let air_stats_copy_ns = [stats.table_ns[decode::AIR_STATS[0].index()]];
-        let naval_copy_ns = [
-            stats.table_ns[decode::NAVAL_ORDER[0].index()],
-            stats.table_ns[decode::NAVAL_ORDER[1].index()],
-            stats.table_ns[decode::NAVAL_ORDER[2].index()],
-            stats.table_ns[decode::NAVAL_ORDER[3].index()],
-            stats.table_ns[decode::NAVAL_ORDER[4].index()],
-            stats.table_ns[decode::NAVAL_ORDER[5].index()],
-            stats.table_ns[decode::NAVAL_ORDER[6].index()],
-            stats.table_ns[decode::NAVAL_ORDER[7].index()],
-            stats.table_ns[decode::NAVAL_ORDER[8].index()],
-        ];
-        let players_copy_ns = [
-            stats.table_ns[decode::PLAYERS[0].index()],
-            stats.table_ns[decode::PLAYERS[1].index()],
-        ];
-        let session_copy_ns = [
-            stats.table_ns[decode::SESSION[0].index()],
-            stats.table_ns[decode::SESSION[1].index()],
-            stats.table_ns[decode::SESSION[2].index()],
-        ];
-        let writer = self.writer.diagnostics();
-        let spool_work = status!({
-                "conversion": conversion,
-                "conversion_packs": sequence(crate::extended::PACK_NAMES.iter().zip(&stats.conversion_packs)
-                    .map(|(name, cost)| status!({"name": name, "cost": cost.status()}))),
-                "conversion_packs_scope": "cumulative calls, total and maximum wall per pack conversion, on the spool thread or, for packs with a helper marker, a conversion helper; nested within conversion; excludes core and map tables",
-                "frame_encoding": frame_encoding,
-                "record_writes": writer.writes(),
-                "writer_queue": writer.queue_status(),
-                "table_rows_storage_bytes": std::mem::size_of::<TableRows>(),
-                "background_sync": {
-                    "scope": "collector writer periodic sync wall, serialized with writes; forced barriers are in record_writes",
-                    "writer": writer.sync_status(),
-                },
-                "native_projection": sequence(self.campaigns.values().map(|campaign| campaign.projection_scratch.status())),
-                "comparison": self.comparison.status(),
-                "lexical_conversion": lexical_conversion_status(self.campaigns.values().map(|campaign| &campaign.lexical_conversion)),
-                "intel_shadow": intel_shadow_status(self.campaigns.values().map(|campaign| &campaign.intel_shadow)),
-                "quiet_republish": quiet_republish_status(
-                    self.campaigns.values().map(|campaign| &campaign.projection_scratch),
-                    self.campaigns.values().map(|campaign| &campaign.intel_shadow),
-                ),
-                "character_shadow": character_shadow_status(self.campaigns.values().map(|campaign| &campaign.character_shadow)),
-                "phases": crate::spool_phases::SPOOL.status(self.session.qpc_frequency),
-                "helper_phases": crate::spool_phases::HELPER.status(self.session.qpc_frequency),
-                "sizing_phases": crate::spool_phases::SIZING.status(self.session.qpc_frequency),
-                "sizing_steps": crate::sizing_steps::status(),
-                "tick_gate": crate::tick_gate::status(),
-                "columnar": self.campaigns.values().filter_map(|campaign| campaign.columnar.status()).collect::<Vec<_>>(),
-                "columnar_finished": crate::columnar::finished_status(),
-                "conversion_helper": self.helper.is_some(),
-                "conversion_helpers": usize::from(self.helper.is_some()) + usize::from(self.second_helper.is_some()),
-                "conversion_helper_scope": "conversion_helper: whether a persistent helper converts the map tables and the helper packs beside the spool thread; conversion_helpers: how many started, the second converting lane 1 of the helper packs; with none the spool thread converts every table itself",
-
-        }).join(work);
-        let value = status!({
-            "order_instance_counters": self.stats.order_counters.status(),
-            "slices": status_map(crate::slicing::FAMILIES.iter().enumerate().filter(|(index, _)| stats.slices[*index].frames != 0).map(move |(index, family)| {
-                (family.name, stats.slices[index].status(self.session.qpc_frequency).join(status!({"owner": DebugValue(family.owner)})))
-            })),
+        Ok(status!({
             "campaign": &stats.campaign, "hours": stats.hours, "last_hour": stats.last_hour,
             "player": &stats.player,
-            "total_ns": stats.total_ns, "p50_ns": callback.p50_ns, "p95_ns": callback.p95_ns,
+            "total_ns": stats.total_ns, "p95_ns": callback.p95_ns,
             "callback_work": callback_work,
-            "callback_tail": stats.callback_tail.status(self.session.qpc_frequency),
-            "callback_work_scope": "cumulative per-hour game-thread acquisition body wall inside the hook since attach (the block before the trampoline), excluding the original native tick; equals acquisition_work.collect_wait_ns per hour. Drops, failed frames and unattributed startup callbacks excluded; sampled asynchronously after decode, not a CPU counter or exact partition with native_tick_work",
-            "max_ns": callback.max_ns, "table_ns": stats.table_ns.as_slice(),
-            "table_total_ns": stats.table_total_ns.as_slice(),
-            "table_total_ns_scope": "cumulative reported acquisition costs for successfully processed recorded frames; same cohort as callback_work; skipped tables contribute zero, shared reads retain existing anchor charges, worker costs overlap and are not additive callback wall time",
-            "table_reads": sequence(stats.table_reads.iter().copied().map(read_counts_status)),
-            "table_total_reads": sequence(stats.table_total_reads.iter().copied().map(read_counts_status)),
-            "table_reads_recorded": stats.hours != 0,
-            "table_reads_frames": stats.hours,
-            "cadence_policy": "hourly map tables; daily slots; static once per branch",
-            "static_tables": sequence(TableId::ALL.into_iter().filter(|table| replay_data::cadence::cadence(*table) == replay_data::cadence::Cadence::Static).map(DebugValue)),
-            "daily_slots": sequence((0..24).map(|slot| status!({
-                "slot": slot,
-                "tables": sequence(TableId::ALL.into_iter().filter(move |table| replay_data::cadence::refresh_slot(*table) == Some(slot)).map(DebugValue))
-            }))),
-            "table_reads_scope": "exact per-table native acquisition read work for the latest successfully processed frame; indexed by TableId like table_ns; no observation until table_reads_recorded is true; skipped tables contribute zero; shared native work is charged once to its capture anchor; table failures can still incur reads",
-            "table_read_counts_semantics": "native API calls include empty and faulted calls; spans and bytes count nonempty requested source ranges for the executed prefix plus the first failed or rejected source span; empty spans and unexecuted suffixes excluded; invalid destination layouts and short plan buffers count the call only; a plan ControlChanged stop excludes the next unattempted span; bytes are requested lengths, not claimed successfully transferred partial-fault bytes",
-            "table_total_reads_scope": "cumulative read counters over the same successfully processed frames as table_total_ns and callback_work, including failed table attempts and fallbacks within those frames; dropped, failed or unpublished frames and startup callbacks excluded; totals saturate at u64::MAX; requested spans and bytes are read work, not elapsed time or retained memory",
-            "staggered_skipped": stats.staggered_skipped.as_slice(),
-            "staggered_walked": stats.staggered_walked.as_slice(),
+            "callback_tail": stats.callback_tail.status(),
             "hours_per_second": if stats.interval_qpc == 0 { 0.0 } else {
                 stats.interval_hours as f64 * self.session.qpc_frequency as f64 / stats.interval_qpc as f64
             },
-            "dropped_frames": stats.dropped_frames,
             "truncated_tables": stats.truncated_tables,
-            "weather_display_reads": {
-                "failures": stats.weather_display_failures,
-                "last_failure": stats.weather_display_last_failure,
-                "scope": "cumulative over processed frames: retained display boundary refused independently; province simulation and display-byte fields remain available",
-            },
-            "weather_suspend_reads": {
-                "failures": stats.weather_suspend_failures,
-                "last_failure": stats.weather_suspend_last_failure,
-                "scope": "cumulative over processed frames: independent weather-manager suspension reads failed; other SimulationFeatures operands remain available and weather_suspend is absent",
-            },
-            "raid_reads": {
-                "torn_memo_reads": stats.raid_torn_memo_reads,
-                "refused_leader_rows": stats.raid_refused_leaders,
-                "scope": "cumulative over processed frames: raid path memo copies rejected because a game writer held its lock or changed its header during the copy (each retried, the table unavailable after three), and raid, cooldown and raid-target rows refused because their leader arm resolved to an object whose captor is not proven",
-            },
-            "shared_read_groups": sequence(crate::extended::read_groups().map(move |(name, anchor, members)| {
-                // Game-thread copy-only for moved families: `table_ns` for
-                // moved tables carries copy ns only, while `decode_ns`
-                // lives in the decode calibration (`runtime` status). Do not
-                // compare `shared_read_groups` totals across moved vs unmoved
-                // families (PLAN-appendix apples-to-oranges).
-                let total_ns: u64 = members.iter().map(|table| stats.table_ns[table.index()]).sum();
-                status!({"name": name, "anchor": DebugValue(anchor),
-                    "members": sequence(members.iter().copied().map(DebugValue)),
-                    "last_ns": total_ns})
-            })),
-            "country_authentication": {
-                "entries": stats.country_cache_entries,
-                "seed_status": DebugValue(stats.country_cache_status),
-                "fallbacks": stats.country_cache_fallbacks,
-                "cost": country_cache_cost,
-                "accounted_in": "Countries",
-            },
-            "pool_bytes": stats.pool_bytes, "write_errors": stats.errors, "last_error": &stats.last_error,
-            "validation_refusals": &stats.validation_refusals,
-            "failed_hook_families": crate::hook_failures::status(),
+            "dropped_frames": stats.dropped_frames, "pool_bytes": stats.pool_bytes,
+            "write_errors": stats.errors, "last_error": &stats.last_error,
             "build": collector_primitives::build_gate::status(),
-            "input_demand_errors": stats.input_demand_errors,
-            "input_demand_last_error": stats.input_demand_last_error,
-            "sampled_buffer_allocation": {
-                "scope": "last consumed native row buffer, before off-thread growth; not the whole pool",
-                "bytes": stats.sampled_buffer_bytes,
-                "parts": sequence(stats.sampled_buffer_parts.iter().map(|(name, bytes)| {
-                    status!({"name": name, "bytes": bytes})
-                })),
+            "spool_work": {
+                "columnar": self.campaigns.values().filter_map(|campaign| campaign.columnar.status()).collect::<Vec<_>>(),
+                "columnar_finished": crate::columnar::finished_status(),
             },
-            "unknown_losses_pending": self.unknown_pending,
-            "spool_work": spool_work,
-            "war_owned_snapshots": stats.war_snapshots.status(),
-            "game_score": stats.game_score.status(),
-            "division_naming": stats.division_naming.status(),
-            "counter_tooltip_inputs": stats.counter_tooltip_inputs.status(),
-            "country_rosters": country_rosters,
-            "fresh_map_inputs": crate::status::status!({
-                "states": stats.state_map_inputs.status(),
-                "railway": stats.railway_map_inputs.status(),
-                "physical_navies": stats.physical_navies.status(),
-            }),
-            "battle_plan_child_fronts": stats.battle_plan_child_fronts.status(),
-            "battle_plan_execution": stats.battle_plan_execution.status(),
-            "character_naming": stats.character_naming.status(),
-            "supply_vehicles": stats.supply_vehicles.status(),
-            "supply_node_walk": crate::extended::supply_trains::node_walk_data(),
-            "script_variable_seeds": stats.variable_seeds.status(),
-            "scientist_activity": crate::extended::projects::scientist_active_data(),
-            "instant_decisions": crate::extended::visibility::instant_decisions_data(),
-            "political_runtime_scalars": crate::extended::visibility::runtime_scalars_data(),
-            "movement_defines": crate::extended::visibility::movement_defines_data(),
-            "selected_ordered_enemies":crate::extended::visibility::ordered_enemy_data(),
-            "unit_combat_references":crate::extended::unit_combat_references::data(),
-            "air_wing_names": crate::map_capture::air_wing_name_data(),
-            "ship_names": crate::map_capture::ship_name_data(),
-            "railway_gun_names": crate::extended::railway_guns::name_data(),
-            "railway_gun_eta": crate::extended::railway_guns::eta_data(),
-            "railway_gun_owner_transport": crate::extended::railway_guns::transport_data(),
-            "division_speed_terms": crate::extended::division_presentation::speed_term_data(),
-            "division_template_speed_keys": crate::extended::division_templates::speed_key_data(),
-            "division_movement_arrows": crate::extended::division_presentation::movement_arrow_data(),
-            "railway_gun_movement_arrows": crate::extended::railway_guns::movement_arrow_data(),
-            "task_force_movement_arrows": crate::extended::naval_counters::movement_arrow_data(),
-            "task_force_fresh_eta": crate::extended::naval_counters::fresh_eta_data(),
-            "task_force_counter_phases": crate::extended::naval_counters::phase_data(),
-            "naval_combat_member_phases": crate::extended::naval_details::member_phase_data(),
-            "transport_subject_access": crate::extended::visibility::transport_subject_data(),
-            "ship_model_operands": crate::extended::ship_models::optional_data(),
-            "country_original_tags": crate::extended::country_appearance::original_tag_data(),
-            "reserved_reverse_visibility": stats.reserved_visibility.status(),
-            "reserved_land_theatres": crate::extended::naval_history::reserved_land_data(),
-            "orders_group_tooltip_inputs": crate::extended::group_counters::tooltip_data(),
-            "research_walk_ns": research_walk_ns,
-            "stability_walk_ns": stability_walk_ns,
-            "relations_copy_ns": relations_copy_ns,
-            "characters_copy_ns": characters_copy_ns,
-            "projects_copy_ns": projects_copy_ns,
-            "lexical_copy_ns": lexical_copy_ns,
-            "variants_walk_ns": variants_walk_ns,
-            "buildings_walk_ns": buildings_walk_ns,
-            "wars_walk_ns": wars_walk_ns,
-            "divisions_copy_ns": divisions_copy_ns,
-            "production_rest_copy_ns": production_rest_copy_ns,
-            "construction_rest_copy_ns": construction_rest_copy_ns,
-            "map_walk_ns": map_walk_ns,
-            "air_wing_copy_ns": air_wing_copy_ns,
-            "air_stats_copy_ns": air_stats_copy_ns,
-            "naval_copy_ns": naval_copy_ns,
-            "players_copy_ns": players_copy_ns,
-            "session_copy_ns": session_copy_ns,
-        });
-        Ok(value)
+        }))
     }
 
     #[cfg(test)]
@@ -5546,182 +4406,6 @@ mod tests {
     }
 
     #[test]
-    fn war_snapshot_work_only_counts_sampled_passes_and_keeps_capacity_scope() {
-        use engine_native::{
-            cwar_relation::OwnedSnapshotCapacity, cwar_relation::OwnedSnapshotStats,
-        };
-        let first = OwnedSnapshotStats {
-            queries: 8,
-            hits: 5,
-            installed: 2,
-            acquisition_headers: 8,
-            acquisition_words: 21,
-            required_vectors: 4,
-            required_words: 40,
-            required_cells: 128,
-            ..OwnedSnapshotStats::default()
-        };
-        let first_capacity = OwnedSnapshotCapacity {
-            vectors: 8,
-            root_slots: 16,
-            root_capacity: 32,
-            words: 64,
-            initialized_count_cells: 128,
-            count_capacity: 256,
-            allocated_bytes: 8192,
-        };
-        let mut work = WarSnapshotWork::default();
-        work.observe(false, first, first_capacity);
-        assert_eq!(work.passes, 0);
-        assert_eq!(work.totals, [0; 6]);
-        assert_eq!(work.max_required, [0; 3]);
-        assert_eq!(work.peak_frame_bytes, 0);
-        assert!(work.json()["latest"].is_null());
-        work.observe(true, first, first_capacity);
-        let second = OwnedSnapshotStats {
-            queries: 3,
-            hits: 1,
-            fallbacks: 1,
-            acquisition_headers: 3,
-            acquisition_words: 5,
-            required_vectors: 5,
-            required_words: 12,
-            required_cells: 32,
-            ..OwnedSnapshotStats::default()
-        };
-        let second_capacity = OwnedSnapshotCapacity {
-            vectors: 6,
-            root_slots: 16,
-            root_capacity: 16,
-            words: 16,
-            initialized_count_cells: 32,
-            count_capacity: 64,
-            allocated_bytes: 2048,
-        };
-        work.observe(true, second, second_capacity);
-        assert_eq!(work.passes, 2);
-        assert_eq!(work.totals, [11, 6, 2, 1, 11, 26]);
-        assert_eq!(work.max_required, [5, 40, 128]);
-        assert_eq!(work.peak_frame_bytes, 8192);
-        assert_eq!(work.last, Some((second, second_capacity)));
-        let status = work.json();
-        assert_eq!(status["acquisition_consumed_nonnull_words"], 26);
-        assert_eq!(status["maximum_required"]["words"], 40);
-        assert_eq!(status["latest"]["required_words"], 12);
-        assert_eq!(status["latest"]["capacity"]["root_capacity"], 16);
-        assert_eq!(status["latest"]["capacity"]["allocated_bytes"], 2048);
-        assert_eq!(status["peak_sampled_frame_capacity_bytes"], 8192);
-        assert!(
-            status["scope"]
-                .as_str()
-                .unwrap()
-                .contains("not replay acceptance")
-        );
-        assert!(
-            status["word_counter_scope"]
-                .as_str()
-                .unwrap()
-                .contains("not physical native reads")
-        );
-        assert!(
-            status["capacity_scope"]
-                .as_str()
-                .unwrap()
-                .contains("not whole-pool ownership")
-        );
-        work.observe(false, first, first_capacity);
-        assert_eq!(work.json(), status);
-    }
-
-    #[test]
-    fn war_snapshot_work_saturates_cumulative_counters() {
-        use engine_native::{
-            cwar_relation::OwnedSnapshotCapacity, cwar_relation::OwnedSnapshotStats,
-        };
-        let mut work = WarSnapshotWork {
-            passes: u64::MAX,
-            totals: [u64::MAX - 1; 6],
-            ..WarSnapshotWork::default()
-        };
-        let stats = OwnedSnapshotStats {
-            queries: 2,
-            hits: 2,
-            installed: 2,
-            fallbacks: 2,
-            acquisition_headers: 2,
-            acquisition_words: 2,
-            ..OwnedSnapshotStats::default()
-        };
-        work.observe(true, stats, OwnedSnapshotCapacity::default());
-        assert_eq!(work.passes, u64::MAX);
-        assert_eq!(work.totals, [u64::MAX; 6]);
-        assert_eq!(work.json()["queries"], u64::MAX);
-    }
-
-    #[test]
-    fn war_snapshot_work_includes_rejected_consumed_frame_without_io() {
-        let mut processor = Processor {
-            root: PathBuf::new(),
-            history: PreparedCampaigns::default(),
-            session: session(),
-            session_verified: false,
-            campaigns: Campaigns::new(),
-            stats: Statistics::default(),
-            unknown_pending: 0,
-            suppress_origin: false,
-            retry_full: false,
-            unpublished_families: 0,
-            helper: None,
-            second_helper: None,
-            backlogged: false,
-            comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
-                .unwrap(),
-            queued: std::collections::VecDeque::new(),
-            flight: None,
-            writer_error: None,
-            command_drain: Default::default(),
-            command_pending: Vec::new(),
-            command_contexts: Default::default(),
-            command_anchors: Default::default(),
-            command_ordinals: Default::default(),
-            command_definitions: Default::default(),
-            command_last_flush: std::time::Instant::now(),
-            command_ready: Default::default(),
-            command_inflight: Default::default(),
-        };
-        let mut source = Captured::new();
-        source.wars_snapshot_sampled = true;
-        source.table_reads[TableId::Clock.index()] = ReadCounts {
-            copy_calls: 1,
-            spans: 1,
-            bytes: 64,
-            ..ReadCounts::ZERO
-        };
-        assert!(source.clock.is_none());
-        assert!(processor.frame(&source).is_err());
-        assert_eq!(processor.stats.war_snapshots.passes, 1);
-        assert_eq!(processor.stats.hours, 0);
-        assert_eq!(
-            processor.stats.table_total_reads,
-            [ReadCounts::ZERO; TABLE_COUNT]
-        );
-        assert_eq!(processor.json()["table_reads_recorded"], false);
-        assert_eq!(processor.stats.errors, 1);
-        assert!(processor.campaigns.is_empty());
-        let status = processor.json()["war_owned_snapshots"].clone();
-        assert_eq!(status["passes"], 1);
-        assert_eq!(
-            status["latest"]["capacity"]["allocated_bytes"],
-            source.wars_snapshot.allocated_bytes()
-        );
-        source.wars_snapshot_sampled = false;
-        assert!(processor.frame(&source).is_err());
-        assert_eq!(processor.json()["war_owned_snapshots"], status);
-        assert_eq!(processor.stats.errors, 2);
-    }
-
-    #[test]
     fn compared_variables_never_override_a_missing_entry_clock() {
         let mut encoder = FrameEncoder::new();
         encoder
@@ -5753,159 +4437,6 @@ mod tests {
     }
 
     #[test]
-    fn pack_costs_keep_fixed_totals_however_many_hours_are_recorded() {
-        let mut stats = Statistics::default();
-        let before = std::mem::size_of_val(&stats.conversion_packs);
-        for hour in 0..10_000_i64 {
-            stats.conversion_packs[3].record_ticks(hour % 7, 10_000_000);
-        }
-        // Totals, not a per-hour sample list: nothing grows with the hours.
-        assert_eq!(std::mem::size_of_val(&stats.conversion_packs), before);
-        let status = serde_json::to_value(stats.conversion_packs[3].status()).unwrap();
-        assert_eq!(status["calls"], 10_000);
-        assert_eq!(status["max_ns"], 600);
-        assert_eq!(
-            status["total_ns"],
-            (0..10_000_u64).map(|hour| hour % 7 * 100).sum::<u64>()
-        );
-        assert_eq!(
-            serde_json::to_value(stats.conversion_packs[4].status()).unwrap()["mean_ns"],
-            0.0
-        );
-    }
-
-    #[test]
-    fn callback_tail_histogram_and_slowest_hours_share_callback_work_samples() {
-        let mut processor = Processor {
-            root: PathBuf::new(),
-            history: PreparedCampaigns::default(),
-            session: session(),
-            session_verified: false,
-            campaigns: Campaigns::new(),
-            stats: Statistics::default(),
-            unknown_pending: 0,
-            suppress_origin: false,
-            retry_full: false,
-            unpublished_families: 0,
-            helper: None,
-            second_helper: None,
-            backlogged: false,
-            comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
-                .unwrap(),
-            queued: std::collections::VecDeque::new(),
-            flight: None,
-            writer_error: None,
-            command_drain: Default::default(),
-            command_pending: Vec::new(),
-            command_contexts: Default::default(),
-            command_anchors: Default::default(),
-            command_ordinals: Default::default(),
-            command_definitions: Default::default(),
-            command_last_flush: std::time::Instant::now(),
-            command_ready: Default::default(),
-            command_inflight: Default::default(),
-        };
-        let mut samples = vec![0];
-        for floor_ms in [2, 4, 8, 16, 32, 64, 128, 256] {
-            samples.extend([floor_ms * 1_000_000 - 1, floor_ms * 1_000_000]);
-        }
-        samples.extend([512_000_000, 512_000_000, 4_000_000, 4_000_000]);
-        let mut frame = captured(-20);
-        for (index, &ns) in samples.iter().enumerate() {
-            frame.clock = Some(clock(index as i32 - 20));
-            frame.qpc = 6_000_000_000_000 + index as i64;
-            frame.total_ns = ns;
-            frame.hour_cost = crate::sampling::HourCost {
-                entry_ns: 100 + index as u64,
-                buffer_wait_ns: 200 + index as u64,
-                free_frames: 1,
-                allocator_wait_ns: 0,
-                setup_ns: ns / 4,
-                parallel_ns: ns / 2,
-                residual_ns: ns - ns / 4 - ns / 2,
-                segments_ns: [index as u64; crate::sampling::SEGMENTS],
-                slowest_join: (index == 17).then_some(crate::sampling::SlowestJoin {
-                    role: Some(1),
-                    readiness: false,
-                    wait_ns: 300,
-                    collect_stall_ns: 250,
-                }),
-                collect_stalls_over_1ms: index as u64,
-                growths: index as u64 + 1,
-                diagnostics: Default::default(),
-                idle: Default::default(),
-                variants: None,
-                #[cfg(feature = "callback_profile")]
-                join_timeline: None,
-                first_since_attach: index == 17,
-                continuous: index != 17,
-                force_full: index == 17,
-                recovery: index == 17,
-                refresh: index == 17,
-            };
-            CapturedStatistics::capture(&frame)
-                .unwrap()
-                .record(&mut processor.stats);
-        }
-        let status = processor.json();
-        let tail = &status["callback_tail"];
-        assert_eq!(
-            tail["histogram_floor_ms"],
-            json!([0, 2, 4, 8, 16, 32, 50, 64, 100, 128, 256, 1000])
-        );
-        assert_eq!(
-            tail["histogram"],
-            json!([2, 2, 4, 2, 2, 1, 1, 1, 1, 2, 3, 0])
-        );
-        // Over 50 ms: 64 ms - 1 ns and every longer sample; each waited 200 + index ns.
-        let over = &tail["over_budget"];
-        assert_eq!(over["hours"], 8);
-        assert_eq!(over["with_buffer_wait"], 8);
-        assert_eq!(over["acquisition"], 8);
-        assert_eq!(over["acquisition_max_ns"], 512_000_000 - 217);
-        assert_eq!(over["by_free_frames"][1], 8);
-        assert_eq!(over["force_full"], 1);
-        assert_eq!(tail["capacity"], 64);
-        assert_eq!(tail["qpc_frequency"], processor.session.qpc_frequency);
-        assert_eq!(status["callback_work"]["calls"], samples.len());
-        let slowest = tail["slowest"].as_array().unwrap();
-        let indices = [
-            17, 18, 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 19, 20, 3, 2, 1, 0,
-        ];
-        assert_eq!(
-            slowest
-                .iter()
-                .map(|entry| entry["hour"].as_i64().unwrap())
-                .collect::<Vec<_>>(),
-            indices.map(|index| index - 20),
-        );
-        let first = &slowest[0];
-        assert_eq!(first["callback_ns"], status["callback_work"]["max_ns"]);
-        assert_eq!(
-            first,
-            &json!({
-                "hour": -3, "qpc": 6_000_000_000_017_i64,
-                "daily_slot": (-3_i32).rem_euclid(replay_data::cadence::STAGGER_PERIOD),
-                "callback_ns": 512_000_000, "entry_ns": 117, "buffer_wait_ns": 217, "free_frames": 1, "allocator_wait_ns": 0,
-                "setup_ns": 128_000_000, "parallel_ns": 256_000_000, "residual_ns": 128_000_000,
-                "segments_ns": vec![17; crate::sampling::SEGMENTS],
-                "slowest_join": {
-                    "role": format!("{:?}", crate::acquisition_jobs::ROLES[1]),
-                    "kind": "join", "wait_ns": 300, "collect_stall_ns": 250,
-                },
-                "collect_stalls_over_1ms": 17, "growths": 18,
-                "variants": null, "join_timeline": null,
-                "idle": serde_json::to_value(crate::acquisition::idle_diagnostics::Hour::default().status(processor.session.qpc_frequency)).unwrap(),
-                "dominant_segment": 0,
-                "diagnostics": serde_json::to_value(crate::acquisition_diagnostics::Hour::default().status(processor.session.qpc_frequency)).unwrap(),
-                "first_since_attach": true, "continuous": false,
-                "force_full": true, "recovery": true, "refresh": true,
-            }),
-        );
-    }
-
-    #[test]
     fn validation_refuses_only_bad_table_and_next_hour_rebaselines() {
         use replay_frame::frame::{FrameDecoder, TableUpdate};
         crate::spooling::keep_every_table();
@@ -5914,7 +4445,6 @@ mod tests {
         let _ = fs::remove_dir_all(&directory);
         let mut processor =
             Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
-        let retained = processor.validation_refusals();
         processor.frame(&captured(10)).unwrap();
         for hour in [11, 12] {
             let mut prepared = processor.prepare_frame(&captured(hour)).unwrap();
@@ -5935,12 +4465,6 @@ mod tests {
         let status = processor.json();
         assert_eq!(status["hours"], 4);
         assert_eq!(status["write_errors"], 0);
-        let refusals = status["validation_refusals"].as_array().unwrap();
-        let states = refusals.iter().find(|f| f["table"] == "States").unwrap();
-        assert_eq!(states["column"], "continent");
-        assert_eq!(states["first_hour"], 11);
-        assert_eq!(states["last_hour"], 12);
-        assert_eq!(states["count"], 2);
         let log = fs::read_to_string(directory.join("recorder.log")).unwrap();
         assert_eq!(log.matches("States: row 64 column continent").count(), 1);
         let campaign = processor
@@ -5975,9 +4499,6 @@ mod tests {
         }
         assert_eq!(frames, 4);
         drop(processor);
-        // Runtime fallback status keeps the ledger even after spool ownership ends.
-        let retained = serde_json::to_value(&retained).unwrap();
-        assert_eq!(retained, status["validation_refusals"]);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -7171,14 +5692,12 @@ mod tests {
         let mut processor =
             Processor::new(&directory, PreparedCampaigns::default(), session()).unwrap();
         let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 7);
         processor.prepare(&source).unwrap();
         processor.frame(&source).unwrap();
 
         // Fail an ordinary hour after the forced sample's successful keyframe.
         // The failed write closes the segment and queues a gap for recovery.
         source = captured(11);
-        source.order_counters.forced = false;
         let mut prepared = processor.prepare_frame(&source).unwrap();
         prepared.source.tables[TableId::Clock.index()] =
             TableView::Complete(TableRows::Clock(vec![ClockRow {
@@ -7211,7 +5730,7 @@ mod tests {
         );
         processor.detach().unwrap();
 
-        // Gap-only detach preserves the original refusal without inventing a sample.
+        // Gap-only detach preserves the original refusal.
         let mut bytes = Vec::new();
         crate::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
         let status_path = directory.join("status.json");
@@ -7219,11 +5738,6 @@ mod tests {
         let persisted: Value = serde_json::from_slice(&fs::read(status_path).unwrap()).unwrap();
         assert_eq!(persisted["write_errors"], 2);
         assert_eq!(persisted["last_error"], expected);
-        let sample = &persisted["order_instance_counters"]["sample"];
-        assert_eq!(sample["clock"]["hour"], 10);
-        assert_eq!(sample["frame_write_succeeded"], true);
-        assert_eq!(sample["subsequent_io_error"], expected);
-        assert_eq!(sample["usable_with_recorded_frame"], false);
 
         // Preflight and loss handling must retain static reasons with capture
         // hooks installed too, and must restore callback behaviour on return.
@@ -7253,88 +5767,6 @@ mod tests {
     }
 
     #[test]
-    fn spool_validation_detail_survives_owned_status_and_forced_witness() {
-        let mut processor = Processor {
-            root: PathBuf::new(),
-            history: PreparedCampaigns::default(),
-            session: session(),
-            session_verified: false,
-            campaigns: Campaigns::new(),
-            stats: Statistics::default(),
-            unknown_pending: 0,
-            suppress_origin: false,
-            retry_full: false,
-            unpublished_families: 0,
-            helper: None,
-            second_helper: None,
-            backlogged: false,
-            comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
-                .unwrap(),
-            queued: std::collections::VecDeque::new(),
-            flight: None,
-            writer_error: None,
-            command_drain: Default::default(),
-            command_pending: Vec::new(),
-            command_contexts: Default::default(),
-            command_anchors: Default::default(),
-            command_ordinals: Default::default(),
-            command_definitions: Default::default(),
-            command_last_flush: std::time::Instant::now(),
-            command_ready: Default::default(),
-            command_inflight: Default::default(),
-        };
-        let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 7);
-        let mut witness = OrderCounterWitness::default();
-        let prepared = PreparedOrderWitness::capture(&source, Some(1));
-        let detail = "Clock: clock row hour differs from frame hour";
-        let expected = format!("spool validation failed: {detail}");
-        {
-            let (mut campaign, _) = campaign();
-            let branch = campaign.observe(None, 10, Some(1)).unwrap();
-            let mut frame = staggered_frame(branch, 10, false);
-            *frame.tables[TableId::Clock.index()] =
-                TableView::Complete(TableRows::Clock(vec![ClockRow {
-                    hour: 11,
-                    ..Default::default()
-                }]));
-            let result = campaign.write(frame, 1000, Some(1), 0, &mut WorkSample::default());
-            assert_eq!(result.as_ref().unwrap_err().to_string(), detail);
-            processor.error(result.as_ref().unwrap_err());
-            witness.observe(&source, Some(1), &result);
-            // Preparation failures borrow the original error, rather than
-            // reconstructing one from its kind before retaining the witness.
-            witness.observe_error(&source, Some(1), result.as_ref().err());
-            prepared.bind(&mut processor.stats.order_counters, &result);
-            witness.invalidate_write(
-                std::str::from_utf8(ID).unwrap(),
-                result.as_ref().unwrap_err(),
-            );
-        }
-        let generic = io::Error::from(io::ErrorKind::InvalidData);
-        processor.error(&generic);
-        witness.invalidate_write(std::str::from_utf8(ID).unwrap(), &generic);
-        processor.stats.order_counters.observe_error(
-            &source,
-            Some(1),
-            Some(&io::ErrorKind::OutOfMemory.into()),
-        );
-        // The original error is gone before the status writer serializes it.
-        let mut bytes = Vec::new();
-        crate::status::serialize_into(&mut bytes, &processor.status().unwrap()).unwrap();
-        let persisted: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(persisted["write_errors"], 2);
-        assert_eq!(persisted["last_error"], expected);
-        assert_eq!(
-            persisted["order_instance_counters"]["sample"]["frame_write_error"],
-            expected
-        );
-        assert_eq!(witness.json()["sample"]["frame_write_error"], expected);
-        assert_eq!(witness.json()["sample"]["subsequent_io_error"], expected);
-    }
-
-    #[test]
     fn cached_callback_summary_does_not_freeze_status_errors_or_latest_cost() {
         let mut processor = Processor {
             root: PathBuf::new(),
@@ -7351,8 +5783,9 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+            writer: crate::spool_writer::Writer::start(PathBuf::new())
                 .unwrap(),
+            durability: crate::columnar::Durability::start().unwrap(),
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -7372,9 +5805,7 @@ mod tests {
         processor.stats.hours = 3;
         processor.stats.total_ns = 300;
         let first = processor.json();
-        assert_eq!(first["p50_ns"], 200);
         assert_eq!(first["p95_ns"], 300);
-        assert_eq!(first["max_ns"], 300);
         assert_eq!(first["total_ns"], 300);
         assert_eq!(first["callback_work"]["calls"], 3);
         assert_eq!(first["callback_work"]["total_ns"], 600);
@@ -7384,9 +5815,7 @@ mod tests {
         for field in [
             "hours",
             "total_ns",
-            "p50_ns",
             "p95_ns",
-            "max_ns",
             "callback_work",
         ] {
             assert_eq!(repeated[field], first[field], "{field}");
@@ -7394,19 +5823,18 @@ mod tests {
 
         processor.observe_input_demand_error("country roster header unreadable or invalid");
         processor.observe_input_demand_error("unit leader identity unreadable");
-        let demand_failed = processor.json();
-        assert_eq!(demand_failed["input_demand_errors"], 2);
+        assert_eq!(processor.stats.input_demand_errors, 2);
         assert_eq!(
-            demand_failed["input_demand_last_error"],
-            "unit leader identity unreadable"
+            processor.stats.input_demand_last_error,
+            Some("unit leader identity unreadable")
         );
-        assert_eq!(demand_failed["write_errors"], 0);
+        assert_eq!(processor.json()["write_errors"], 0);
 
         processor.error(&io::Error::other("new disk failure while paused"));
         let failed = processor.json();
         assert_eq!(failed["last_error"], "spool I/O failed");
         assert_eq!(failed["write_errors"], 1);
-        assert_eq!(failed["p50_ns"], first["p50_ns"]);
+        assert_eq!(failed["p95_ns"], first["p95_ns"]);
 
         processor.stats.callback.record_ns(50);
         processor.stats.hours += 1;
@@ -7416,234 +5844,8 @@ mod tests {
         assert_eq!(resumed["total_ns"], 50);
         assert_eq!(resumed["callback_work"]["calls"], 4);
         assert_eq!(resumed["callback_work"]["total_ns"], 650);
-        assert_eq!(resumed["p50_ns"], 100);
         assert_eq!(resumed["p95_ns"], 300);
-        assert_eq!(resumed["max_ns"], 300);
         assert_eq!(resumed["last_error"], failed["last_error"]);
-    }
-
-    #[test]
-    fn table_acquisition_totals_keep_zero_skips_distinct_from_latest_gauges() {
-        let mut stats = Statistics::default();
-        let mut first = [0; TABLE_COUNT];
-        first[0] = 100;
-        first[1] = 300;
-        stats.observe_table_costs(first);
-        let mut second = [0; TABLE_COUNT];
-        second[0] = 50;
-        second[2] = 200;
-        stats.observe_table_costs(second);
-        assert_eq!(stats.table_ns, second);
-        assert_eq!(&stats.table_total_ns[..3], &[150, 300, 200]);
-        assert!(stats.table_total_ns[3..].iter().all(|&ns| ns == 0));
-        stats.table_total_ns[0] = u64::MAX;
-        stats.observe_table_costs(first);
-        assert_eq!(stats.table_total_ns[0], u64::MAX);
-    }
-
-    #[test]
-    fn table_read_totals_preserve_zero_skips_and_saturate_each_counter() {
-        let counts = ReadCounts {
-            copy_calls: 2,
-            scattered_calls: 3,
-            record_calls: 5,
-            plan_calls: 7,
-            spans: 11,
-            bytes: 13,
-        };
-        let mut first = [ReadCounts::ZERO; TABLE_COUNT];
-        first[0] = counts;
-        first[1] = counts;
-        let mut stats = Statistics::default();
-        stats.observe_table_reads(first);
-        let mut second = [ReadCounts::ZERO; TABLE_COUNT];
-        second[1] = counts;
-        stats.observe_table_reads(second);
-        assert_eq!(stats.table_reads, second);
-        assert_eq!(stats.table_total_reads[0], counts);
-        assert_eq!(
-            stats.table_total_reads[1],
-            ReadCounts {
-                copy_calls: 4,
-                scattered_calls: 6,
-                record_calls: 10,
-                plan_calls: 14,
-                spans: 22,
-                bytes: 26,
-            }
-        );
-        assert!(
-            stats.table_total_reads[2..]
-                .iter()
-                .all(|&value| value == ReadCounts::ZERO)
-        );
-        stats.table_total_reads[0] = ReadCounts {
-            copy_calls: u64::MAX - 1,
-            scattered_calls: u64::MAX - 1,
-            record_calls: u64::MAX - 1,
-            plan_calls: u64::MAX - 1,
-            spans: u64::MAX - 1,
-            bytes: u64::MAX - 1,
-        };
-        stats.observe_table_reads(first);
-        assert_eq!(
-            stats.table_total_reads[0],
-            ReadCounts {
-                copy_calls: u64::MAX,
-                scattered_calls: u64::MAX,
-                record_calls: u64::MAX,
-                plan_calls: u64::MAX,
-                spans: u64::MAX,
-                bytes: u64::MAX,
-            }
-        );
-    }
-
-    #[test]
-    fn status_read_counts_keep_latest_totals_and_full_width_integers() {
-        let mut processor = Processor {
-            root: PathBuf::new(),
-            history: PreparedCampaigns::default(),
-            session: session(),
-            session_verified: false,
-            campaigns: Campaigns::new(),
-            stats: Statistics::default(),
-            unknown_pending: 0,
-            suppress_origin: false,
-            retry_full: false,
-            unpublished_families: 0,
-            helper: None,
-            second_helper: None,
-            backlogged: false,
-            comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
-                .unwrap(),
-            queued: std::collections::VecDeque::new(),
-            flight: None,
-            writer_error: None,
-            command_drain: Default::default(),
-            command_pending: Vec::new(),
-            command_contexts: Default::default(),
-            command_anchors: Default::default(),
-            command_ordinals: Default::default(),
-            command_definitions: Default::default(),
-            command_last_flush: std::time::Instant::now(),
-            command_ready: Default::default(),
-            command_inflight: Default::default(),
-        };
-        assert_eq!(processor.json()["table_reads_recorded"], false);
-        let counts = ReadCounts {
-            copy_calls: 1,
-            scattered_calls: 2,
-            record_calls: 3,
-            plan_calls: 4,
-            spans: 9_007_199_254_740_993,
-            bytes: u64::MAX,
-        };
-        let mut first = [ReadCounts::ZERO; TABLE_COUNT];
-        first[0] = counts;
-        processor.stats.observe_table_reads(first);
-        processor
-            .stats
-            .observe_table_reads([ReadCounts::ZERO; TABLE_COUNT]);
-        processor.stats.hours = 2;
-        let status = processor.json();
-        assert_eq!(status["table_reads_recorded"], true);
-        assert_eq!(status["table_reads_frames"], 2);
-        assert_eq!(status["table_reads"].as_array().unwrap().len(), TABLE_COUNT);
-        assert_eq!(
-            status["table_total_reads"].as_array().unwrap().len(),
-            TABLE_COUNT
-        );
-        assert_eq!(status["table_reads"][0], read_counts_json(ReadCounts::ZERO));
-        let serialized = serde_json::to_vec(&status).unwrap();
-        let reparsed: Value = serde_json::from_slice(&serialized).unwrap();
-        assert_eq!(reparsed["table_total_reads"][0], read_counts_json(counts));
-        assert_eq!(
-            reparsed["table_total_reads"][0]["bytes"].as_u64(),
-            Some(u64::MAX)
-        );
-        assert_eq!(
-            reparsed["table_total_reads"][1],
-            read_counts_json(ReadCounts::ZERO)
-        );
-    }
-
-    #[test]
-    fn status_reports_pilot_copy_ns_additively() {
-        let mut processor = Processor {
-            root: PathBuf::new(),
-            history: PreparedCampaigns::default(),
-            session: session(),
-            session_verified: false,
-            campaigns: Campaigns::new(),
-            stats: Statistics::default(),
-            unknown_pending: 0,
-            suppress_origin: false,
-            retry_full: false,
-            unpublished_families: 0,
-            helper: None,
-            second_helper: None,
-            backlogged: false,
-            comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
-                .unwrap(),
-            queued: std::collections::VecDeque::new(),
-            flight: None,
-            writer_error: None,
-            command_drain: Default::default(),
-            command_pending: Vec::new(),
-            command_contexts: Default::default(),
-            command_anchors: Default::default(),
-            command_ordinals: Default::default(),
-            command_definitions: Default::default(),
-            command_last_flush: std::time::Instant::now(),
-            command_ready: Default::default(),
-            command_inflight: Default::default(),
-        };
-        processor.stats.table_ns[replay_data::rows::TableId::ResearchTechnologies.index()] = 11;
-        processor.stats.table_ns[replay_data::rows::TableId::ResearchSlots.index()] = 22;
-        processor.stats.table_ns[replay_data::rows::TableId::TechnologyDefinitions.index()] = 33;
-        processor.stats.table_ns[replay_data::rows::TableId::LandCombats.index()] = 101;
-        processor.stats.table_ns[replay_data::rows::TableId::WingEquipment.index()] = 201;
-        processor.stats.table_ns[replay_data::rows::TableId::LandTheatres.index()] = 301;
-        processor.stats.table_ns[replay_data::rows::TableId::Players.index()] = 401;
-        processor.stats.table_ns[replay_data::rows::TableId::WorldTension.index()] = 501;
-        processor.stats.table_ns[replay_data::rows::TableId::WarRelations.index()] = 601;
-        processor.stats.table_ns[replay_data::rows::TableId::StateBuildings.index()] = 701;
-        processor.stats.table_ns[replay_data::rows::TableId::RaidTargetStatuses.index()] = 703;
-        processor.stats.observe_stability_walk_ticks([1, 2, 3, 4]);
-        processor
-            .stats
-            .observe_stability_walk_ticks([10, 20, 30, 40]);
-        let status = processor.json();
-        assert_eq!(status["buildings_walk_ns"], json!([701, 0, 703]));
-        assert_eq!(status["research_walk_ns"], json!([11, 22, 33]));
-        assert_eq!(status["stability_walk_ns"], json!([1100, 2200, 3300, 4400]));
-        assert_eq!(status["wars_walk_ns"], json!([601]));
-        // New game-thread copy-only mirrors for the coupled unit, air,
-        // naval, players and session families.
-        assert_eq!(status["map_walk_ns"][0], json!(101));
-        assert_eq!(status["map_walk_ns"].as_array().unwrap().len(), 8);
-        assert_eq!(status["air_wing_copy_ns"], json!([201, 0]));
-        assert_eq!(status["naval_copy_ns"][0], json!(301));
-        assert_eq!(status["naval_copy_ns"].as_array().unwrap().len(), 9);
-        assert_eq!(status["players_copy_ns"], json!([401, 0]));
-        assert_eq!(status["session_copy_ns"], json!([501, 0, 0]));
-        // Existing keys survive the additive merge.
-        assert!(status["table_ns"].is_array());
-        assert_eq!(status["hours"], 0);
-        assert_eq!(status["spool_work"]["lexical_conversion"]["hits"], 0);
-        assert_eq!(status["spool_work"]["lexical_conversion"]["misses"], 0);
-        assert_eq!(
-            status["spool_work"]["lexical_conversion"]["additional_native_dictionary_capacity_bytes"],
-            0
-        );
-        assert_eq!(status["spool_work"]["character_shadow"]["campaigns"], 0);
-        assert_eq!(
-            status["spool_work"]["character_shadow"]["retained_capacity_bytes"],
-            0
-        );
     }
 
     use engine_native::msvc_string::Text;
@@ -7716,28 +5918,6 @@ mod tests {
         captured
     }
 
-    pub(super) fn prepare_order_counter_sample(source: &mut Captured, hour: i32, seq: u64) {
-        source.capture_seq = seq;
-        source.clock = Some(clock(hour));
-        source.qpc = 1000;
-        source.country_cache_status = engine_native::country_memory::SeedStatus::Ready;
-        source.order_counters.forced = true;
-        source.order_counters.read = Some(engine_native::ccountry::OrderInstanceCounterRead {
-            len: 1,
-            required: 1,
-            unreadable: 0,
-        });
-        source.order_counters.rows[0] = engine_native::ccountry::OrderInstanceCounter {
-            pointer: 0x2000,
-            country: 3,
-            canonical_slot: 1,
-            value: Some(3806),
-        };
-        source.order_counters.qpc_begin = 2000;
-        source.order_counters.qpc_end = 2100;
-        source.order_counters.elapsed_ns = 10_000;
-    }
-
     fn owned_prepared_fixture(captured: &Captured, branch: BranchId) -> PreparedFrame {
         let clock = captured.clock.as_ref().unwrap().copy_owned().unwrap();
         let source: FrameInput = decoded(captured, clock.clone(), branch).into();
@@ -7751,11 +5931,8 @@ mod tests {
             unknown: 0,
             retry_full,
             unpublished_families: 0,
-            skipped: [false; TABLE_COUNT],
             work: WorkSample::default(),
-            pack_ticks: [None; crate::extended::PACK_NAMES.len()],
             sampled: CapturedStatistics::capture(captured).unwrap(),
-            witness: PreparedOrderWitness::capture(captured, Some(branch)),
             operation_publication: None,
             map_event_publication: None,
             event_feed_publication: None,
@@ -7763,28 +5940,18 @@ mod tests {
     }
 
     #[test]
-    fn prepared_output_statistics_and_forced_witness_survive_capture_reuse() {
+    fn prepared_output_statistics_survive_capture_reuse() {
         let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 7);
         source.total_ns = 123;
-        source.hour_cost.growths = 43;
-        source.table_ns[TableId::Clock.index()] = 45;
-        source.table_reads[TableId::Clock.index()].copy_calls = 6;
         source.pool_bytes = 789;
-        source.country_cache_entries = 12;
-        source.country_cache_ns = 34;
         source.dropped_frames = 2;
         let expected = decoded(&source, clock(10), 1);
-        let allocated = source.allocated_bytes();
         let prepared = owned_prepared_fixture(&source, 1);
         // Reuse every field and allocation of the producer before consumption.
-        source = captured(11);
-        prepare_order_counter_sample(&mut source, 11, 8);
-        source.order_counters.rows[0].value = Some(999);
+        let _ = std::mem::replace(&mut source, captured(11));
         let PreparedFrame {
             source: owned,
             sampled,
-            witness,
             ..
         } = prepared;
         let mut encoder = FrameEncoder::new();
@@ -7796,77 +5963,14 @@ mod tests {
         assert_eq!(actual.metrics, expected.metrics);
         let mut stats = Statistics::default();
         sampled.record(&mut stats);
-        witness.bind(&mut stats.order_counters, &Ok(()));
         assert_eq!(stats.total_ns, 123);
-        let tail = serde_json::to_value(stats.callback_tail.status(1)).unwrap();
-        assert_eq!(tail["slowest"][0]["hour"], 10);
-        assert_eq!(tail["slowest"][0]["growths"], 43);
-        assert_eq!(stats.table_ns[TableId::Clock.index()], 45);
-        assert_eq!(
-            stats.table_total_reads[TableId::Clock.index()].copy_calls,
-            6
-        );
         assert_eq!(stats.pool_bytes, 789);
-        assert_eq!(stats.sampled_buffer_bytes, allocated);
-        assert_eq!(stats.country_cache_entries, 12);
-        assert_eq!(stats.country_cache_cost.total_ns, 34);
         assert_eq!(stats.dropped_frames, 2);
-        let sample = stats.order_counters.json();
-        assert_eq!(sample["sample"]["clock"]["hour"], 10);
-        assert_eq!(sample["sample"]["sequence"], 7);
-        assert_eq!(sample["sample"]["countries"][0]["counter"], 3806);
-        assert_eq!(sample["sample"]["usable_with_recorded_frame"], true);
     }
 
     #[test]
-    fn prepared_forced_witness_binds_write_failure_after_capture_is_dropped() {
-        let (mut campaign, store) = campaign();
-        let branch = campaign.observe(None, 10, Some(1234)).unwrap();
-        let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 7);
-        let PreparedFrame {
-            source: owned,
-            witness,
-            qpc,
-            clock,
-            ..
-        } = owned_prepared_fixture(&source, branch);
-        drop(source);
-        store.borrow_mut().fail_frame_flush = true;
-        let result = campaign.write(
-            owned,
-            qpc,
-            Some(clock.play_session_started_at),
-            0,
-            &mut WorkSample::default(),
-        );
-        assert!(result.is_err());
-        let mut retained = OrderCounterWitness::default();
-        witness.bind(&mut retained, &result);
-        assert_eq!(retained.json()["sample"]["sequence"], 7);
-        assert_eq!(retained.json()["sample"]["frame_write_succeeded"], false);
-        assert_eq!(
-            retained.json()["sample"]["usable_with_recorded_frame"],
-            false
-        );
-        assert!(campaign.disk_branch.is_none());
-        assert!(!campaign.pending.is_empty());
-        // A later ordinary failure must still invalidate the retained sample.
-        let mut later = captured(11);
-        later.order_counters.forced = false;
-        let ordinary = PreparedOrderWitness::capture(&later, Some(branch));
-        drop(later);
-        ordinary.bind(&mut retained, &Err(io::Error::other("later failure")));
-        assert_eq!(
-            retained.json()["sample"]["subsequent_io_error"],
-            "spool I/O failed"
-        );
-    }
-
-    #[test]
-    fn prepared_retry_verdict_retains_frame_but_forced_diagnostics_do_not() {
-        let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 7);
+    fn prepared_retry_verdict_retains_frame() {
+        let source = captured(10);
         let mut prepared = owned_prepared_fixture(&source, 1);
         // Synthetic fully complete tables represent a successful full refresh.
         prepared.source.tables = TableId::ALL
@@ -7874,7 +5978,6 @@ mod tests {
         prepared.retry_full = needs_retry(&prepared.source.tables);
         assert!(!prepared.needs_retry());
         assert!(prepared.allows_early_recycle());
-        assert!(prepared.witness.forced.is_some());
         let static_table = TableId::ALL
             .into_iter()
             .find(|table| {
@@ -7896,226 +5999,6 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Acquire)
         );
         assert!(!shared.force_next.load(std::sync::atomic::Ordering::Acquire));
-    }
-
-    #[test]
-    fn order_counter_status_keeps_owned_sample_hour_sequence_and_write_failure() {
-        let mut source = captured(10);
-        let mut witness = OrderCounterWitness::default();
-        assert!(witness.json()["sample"].is_null());
-        prepare_order_counter_sample(&mut source, 10, 0);
-        witness.observe(&source, Some(2), &Ok(()));
-        let first = witness.json();
-        assert_eq!(first["sample"]["sequence"], 0);
-        assert_eq!(first["sample"]["branch"], 2);
-        assert_eq!(first["sample"]["usable_with_recorded_frame"], true);
-        assert_eq!(
-            first["sample"]["source_capacity_bytes"],
-            source.order_counters.allocated_bytes()
-        );
-        assert_eq!(
-            first["retained_capacity_bytes"],
-            witness.rows.capacity()
-                * std::mem::size_of::<engine_native::ccountry::OrderInstanceCounter>()
-        );
-        prepare_order_counter_sample(&mut source, 11, 1);
-        source.order_counters.forced = false;
-        source.order_counters.rows[0].value = Some(999);
-        witness.observe(&source, Some(3), &Ok(()));
-        assert_eq!(witness.json(), first);
-        source.order_counters.forced = true;
-        witness.observe(
-            &source,
-            Some(3),
-            &Err(io::Error::other("injected frame failure")),
-        );
-        let failed = witness.json();
-        assert_eq!(failed["sample"]["clock"]["hour"], 11);
-        assert_eq!(failed["sample"]["sequence"], 1);
-        assert_eq!(failed["sample"]["branch"], 3);
-        assert_eq!(failed["sample"]["countries"][0]["counter"], 999);
-        assert_eq!(failed["sample"]["sample_valid"], true);
-        assert_eq!(failed["sample"]["frame_write_succeeded"], false);
-        assert_eq!(failed["sample"]["frame_write_error"], "spool I/O failed");
-        assert_eq!(failed["sample"]["usable_with_recorded_frame"], false);
-        source.order_counters.forced = false;
-        witness.observe(&source, Some(3), &Ok(()));
-        assert_eq!(witness.json(), failed);
-        prepare_order_counter_sample(&mut source, 12, 2);
-        source.clock.as_mut().unwrap().play_session_started_at = 5678;
-        witness.observe(&source, Some(4), &Ok(()));
-        assert_eq!(witness.json()["sample"]["usable_with_recorded_frame"], true);
-        assert_eq!(witness.json()["sample"]["branch"], 4);
-        assert_eq!(witness.json()["sample"]["clock"]["load_signal"], 5678);
-    }
-
-    #[test]
-    fn order_counter_status_retains_sampled_allocation_values_and_missing_metadata() {
-        let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 7);
-        let before = AllocationCounters {
-            debug_current_ref_id: Some(u32::MAX),
-            unit: Some(11),
-            order_index: Some(12),
-            front_index: Some(13),
-            theatre_index: Some(14),
-            theater_group_index: Some(15),
-            military_deployment_line_index: Some(16),
-            military_deployment_conveyor_index: Some(17),
-            equipment_variant_index: Some(18),
-            country_leader_index: Some(19),
-            navy_id: Some(20),
-            land_combat_id: Some(21),
-            multiplayer_random_count: Some(-100),
-        };
-        source.counters = Some(before);
-        let mut witness = OrderCounterWitness::default();
-        witness.observe(&source, Some(2), &Ok(()));
-        let retained = witness.json();
-        let sample = &retained["sample"];
-        assert_eq!(sample["sequence"], 7);
-        assert_eq!(sample["branch"], 2);
-        assert_eq!(sample["clock"]["hour"], 10);
-        assert_eq!(sample["sample_valid"], true);
-        assert_eq!(sample["usable_with_recorded_frame"], true);
-        assert_eq!(
-            sample["allocation_counters"],
-            json!({
-                "debug_current_ref_id": u32::MAX,
-                "unit": 11,
-                "order_index": 12,
-                "front_index": 13,
-                "theatre_index": 14,
-                "theater_group_index": 15,
-                "military_deployment_line_index": 16,
-                "military_deployment_conveyor_index": 17,
-                "equipment_variant_index": 18,
-                "country_leader_index": 19,
-                "navy_id": 20,
-                "land_combat_id": 21,
-                "multiplayer_random_count": -100,
-            })
-        );
-        // A reused frame and a later ordinary hour cannot change the bound
-        // force_full sample. Missing counter metadata adds no new validity gate.
-        prepare_order_counter_sample(&mut source, 11, 8);
-        source.order_counters.forced = false;
-        source.counters = None;
-        witness.observe(&source, Some(3), &Ok(()));
-        assert_eq!(witness.json(), retained);
-        source.order_counters.forced = true;
-        witness.observe(&source, Some(3), &Ok(()));
-        let missing = witness.json();
-        assert_eq!(missing["sample"]["sequence"], 8);
-        assert_eq!(missing["sample"]["branch"], 3);
-        assert!(missing["sample"]["allocation_counters"].is_null());
-        assert_eq!(missing["sample"]["sample_valid"], true);
-        assert_eq!(missing["sample"]["usable_with_recorded_frame"], true);
-    }
-
-    #[test]
-    fn order_counter_status_rejects_incomplete_or_unbound_samples() {
-        let mut source = captured(10);
-        let mut witness = OrderCounterWitness::default();
-        for case in 0..9 {
-            prepare_order_counter_sample(&mut source, 10, case);
-            match case {
-                0 => source.clock = None,
-                1 => {
-                    source.country_cache_status =
-                        engine_native::country_memory::SeedStatus::Unavailable {
-                            reason: "no roster",
-                        }
-                }
-                2 => source.order_counters.read = None,
-                3 => source.order_counters.read.as_mut().unwrap().required = 2,
-                4 => source.order_counters.read.as_mut().unwrap().unreadable = 1,
-                5 => source.order_counters.rows[0].value = None,
-                6 => {
-                    source.order_counters.read.as_mut().unwrap().len =
-                        source.order_counters.rows.len() + 1
-                }
-                7 => source.order_counters.qpc_end = source.order_counters.qpc_begin - 1,
-                8 => source.order_counters.qpc_begin = source.qpc - 1,
-                _ => unreachable!(),
-            }
-            witness.observe(&source, Some(2), &Ok(()));
-            assert_eq!(
-                witness.json()["sample"]["sample_valid"],
-                false,
-                "case {case}"
-            );
-            assert_eq!(
-                witness.json()["sample"]["usable_with_recorded_frame"],
-                false,
-                "case {case}"
-            );
-        }
-        prepare_order_counter_sample(&mut source, 10, 20);
-        witness.observe(&source, None, &Err(io::Error::other("branch unavailable")));
-        assert!(witness.json()["sample"]["branch"].is_null());
-        assert_eq!(
-            witness.json()["sample"]["usable_with_recorded_frame"],
-            false
-        );
-    }
-
-    #[test]
-    fn order_counter_status_io_failure_cannot_be_healed_by_an_off_hour() {
-        let mut source = captured(10);
-        prepare_order_counter_sample(&mut source, 10, 1);
-        let mut witness = OrderCounterWitness::default();
-        witness.observe(&source, Some(2), &Ok(()));
-        witness.invalidate_write("different campaign", &io::Error::other("unrelated"));
-        assert_eq!(witness.json()["sample"]["usable_with_recorded_frame"], true);
-        prepare_order_counter_sample(&mut source, 11, 2);
-        source.order_counters.forced = false;
-        witness.observe(
-            &source,
-            Some(2),
-            &Err(io::Error::other("later frame failure")),
-        );
-        assert_eq!(witness.json()["sample"]["clock"]["hour"], 10);
-        assert_eq!(witness.json()["sample"]["sequence"], 1);
-        assert_eq!(
-            witness.json()["sample"]["subsequent_io_error"],
-            "spool I/O failed"
-        );
-        assert_eq!(
-            witness.json()["sample"]["usable_with_recorded_frame"],
-            false
-        );
-        witness.observe(&source, Some(2), &Ok(()));
-        assert_eq!(
-            witness.json()["sample"]["usable_with_recorded_frame"],
-            false
-        );
-        prepare_order_counter_sample(&mut source, 12, 3);
-        witness.observe(&source, Some(2), &Ok(()));
-        assert_eq!(witness.json()["sample"]["usable_with_recorded_frame"], true);
-        witness.invalidate_write(
-            std::str::from_utf8(ID).unwrap(),
-            &io::Error::other("later sync failure"),
-        );
-        assert_eq!(witness.json()["sample"]["frame_write_succeeded"], true);
-        assert_eq!(
-            witness.json()["sample"]["subsequent_io_error"],
-            "spool I/O failed"
-        );
-        assert_eq!(
-            witness.json()["sample"]["usable_with_recorded_frame"],
-            false
-        );
-        source.order_counters.forced = false;
-        witness.observe(&source, Some(2), &Ok(()));
-        assert_eq!(
-            witness.json()["sample"]["usable_with_recorded_frame"],
-            false
-        );
-        prepare_order_counter_sample(&mut source, 12, 3);
-        witness.observe(&source, Some(2), &Ok(()));
-        assert_eq!(witness.json()["sample"]["usable_with_recorded_frame"], true);
-        assert!(witness.json()["sample"]["subsequent_io_error"].is_null());
     }
 
     #[test]
@@ -9145,8 +7028,9 @@ mod tests {
             second_helper: None,
             backlogged: false,
             comparison: Box::default(),
-            writer: crate::spool_writer::Writer::start(PathBuf::new(), session().qpc_frequency)
+            writer: crate::spool_writer::Writer::start(PathBuf::new())
                 .unwrap(),
+            durability: crate::columnar::Durability::start().unwrap(),
             queued: std::collections::VecDeque::new(),
             flight: None,
             writer_error: None,
@@ -9171,22 +7055,11 @@ mod tests {
         assert!(processor.lost(&loss).is_err());
         let mut captured = captured(4);
         captured.clock.as_mut().unwrap().campaign_id = owned_text(b"../invalid");
-        captured.table_reads[TableId::Countries.index()] = ReadCounts {
-            copy_calls: 1,
-            spans: 1,
-            bytes: u64::MAX,
-            ..ReadCounts::ZERO
-        };
         processor.prepare(&captured).unwrap();
         assert!(processor.frame(&captured).is_err());
         assert_eq!(processor.unknown_pending, 4);
         assert!(processor.suppress_origin);
         assert!(processor.campaigns.is_empty());
-        assert_eq!(
-            processor.stats.table_total_reads,
-            [ReadCounts::ZERO; TABLE_COUNT]
-        );
-        assert_eq!(processor.json()["table_reads_frames"], 0);
     }
 
     fn research_rows(rows: &[(u32, u32, i64, i32)]) -> TableRows {
@@ -10861,25 +8734,6 @@ mod tests {
         );
         assert!(packs.iter().all(Option::is_none));
         assert_eq!(campaign.lexical_conversion, before);
-
-        let other = LexicalConversionStats {
-            hits: 7,
-            misses: 11,
-        };
-        let status = serde_json::to_value(lexical_conversion_status([
-            &campaign.lexical_conversion,
-            &other,
-        ]))
-        .unwrap();
-        assert_eq!(status["hits"], before.hits + 7);
-        assert_eq!(status["misses"], before.misses + 11);
-        assert_eq!(status["additional_native_dictionary_capacity_bytes"], 0);
-        assert!(
-            status["cost_scope"]
-                .as_str()
-                .unwrap()
-                .contains("conversion_packs lexical")
-        );
     }
 
     fn character_frame(
@@ -10905,62 +8759,6 @@ mod tests {
             }
         }
         frame
-    }
-
-    #[test]
-    fn character_shadow_status_sums_current_capacity_and_decisions_across_campaigns() {
-        let (mut first, _) = campaign();
-        let branch = first.observe(None, 0, Some(1)).unwrap();
-        let mut source = character_frame(&mut first, branch, 0, 10);
-        first.apply_staggered_inputs(&mut source);
-        let _equal = character_frame(&mut first, branch, 1, 10);
-        let (mut second, _) = campaign();
-        let branch = second.observe(None, 0, Some(1)).unwrap();
-        let _source = character_frame(&mut second, branch, 0, 10);
-
-        let status = serde_json::to_value(character_shadow_status([
-            &first.character_shadow,
-            &second.character_shadow,
-        ]))
-        .unwrap();
-        assert_eq!(status["campaigns"], 2);
-        let mut bytes = 0usize;
-        for (index, (first, second)) in first
-            .character_shadow
-            .statistics()
-            .into_iter()
-            .zip(second.character_shadow.statistics())
-            .enumerate()
-        {
-            let table = &status["tables"][index];
-            assert_eq!(table["hits"], 1);
-            assert_eq!(table["misses"], 2);
-            assert_eq!(
-                table["row_capacity_bytes"],
-                first.row_capacity_bytes + second.row_capacity_bytes
-            );
-            assert_eq!(
-                table["arena_capacity_bytes"],
-                first.arena_capacity_bytes + second.arena_capacity_bytes
-            );
-            bytes += first.row_capacity_bytes
-                + second.row_capacity_bytes
-                + first.arena_capacity_bytes
-                + second.arena_capacity_bytes;
-        }
-        assert_eq!(status["retained_capacity_bytes"], bytes);
-        assert!(
-            status["allocation_scope"]
-                .as_str()
-                .unwrap()
-                .contains("separate from raw/pool")
-        );
-        assert!(
-            status["counter_scope"]
-                .as_str()
-                .unwrap()
-                .contains("skipped inputs excluded")
-        );
     }
 
     fn intel_frame(
@@ -11122,35 +8920,6 @@ mod tests {
         assert!(costs.iter().all(Option::is_none));
         let next = intel_frame(&mut campaign, 1, 1, 10);
         assert!(Arc::ptr_eq(&old, intel_allocation(&next, table)));
-    }
-
-    #[test]
-    fn intel_shadow_status_reports_native_and_shared_replay_storage_separately() {
-        let (mut first, _) = campaign();
-        let (mut second, _) = campaign();
-        intel_frame(&mut first, 1, 0, 10);
-        intel_frame(&mut first, 1, 1, 10);
-        intel_frame(&mut second, 1, 0, 20);
-        let report = serde_json::to_value(intel_shadow_status([
-            &first.intel_shadow,
-            &second.intel_shadow,
-        ]))
-        .unwrap();
-        assert_eq!(report["campaigns"], 2);
-        let (a, b) = (
-            first.intel_shadow.statistics(),
-            second.intel_shadow.statistics(),
-        );
-        assert_eq!(
-            report["retained_native_capacity_bytes"],
-            a.row_capacity_bytes + b.row_capacity_bytes
-        );
-        assert_eq!(
-            report["retained_replay_capacity_bytes"],
-            a.replay_capacity_bytes + b.replay_capacity_bytes
-        );
-        assert_eq!(report["hits"], 1);
-        assert_eq!(report["misses"], 2);
     }
 
     #[test]

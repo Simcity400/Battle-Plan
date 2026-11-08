@@ -36,8 +36,6 @@ pub const TABLES: [TableId; N] = [
     TableId::CountryStabilityInputs,
     TableId::CountryStabilityLines,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("stability inputs, census and tree lines", 0, &[0, 1])];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

@@ -265,30 +265,6 @@ impl Forward {
         Self::CountryCharacters,
     ];
 
-    fn name(self) -> &'static str {
-        match self {
-            Self::ResetCountry => "reset_country",
-            Self::RulingParty => "ruling_party",
-            Self::Ideas => "ideas",
-            Self::Popularity => "popularity",
-            Self::PartyLeaders => "party_leaders",
-            Self::Roles => "character_roles",
-            Self::ScientistRoles => "scientist_roles",
-            Self::ScientistTraits => "scientist_traits",
-            Self::DiplomacyReset => "diplomacy_reset",
-            Self::Focus => "focus",
-            Self::CharacterIdentity => "character_identity",
-            Self::WartimeAllies => "wartime_allies",
-            Self::StateOwner => "state_owner",
-            Self::StateController => "state_controller",
-            Self::StateReset => "state_reset",
-            Self::Cores => "cores",
-            Self::RelationReset => "relation_reset",
-            Self::RelationSlot => "relation_slot",
-            Self::CountryCharacters => "country_characters",
-        }
-    }
-
     /// How the forwarded first argument names the country.
     fn receiver(self) -> Receiver {
         match self {
@@ -407,21 +383,6 @@ impl Forwarder {
         Self::Opinions,
         Self::AdvisorPool,
     ];
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Politics => "politics_changes",
-            Self::PoliticalStatus => "political_status_changes",
-            Self::PartyLeaders => "party_leader_changes",
-            Self::Roles => "advisor_changes",
-            Self::Roster => "roster_changes",
-            Self::Relations => "relation_changes",
-            Self::Territory => "territory_changes",
-            Self::Raid => "raid_changes",
-            Self::Opinions => "opinion_changes",
-            Self::AdvisorPool => "advisor_pool_changes",
-        }
-    }
 
     /// Whether a writer this family forwards reaches set `set`: a set
     /// observes only while each such family's patches are enabled.
@@ -1318,67 +1279,6 @@ pub fn record_carried(table: Table, carried: u64) {
     CARRIED[table as usize].fetch_add(carried, Ordering::Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&DOMAIN.calls)
-            .map(|((site, _, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let forwarded = crate::status::map(
-        Forward::ALL
-            .iter()
-            .zip(&DOMAIN.forwarded)
-            .map(|(site, n)| (site.name(), n.load(Ordering::Relaxed))),
-    );
-    let forwarders = crate::status::map(
-        Forwarder::ALL
-            .iter()
-            .zip(&DOMAIN.forwarders)
-            .map(|(family, enabled)| (family.name(), enabled.load(Ordering::Relaxed))),
-    );
-    let table = |table: Table| {
-        let reads = READS[table as usize]
-            .each_ref()
-            .map(|value| value.load(Ordering::Relaxed));
-        crate::status::status!({
-            "carried_countries": CARRIED[table as usize].load(Ordering::Relaxed),
-            "marked_countries": reads[0],
-            "read_countries": reads[1],
-            "full_reads": reads[2],
-            "hours": DOMAIN.hours[table as usize].load(Ordering::Relaxed),
-            "set": DOMAIN.set(table).status(),
-        })
-    };
-    crate::status::status!({
-        "configured": cfg!(feature = "country_input_changes"),
-        "sets_configured": CONFIGURED,
-        "observed": DOMAIN.hooks.load(Ordering::Relaxed),
-        "poisoned": DOMAIN.sets.iter().any(|set| set.poisoned()),
-        "stability": table(Table::Stability),
-        "research": table(Table::Research),
-        "technologies": table(Table::Technologies),
-        "focus": table(Table::Focus),
-        "projects": table(Table::Projects),
-        "appearance": table(Table::Appearance),
-        "counters": table(Table::Counters),
-        "visibility": table(Table::Visibility),
-        "acquired_crews": crate::crew_changes::status(),
-        "wargoals": crate::wargoal_changes::status(),
-        "designs": table(Table::Designs),
-        "unit_speeds": table(Table::UnitSpeeds),
-        "events": events,
-        "forwarded": forwarded,
-        "forwarders": forwarders,
-        "unnamed_receivers": DOMAIN.unnamed.load(Ordering::Relaxed),
-        "resynced_slot_rosters": DOMAIN.resynced.load(Ordering::Relaxed),
-        "weather_writes": DOMAIN.weather_writes.load(Ordering::Relaxed),
-        "weather": weather_carry::status(),
-        "changed_faction_sharing_bases": DOMAIN.rebased.load(Ordering::Relaxed),
-        "changed_leader_rosters": DOMAIN.removed_leaders.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; the stability, research, technology, appearance, counter and visibility families read, beside their daily slice (the focus and projects families: every country after the daily tick), every country a hooked or forwarded writer marked since the previous hour (marked_countries); an unmarked country keeps the rows of its last read only while the hour's take returned the held epoch and the per-read globals are unchanged (visibility holds raw accumulator presence/value and recomputes the effective value hourly), and otherwise every country is read (full_reads); the research and technology families carry an unmarked drifting country at its slice, reading only its daily drift afresh; a family's set observes only while the hooks and every family forwarding one of its writers are enabled (forwarders)"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

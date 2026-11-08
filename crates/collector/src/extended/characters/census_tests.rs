@@ -961,7 +961,6 @@ fn census_advisor_cache_keeps_reuse_and_fresh_countries() {
     // still acquires both independent headers: numeric cache (16 bytes) and
     // tooltip set (17 bytes), even when both are empty.
     assert_eq!(counting.calls.get(), 2 + 2 * demand.rows);
-    assert_eq!(counting.bytes.get() as u64, cache.raw_bytes);
     characters_test_kit::assert_matches_direct(&decode_cache(&cache), &fresh(&world));
     cache.prepare();
     // A changed country comes from the current census, never the entry.

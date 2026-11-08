@@ -1,13 +1,7 @@
 //! Ordered file ownership; admission never lends capture or encoder storage.
 
-use crate::{
-    allocation::{self, Context},
-    sampling::qpc,
-    spooling::WallTotals,
-};
-use replay::spool::{
-    BackgroundSyncWork, FileBackend, Record, SealedRecord, SegmentBackend, SegmentedSpool,
-};
+use crate::allocation::{self, Context};
+use replay::spool::{FileBackend, Record, SealedRecord, SegmentBackend, SegmentedSpool};
 use replay_frame::frame::EncodedFrame;
 use std::{
     collections::VecDeque,
@@ -92,30 +86,7 @@ pub(crate) struct Diagnostics {
     deferred_bytes: usize,
     owned_bytes: usize,
     waiting: usize,
-    peak: usize,
     budget: usize,
-    backpressure: WallTotals,
-    writes: WallTotals,
-    sync: BackgroundSyncWork,
-}
-impl Diagnostics {
-    pub(crate) fn queue_status(&self) -> impl serde::Serialize + use<> {
-        use crate::status::status;
-        status!({
-            "queued_bytes": self.bytes, "peak_bytes": self.peak, "budget_bytes": self.budget, "deferred_receipt_bytes": self.deferred_bytes, "owned_bytes": self.owned_bytes,
-            "scope": "sealed records, deferred receipts and per-job ledgers, queued and in flight; receipts retain at most half the budget until applied; minimum 64 MiB, growing to twice the largest record with receipts; no capture buffers or baselines",
-            "backpressure": self.backpressure.status(),
-            "writer_writes": self.writes.status(),
-        })
-    }
-    pub(crate) fn writes(&self) -> impl serde::Serialize + use<> {
-        self.writes.status()
-    }
-    pub(crate) fn sync_status(&self) -> impl serde::Serialize + use<> {
-        use crate::status::status;
-        let work = self.sync;
-        status!({ "requested": work.requested, "completed": work.completed, "total_ns": work.total_ns, "max_ns": work.max_ns, "pending": work.pending, "threads": work.threads })
-    }
 }
 
 #[derive(Default)]
@@ -263,7 +234,6 @@ impl State {
 pub(crate) struct Shared {
     state: Mutex<State>,
     changed: Condvar,
-    frequency: u64,
 }
 impl Shared {
     fn reconcile(state: &mut State) {
@@ -273,7 +243,6 @@ impl Shared {
             + state.completions.len() * size_of::<Completion>()
             + state.frames.len() * size_of::<FrameWitness>()
             + state.contexts.len() * size_of::<Context>();
-        state.diagnostics.peak = state.diagnostics.peak.max(state.diagnostics.bytes);
         state
             .close_receipts
             .retain(|receipt| receipt.strong_count() != 0);
@@ -432,7 +401,7 @@ impl Shared {
                 .checked_add(receipt_bytes)
                 .ok_or_else(engine_allocation::oom)?,
         );
-        let mut waited = None;
+        let mut waited = false;
         while state.diagnostics.bytes > budget.saturating_sub(bytes) {
             if !wait {
                 return Err(io::ErrorKind::WouldBlock.into());
@@ -443,8 +412,8 @@ impl Shared {
             if state.blocked {
                 return Err(io::Error::other("spool writer failure awaiting receipts"));
             }
-            if waited.is_none() {
-                waited = Some(qpc());
+            if !waited {
+                waited = true;
                 state.diagnostics.waiting += 1;
                 self.changed.notify_all();
             }
@@ -453,12 +422,8 @@ impl Shared {
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        if let Some(started) = waited {
+        if waited {
             state.diagnostics.waiting -= 1;
-            state
-                .diagnostics
-                .backpressure
-                .record_ticks(qpc() - started, self.frequency);
         }
         if allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -569,9 +534,9 @@ pub(crate) struct Writer {
     thread: Option<JoinHandle<()>>,
 }
 impl Writer {
-    pub(crate) fn start(root: PathBuf, frequency: u64) -> io::Result<Self> {
+    pub(crate) fn start(root: PathBuf) -> io::Result<Self> {
         let factory_bytes = root.capacity();
-        let writer = Self::start_with(frequency, move |campaign| {
+        let writer = Self::start_with(move |campaign| {
             let id = std::str::from_utf8(campaign).map_err(|_| io::ErrorKind::InvalidData)?;
             FileBackend::ordered(root.join(id))
         })?;
@@ -584,13 +549,11 @@ impl Writer {
     }
 
     pub(crate) fn start_with<B: SegmentBackend + 'static>(
-        frequency: u64,
         create: impl FnMut(&CampaignId) -> io::Result<B> + Send + 'static,
     ) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::default(),
             changed: Condvar::new(),
-            frequency,
         });
         let worker = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
@@ -679,7 +642,6 @@ impl Writer {
     }
     pub(crate) fn wait_receipt_progress(&self) -> io::Result<()> {
         let mut state = self.shared.lock();
-        let started = qpc();
         state.diagnostics.waiting += 1;
         self.shared.changed.notify_all();
         while state.completions.is_empty() && !state.stopped {
@@ -690,10 +652,6 @@ impl Writer {
                 .unwrap_or_else(PoisonError::into_inner);
         }
         state.diagnostics.waiting -= 1;
-        state
-            .diagnostics
-            .backpressure
-            .record_ticks(qpc() - started, self.shared.frequency);
         if state.stopped {
             Err(io::Error::other("spool writer stopped before receipt"))
         } else {
@@ -729,7 +687,6 @@ impl Writer {
     pub(crate) fn test_budget(&self, budget: usize) {
         let mut state = self.shared.lock();
         state.diagnostics.budget = budget;
-        state.diagnostics.peak = state.diagnostics.bytes;
     }
     #[cfg(test)]
     pub(crate) fn test_uncommitted_hours(&self) -> Vec<i32> {
@@ -762,7 +719,7 @@ impl Writer {
     pub(crate) fn test_storage_probe(
         &self,
         baseline: u64,
-    ) -> impl FnOnce() -> Diagnostics + Send + use<> {
+    ) -> impl FnOnce() -> (usize, usize) + Send + use<> {
         let shared = Arc::clone(&self.shared);
         move || {
             let mut state = shared.lock();
@@ -778,7 +735,10 @@ impl Writer {
                 state.pool.counter.as_ref().unwrap().load(Ordering::Relaxed),
                 baseline + state.diagnostics.owned_bytes as u64
             );
-            state.diagnostics
+            (
+                state.diagnostics.deferred_bytes,
+                state.diagnostics.owned_bytes,
+            )
         }
     }
     #[cfg(test)]
@@ -803,9 +763,6 @@ impl Writer {
         }
     }
 
-    pub(crate) fn diagnostics(&self) -> Diagnostics {
-        self.shared.lock().diagnostics
-    }
     pub(crate) fn shutdown(&mut self) {
         self.shared.lock().stop = true;
         self.shared.changed.notify_all();
@@ -1135,7 +1092,6 @@ impl<B: SegmentBackend> Output<B> {
 
 fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId) -> io::Result<B>) {
     let mut spools: Vec<(CampaignId, u64, SegmentedSpool<B>)> = Vec::new();
-    let mut sync_totals = BackgroundSyncWork::default();
     loop {
         let job = {
             let mut state = shared.lock();
@@ -1165,11 +1121,7 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
                     campaign_id: Some(*campaign),
                     ..Context::default()
                 });
-                let before = spool.background_sync_totals();
-                let result = spool.sync_if_due();
-                let after = spool.background_sync_totals();
-                merge_sync(&mut sync_totals, before, after);
-                if let Err(error) = result {
+                if let Err(error) = spool.sync_if_due() {
                     let mut state = shared.lock();
                     state.fail(*campaign, *generation);
                     state.blocked = true;
@@ -1186,12 +1138,10 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
                     shared.changed.notify_all();
                 }
             }
-            shared.lock().diagnostics.sync = sync_totals;
             continue;
         };
         allocation::set_context(job.context);
         let _phase = allocation::enter(allocation::Phase::Spool);
-        let started = qpc();
         let is_frame = matches!(
             &job.command,
             Command::StartSegment { frame: true, .. } | Command::Records { frame: true, .. }
@@ -1231,7 +1181,6 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
                 .unwrap();
             let before_commit = spool.committed_watermark();
             let before_frames = spool.committed_frames();
-            let before_sync = spool.background_sync_totals();
             let result = match job.command {
                 Command::StartSegment { records, frame } => {
                     *generation = job.generation;
@@ -1287,11 +1236,8 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
             if result.is_err() {
                 let _ = spool.finish_segment();
             }
-            let after_sync = spool.background_sync_totals();
-            merge_sync(&mut sync_totals, before_sync, after_sync);
             result
         })();
-        let elapsed = qpc() - started;
         let mut state = shared.lock();
         state.backend_bytes = spools.capacity() * size_of::<(CampaignId, u64, SegmentedSpool<B>)>()
             + spools
@@ -1335,11 +1281,6 @@ fn serve<B: SegmentBackend>(shared: &Shared, mut create: impl FnMut(&CampaignId)
         }
         state.payload_bytes -= job.payload_bytes;
         state.unfinished_jobs -= 1;
-        state
-            .diagnostics
-            .writes
-            .record_ticks(elapsed, shared.frequency);
-        state.diagnostics.sync = sync_totals;
         state.completed = job.ticket;
         state.completions.push_back(Completion {
             ticket: job.ticket,
@@ -1389,23 +1330,6 @@ fn cancel_queued(state: &mut State, kind: io::ErrorKind) {
     Shared::reconcile(state);
 }
 
-fn merge_sync(
-    total: &mut BackgroundSyncWork,
-    before: BackgroundSyncWork,
-    after: BackgroundSyncWork,
-) {
-    total.requested = total
-        .requested
-        .saturating_add(after.requested.saturating_sub(before.requested));
-    total.completed = total
-        .completed
-        .saturating_add(after.completed.saturating_sub(before.completed));
-    total.total_ns = total
-        .total_ns
-        .saturating_add(after.total_ns.saturating_sub(before.total_ns));
-    total.max_ns = total.max_ns.max(after.max_ns);
-}
-
 fn same_context(left: Context, right: Context) -> bool {
     left.campaign_id == right.campaign_id
         && left.branch == right.branch
@@ -1425,7 +1349,6 @@ mod tests {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             changed: Condvar::new(),
-            frequency: 10_000_000,
         });
         let mut output: Output = Output::Queued {
             shared: Arc::clone(&shared),

@@ -623,7 +623,7 @@ mod census_tests {
         writer.join().unwrap();
         assert!(!repair::pending());
         assert!(pending());
-        assert!(status().lock_contentions >= 1);
+        assert!(LOCK_CONTENTIONS.load(Ordering::Relaxed) >= 1);
         assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
         assert!(!Arc::ptr_eq(
             &recovered.definitions.rows[0].design,
@@ -890,7 +890,7 @@ mod census_tests {
             interval,
             Err("variant change interval has an unobserved or running writer")
         );
-        assert_eq!(status().running_refusals, 1);
+        assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 1);
     }
     #[test]
     fn variant_recovery_reacquires_deep_values_after_a_completed_unforwarded_bonus_refresh() {
@@ -1147,11 +1147,10 @@ mod census_tests {
         assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
         assert_eq!(changes.len(), 1);
         assert!(changes[0].scalar.is_some());
-        let status = status();
-        assert_eq!(status.missed_refusals, 0);
-        assert_eq!(status.running_refusals, 0);
-        assert_eq!(status.repaired_receivers, 0);
-        assert_eq!(status.lock_contentions, 1);
+        assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 0);
+        assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 0);
+        assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 0);
+        assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
         assert!(!needs_full());
     }
     #[test]
@@ -1184,10 +1183,9 @@ mod census_tests {
         // Publishing that same draft is different: it adds a saved member.
         unrecorded_writer(Receiver::Published, sources[7].pointer(), None);
         assert!(drain(space.base, 7, &mut Vec::new()).is_err());
-        let status = status();
-        assert_eq!(status.running_refusals, 0);
-        assert_eq!(status.missed_refusals, 1);
-        assert!(status.last_missed_at.is_some());
+        assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 0);
+        assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 1);
+        assert!(!LAST_MISSED_AT.load(Ordering::Acquire).is_null());
     }
     #[test]
     fn variant_log_owner_collision_marks_known_receivers_without_revoking_unrelated_designs() {

@@ -1,5 +1,5 @@
 //! One hourly store loan spans acquisition and FIFO owned settlement.
-use crate::acquisition::callback_parks::{self, Site, lock_callback};
+use crate::acquisition::lock_unpoisoned;
 use crate::extended::attack_stats::ArmyStatStore;
 use std::{
     ops::{Deref, DerefMut},
@@ -63,7 +63,7 @@ impl Slot {
         }
     }
     pub(crate) fn take(self: &Arc<Self>) -> Option<Loan> {
-        let mut store = lock_callback(&self.store, Site::StoreMutex);
+        let mut store = lock_unpoisoned(&self.store);
         let waiting = store
             .is_none()
             .then(|| {
@@ -83,13 +83,11 @@ impl Slot {
             if let Some(hook) = self.before_wait.get() {
                 hook();
             }
-            let park = callback_parks::Park::new(Site::StoreReturn);
             store = self
                 .returned
                 .wait_timeout(store, std::time::Duration::from_millis(10))
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .0;
-            drop(park);
         }
         let mut held = store.take();
         self.loaned.store(true, Ordering::SeqCst);
@@ -143,7 +141,7 @@ impl Drop for Loan {
     fn drop(&mut self) {
         // Aborted acquisition, dropped frames and decode unwind cannot carry a partial baseline.
         self.prepare_return();
-        let mut slot = lock_callback(&self.owner.store, Site::StoreMutex);
+        let mut slot = lock_unpoisoned(&self.owner.store);
         assert!(slot.is_none(), "one presentation store loan");
         *slot = self.store.take();
         self.owner.loaned.store(false, Ordering::SeqCst);
@@ -159,7 +157,7 @@ impl Drop for Loan {
             hook();
         }
         if let Some(priority) = priority {
-            priority.refresh(crate::frame_priority::Caller::Worker);
+            priority.refresh();
         }
     }
 }
@@ -178,18 +176,11 @@ mod tests {
         slot.set_priority(Arc::clone(&priority));
         let loan = slot.take().unwrap();
         slot.prepare_hour(12, false);
-        let pending = serde_json::to_value(priority.status(1_000_000_000)).unwrap();
-        assert_eq!(pending["requested_priority"], 2);
-        assert_eq!(pending["store_expected"], true);
+        assert_eq!(priority.store_state(), (true, 2, 0));
         drop(loan);
-        let returned = serde_json::to_value(priority.status(1_000_000_000)).unwrap();
-        assert_eq!(returned["requested_priority"], 0);
-        assert_eq!(returned["store_expected"], false);
+        assert_eq!(priority.store_state(), (false, 0, 0));
         let _next = slot.take().unwrap();
-        assert_eq!(
-            serde_json::to_value(priority.status(1_000_000_000)).unwrap()["store_waiters"],
-            0
-        );
+        assert_eq!(priority.store_state().2, 0);
     }
     #[test]
     fn a_loan_returned_between_the_check_and_the_hint_leaves_no_expectation() {
@@ -205,9 +196,7 @@ mod tests {
         // prepare_hour saw the loan outstanding; decode returns it before the hint is published.
         drop(loan);
         priority.expect_store(&slot.loaned);
-        let status = serde_json::to_value(priority.status(1_000_000_000)).unwrap();
-        assert_eq!(status["store_expected"], false);
-        assert_eq!(status["requested_priority"], 0);
+        assert_eq!(priority.store_state(), (false, 0, 0));
     }
     #[test]
     fn a_delayed_return_tail_keeps_the_next_loans_hint() {
@@ -236,9 +225,7 @@ mod tests {
         // Taken out before asserting, so a failure still drops it and breaks the hook's cycle.
         let next = next.lock().unwrap().take();
         assert!(next.is_some());
-        let status = serde_json::to_value(priority.status(1_000_000_000)).unwrap();
-        assert_eq!(status["store_expected"], true);
-        assert_eq!(status["requested_priority"], 2);
+        assert_eq!(priority.store_state(), (true, 2, 0));
     }
     #[test]
     fn daily_and_full_revocation_survive_an_older_decode_and_skipped_dispatch() {

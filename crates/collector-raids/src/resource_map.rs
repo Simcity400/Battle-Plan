@@ -32,18 +32,6 @@ pub const TABLES: [TableId; N] = [
     TableId::TradeRoutes,
     TableId::RegionalConvoyEfficiency,
 ];
-/// One walk reads the origins, rights, oil factors and convoy clients; the temporary
-/// resources and the routes are their own reads.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    (
-        "resource origins, rights, oil factors and convoy clients",
-        0,
-        &[0, 1, 2, 4],
-    ),
-    ("state temporary resources", 3, &[3]),
-    ("trade routes", 5, &[5]),
-    ("regional convoy efficiency of bad naval routes", 6, &[6]),
-];
 
 /// Every buffer grows on the worker from what the walk finds.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

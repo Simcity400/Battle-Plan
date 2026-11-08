@@ -688,13 +688,6 @@ pub fn drain(
     result.and_then(|len| refused.map_or(Ok(len), Err))
 }
 
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "unhooked": UNHOOKED.get(), "enabled": ENABLED.load(Ordering::SeqCst),
-        "calls": CALLS.each_ref().map(|value| value.load(Ordering::Relaxed)),
-        "refusals": REFUSALS.load(Ordering::Relaxed), "refused": FIRST_REFUSAL.get(),
-    })
-}
 
 /// Only once no published tap can run: writers never load the table again.
 fn release(store: &Mutex<Option<Store>>) {

@@ -796,6 +796,12 @@ impl WatchRegistry {
         self.requested.load(SeqCst) > self.capacity.load(Relaxed)
     }
 
+    /// Slots of the installed table, for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn capacity(&self) -> usize {
+        self.capacity.load(Relaxed)
+    }
+
     /// Model a notification crossing the last install, for tests.
     #[cfg(any(test, feature = "test-support"))]
     pub fn defer_retirement(&self) {
@@ -884,19 +890,6 @@ impl WatchRegistry {
         }
     }
 
-    pub fn status(&self) -> impl serde::Serialize {
-        crate::status::status!({
-            "capacity": self.capacity.load(Relaxed),
-            "registered": self.registered.load(Relaxed),
-            "refused_registrations": self.refused.load(Relaxed),
-            "clears": self.clears.load(Relaxed),
-            "installs": self.installs.load(Relaxed),
-            "deferred_boundaries": self.deferred.load(Relaxed),
-            "held_for_full_hour": self.held.load(Relaxed),
-            "failed_offers": self.failed_offers.load(Relaxed),
-            "scope": "cumulative since attach; refused registrations cannot certify a carry; a clear or boundary install starts an epoch and waits for an invalidating hour (attach, load, gap or recovery); exclusive quiescent growth preserves live certificates"
-        })
-    }
 }
 
 impl Drop for WatchRegistry {

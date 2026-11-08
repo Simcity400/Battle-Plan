@@ -990,8 +990,8 @@ fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
         );
     }
     assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
-    assert_eq!(status().missed_refusals, 0);
-    assert_eq!(status().running_refusals, 0);
+    assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 0);
+    assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 0);
 }
 
 mod concurrency;

@@ -34,14 +34,6 @@ pub const TABLES: [TableId; N] = [
     TableId::ThreatCountryAggregates,
 ];
 
-/// Root authentication and both array headers are read once per pass and
-/// charged to the manager row; the two vectors keep their own read times.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "world threat manager, sources and aggregates",
-    0,
-    &[0, 1, 2],
-)];
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {
     pub rows: [usize; N],

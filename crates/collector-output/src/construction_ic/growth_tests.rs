@@ -120,16 +120,13 @@ fn original_overflow_demand_survives_consumption_with_unchanged_native_hint() {
 }
 
 #[test]
-fn failed_live_hint_is_counted_and_retains_full_original_burst_pressure() {
+fn failed_live_hint_retains_full_original_burst_pressure() {
     let _lock = test_lock();
     observe_for_test(true, 0);
     reset_log_for_test(0);
     append_burst(10_003);
     let mut output = Vec::new();
     let loss = drain_growing(&mut output).unwrap();
-    let before = serde_json::to_value(demand::status()).unwrap()["failed_observations"]
-        .as_u64()
-        .unwrap();
     let missing = engine_native::memory::SliceMemory {
         base: 0,
         bytes: &[],
@@ -137,12 +134,6 @@ fn failed_live_hint_is_counted_and_retains_full_original_burst_pressure() {
     assert_eq!(
         presize_from_live(&missing, 0),
         Err("construction output sizing game state unreadable"),
-    );
-    let failed = serde_json::to_value(demand::status()).unwrap();
-    assert_eq!(failed["failed_observations"], before + 1);
-    assert_eq!(
-        failed["last_reason"],
-        "construction output sizing game state unreadable"
     );
     assert!(!REFUSAL_PENDING.load(Ordering::SeqCst));
     install_offered();

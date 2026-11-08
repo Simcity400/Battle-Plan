@@ -29,48 +29,6 @@ static EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static LOGS: Mutex<Vec<Box<Log>>> = Mutex::new(Vec::new());
 static UNHOOKED: OnceLock<std::borrow::Cow<'static, str>> = OnceLock::new();
 static REQUIRED_LANES: AtomicUsize = AtomicUsize::new(1);
-// 11: thread registrations beyond the dedicated lanes, 12: refused shared appends.
-static COUNTERS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
-const FAILURE_NAMES: [&str; 36] = [
-    "operation completion address overflow",
-    "operation completion module overflow",
-    "operation completion identity unreadable",
-    "operation completion instance vtable mismatch",
-    "operation completion null handle",
-    "operation completion definition unreadable",
-    "operation module address overflow",
-    "operation definition identity unreadable",
-    "operation definition vtable mismatch",
-    "operation completion owner unreadable",
-    "operation completion owner identity unreadable",
-    "operation completion owner vtable mismatch",
-    "operation completion null owner",
-    "operation completion target unreadable",
-    "operation completion terminal unreadable",
-    "operation completion outcomes unreadable",
-    "operation completion stored flags invalid",
-    "operation completion description exceeds native string maximum",
-    "operation completion description header invalid",
-    "operation completion description terminator unreadable or invalid",
-    "operation completion clock address overflow",
-    "operation completion clock unreadable",
-    "operation completion hour address overflow",
-    "operation completion hour unreadable",
-    "operation completion callback incomplete",
-    "operation completion description bytes unreadable",
-    "operation completion staging absent",
-    "operation completion stale handoff",
-    "operation completion description exceeds byte budget",
-    "operation completion description byte ring short",
-    "operation completion description demand overflow",
-    "operation completion description capacity overflow",
-    "operation completion description allocation failed",
-    "operation completion event sequence exhausted",
-    "operation completion shared lane exhausted",
-    "operation completion sealed staging successor absent",
-];
-static FAILURES: [AtomicU64; FAILURE_NAMES.len() + 1] =
-    [const { AtomicU64::new(0) }; FAILURE_NAMES.len() + 1];
 thread_local! {
     static DEPTH: Cell<usize> = const { Cell::new(0) };
     static UNWOUND: Cell<bool> = const { Cell::new(false) };
@@ -356,8 +314,6 @@ impl Drop for Call {
             // Rust cleanup precedes completion of the foreign unwind. Retain
             // this thread's claim; later calls cannot release its return path.
             UNWOUND.set(true);
-            count("operation completion callback incomplete");
-            COUNTERS[9].fetch_add(1, Ordering::Relaxed);
             invalidate();
         }
         DEPTH.with(|depth| {
@@ -372,26 +328,12 @@ pub fn invalidate() {
     EPOCH.fetch_add(1, Ordering::SeqCst);
 }
 pub fn lost_drain() {
-    COUNTERS[7].fetch_add(1, Ordering::Relaxed);
     invalidate();
 }
 fn failed() {
-    COUNTERS[4].fetch_add(1, Ordering::Relaxed);
     invalidate();
 }
-fn count(reason: &'static str) {
-    let index = FAILURE_NAMES
-        .iter()
-        .position(|name| *name == reason)
-        .unwrap_or(FAILURE_NAMES.len());
-    FAILURES[index].fetch_add(1, Ordering::Relaxed);
-}
-fn failed_reason(reason: &'static str) {
-    count(reason);
-    failed();
-}
 fn overflow() {
-    COUNTERS[1].fetch_add(1, Ordering::Relaxed);
     invalidate();
 }
 pub fn thread_slots() -> usize {
@@ -426,7 +368,6 @@ fn lane(log: &Log) -> Target<'_> {
             if index >= log.lanes.len() {
                 // Growth offers a dedicated lane to the next generation.
                 REQUIRED_LANES.fetch_max(index + 1, Ordering::Relaxed);
-                COUNTERS[11].fetch_add(1, Ordering::Relaxed);
             }
             index
         };
@@ -452,7 +393,7 @@ fn publishing(mut log: &Log) -> Option<Publishing<'_>> {
             Err(usize::MAX) => {
                 let next = log.next.load(Ordering::Acquire) as *const Log;
                 if next.is_null() {
-                    failed_reason("operation completion sealed staging successor absent");
+                    failed();
                     return None;
                 }
                 log = unsafe { &*next };
@@ -525,9 +466,7 @@ pub fn presize(entries: usize, bytes: usize) {
         // A new byte ring is published independently of record storage: old
         // records retain their ring, so byte growth loses no observation epoch.
         for lane in &log.lanes {
-            if let Err(reason) = lane.grow_bytes_for(bytes) {
-                count(reason);
-            }
+            let _ = lane.grow_bytes_for(bytes);
         }
     }
     let lanes = thread_slots().max(generations().map(|log| log.lanes.len()).max().unwrap_or(0));
@@ -573,19 +512,16 @@ pub fn presize(entries: usize, bytes: usize) {
             .map_err(|_| "operation completion description allocation failed")?;
         boxed(Log::with_shared(entries, bytes, lanes, &required, shared)?)
     })();
-    let fresh = match fresh {
-        Ok(fresh) => fresh,
-        Err(reason) => {
-            failed_reason(reason);
-            return;
-        }
+    let Ok(fresh) = fresh else {
+        failed();
+        return;
     };
     let pointer = &*fresh as *const Log as usize;
     let mut retained = LOGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if engine_allocation::reserve(&mut retained, 1).is_err() {
-        failed_reason("operation completion description allocation failed");
+        failed();
         return;
     }
     retained.push(fresh);
@@ -617,7 +553,6 @@ pub fn reset_admitted() {
 /// holding a Handoff or log reference is joined. A premature release retains it.
 pub unsafe fn release() {
     if ENABLED.load(Ordering::SeqCst) || ACTIVE.load(Ordering::SeqCst) != 0 {
-        COUNTERS[6].fetch_add(1, Ordering::Relaxed);
         return;
     }
     LOG.store(0, Ordering::Release);
@@ -643,8 +578,6 @@ fn append_observation(
 fn append_shared(log: &Log, observation: native::Observation, memory: &impl Memory) {
     let Some(mut slot) = log.shared.reserve() else {
         // Refused demand is retained for the next generation's shared lane.
-        count("operation completion shared lane exhausted");
-        COUNTERS[12].fetch_add(1, Ordering::Relaxed);
         overflow();
         return;
     };
@@ -653,12 +586,11 @@ fn append_shared(log: &Log, observation: native::Observation, memory: &impl Memo
     event.description_required = length as u64;
     let (description_error, description_len) = if length > slot.stride() {
         SHARED_DESCRIPTION_DEMAND.fetch_max(length, Ordering::Relaxed);
-        count("operation completion description byte ring short");
         (2, 0)
     } else {
         let output = unsafe { std::slice::from_raw_parts_mut(slot.bytes(), length) };
-        if let Err(reason) = observation.copy_description(memory, output) {
-            failed_reason(reason);
+        if observation.copy_description(memory, output).is_err() {
+            failed();
             return; // The dropped reservation publishes void.
         }
         (0, length)
@@ -667,7 +599,7 @@ fn append_shared(log: &Log, observation: native::Observation, memory: &impl Memo
     let Ok(sequence) = EVENT_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
         last.checked_add(1)
     }) else {
-        failed_reason("operation completion event sequence exhausted");
+        failed();
         return;
     };
     event.sequence = sequence + 1;
@@ -702,13 +634,13 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
     let byte_start = unsafe { *ring.write.get() };
     let byte_pending = byte_start.saturating_sub(ring.consumed.load(Ordering::Acquire));
     let Some(byte_demand) = (unsafe { *lane.byte_demand.get() }).checked_add(length as u64) else {
-        failed_reason("operation completion description demand overflow");
+        failed();
         return;
     };
     let required_bytes =
         byte_demand.saturating_sub(lane.consumed_byte_demand.load(Ordering::Acquire));
     let Ok(required_bytes) = usize::try_from(required_bytes) else {
-        failed_reason("operation completion description demand overflow");
+        failed();
         return;
     };
     lane.required_bytes
@@ -722,15 +654,17 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
     let (description_error, description_len) = if byte_pending.saturating_add(length as u64)
         > ring.bytes.len() as u64
     {
-        count("operation completion description byte ring short");
         (2, 0)
     } else {
         let start = byte_start as usize % ring.bytes.len();
         let first_len = length.min(ring.bytes.len() - start);
         let first = unsafe { std::slice::from_raw_parts_mut(ring.pointer(start), first_len) };
         let second = unsafe { std::slice::from_raw_parts_mut(ring.pointer(0), length - first_len) };
-        if let Err(reason) = observation.copy_description_parts(memory, first, second) {
-            failed_reason(reason);
+        if observation
+            .copy_description_parts(memory, first, second)
+            .is_err()
+        {
+            failed();
             return;
         }
         (0, length)
@@ -740,7 +674,7 @@ fn append_to_lane(log: &Log, lane: &Lane, observation: native::Observation, memo
     let Ok(sequence) = EVENT_SEQUENCE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
         last.checked_add(1)
     }) else {
-        failed_reason("operation completion event sequence exhausted");
+        failed();
         return;
     };
     event.sequence = sequence + 1;
@@ -769,7 +703,7 @@ fn observe_success(
 ) {
     match native::observe(memory, base, instance) {
         Ok(observation) => append_observation(log, target, observation, memory),
-        Err(reason) => failed_reason(reason),
+        Err(_) => failed(),
     }
 }
 fn observe_return(
@@ -796,13 +730,10 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
         if generation != crate::world_lifetime::generation()
             || crate::world_lifetime::invalidating()
         {
-            count("operation completion native world changed during original");
-            COUNTERS[10].fetch_add(1, Ordering::Relaxed);
             invalidate();
             active.returned = true;
             return result;
         }
-        COUNTERS[0].fetch_add(1, Ordering::Relaxed);
         if let Some(log) = log() {
             if let Some(lease) = publishing(log) {
                 let memory = unsafe { engine_native::memory::LiveMemory::new() };
@@ -816,8 +747,6 @@ unsafe extern "system-unwind" fn completion(instance: usize) -> usize {
                 );
             }
         } else {
-            count("operation completion staging absent");
-            COUNTERS[10].fetch_add(1, Ordering::Relaxed);
             invalidate();
         }
     }
@@ -863,7 +792,6 @@ fn handoff_buffer(
         .ensure(lanes)
         .map_err(|_| "operation completion handoff allocation failed")?;
     if cursors.len() < lanes {
-        COUNTERS[5].fetch_add(1, Ordering::Relaxed);
         invalidate();
         return Err("operation completion thread handoff staging short");
     }
@@ -965,9 +893,6 @@ impl Handoff {
         {
             return;
         }
-        let pending = self
-            .sequence
-            .saturating_sub(log.consumed.load(Ordering::Acquire));
         for (lane, end) in log.lanes.iter().zip(cursors).take(self.lanes) {
             for cursor in lane.consumed.load(Ordering::Acquire)..end.cursor {
                 let record =
@@ -1001,7 +926,6 @@ impl Handoff {
         log.consumed.store(self.sequence, Ordering::Release);
         log.consumed_epoch.store(self.epoch, Ordering::Release);
         self.admitted(cursors);
-        COUNTERS[2].fetch_add(pending, Ordering::Relaxed);
     }
     #[cfg(test)]
     fn drain(
@@ -1031,7 +955,6 @@ impl Handoff {
             end.cursor < lane.assembled.load(Ordering::Acquire)
                 || end.attempts < lane.assembled_attempts.load(Ordering::Acquire)
         }) {
-            count("operation completion stale handoff");
             return Err("operation completion stale handoff");
         }
         let Some(pending) = self
@@ -1040,7 +963,6 @@ impl Handoff {
             .map(|pending| pending as usize)
         else {
             // Never rewind consumption or the epoch for an idle reused handoff.
-            count("operation completion stale handoff");
             return Err("operation completion stale handoff");
         };
         if log.assembled_epoch.load(Ordering::Acquire) != self.epoch
@@ -1142,57 +1064,6 @@ impl Handoff {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let counters = COUNTERS
-        .each_ref()
-        .map(|count| count.load(Ordering::Relaxed));
-    let logs = LOGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let allocated_bytes: usize = logs
-        .iter()
-        .map(|log| {
-            size_of::<Log>()
-                + log
-                    .lanes
-                    .iter()
-                    .map(|lane| {
-                        size_of::<Lane>()
-                            + lane.records.len() * size_of::<Record>()
-                            + lane
-                                .byte_rings
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .iter()
-                                .map(|ring| size_of::<ByteRing>() + ring.bytes.len())
-                                .sum::<usize>()
-                    })
-                    .sum::<usize>()
-                + log.shared.allocated_bytes()
-        })
-        .sum();
-    crate::status::status!({ "runtime_enabled": RUNTIME_ENABLED.load(Ordering::Relaxed),
-        "enabled": ENABLED.load(Ordering::Acquire), "unhooked": UNHOOKED.get(),
-        "observed": counters[0], "overflow": counters[1], "drained": counters[2],
-        "sentinel_failures": counters[3], "read_failures": counters[4], "short_handoffs": counters[5],
-        "release_refusals": counters[6], "lost_intervals": counters[7], "publication_failures":counters[8],
-        "callback_incomplete": counters[9], "staging_absent": counters[10],
-        "allocated_bytes":allocated_bytes,"retained_logs":logs.len(),
-        "required_description_bytes": log().map_or(0, |log| log.lanes.iter()
-            .map(|lane| lane.required_bytes.load(Ordering::Relaxed)).max().unwrap_or(0)),
-        "required_thread_lanes": REQUIRED_LANES.load(Ordering::Relaxed),
-        "shared_lane_threads": counters[11], "shared_lane_refusals": counters[12],
-        "shared_lane_entries": log().map_or(0, |log| log.shared.len()),
-        "required_shared_lane_entries": log().map_or(0, |log| log.shared.required_entries()),
-        "shared_lane_description_stride": log().map_or(0, |log| log.shared.stride()),
-        "offered_generation": offered().is_some(),
-        "entry_capacity": log().map_or(0, |log| log.entries),
-        "description_byte_capacity": log().map_or(0, |log| log.lanes.iter().map(|lane| lane.ring().bytes.len()).sum::<usize>()),
-        "refusals": crate::status::sequence(FAILURE_NAMES.iter().enumerate().map(|(index,name)|
-            crate::status::status!({"reason":*name,"count":FAILURES[index].load(Ordering::Relaxed)})).chain(std::iter::once(
-                crate::status::status!({"reason":"operation completion unrecognized native refusal",
-                    "count":FAILURES[FAILURE_NAMES.len()].load(Ordering::Relaxed)})))) })
-}
 pub struct Hooks {
     entry: Option<Hook>,
 }
@@ -1218,7 +1089,6 @@ impl Hooks {
     unsafe fn install(_memory: &impl Memory, base: usize) -> Result<Self, String> {
         let (at, original) =
             crate::located_hook(base, native::COMPLETION_RVA).map_err(|cause| {
-                COUNTERS[3].fetch_add(1, Ordering::Relaxed);
                 engine_allocation::string(cause).unwrap_or_default()
             })?;
         BASE.store(base, Ordering::Relaxed);
@@ -1241,7 +1111,6 @@ impl Hooks {
             Ok(false) => return Ok(false),
             Ok(true) => {}
             Err(reason) => {
-                COUNTERS[8].fetch_add(1, Ordering::Relaxed);
                 invalidate();
                 return Err(reason);
             }
@@ -1677,19 +1546,13 @@ mod tests {
         }
     }
     #[test]
-    fn operation_completion_refused_native_form_is_named_counted_and_withholds_interval() {
+    fn operation_completion_refused_native_form_withholds_interval() {
         let _serial = TEST.lock().unwrap();
         let log = new_log(1, 16);
         prime(&log);
         let fixture = Fixture::new(b"invalid");
         fixture.bytes.borrow_mut()[INSTANCE + operation::DETECTED] = 2;
-        let index = FAILURE_NAMES
-            .iter()
-            .position(|reason| *reason == "operation completion stored flags invalid")
-            .unwrap();
-        let before = FAILURES[index].load(Ordering::Relaxed);
         complete(&log, &fixture, 1);
-        assert_eq!(FAILURES[index].load(Ordering::Relaxed), before + 1);
         assert!(drain(&log).is_err());
     }
     #[test]
@@ -1701,11 +1564,9 @@ mod tests {
                 panic!("disabled operation outcomes must not read a hook site");
             }
         }
-        let before = COUNTERS[3].load(Ordering::Relaxed);
         let hooks = unsafe { Hooks::new(&NoRead, usize::MAX, false) };
         assert!(hooks.entry.is_none());
         assert!(!RUNTIME_ENABLED.load(Ordering::Relaxed));
-        assert_eq!(COUNTERS[3].load(Ordering::Relaxed), before);
         let logs = LOGS.lock().unwrap().len();
         resize(usize::MAX);
         assert_eq!(LOGS.lock().unwrap().len(), logs);
@@ -1743,20 +1604,12 @@ mod tests {
         assert_eq!(old.pending(), 0);
         assert_eq!(old.description_capacity(&cursors).unwrap(), 0);
         let consumed = log.consumed.load(Ordering::Acquire);
-        let index = FAILURE_NAMES
-            .iter()
-            .position(|name| *name == "operation completion stale handoff")
-            .unwrap();
-        let before = FAILURES[index].load(Ordering::Relaxed);
-        let reads = COUNTERS[4].load(Ordering::Relaxed);
         let epoch = EPOCH.load(Ordering::Acquire);
         assert_eq!(
             old.drain(&cursors, &mut [], &mut []),
             Err("operation completion stale handoff")
         );
-        assert_eq!(FAILURES[index].load(Ordering::Relaxed), before + 1);
         assert_eq!(log.consumed.load(Ordering::Acquire), consumed);
-        assert_eq!(COUNTERS[4].load(Ordering::Relaxed), reads);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         // Idle growth uses the retained drain-time demand, not a later cursor.
         assert_eq!(idle.drained_pending(), 1);
@@ -1829,12 +1682,6 @@ mod tests {
         complete(&log, &Fixture::new(b"before"), 1);
         let long = Fixture::new(&vec![0xfc; 40_000]);
         let epoch = EPOCH.load(Ordering::Acquire);
-        let reads = COUNTERS[4].load(Ordering::Relaxed);
-        let index = FAILURE_NAMES
-            .iter()
-            .position(|name| *name == "operation completion description byte ring short")
-            .unwrap();
-        let before = FAILURES[index].load(Ordering::Relaxed);
         complete(&log, &long, 1);
         let old_ring = log.lanes[0].byte_ring.load(Ordering::Acquire);
         log.lanes[0].grow_bytes().unwrap();
@@ -1854,8 +1701,6 @@ mod tests {
         assert_eq!(&bytes[6..], vec![0xfc; 40_000]);
         assert_eq!(events[1].description_len, 0);
         assert_eq!(events[1].description_required, 40_000);
-        assert_eq!(FAILURES[index].load(Ordering::Relaxed), before + 1);
-        assert_eq!(COUNTERS[4].load(Ordering::Relaxed), reads);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
         complete(&log, &long, 1);
         assert_eq!(drain(&log).unwrap().1, vec![0xfc; 40_000]);
@@ -1904,11 +1749,6 @@ mod tests {
             }
         }
         // Byte cursor is 71; a 60-byte heap string splits at offset 57.
-        let index = FAILURE_NAMES
-            .iter()
-            .position(|name| *name == "operation completion description bytes unreadable")
-            .unwrap();
-        let before = FAILURES[index].load(Ordering::Relaxed);
         observe_return(
             &log,
             Target::Lane(&log.lanes[0]),
@@ -1917,7 +1757,6 @@ mod tests {
             INSTANCE,
             1,
         );
-        assert_eq!(FAILURES[index].load(Ordering::Relaxed), before + 1);
         assert!(drain(&log).is_err());
     }
 
@@ -1957,16 +1796,12 @@ mod tests {
     #[test]
     fn operation_completion_callback_incomplete_retains_its_unwind_claim() {
         let _serial = TEST.lock().unwrap();
-        let before = COUNTERS[9].load(Ordering::Relaxed);
-        let reads = COUNTERS[4].load(Ordering::Relaxed);
         let active = ACTIVE.load(Ordering::SeqCst);
         let epoch = EPOCH.load(Ordering::Acquire);
         let mut outer = Call::enter();
         drop(Call::enter());
         outer.returned = true;
         drop(outer);
-        assert_eq!(COUNTERS[9].load(Ordering::Relaxed), before + 1);
-        assert_eq!(COUNTERS[4].load(Ordering::Relaxed), reads);
         assert_eq!(ACTIVE.load(Ordering::SeqCst), active + 1);
         assert_eq!(DEPTH.get(), 0);
         let mut later = Call::enter();
@@ -1974,28 +1809,10 @@ mod tests {
         drop(later);
         assert_eq!(ACTIVE.load(Ordering::SeqCst), active + 1);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch + 1);
-        assert_eq!(
-            serde_json::to_value(status()).unwrap()["callback_incomplete"],
-            before + 1
-        );
         UNWOUND.set(false);
         ACTIVE.store(active, Ordering::SeqCst);
     }
 
-    #[test]
-    fn operation_completion_unknown_refusal_counts_without_panicking_or_invalidating() {
-        let _serial = TEST.lock().unwrap();
-        let before = FAILURES[FAILURE_NAMES.len()].load(Ordering::Relaxed);
-        let reads = COUNTERS[4].load(Ordering::Relaxed);
-        let epoch = EPOCH.load(Ordering::Acquire);
-        count("synthetic unrecognized refusal");
-        assert_eq!(
-            FAILURES[FAILURE_NAMES.len()].load(Ordering::Relaxed),
-            before + 1
-        );
-        assert_eq!(COUNTERS[4].load(Ordering::Relaxed), reads);
-        assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-    }
     #[test]
     fn operation_completion_growth_within_installed_capacity_keeps_pending_events() {
         let _serial = TEST.lock().unwrap();
@@ -2045,7 +1862,6 @@ mod tests {
     fn operation_completion_writers_beyond_the_lane_count_lose_nothing_in_one_generation() {
         let _serial = TEST.lock().unwrap();
         let required = REQUIRED_LANES.load(Ordering::Relaxed);
-        let shared_threads = COUNTERS[11].load(Ordering::Relaxed);
         // The generation's only lane is already registered.
         let log = new_log(8, 32);
         prime(&log);
@@ -2062,7 +1878,6 @@ mod tests {
             }
         });
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch);
-        assert!(COUNTERS[11].load(Ordering::Relaxed) >= shared_threads + 3);
         assert!(REQUIRED_LANES.load(Ordering::Relaxed) >= 4);
         let (events, bytes) = drain(&log).unwrap();
         let mut owners = events.iter().map(|event| event.owner).collect::<Vec<_>>();
@@ -2084,11 +1899,6 @@ mod tests {
         let log = new_log(2, 4);
         prime(&log);
         let long = vec![0xfe; 9];
-        let index = FAILURE_NAMES
-            .iter()
-            .position(|name| *name == "operation completion description byte ring short")
-            .unwrap();
-        let before = FAILURES[index].load(Ordering::Relaxed);
         observe_return(
             &log,
             Target::Shared,
@@ -2097,7 +1907,6 @@ mod tests {
             INSTANCE,
             1,
         );
-        assert_eq!(FAILURES[index].load(Ordering::Relaxed), before + 1);
         assert!(SHARED_DESCRIPTION_DEMAND.load(Ordering::Relaxed) >= 9);
         let (events, bytes) = drain(&log).unwrap();
         assert_eq!(events.len(), 1);
@@ -2107,11 +1916,6 @@ mod tests {
         );
         assert!(bytes.is_empty());
         // An exhausted shared lane is a named, counted refusal.
-        let refused = FAILURE_NAMES
-            .iter()
-            .position(|name| *name == "operation completion shared lane exhausted")
-            .unwrap();
-        let refusals = FAILURES[refused].load(Ordering::Relaxed);
         let held: Vec<_> = (0..log.shared.len())
             .map(|_| log.shared.reserve().unwrap())
             .collect();
@@ -2119,7 +1923,6 @@ mod tests {
         crate::test_support::with_allocations_denied(|| {
             observe_return(&log, Target::Shared, &refused_fixture, BASE, INSTANCE, 1);
         });
-        assert_eq!(FAILURES[refused].load(Ordering::Relaxed), refusals + 1);
         assert!(log.shared.required_entries() > log.shared.len());
         drop(held);
     }
@@ -2362,17 +2165,14 @@ mod tests {
         handoff_from(sealed, &mut cursors)
             .unwrap()
             .admitted(&cursors);
-        let lost = COUNTERS[7].load(Ordering::Relaxed);
         let epoch = EPOCH.load(Ordering::Acquire);
         // The writer lost the frame; no later handoff drains the old generation.
         reset_admitted();
-        assert_eq!(COUNTERS[7].load(Ordering::Relaxed), lost + 1);
         assert_eq!(EPOCH.load(Ordering::Acquire), epoch + 1);
         assert_eq!(old.assembled.load(Ordering::Acquire), 0);
         assert_eq!(old.lanes[0].consumed.load(Ordering::Acquire), 0);
         // Nothing else was queued: a second reset reports nothing.
         reset_admitted();
-        assert_eq!(COUNTERS[7].load(Ordering::Relaxed), lost + 1);
         REQUIRED_LANES.store(required, Ordering::Relaxed);
         unsafe {
             release();

@@ -135,18 +135,6 @@ pub(crate) fn collect() {
     ACCIDENTS.collect();
     LEDGERS.collect();
 }
-pub(crate) fn status() -> impl serde::Serialize {
-    let calls = LEDGER_CALLS
-        .each_ref()
-        .map(|calls| calls.load(Ordering::Relaxed));
-    crate::status::status!({ "mines": MINES.status(), "accidents": ACCIDENTS.status(),
-        "ledgers": LEDGERS.status(),
-        "ledger_writers": crate::status::map(
-            LEDGER_WRITERS.iter().map(|site| site.name).zip(calls)
-        ),
-        "mine_event_metadata_failed": METADATA_FAILED.load(Ordering::Acquire),
-        "mine_event_metadata_refusals": METADATA_REFUSALS.load(Ordering::Relaxed) })
-}
 
 const REPORT_SITE_NAMES: [&str; engine_naval_history::cnaval_accident_report::WRITERS.len()] = [
     "standing report creation/update",

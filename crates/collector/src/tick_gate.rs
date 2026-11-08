@@ -3,7 +3,6 @@
 //! helpers) work through the tick at idle priority, off the main game thread's core
 //! ([`crate::frame_priority::Pipeline::tick`]); their few live reads skip a tick instead
 //! ([`game_ticking`]).
-use serde_json::{Value, json};
 use std::{
     cell::Cell,
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
@@ -76,9 +75,6 @@ pub(crate) fn game_ticking() -> bool {
     GATE.ticking.load(Ordering::SeqCst) != 0
 }
 
-pub(crate) fn status() -> Value {
-    GATE.status()
-}
 
 struct Gate {
     ticking: AtomicU32,
@@ -143,12 +139,4 @@ impl Gate {
         );
     }
 
-    fn status(&self) -> Value {
-        json!({
-            "waits": self.waits.load(Ordering::Relaxed),
-            "wait_ns": self.wait_ns.load(Ordering::Relaxed),
-            "capped": self.capped.load(Ordering::Relaxed),
-            "scope": "cumulative waits at phase and pack boundaries while the game ran its hourly tick: the sizing thread's, and copy-only threads' (decode, spool, helpers) only when their priority controller was unavailable; capped counts waits that reached the 200 ms bound",
-        })
-    }
 }

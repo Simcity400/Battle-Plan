@@ -245,20 +245,6 @@ pub fn failed() {
     READS[3].fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "retreat_ban_changes"),
-        "poisoned": WATCHES.poisoned(),
-        "forwarded_writes": CALLS.load(Ordering::Relaxed),
-        "reused_commanders": reads[0],
-        "read_commanders": reads[1],
-        "refused_commanders": reads[2],
-        "failed_captures": reads[3],
-        "watches": WATCHES.status(),
-        "scope": "cumulative since attach; each hour DivisionRetreatBans takes every division's commander from the division census's selection, and carries a commander's bans while its certificate holds (no forwarded naval-tree commander writer touched it since the held read, same epoch); every other commander's two blocks are read"
-    })
-}
 
 #[cfg(test)]
 mod tests {

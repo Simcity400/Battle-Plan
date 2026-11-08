@@ -22,11 +22,6 @@ pub const TABLES: [TableId; N] = [
     TableId::GovernmentChanges,
     TableId::PoliticsCaptureCoverage,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "politics observations and balance conservation",
-    4,
-    &[0, 1, 2, 3, 4],
-)];
 const ASSEMBLED: &str = "politics observations assembled by spool";
 // A native row plus at most four signed chunks of its i128 clamp correction.
 const EVENT_SEQUENCE_STRIDE: u64 = 5;

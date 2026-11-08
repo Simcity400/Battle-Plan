@@ -287,10 +287,6 @@ impl Cache {
     }
 }
 
-pub fn allocated_bytes() -> usize {
-    BYTES.load(Ordering::Relaxed)
-}
-
 pub fn snapshot(
     memory: &impl Memory,
     base: usize,

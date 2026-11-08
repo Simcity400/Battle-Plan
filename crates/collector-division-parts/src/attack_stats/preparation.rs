@@ -69,23 +69,8 @@ impl PreparationPart {
     pub fn daily_supply(&self, index: usize) -> Option<&Option<Arc<crate::supply_inputs::Sample>>> {
         self.supply.get(index.checked_sub(self.range.start)?)
     }
-    /// Why this part's reads cannot settle the sources, or None when they can.
-    pub fn source_refusal(&self) -> Option<&'static str> {
-        if !self.source_ready {
-            Some("part sources not ready")
-        } else if self.rows.len() != self.range.len() {
-            Some("part rows short")
-        } else if !self.sources.can_settle_owned() {
-            Some("part reads incomplete")
-        } else {
-            None
-        }
-    }
     pub fn can_settle_sources(&self) -> bool {
         self.source_ready && self.rows.len() == self.range.len() && self.sources.can_settle_owned()
-    }
-    pub fn has_local_source_refusal(&self) -> bool {
-        self.source_ready && self.sources.has_local_province_refusal()
     }
     pub fn source_reads(&self) -> Option<&crate::panel_sources::Preparation> {
         self.source_ready.then_some(&self.sources)

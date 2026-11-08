@@ -2,7 +2,6 @@
 
 use collector_hooks::hook;
 use collector_primitives::raw_memory;
-use collector_status::status;
 use collector_timing::hook_timing;
 
 pub mod logistics_balance;

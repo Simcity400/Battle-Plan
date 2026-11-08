@@ -17,7 +17,6 @@ pub const TABLES: [TableId; N] = [
     TableId::DestroyedDivisions,
     TableId::LandEventCoverage,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
     pub words: usize,
@@ -632,12 +631,6 @@ mod tests {
         captured.drain(12, false); // Installs the offered log at this empty boundary.
         captured.drain(13, false);
         assert!(complete_coverage(&captured.tables()).complete);
-        assert!(
-            serde_json::to_value(crate::land_events::status()).unwrap()["log_words"]
-                .as_u64()
-                .unwrap()
-                > 1 << 20
-        );
         test_support::disable();
     }
     fn encode_land(
@@ -876,10 +869,6 @@ mod tests {
         assert!(!coverage.complete);
         assert!(coverage.lost_events > 0);
         assert!(matches!(tables[0], TableView::Unavailable { .. }));
-        assert_eq!(
-            serde_json::to_value(crate::land_events::status()).unwrap()["log_capacity_failures"],
-            1
-        );
         c.drain(13, false);
         assert!(complete_coverage(&c.tables()).complete);
         test_support::disable();

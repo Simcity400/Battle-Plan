@@ -136,20 +136,6 @@ fn record(counts: Counts) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let hours = HOURS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let rows = ROWS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "province_changes"),
-        "full_hours": hours[0],
-        "quiet_hours": hours[1],
-        "marked_hours": hours[2],
-        "carried_rows": rows[0],
-        "read_rows": rows[1],
-        "refreshed_fort_bunkers": rows[2],
-        "scope": "cumulative since attach; the Provinces job carries a province's row when the hour's take of the territory family's province marks returned the epochs of the held complete walk, the province table header and the province's slot pointer are the held ones, neither the province nor its held state is marked and its held row is in no border conflict; carried rows read only fort_bunker again (positive fort sum and controller) when the modifier take refused or moved, the country links and roster differ from those it was read under or a forwarded modifier writer marked its state, every other province is read as a full walk reads it"
-    })
-}
 
 #[cfg(test)]
 mod tests {

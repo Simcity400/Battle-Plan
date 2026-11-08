@@ -76,11 +76,6 @@ pub const TABLES: [TableId; N] = [
     TableId::NavalModifierTrees,
     TableId::NavalModifierTreeSamples,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("shared naval combat registry census", 0, &[0, 1]),
-    ("dense combat air base wing occurrences", 2, &[2]),
-    ("live naval hover source trees", 3, &[3, 4]),
-];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

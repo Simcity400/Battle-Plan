@@ -37,7 +37,6 @@ impl AirStatsJob {
 pub(crate) struct AirStatsCopyReport {
     pub raw_ok: bool,
     pub copy_ticks: [u64; AIR_STATS_N],
-    pub raw_bytes: [u64; AIR_STATS_N],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -593,7 +592,6 @@ pub(crate) fn copy_air_stats_refresh_growing(
     AirStatsCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 
@@ -612,7 +610,6 @@ pub(crate) fn copy_air_stats_refresh(
     AirStatsCopyReport {
         raw_ok: !job.log.overflowed,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 

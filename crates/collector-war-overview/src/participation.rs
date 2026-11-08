@@ -118,23 +118,6 @@ pub struct Status {
     seed_status_entries: u64,
     seed_nonzero_histories: u64,
 }
-pub fn status() -> Status {
-    Status {
-        enabled: ENABLED.load(Ordering::SeqCst),
-        lost: LOST.load(Ordering::SeqCst),
-        active: active(),
-        calls: CALLS.each_ref().map(|n| n.load(Ordering::Relaxed)),
-        refusals: REFUSALS.load(Ordering::Relaxed),
-        changed_field_reads: READ_FIELDS.load(Ordering::Relaxed),
-        seeded_directions: SEEDS.load(Ordering::Relaxed),
-        carried_hours: CARRIED.load(Ordering::Relaxed),
-        seed_roster_entries: SEED_ROSTERS.load(Ordering::Relaxed),
-        seed_owners: SEED_OWNERS.load(Ordering::Relaxed),
-        seed_matrix_entries: SEED_MATRIX.load(Ordering::Relaxed),
-        seed_status_entries: SEED_STATUSES.load(Ordering::Relaxed),
-        seed_nonzero_histories: SEED_NONZERO.load(Ordering::Relaxed),
-    }
-}
 
 fn held_mut(store: &mut Store, ledger: usize) -> Option<(&mut Held, usize)> {
     let first = ledger.checked_sub(native::DIRECTIONAL_LEDGERS[0])?;

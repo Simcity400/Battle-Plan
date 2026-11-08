@@ -14,7 +14,6 @@ use replay_frame::frame::TableView;
 use std::cell::RefCell;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CharacterPortraits];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// Inputs for one exclusively owned hourly acquisition.
 #[derive(Clone, Copy, Debug)]

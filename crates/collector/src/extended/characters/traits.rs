@@ -323,7 +323,6 @@ pub(super) struct TraitCapture {
     used_bytes: usize,
     truncated: bool,
     pub(super) fault: bool,
-    pub(super) raw_bytes: u64,
     overflowed: bool,
     charge: crate::raw_memory::Charge,
 }
@@ -380,7 +379,6 @@ impl TraitCapture {
         self.used_bytes = 0;
         self.truncated = false;
         self.fault = false;
-        self.raw_bytes = 0;
         self.overflowed = false;
     }
 
@@ -444,7 +442,6 @@ impl TraitCapture {
                 self.fault = true;
                 "unit leader identity unreadable"
             })?;
-            self.raw_bytes += 16;
             let found = usize::try_from(u64::from_le_bytes(identity[..8].try_into().unwrap()))
                 .ok()
                 .and_then(|vtable| {
@@ -477,8 +474,6 @@ impl TraitCapture {
             let header = read::<[u8; 16]>(memory, at);
             if header.is_none() {
                 self.fault = true;
-            } else {
-                self.raw_bytes += 16;
             }
             let array = header
                 .and_then(|header| Array::from_header(header, TRAIT_STRIDE))
@@ -521,7 +516,6 @@ impl TraitCapture {
                     self.fault = true;
                     return Err("unit leader trait pointer unreadable");
                 }
-                self.raw_bytes += TRAIT_STRIDE as u64;
                 let address = usize::try_from(u64::from_le_bytes(entry))
                     .map_err(|_| "unit leader trait pointer overflow")?;
                 let definition = self.definitions.header(memory, base, address)?;
@@ -567,7 +561,6 @@ impl TraitCapture {
 
     pub(super) fn finish(&mut self) {
         self.fault |= self.definitions.log.fault[0];
-        self.raw_bytes += self.definitions.log.raw_bytes[0];
         self.update_charge();
         self.definitions.update_charge();
     }

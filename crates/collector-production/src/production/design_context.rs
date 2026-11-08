@@ -89,11 +89,6 @@ impl Owners {
         }
         Ok(())
     }
-    fn allocated_bytes(&self) -> usize {
-        self.aliases.capacity() * size_of::<(u32, u32)>()
-            + self.reverse.capacity() * size_of::<(u32, HashSet<u32>)>()
-            + self.nested_bytes
-    }
 }
 #[derive(Default)]
 struct Cache {
@@ -1117,48 +1112,6 @@ pub(super) fn invalidate() {
     INVALIDATED.store(true, std::sync::atomic::Ordering::Release);
     super::design_template_changes::invalidate();
 }
-#[derive(serde::Serialize)]
-pub(super) struct Status {
-    admitted: bool,
-    designs: usize,
-    countries: usize,
-    operands: usize,
-    failures: u64,
-    failure: Option<&'static str>,
-    last_refusal: Option<&'static str>,
-    allocated_bytes: usize,
-}
-pub(super) fn status() -> Status {
-    let cache = cache();
-    Status {
-        admitted: cache.seeded && cache.failure.is_none(),
-        designs: cache.designs.len(),
-        countries: cache.countries.len(),
-        operands: cache.values.len(),
-        failures: cache.failures,
-        failure: cache.failure,
-        last_refusal: cache.last_refusal,
-        allocated_bytes: cache.demand_bytes
-            + cache.spare_keys.capacity() * size_of::<u32>()
-            + cache.owner_key_bytes
-            + cache.published_bytes
-            + cache.template_heap_bytes
-            + cache.template_published_bytes
-            + cache.template_values.capacity()
-                * size_of::<(u32, rows::DesignCountryTemplatesRow)>()
-            + cache.template_dirty.capacity() * size_of::<(u32, bool)>()
-            + cache.designs.capacity() * size_of::<(u64, Demand)>()
-            + cache.organisation_demands.capacity() * size_of::<(u64, u32)>()
-            + cache.template_demands.capacity() * size_of::<(u32, usize)>()
-            + cache.countries.capacity() * size_of::<(u32, HashMap<u32, usize>)>()
-            + cache.types.capacity() * size_of::<(u32, u32)>()
-            + cache.modules.capacity() * size_of::<(u32, u32)>()
-            + cache.upgrade_currencies.capacity() * size_of::<(u32, u32)>()
-            + cache.owners.allocated_bytes()
-            + cache.dirty.capacity() * size_of::<(u32, bool)>()
-            + cache.values.capacity() * size_of::<((u32, u32), rows::DesignCountryModifierRow)>(),
-    }
-}
 pub(super) fn input(snapshot: &Snapshot) -> TableInput {
     snapshot.as_ref().map_or_else(
         || unavailable("design country context unavailable").into(),
@@ -1786,8 +1739,6 @@ impl ColdSeed {
         }
     }
     fn install(self, cache: &mut Cache) -> Result<SeedRows, &'static str> {
-        let _phase =
-            design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedJoin);
         engine_allocation::reserve_map(&mut cache.designs, self.rows.len())
             .map_err(|_| "design context seed join allocation failed")?;
         let country_count = self.caches.iter().map(|part| part.countries.len()).sum();
@@ -1872,8 +1823,6 @@ fn seed_operand(
 }
 fn seed_operands(cache: &mut Cache, parts: &mut [CountryPart], memory: &impl Memory, base: usize) {
     let _reads = read_accounting::table(TableId::DesignCountryModifiers);
-    let _phase =
-        design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedOperands);
     let mut failure = None;
     // Native first occurrences stay serial; owned per-design aggregation stays parallel.
     for part in parts {
@@ -1977,7 +1926,6 @@ fn cold_demands(
     if definitions.len() < 64 {
         return None;
     }
-    let plan = design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedPlan);
     let mut parts = engine_allocation::advisory(|| {
         let width = definitions.len().div_ceil(lanes);
         let modules = &variants.modules.rows[..variants.modules.outcome.len()];
@@ -2053,7 +2001,6 @@ fn cold_demands(
         }
         Some(parts)
     })?;
-    drop(plan);
     seed_operands(cache, &mut parts, memory, base);
     let count = parts.len();
     let mut parts = match acquire(parts) {
@@ -2070,8 +2017,6 @@ fn cold_demands(
             "design context seed acquisition incomplete",
         ));
     }
-    let _phase =
-        design_changes::profile::Timer::new(design_changes::profile::Phase::ContextSeedJoin);
     let joined = (|| {
         let mut rows = engine_allocation::vec(definitions.len())
             .map_err(|_| "design context seed join allocation failed")?;
@@ -2112,15 +2057,10 @@ impl CountryPart {
     }
     pub fn capture(&mut self, memory: &impl Memory, base: usize) {
         if let Some(seed) = self.seed.as_mut() {
-            let _phase = design_changes::profile::Timer::new(
-                design_changes::profile::Phase::ContextSeedParts,
-            );
             self.failure = seed.read(memory, base).err();
             self.complete = self.failure.is_none();
             return;
         }
-        let _phase =
-            design_changes::profile::Timer::new(design_changes::profile::Phase::ContextParts);
         self.owners.clear();
         self.modifiers.clear();
         self.templates.clear();

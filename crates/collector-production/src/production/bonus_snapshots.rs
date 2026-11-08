@@ -168,25 +168,6 @@ pub(super) fn release() {
     }
 }
 
-#[derive(serde::Serialize)]
-pub(super) struct Status {
-    sources: usize,
-    published_sources: usize,
-    allocated_bytes: usize,
-}
-pub(super) fn status() -> Status {
-    let cache = cache();
-    Status {
-        sources: cache.entries.len(),
-        published_sources: cache.published.as_ref().map_or(0, |rows| rows.len()),
-        allocated_bytes: cache.entries.capacity()
-            * std::mem::size_of::<rows::VariantBonusSnapshotRow>()
-            + cache.indices.capacity() * std::mem::size_of::<(u64, usize)>()
-            + cache.payload_bytes
-            + cache.published_bytes,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

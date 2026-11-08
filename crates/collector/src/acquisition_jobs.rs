@@ -22,7 +22,9 @@ pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
 pub(crate) mod ship_details;
 mod variant_workers;
-use engine_native::{memory::CountedMemory, memory::LiveMemory};
+#[cfg(test)]
+use engine_native::memory::CountedMemory;
+use engine_native::memory::LiveMemory;
 pub(crate) use presentation::{
     FinalInputsDispatch, PresentationDispatch, PresentationFanIn, PresentationInputs,
 };
@@ -1474,43 +1476,6 @@ impl Job {
             job => job.role().worker_only(),
         }
     }
-    pub(crate) fn diagnostic_identity(&self) -> crate::acquisition_diagnostics::Identity {
-        let mut identity = crate::acquisition_diagnostics::Identity {
-            role: self.role() as usize,
-            ..Default::default()
-        };
-        identity.part = match self {
-            Self::Characters(request) => Some(request.payload.part),
-            Self::AirWing(request) => {
-                identity.partition = Some((request.payload.slots.start, request.payload.slots.end));
-                None
-            }
-            Self::SupplyTrains(request) => Some(request.part),
-            Self::CharacterPortraits(request) => Some(request.part),
-            Self::AirRelations(request) => Some(request.part),
-            Self::AirHistories(request) => Some(request.part),
-            Self::ShipModelDetails(request) => Some(request.part),
-            Self::ProductionModifierPart(request) => Some(request.part),
-            Self::OrdersPart(request) => Some(request.index),
-            Self::Orders(_) | Self::DivisionInputs(_) => Some(0),
-            Self::DivisionInputParts(request) => {
-                identity.partition = Some(request.slots);
-                request.presentation.as_ref().map(|(_, index)| *index)
-            }
-            Self::PresentationStatus(request) => request.stitch.as_ref().map(|(_, index)| *index),
-            Self::VariantPart(request) => Some(request.index),
-            _ => None,
-        };
-        match self {
-            Self::VariantPart(request) => identity.kind = request.part.kind(),
-            Self::EventFeedSeal(_) => identity.kind = 3,
-            Self::ProductionModifierPart(request) => {
-                identity.partition = Some((request.slots.start, request.slots.end))
-            }
-            _ => {}
-        }
-        identity
-    }
     pub(crate) fn priority(&self) -> u8 {
         let cold_tail = match self {
             Self::Governance(request) => request.context.force_full,
@@ -1637,7 +1602,6 @@ pub(crate) struct Calibration {
     pub executor: acquisition::Calibration,
     #[serde(serialize_with = "serialize_roles")]
     pub roles: [RoleCalibration; ROLE_COUNT],
-    pub presentation_continuations: [presentation::ContinuationCalibration; 4],
 }
 fn serialize_roles<S: serde::Serializer>(
     roles: &[RoleCalibration; ROLE_COUNT],
@@ -1645,51 +1609,6 @@ fn serialize_roles<S: serde::Serializer>(
 ) -> Result<S::Ok, S::Error> {
     roles.as_slice().serialize(serializer)
 }
-#[derive(Clone, Copy, Debug, Serialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-pub(crate) enum CountryCacheSeed {
-    Ready { entries: usize },
-    Capacity { required_cells: usize },
-    Unavailable { reason: &'static str },
-}
-
-#[derive(Clone, Copy, Debug, Default, Serialize)]
-pub(crate) struct CountryCacheCalibration {
-    pub ready: u64,
-    pub capacity_fallbacks: u64,
-    pub unavailable_fallbacks: u64,
-    pub latest: Option<CountryCacheSeed>,
-}
-
-impl CountryCacheCalibration {
-    fn observe(&mut self, seed: engine_native::country_memory::SeedStatus, entries: usize) {
-        self.latest = Some(match seed {
-            engine_native::country_memory::SeedStatus::Ready => {
-                self.ready = self.ready.saturating_add(1);
-                CountryCacheSeed::Ready { entries }
-            }
-            engine_native::country_memory::SeedStatus::Capacity { required_cells } => {
-                self.capacity_fallbacks = self.capacity_fallbacks.saturating_add(1);
-                CountryCacheSeed::Capacity { required_cells }
-            }
-            engine_native::country_memory::SeedStatus::Unavailable { reason } => {
-                self.unavailable_fallbacks = self.unavailable_fallbacks.saturating_add(1);
-                CountryCacheSeed::Unavailable { reason }
-            }
-        });
-    }
-}
-
-/// The World and Economy jobs together: both add their worker time to
-/// `acquisition_ticks` and report their failures in `last_error`; the Economy
-/// job, which runs every hour, observes the country cache.
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct WorldCalibration {
-    pub country_cache: CountryCacheCalibration,
-    pub acquisition_ticks: u64,
-    pub last_error: Option<&'static str>,
-}
-
 #[derive(Default)]
 struct Counters {
     accepted: AtomicU64,
@@ -1737,24 +1656,10 @@ fn note_completion<R>(counters: &Counters, report: &Result<R, Failure>) {
 }
 
 fn account_completion(calibration: &SharedCalibration, completed: &Completion<Job, Report>) {
+    #[cfg(test)]
     crate::read_accounting::merge(&completed.table_reads);
-    crate::attach_diagnostics::completed(completed);
     let role = completed.request.role();
     note_completion(&calibration.roles[role as usize], &completed.report);
-    if matches!(role, Role::World | Role::Economy)
-        && let Err(failure) = completed.report
-    {
-        calibration
-            .world
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .last_error = Some(match (role, failure) {
-            (Role::Economy, Failure::Panicked) => "Economy acquisition job panicked",
-            (Role::Economy, Failure::Stopped) => "Economy acquisition job stopped before reading",
-            (_, Failure::Panicked) => "World acquisition job panicked",
-            (_, Failure::Stopped) => "World acquisition job stopped before reading",
-        });
-    }
 }
 
 /// Contain a teardown step's panic without consulting the terminal
@@ -1789,16 +1694,12 @@ fn catch_failure<R>(work: impl FnOnce() -> R) -> Result<R, Failure> {
 struct SharedCalibration {
     cold_parents: std::sync::atomic::AtomicUsize,
     roles: [Counters; ROLE_COUNT],
-    world: Mutex<WorldCalibration>,
-    presentation_continuations: [presentation::ContinuationCounters; 4],
 }
 impl Default for SharedCalibration {
     fn default() -> Self {
         Self {
             cold_parents: Default::default(),
             roles: std::array::from_fn(|_| Counters::default()),
-            world: Mutex::new(WorldCalibration::default()),
-            presentation_continuations: Default::default(),
         }
     }
 }
@@ -1835,47 +1736,23 @@ pub(crate) fn run_world(
     }
 }
 
-/// The World job's worker time joins the family's `acquisition_ticks`; the
-/// country cache is observed once an hour, by the Economy job.
-fn run_world_shared(
-    request: &mut WorldRequest,
-    memory: &impl engine_native::Memory,
-    calibration: &Mutex<WorldCalibration>,
-) -> WorldReport {
+fn run_world_shared(request: &mut WorldRequest, memory: &impl engine_native::Memory) -> WorldReport {
     let started = crate::sampling::qpc();
     let snapshot = Arc::clone(&request.countries);
     let cached = snapshot.view(memory);
     let mut report = run_world(request, &cached, memory);
     // The callback owns preparation and retains the country lease through all jobs.
     report.ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
-    let mut counters = calibration
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    counters.acquisition_ticks = counters.acquisition_ticks.saturating_add(report.ticks);
     report
 }
 
-/// The economy rest through the shared country cache, which it observes for
-/// the family's calibration: it runs every hour, so the cache is observed
-/// once an hour.
+/// The economy rest through the shared country cache.
 fn run_economy_shared(
     request: &mut EconomyRequest,
     memory: &impl engine_native::Memory,
-    calibration: &Mutex<WorldCalibration>,
 ) -> economy::EconomyRestCopyReport {
-    let started = crate::sampling::qpc();
     let cached = request.countries.view(memory);
-    let seed = cached.seed_status();
-    let entries = cached.cached_entries();
-    let report =
-        economy::copy_economy_rest_refresh_growing(&cached, request.context, &mut request.payload);
-    let ticks = crate::sampling::qpc().saturating_sub(started).max(0) as u64;
-    let mut counters = calibration
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    counters.country_cache.observe(seed, entries);
-    counters.acquisition_ticks = counters.acquisition_ticks.saturating_add(ticks);
-    report
+    economy::copy_economy_rest_refresh_growing(&cached, request.context, &mut request.payload)
 }
 
 #[cfg(test)]
@@ -2042,14 +1919,11 @@ fn run_with_memory(
             ))
         }
 
-        Job::World(request) => Report::World(run_world_shared(request, memory, &calibration.world)),
+        Job::World(request) => Report::World(run_world_shared(request, memory)),
         Job::Economy(request) => {
-            Report::Economy(run_economy_shared(request, memory, &calibration.world))
+            Report::Economy(run_economy_shared(request, memory))
         }
         Job::Governance(request) => {
-            request
-                .captured
-                .profile_acquisition(crate::attach_diagnostics::measuring());
             let cached = request.countries.roster_view(memory);
             let context = request.context;
             let workers = &request.workers;
@@ -2080,9 +1954,7 @@ fn run_with_memory(
             })
         }
         Job::Variants(request) => {
-            use production::design_changes::profile::{Job as ProfileJob, Phase, Timer};
             let context = request.context;
-            let _profile = ProfileJob::begin(context.hour);
             // Repair before deciding recovery: the drain may withdraw the census.
             let begin = sampling::qpc();
             crate::read_accounting::with_table(replay_data::rows::TableId::VariantChanges, || {
@@ -2102,7 +1974,6 @@ fn run_with_memory(
             // The campaign registry includes variants absent from units,
             // production and stockpiles. Keep all entries and duplicates.
             let begin = sampling::qpc();
-            let registry_phase = Timer::new(Phase::Registry);
             let (acquire_roster, fresh) = variant_read_plan(
                 context.hour,
                 context.force_full,
@@ -2116,8 +1987,6 @@ fn run_with_memory(
                 request.registry.mark_skipped();
             }
             let registry_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
-            drop(registry_phase);
-            let _variants_phase = Timer::new(Phase::Variants);
             let workers = &request.workers;
             let mut variants = request.variants.capture_deferred_overlapped(
                 memory,
@@ -2505,9 +2374,6 @@ fn run_with_memory(
             Report::Gated(GatedReport)
         }
         Job::GatedProjects(request) => {
-            request
-                .captured
-                .profile_acquisition(crate::attach_diagnostics::measuring());
             let countries = request.countries.clone();
             match countries.as_deref() {
                 Some(countries) => request.capture(
@@ -2754,7 +2620,6 @@ impl Pool {
     ) -> Self {
         let executor = acquisition::Pool::start(workers, MAX_JOBS, run).unwrap();
         executor.set_on_completed(presentation::completed);
-        executor.set_diagnostics(Job::diagnostic_identity);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS).unwrap();
         let executor = Arc::new(executor);
         let calibration = Arc::new(SharedCalibration::default());
@@ -2782,13 +2647,14 @@ impl Pool {
                 let _sampler_job = crate::worker_sampler::job(job.role());
                 // SAFETY: submit's callback lease remains admitted until every
                 // accepted request is collected, including on callback unwind.
-                let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+                let memory = unsafe { LiveMemory::new() };
+                #[cfg(test)]
+                let memory = CountedMemory::new(memory);
                 run_with_memory(job, &memory, &runner_calibration)
             },
         )?;
         executor.set_callback_help(Job::callback_help);
         executor.set_on_completed(presentation::completed);
-        executor.set_diagnostics(Job::diagnostic_identity);
         executor.reserve_worker_slots(WORKER_ONLY_JOBS)?;
         let executor = Arc::new(executor);
         Ok(Self {
@@ -2859,49 +2725,36 @@ impl Pool {
     /// The admitted callback lease must remain valid throughout this call.
     // Keep the request, isolated read counts and completion in their own frame.
     #[inline(never)]
-    pub(crate) unsafe fn run_inline(
-        &self,
-        ticket: Ticket,
-        mut request: Job,
-    ) -> Completion<Job, Report> {
+    pub(crate) unsafe fn run_inline(&self, mut request: Job) -> Completion<Job, Report> {
         assert!(!request.worker_only(), "acquisition requires a worker");
         let role = request.role();
-        let identity = request.diagnostic_identity();
-        let begin = sampling::qpc();
-        let growths_before = engine_allocation::growths();
         let reads = crate::read_accounting::Capture::new();
         let report = catch_failure(|| {
             // SAFETY: the caller retains the callback's live-read lease.
-            let memory = CountedMemory::new(unsafe { LiveMemory::new() });
+            let memory = unsafe { LiveMemory::new() };
+            #[cfg(test)]
+            let memory = CountedMemory::new(memory);
             run_with_memory(&mut request, &memory, &self.calibration)
         });
-        let mut table_reads = crate::read_accounting::ZERO;
-        reads.finish_into(&mut table_reads);
-        crate::read_accounting::merge(&table_reads);
+        #[cfg(test)]
+        let table_reads = {
+            let mut table_reads = crate::read_accounting::ZERO;
+            reads.finish_into(&mut table_reads);
+            crate::read_accounting::merge(&table_reads);
+            table_reads
+        };
+        #[cfg(not(test))]
+        drop(reads);
         let counters = &self.calibration.roles[role as usize];
         counters.inline_completed.fetch_add(1, Ordering::Relaxed);
         if report.is_err() {
             counters.inline_panicked.fetch_add(1, Ordering::Relaxed);
         }
-        let timeline = acquisition::Timeline {
-            body_begin_qpc: begin,
-            body_end_qpc: sampling::qpc(),
-            growths: engine_allocation::growths().saturating_sub(growths_before),
-            caller: true,
-            ..Default::default()
-        };
-        crate::acquisition_diagnostics::update(|hour| {
-            hour.jobs.record(crate::acquisition_diagnostics::Job {
-                identity,
-                ticket,
-                timeline,
-            })
-        });
         Completion {
             request,
             report,
+            #[cfg(test)]
             table_reads,
-            timeline,
             #[cfg(feature = "callback_profile")]
             profile: Default::default(),
         }
@@ -2925,38 +2778,12 @@ impl Pool {
             .saturating_add(2 * std::mem::size_of::<PresentationFanIn>())
             .saturating_add(10 * std::mem::size_of::<usize>())
     }
-    pub(crate) fn world_calibration(&self) -> WorldCalibration {
-        *self
-            .calibration
-            .world
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-    }
-    pub(crate) fn presentation_input_hold_ticks(&self) -> u64 {
-        self.presentation_inputs.hold_ticks()
-    }
     pub(crate) fn calibration(&self) -> Calibration {
-        let mut frequency = 0;
-        // SAFETY: valid local output; diagnostics convert retained QPC totals.
-        unsafe {
-            windows_sys::Win32::System::Performance::QueryPerformanceFrequency(&mut frequency)
-        };
         Calibration {
             executor: self.executor.calibration(),
             roles: std::array::from_fn(|index| RoleCalibration {
                 role: ROLES[index],
                 counters: self.calibration.roles[index].snapshot(),
-            }),
-            presentation_continuations: std::array::from_fn(|index| {
-                self.calibration.presentation_continuations[index].snapshot(
-                    [
-                        "inputs_to_prepare",
-                        "preparation_to_settle",
-                        "status_to_stitch",
-                        "final_inputs",
-                    ][index],
-                    frequency.max(1) as u64,
-                )
             }),
         }
     }
@@ -3090,9 +2917,6 @@ impl<'a> Batch<'a> {
     pub(crate) fn completed_report(&self, ticket: Ticket) -> Option<Result<Report, Failure>> {
         self.pool.executor.completed_report(ticket)
     }
-    pub(crate) fn completed_state(&self, ticket: Ticket) -> Option<(Result<Report, Failure>, i64)> {
-        self.pool.executor.completed_state(ticket)
-    }
     /// Advance whichever dependency barrier is ready, without joining a
     /// different producer first. Rejected requests are ready at their normal
     /// collection path; accepted producers must have published completely.
@@ -3198,13 +3022,9 @@ impl<'a> Batch<'a> {
     }
     /// # Safety
     /// Same live-read lease as submit; only a retained rejected job may run here.
-    pub(crate) unsafe fn run_inline(
-        &self,
-        ticket: Ticket,
-        request: Job,
-    ) -> Completion<Job, Report> {
+    pub(crate) unsafe fn run_inline(&self, request: Job) -> Completion<Job, Report> {
         // SAFETY: forwarded from this callback's lease.
-        unsafe { self.pool.run_inline(ticket, request) }
+        unsafe { self.pool.run_inline(request) }
     }
 }
 /// The callback's live-read barrier on every exit: the callback returns or
@@ -3249,9 +3069,6 @@ impl Drop for Batch<'_> {
         self.presentation_stitch.drain();
         self.pool.final_inputs.drain();
         self.pool.ship_details.drain();
-        // SAFETY: all tickets and detached publishers are drained before the next callback.
-        let jobs = unsafe { self.pool.executor.take_diagnostics() };
-        crate::acquisition_diagnostics::update(|hour| hour.jobs.merge(&jobs));
     }
 }
 
@@ -3544,7 +3361,6 @@ mod tests {
             );
             batch.arm_presentation(&mut request);
             assert!(!request.dispatch.dispatched());
-            assert_eq!(request.dispatch.ticks, 0);
             request.dispatch.dispatch(
                 &mut request.captured,
                 &request.countries,
@@ -4008,51 +3824,6 @@ mod tests {
         for &table in &economy::TABLES {
             assert_eq!(world_reads[table.index()], ReadCounts::ZERO, "{table:?}");
         }
-        // The country cache is observed once for the hour, by the Economy
-        // job; both jobs' worker time is the family's.
-        let world_calibration = *calibration.world.lock().unwrap();
-        let cache = world_calibration.country_cache;
-        assert_eq!(
-            cache.ready + cache.capacity_fallbacks + cache.unavailable_fallbacks,
-            1
-        );
-        assert!(world_calibration.last_error.is_none());
-    }
-
-    #[test]
-    fn country_cache_calibration_distinguishes_each_seed_and_retains_fallback_counts() {
-        use engine_native::country_memory::SeedStatus;
-        let mut calibration = CountryCacheCalibration::default();
-        assert!(calibration.latest.is_none());
-        calibration.observe(SeedStatus::Ready, 10);
-        assert_eq!(
-            serde_json::to_value(calibration.latest).unwrap(),
-            serde_json::json!({"state": "ready", "entries": 10})
-        );
-        calibration.observe(
-            SeedStatus::Capacity {
-                required_cells: 16384,
-            },
-            0,
-        );
-        assert_eq!(
-            serde_json::to_value(calibration.latest).unwrap(),
-            serde_json::json!({"state": "capacity", "required_cells": 16384})
-        );
-        calibration.observe(
-            SeedStatus::Unavailable {
-                reason: "synthetic unreadable census",
-            },
-            0,
-        );
-        assert_eq!(
-            serde_json::to_value(calibration.latest).unwrap(),
-            serde_json::json!({"state": "unavailable", "reason": "synthetic unreadable census"})
-        );
-        calibration.observe(SeedStatus::Ready, 12);
-        assert_eq!(calibration.ready, 2);
-        assert_eq!(calibration.capacity_fallbacks, 1);
-        assert_eq!(calibration.unavailable_fallbacks, 1);
     }
 
     #[test]
@@ -4198,7 +3969,6 @@ mod tests {
                         unreachable!();
                     };
                     assert!(expected.raw_ok && actual.raw_ok);
-                    assert_eq!(actual.raw_bytes, expected.raw_bytes);
                     assert_eq!(counts, expected_counts);
                     assert_eq!(actual_reads, expected_reads);
                     assert_eq!(decoded(&request.payload), decoded(&previous));
@@ -4278,7 +4048,6 @@ mod tests {
         let expected = run_world_shared(
             &mut direct,
             &memory,
-            &Mutex::new(WorldCalibration::default()),
         );
         let pool = acquisition::Pool::start(1, 1, move |request: &mut WorldRequest| {
             run_world_shared(
@@ -4287,7 +4056,6 @@ mod tests {
                     base: 0,
                     bytes: &bytes,
                 },
-                &Mutex::new(WorldCalibration::default()),
             )
         })
         .unwrap();
@@ -4355,7 +4123,6 @@ mod tests {
                         base: 0,
                         bytes: &bytes,
                     }),
-                    &Mutex::new(WorldCalibration::default()),
                 )
             })
             .unwrap();
@@ -4389,7 +4156,6 @@ mod tests {
                         base: 0,
                         bytes: &bytes,
                     }),
-                    &Mutex::new(WorldCalibration::default()),
                 )
             })
             .unwrap();

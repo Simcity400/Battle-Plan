@@ -62,53 +62,6 @@ impl Sample {
     }
 }
 
-#[derive(Default)]
-pub struct Work {
-    captured: u64,
-    refused: u64,
-    origins_captured: u64,
-    origins_refused: [u64; 5],
-}
-
-impl Work {
-    pub fn observe(&mut self, inputs: Option<Inputs>, failure: Option<Failure>) {
-        let Some(inputs) = inputs else {
-            self.refused = self.refused.saturating_add(1);
-            return;
-        };
-        self.captured = self.captured.saturating_add(1);
-        if inputs.origins_len.is_ok() {
-            self.origins_captured = self.origins_captured.saturating_add(1);
-        } else if let Some(failure) = failure {
-            let index = match failure {
-                Failure::Unreadable => 0,
-                Failure::InvalidOrigins => 1,
-                Failure::OriginsCapacity { .. } => 2,
-                Failure::OriginsChanged => 3,
-                Failure::Allocation => 4,
-            };
-            self.origins_refused[index] = self.origins_refused[index].saturating_add(1);
-        }
-    }
-
-    pub fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "captured": self.captured,
-            "scope": "division, railway-gun and task-force supply-footer operand packs; origin fragments fail independently",
-            "refused": self.refused,
-            "refusal": Failure::Unreadable.reason(),
-            "origins_captured": self.origins_captured,
-            "origin_refusals": crate::status::map([
-                (Failure::Unreadable.reason(), self.origins_refused[0]),
-                (Failure::InvalidOrigins.reason(), self.origins_refused[1]),
-                (Failure::OriginsCapacity { required: 0 }.reason(), self.origins_refused[2]),
-                (Failure::OriginsChanged.reason(), self.origins_refused[3]),
-                (Failure::Allocation.reason(), self.origins_refused[4]),
-            ].into_iter()),
-        })
-    }
-}
-
 /// An amount at the footer's display step ([`UnitSupplyInputs::STEP`]).
 fn displayed(value: i64) -> i64 {
     UnitSupplyInputs::STEP.round(value)

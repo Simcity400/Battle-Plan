@@ -119,13 +119,6 @@ impl Pending {
     fn take_lost(&self) -> bool {
         self.lost.swap(false, Ordering::AcqRel)
     }
-    fn status(&self) -> impl serde::Serialize {
-        crate::status::status!({
-            "lost": self.lost.load(Ordering::Acquire),
-            "missed_operands": self.missed.load(Ordering::Relaxed),
-            "watches": self.watches.status()
-        })
-    }
 }
 static GAINS: Pending = Pending::new();
 static EXPIRIES: Pending = Pending::new();
@@ -181,12 +174,6 @@ pub(super) unsafe fn release() {
             .write()
             .unwrap_or_else(|error| error.into_inner()) = Vec::new();
     }
-}
-pub(super) fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "gains": GAINS.status(),
-        "expiries": EXPIRIES.status()
-    })
 }
 
 #[cfg(test)]

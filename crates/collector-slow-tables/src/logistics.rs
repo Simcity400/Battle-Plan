@@ -13,7 +13,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LogisticsEquipment];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

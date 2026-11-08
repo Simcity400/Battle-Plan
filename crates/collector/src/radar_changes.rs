@@ -148,16 +148,6 @@ pub(crate) fn collect() {
     WATCHES.collect();
 }
 
-pub(crate) fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "events": CALLS.load(Ordering::Relaxed),
-        "carried_groups": CARRIED.load(Ordering::Relaxed),
-        "read_groups": READ.load(Ordering::Relaxed),
-        "refused_groups": REFUSED.load(Ordering::Relaxed),
-        "watches": WATCHES.status(),
-        "scope": "cumulative since attach; newly encountered or writer-changed radar groups alone read symbol operands in the existing coverage worker; all others are certified carry; missing certification refuses symbols without polling"
-    })
-}
 
 pub(crate) struct Hooks {
     hooks: Vec<Hook>,

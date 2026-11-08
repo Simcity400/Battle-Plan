@@ -26,19 +26,8 @@ use std::sync::{
 static REFUSED_ROWS: AtomicU64 = AtomicU64::new(0);
 static FIRST_REFUSAL: OnceLock<&'static str> = OnceLock::new();
 
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "reason": "naval result HQ inputs unreadable",
-        "refused_rows": REFUSED_ROWS.load(Ordering::Relaxed),
-        "first_detail_reason": FIRST_REFUSAL.get(),
-        "scope": "cumulative result detail rows refused since attach; their NavalResults identities remain, with unknown details",
-    })
-}
-
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::NavalCombatResultDetails];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("retained naval result detail census", 0, &[0])];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

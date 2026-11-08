@@ -124,18 +124,6 @@ pub(crate) unsafe fn install_growth() {
         }
     }
 }
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "configured": cfg!(feature="faction_changes"),
-        "rules":WATCHES[Family::Rules as usize].status(),
-        "programmes":WATCHES[Family::Programmes as usize].status(),
-        "manpower":WATCHES[Family::Manpower as usize].status(),
-        "unlocks":WATCHES[Family::Unlocks as usize].status(),
-        "accounts": WATCHES[Family::Accounts as usize].status(),
-        "advisors":WATCHES[Family::Advisors as usize].status(),
-        "calls": crate::status::sequence((0..MUTATIONS.len()).map(|site| CALLS.total(site))),
-    })
-}
 enum OwnedHook {
     Entry(Hook),
     Store(Tap),

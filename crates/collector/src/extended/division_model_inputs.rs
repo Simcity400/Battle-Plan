@@ -9,7 +9,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::DivisionModelInputs];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 /// Rows grow with the census inside the job.
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

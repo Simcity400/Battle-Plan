@@ -799,20 +799,6 @@ impl Hooks {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let census_reason = *CENSUS_REASON
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    crate::status::status!({"enabled":ENABLED.load(Ordering::SeqCst), "unhooked":UNHOOKED.load(Ordering::Relaxed),
-        "failed_operands":FAILED_READS.load(Ordering::Relaxed), "unregistered_writes":UNREGISTERED.load(Ordering::Relaxed),
-        "unidentified_stores":UNATTRIBUTED.load(Ordering::Relaxed),
-        "census_refusals":CENSUS_REFUSALS.load(Ordering::Relaxed), "last_census_refusal":census_reason,
-        "refusals":crate::status::sequence(REFUSALS.iter().zip(REASONS).filter_map(|(count, reason)| {
-            let count = count.load(Ordering::Relaxed);
-            (count != 0).then_some(crate::status::status!({"reason":reason,"count":count}))
-        })),
-        "scope":"actual availability at the last matching native balance write; absent before observation and, until its next clean write, for the cell a refused write could reach (every cell for an unidentified store)"})
-}
 
 #[cfg(test)]
 mod tests {

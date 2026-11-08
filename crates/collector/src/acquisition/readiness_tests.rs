@@ -152,87 +152,6 @@ fn callback_join_can_help_its_admitted_worker_only_target() {
 }
 
 #[test]
-fn outstanding_scan_rejects_replacement_identity_before_its_generation_is_published() {
-    use crate::{
-        acquisition_diagnostics::{Identity, Outstanding, Slot},
-        acquisition_jobs::Role,
-    };
-    for accepted in [false, true] {
-        let slot = Slot::default();
-        let old = Identity {
-            role: Role::Variants as usize,
-            part: Some(1),
-            kind: 1,
-            ..Default::default()
-        };
-        let replacement = Identity {
-            role: Role::GatedProjects as usize,
-            part: Some(2),
-            ..Default::default()
-        };
-        // SAFETY: this synthetic slot has no concurrent owners.
-        unsafe {
-            slot.admit(old, true);
-        }
-        let value = AtomicU64::new(word(7, RUNNING));
-        let word_before = value.load(Ordering::Acquire);
-        slot.publish(100);
-        value.store(word(7, PUBLISHED), Ordering::Release);
-        value.store(word(7, COLLECTING), Ordering::Release);
-        // SAFETY: this test owns the synthetic COLLECTING cell.
-        unsafe {
-            slot.collected(Ticket::diagnostic(1, 0, 7), Timeline::default());
-        }
-        value.store(word(7, VACANT), Ordering::Release);
-        // SAFETY: this test owns VACANT; new metadata precedes the next PENDING release.
-        unsafe {
-            slot.admit(replacement, accepted);
-        }
-        assert_eq!(slot.identity(), replacement);
-        assert_eq!(value.load(Ordering::Acquire) >> 3, word_before >> 3);
-        let mut outstanding = Outstanding {
-            pool: 1,
-            ..Default::default()
-        };
-        crate::test_support::with_allocations_denied(|| {
-            record_outstanding_slot(&mut outstanding, 0, word_before, &value, &slot);
-        });
-        assert_eq!(outstanding.changed_slots, 1);
-        assert_eq!(outstanding.generations[0], 0);
-        assert_eq!(outstanding.identities[0], 0);
-        value.store(word(8, PENDING), Ordering::Release);
-        record_outstanding_slot(&mut outstanding, 0, word_before, &value, &slot);
-        assert_eq!(outstanding.changed_slots, 2);
-        assert_eq!(outstanding.generations[0], 0);
-        record_outstanding_slot(&mut outstanding, 0, word(8, PENDING), &value, &slot);
-        assert_eq!(outstanding.changed_slots, 2);
-        assert_eq!(outstanding.generations[0], if accepted { 8 } else { 0 });
-    }
-}
-
-#[test]
-fn outstanding_scan_rejects_phase_changes_and_keeps_only_stable_accepted_slots() {
-    use crate::acquisition_diagnostics::{Identity, Outstanding, Slot};
-    let slot = Slot::default();
-    // SAFETY: this synthetic slot is exclusively owned here.
-    unsafe {
-        slot.admit(Identity::default(), true);
-    }
-    for phase in [PENDING, RUNNING] {
-        for after in [VACANT, PENDING, RUNNING, PUBLISHED, COLLECTING] {
-            let value = AtomicU64::new(word(7, after));
-            let mut outstanding = Outstanding::default();
-            record_outstanding_slot(&mut outstanding, 0, word(7, phase), &value, &slot);
-            assert_eq!(outstanding.changed_slots, u64::from(after != phase));
-            assert_eq!(
-                outstanding.generations[0],
-                if after == phase { 7 } else { 0 }
-            );
-        }
-    }
-}
-
-#[test]
 fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
     crate::allocation::set_context(crate::allocation::Context {
         branch: Some(17),
@@ -247,8 +166,7 @@ fn publication_notification_keeps_no_cell_borrow_and_settle_waits_for_it() {
         released: Mutex<mpsc::Receiver<()>>,
     }
     impl Publication for Notification {
-        fn published(&self, at: i64) {
-            assert!(at > 0);
+        fn published(&self) {
             let pool = self.pool.upgrade().unwrap();
             let (ticket, timeout) = self
                 .registered
@@ -343,7 +261,7 @@ fn publication_transfer_panic_still_publishes_and_drains_the_failed_job() {
 fn publication_notification_panic_still_retires_its_active_lease() {
     struct Notify;
     impl Publication for Notify {
-        fn published(&self, _: i64) {
+        fn published(&self) {
             panic!("synthetic continuation failure")
         }
     }
@@ -513,23 +431,17 @@ fn readiness_report_inspection_does_not_collect_or_accept_stale_foreign_or_parke
     let other = Pool::start(1, 1, |job: &mut u8| *job).unwrap();
     let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
     pool.wait_ready(|| pool.is_complete(ticket).then_some(()));
-    let (_, published) = pool.completed_state(ticket).unwrap();
     crate::test_support::with_allocations_denied(|| {
         assert_eq!(pool.completed_report(ticket), Some(Ok(7)));
         assert_eq!(pool.completed_report(ticket), Some(Ok(7)));
-        assert_eq!(pool.completed_state(ticket), Some((Ok(7), published)));
         assert_eq!(other.completed_report(ticket), None);
-        assert_eq!(other.completed_state(ticket), None);
     });
     assert_eq!(pool.calibration().uncollected, 1);
     let completion = pool.finish(ticket).unwrap();
     assert_eq!(completion.report, Ok(7));
-    assert_eq!(completion.timeline.published_qpc, published);
     assert_eq!(pool.completed_report(ticket), None);
-    assert_eq!(pool.completed_state(ticket), None);
     let parked = pool.park(&mut Some(8), false).unwrap();
     assert_eq!(pool.completed_report(parked), None);
-    assert_eq!(pool.completed_state(parked), None);
     assert_eq!(pool.completed_report(ticket), None);
     assert_eq!(pool.unpark(parked), Some(8));
 }
@@ -550,50 +462,6 @@ fn readiness_registration_is_removed_on_unwind() {
     );
     assert!(!pool.shared.ready_waiting.load(Ordering::SeqCst));
     assert_eq!(pool.wait_ready(|| Some(7)), 7);
-}
-
-#[test]
-fn callback_readiness_park_records_its_wait_without_worker_waits() {
-    let (release, released) = mpsc::channel();
-    let released = Mutex::new(released);
-    let pool = Pool::start(1, 1, move |job: &mut u8| {
-        released
-            .lock()
-            .unwrap()
-            .recv_timeout(crate::TEST_HANG_GUARD)
-            .unwrap();
-        *job
-    })
-    .unwrap();
-    let ticket = unsafe { pool.submit(&mut Some(7)).unwrap() };
-    let before = callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls;
-    let releaser = std::thread::spawn(move || {
-        let until = std::time::Instant::now() + crate::TEST_HANG_GUARD;
-        while callback_parks::snapshot()[callback_parks::Site::Readiness as usize].calls == before {
-            assert!(
-                std::time::Instant::now() < until,
-                "callback did not reach its wait"
-            );
-            std::thread::yield_now();
-        }
-        release.send(()).unwrap();
-    });
-    {
-        let _callback = callback_parks::Scope::enter();
-        pool.park_until_ready(|| {
-            pool.is_complete(ticket).then_some(())
-        });
-    }
-    releaser.join().unwrap();
-    let after = callback_parks::snapshot();
-    assert!(after[callback_parks::Site::Readiness as usize].calls > before);
-    assert!(
-        after[callback_parks::Site::Readiness as usize].ns
-            >= after[callback_parks::Site::Readiness as usize].max_ns
-    );
-    assert_eq!(pool.finish(ticket).unwrap().report, Ok(7));
-    assert_eq!(pool.calibration().uncollected, 0);
-    assert_eq!(pool.calibration().caller_executed, 0);
 }
 
 /// Parts may publish in reverse order, but the consumer waits for every
@@ -682,221 +550,4 @@ fn a_detached_handoff_notification_between_readiness_recheck_and_park_is_not_los
     assert_eq!(polls, 3);
     assert_eq!(pool.shared.counters.join_sleeps.load(Ordering::Relaxed), 1);
     assert!(!pool.shared.ready_waiting.load(Ordering::Relaxed));
-}
-
-struct PausedPublication {
-    entered: mpsc::Sender<()>,
-    released: Mutex<mpsc::Receiver<()>>,
-}
-impl Publication for PausedPublication {
-    fn published(&self, _: i64) {
-        self.entered.send(()).unwrap();
-        receive(&self.released.lock().unwrap());
-    }
-}
-struct WakeJob {
-    value: u8,
-    publication: Option<Arc<PausedPublication>>,
-}
-struct WakeFixture {
-    pool: Pool<WakeJob, u8>,
-    ticket: Ticket,
-    readiness: Mutex<mpsc::Receiver<idle_diagnostics::Signal>>,
-    resume_wake: mpsc::Sender<()>,
-    notification: Mutex<mpsc::Receiver<()>>,
-    resume_notification: mpsc::Sender<()>,
-    next_started: Mutex<mpsc::Receiver<()>>,
-    resume_next: mpsc::Sender<()>,
-}
-fn receive<T>(receiver: &mpsc::Receiver<T>) -> T {
-    receiver.recv_timeout(crate::TEST_HANG_GUARD).unwrap()
-}
-impl WakeFixture {
-    fn new() -> Self {
-        let (run, running) = mpsc::channel();
-        let running = Mutex::new(running);
-        let (resume_next, next) = mpsc::channel();
-        let next = Mutex::new(next);
-        let (started, next_started) = mpsc::channel();
-        let pool = Pool::start(2, 1, move |job: &mut WakeJob| {
-            if job.value == 1 {
-                receive(&running.lock().unwrap());
-            } else {
-                started.send(()).unwrap();
-                receive(&next.lock().unwrap());
-            }
-            job.value
-        })
-        .unwrap();
-        pool.set_on_completed(|job, _| {
-            job.publication
-                .as_ref()
-                .map(|publication| Arc::clone(publication) as Arc<dyn Publication>)
-        });
-        let once = std::sync::Once::new();
-        pool.set_readiness_wait_hook(move || once.call_once(|| run.send(()).unwrap()));
-        let (woke, readiness) = mpsc::channel();
-        let (resume_wake, paused) = mpsc::channel();
-        let paused = Mutex::new(paused);
-        assert!(
-            pool.shared
-                .hooks
-                .after_readiness_wake
-                .set(Box::new(move |signal| {
-                    woke.send(signal).unwrap();
-                    receive(&paused.lock().unwrap());
-                }))
-                .is_ok()
-        );
-        let (entered, notification) = mpsc::channel();
-        let (resume_notification, released) = mpsc::channel();
-        let publication = Arc::new(PausedPublication {
-            entered,
-            released: Mutex::new(released),
-        });
-        // SAFETY: the fixture retains every job and notification through settlement.
-        let ticket = unsafe {
-            pool.submit(&mut Some(WakeJob {
-                value: 1,
-                publication: Some(publication),
-            }))
-        }
-        .unwrap();
-        Self {
-            pool,
-            ticket,
-            readiness: Mutex::new(readiness),
-            resume_wake,
-            notification: Mutex::new(notification),
-            resume_notification,
-            next_started: Mutex::new(next_started),
-            resume_next,
-        }
-    }
-    fn wait_for_readiness(&self) -> (idle_diagnostics::Wait, idle_diagnostics::Signal) {
-        let comparison = self.pool.shared.ready_wake.load(Ordering::SeqCst);
-        let begin = crate::sampling::qpc();
-        self.pool
-            .park_until_ready(|| {
-                self.pool.is_complete(self.ticket).then_some(())
-            });
-        let signal = receive(&self.readiness.lock().unwrap());
-        (
-            idle_diagnostics::Wait {
-                address: idle_diagnostics::Address::Readiness,
-                comparison,
-                observed: self.pool.shared.ready_wake.load(Ordering::SeqCst),
-                begin,
-                end: crate::sampling::qpc(),
-                ..Default::default()
-            },
-            signal,
-        )
-    }
-    fn diagnostics(&self, wait: idle_diagnostics::Wait) -> idle_diagnostics::Hour {
-        self.pool.settle();
-        let mut hour = idle_diagnostics::Hour {
-            wait: Some(wait),
-            ..Default::default()
-        };
-        // SAFETY: both jobs were collected and every publisher has settled.
-        unsafe {
-            self.pool
-                .shared
-                .wake_events
-                .as_ref()
-                .unwrap()
-                .drain_into(&mut hour)
-        };
-        assert_eq!(hour.dropped_signals, 0);
-        hour
-    }
-}
-
-#[test]
-fn readiness_wake_survives_callback_progress_and_same_slot_reuse_before_join_wake() {
-    {
-        let fixture = WakeFixture::new();
-        let (wait, readiness) = fixture.wait_for_readiness();
-        assert_eq!(fixture.pool.finish(fixture.ticket).unwrap().report, Ok(1));
-        // SAFETY: the fixture retains the replacement until its gated worker publishes.
-        let next = unsafe {
-            fixture.pool.submit(&mut Some(WakeJob {
-                value: 2,
-                publication: None,
-            }))
-        }
-        .unwrap();
-        assert_eq!(next.slot, fixture.ticket.slot);
-        assert_ne!(next.generation, fixture.ticket.generation);
-        receive(&fixture.next_started.lock().unwrap());
-        let (joining, registered) = mpsc::channel();
-        assert!(
-            fixture
-                .pool
-                .shared
-                .hooks
-                .before_join_wait
-                .set(Box::new(move |ticket| {
-                    joining.send(ticket).unwrap();
-                }))
-                .is_ok()
-        );
-        std::thread::scope(|scope| {
-            let fixture = &fixture;
-            scope.spawn(move || {
-                assert_eq!(receive(&registered), next);
-                fixture.resume_wake.send(()).unwrap();
-                receive(&fixture.notification.lock().unwrap());
-                fixture.resume_next.send(()).unwrap();
-                fixture.resume_notification.send(()).unwrap();
-            });
-            let mut completion = None;
-            assert!(fixture.pool.finish_into_timed(next, &mut completion));
-            assert_eq!(completion.unwrap().report, Ok(2));
-        });
-        let hour = fixture.diagnostics(wait);
-        assert_eq!(hour.matching_signals, 1);
-        assert_eq!(hour.signal, Some(readiness));
-        assert_eq!(fixture.pool.calibration().active, 0);
-        assert_eq!(fixture.pool.calibration().uncollected, 0);
-    }
-}
-
-#[test]
-fn one_publication_records_readiness_and_its_join_address_as_separate_wakes() {
-    {
-        for readiness_wait in [false, true] {
-            let fixture = WakeFixture::new();
-            let (readiness, signal) = fixture.wait_for_readiness();
-            // Keep this generation registered to exercise both wake addresses in one publication.
-            fixture
-                .pool
-                .shared
-                .awaited
-                .store(fixture.ticket.generation, Ordering::SeqCst);
-            fixture.resume_wake.send(()).unwrap();
-            receive(&fixture.notification.lock().unwrap());
-            let join = idle_diagnostics::Wait {
-                address: idle_diagnostics::Address::Slot,
-                ticket: Some(fixture.ticket),
-                begin: readiness.end,
-                end: crate::sampling::qpc(),
-                ..Default::default()
-            };
-            fixture.pool.shared.awaited.store(0, Ordering::SeqCst);
-            assert_eq!(fixture.pool.finish(fixture.ticket).unwrap().report, Ok(1));
-            fixture.resume_notification.send(()).unwrap();
-            let hour = fixture.diagnostics(if readiness_wait { readiness } else { join });
-            assert_eq!(hour.matching_signals, 1);
-            if readiness_wait {
-                assert_eq!(hour.signal, Some(signal));
-            } else {
-                let joined = hour.signal.unwrap();
-                assert_eq!(joined.ticket, Some(fixture.ticket));
-                assert_eq!(joined.readiness, 0);
-                assert!(joined.slot);
-            }
-        }
-    }
 }

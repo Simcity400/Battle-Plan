@@ -269,7 +269,6 @@ fn failed_template_observer_preserves_fresh_template_and_country_values() {
     assert!(crate::hook_failures::failed(Family::Templates));
     assert!(!crate::hook_failures::failed(Family::ArmyStats));
     assert!(Observer.fresh_only());
-    assert_eq!(serde_json::to_value(crate::template_changes::status()).unwrap()["fresh_only"], true);
     assert_eq!(Observer.quiet(), None);
     assert_eq!(Observer.sequence(0x5000), None);
 

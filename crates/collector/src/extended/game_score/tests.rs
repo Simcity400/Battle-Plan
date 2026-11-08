@@ -118,119 +118,10 @@ fn game_score_projection_keeps_countries_independent_values_and_ordered_witnesse
     );
     assert_eq!(rows[COUNT - 1].country, 0x4000_0000 + COUNT as u32 - 1);
     assert_eq!(rows[COUNT - 1].army_count, Some(1 - COUNT as i32));
-    let mut work = Work::default();
-    work.observe(&capture).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["country_rows"], COUNT);
-    assert_eq!(
-        status["refusals"]["country_results"]["game score army roster count unreadable"],
-        1
-    );
-    assert_eq!(
-        status["refusals"]["operands"]["game score air-site access unreadable"],
-        1
-    );
     capture.countries.outcome = Outcome::Truncated {
         len: COUNT,
         unread_rows: 3,
     };
-    work.observe(&capture).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["latest_arenas"]["countries"]["required"], COUNT + 3);
-}
-
-#[test]
-fn game_score_status_counts_current_read_prefix_errors_after_census_failure() {
-    use crate::extended::air::wing_test_kit as kit;
-    const COUNTRY: usize = 0x20000;
-    const FLEET: usize = 0x3e100;
-    let mut bytes = kit::fixture();
-    put64(&mut bytes, 0x11010, 0xdead0000);
-    array(
-        &mut bytes,
-        COUNTRY + engine_native::ccountry::FLEETS,
-        0x3e000,
-        2,
-    );
-    put64(&mut bytes, 0x3e000, FLEET as u64);
-    put64(&mut bytes, FLEET, engine_native::cfleet::VTABLE_RVA.0 as u64);
-    put64(&mut bytes, FLEET + engine_native::cfleet::HANDLE, 61);
-    bytes[kit::WING + cair_wing::MISSION_STATS + cair_wing::MISSION_STAT_INDEXES] = 255;
-    struct Fault<'a>(&'a [u8]);
-    impl Memory for Fault<'_> {
-        fn copy(&self, at: usize, out: &mut [u8]) -> bool {
-            let failed = [
-                COUNTRY + engine_native::ccountry::DIVISIONS_COUNT,
-                FLEET + engine_native::cfleet::TASK_FORCE_COUNT,
-                kit::WING + cair_wing::DEFAULT_STATS + 0x33 * 8,
-            ];
-            !failed
-                .into_iter()
-                .any(|field| at <= field && field < at.saturating_add(out.len()))
-                && kit::memory(self.0).copy(at, out)
-        }
-    }
-    let memory = Fault(&bytes);
-    let mut capture = Captured::with_capacities(&Capacities {
-        countries: 3,
-        fleets: 2,
-        wings: 1,
-        ..Default::default()
-    });
-    capture.capture(&memory, kit::BASE, kit::GAME_STATE);
-    assert!(matches!(
-        capture.countries.outcome,
-        Outcome::Unavailable { .. }
-    ));
-    assert_eq!(capture.country_len, 1);
-    capture.begin_air();
-    capture.owner(&memory, kit::BASE, 1, None);
-    capture.wing(
-        &memory,
-        kit::WING,
-        &cair_wing::ScoreLeaf {
-            id: 65,
-            planes: Ok(10),
-        },
-    );
-    capture.finish_air(Outcome::Unavailable {
-        reason: "air wing pool vtable mismatch",
-    });
-    let mut work = Work::default();
-    for reset in [false, true] {
-        if reset {
-            capture.reset();
-        }
-        work.observe(&capture).unwrap();
-        let status = serde_json::to_value(work.status()).unwrap();
-        assert_eq!(
-            (
-                status["country_rows"].as_u64(),
-                status["wing_rows"].as_u64()
-            ),
-            (Some(1), Some(1))
-        );
-        let refusals = &status["refusals"];
-        assert_eq!(status["slot_zero_null"], 1);
-        assert!(refusals["country_results"]["game score country slot zero is null"].is_null());
-        assert_eq!(
-            refusals["country_results"]["game score army roster count unreadable"],
-            1
-        );
-        assert_eq!(
-            refusals["country_results"]["game score task force count unreadable"],
-            1
-        );
-        assert_eq!(
-            refusals["operands"]["game score task force count unreadable"],
-            1
-        );
-        assert_eq!(refusals["operands"]["game score fleet pointer is null"], 1);
-        assert_eq!(
-            refusals["operands"]["game score air superiority stat unreadable"],
-            1
-        );
-    }
 }
 
 #[test]
@@ -280,15 +171,6 @@ fn game_score_air_census_is_unknown_until_finished_and_short_storage_is_named() 
         rows[0].air_state,
         rows::CountryGameScoreInputRow::AIR_UNKNOWN
     );
-    let mut work = Work::default();
-    work.observe(&captured).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(
-        status["refusals"]["country_results"]["game score air-country storage exhausted"],
-        1
-    );
-    assert_eq!(status["latest_arenas"]["countries"]["required"], 3);
-    assert_eq!(status["latest_arenas"]["countries"]["capacity"], 1);
     assert_eq!(
         [
             native::AirState::Unknown,
@@ -301,57 +183,6 @@ fn game_score_air_census_is_unknown_until_finished_and_short_storage_is_named() 
             rows::CountryGameScoreInputRow::AIR_ABSENT,
             rows::CountryGameScoreInputRow::AIR_PRESENT
         ]
-    );
-}
-
-#[test]
-fn game_score_sizing_status_retains_named_counts_without_capture_refusals() {
-    let mut work = Work::default();
-    let observed = native::ArenaSizing {
-        demand: native::ArenaDemand {
-            fleets: 7,
-            ..Default::default()
-        },
-        failures: vec![("game score sizing air-pool vtable mismatch", 2)],
-    };
-    work.observe_sizing(&observed).unwrap();
-    work.observe_sizing(&observed).unwrap();
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["sizing_observations"], 2);
-    assert_eq!(
-        status["sizing_failures"]["game score sizing air-pool vtable mismatch"],
-        4
-    );
-    assert!(
-        status["refusals"]["operands"]
-            .as_object()
-            .unwrap()
-            .is_empty()
-    );
-    struct Unreadable;
-    impl Memory for Unreadable {
-        fn copy(&self, _: usize, _: &mut [u8]) -> bool {
-            false
-        }
-    }
-    let unavailable = crate::country_scale::observe_game_score(&Unreadable, 0)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        unavailable.failures,
-        [("input demand game state unreadable or address overflow", 1)]
-    );
-    struct NullState;
-    impl Memory for NullState {
-        fn copy(&self, _: usize, output: &mut [u8]) -> bool {
-            output.fill(0);
-            true
-        }
-    }
-    assert!(
-        crate::country_scale::observe_game_score(&NullState, 0)
-            .unwrap()
-            .is_none()
     );
 }
 

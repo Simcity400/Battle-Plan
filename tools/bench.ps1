@@ -36,7 +36,7 @@ defaults to 420; choose a cap above the expected progress for a full-duration ru
 "console" lists console lines (e.g. "observe") typed after each reload, before a
 recorder attaches; they briefly take the foreground. "alternate" reverses the
 recorder candidates' order on even repeats. "status_every_s" appends the
-recorder's cumulative pause counters, histogram and slowest hours to
+recorder's cumulative pause counters, histogram and frame waits to
 status_series.jsonl at that interval during a screen.
 "save_at_hour" pauses the first screen that reaches that game hour, saves the game
 through its menu as "save_name" (default BENCH_H<hour>) in the user directory, and
@@ -1135,11 +1135,9 @@ function Invoke-Screen($attached, [string]$runDir) {
                     $statusSeries.WriteLine(([ordered]@{
                         elapsed_s = $entry.elapsed_s; hour = $entry.hour
                         callback_work = $status.callback_work; native_tick_work = $status.native_tick_work
-                        callback_tail = $status.callback_tail
-                        attach_callbacks = $status.attach_callbacks
-                        variants_profile = $status.variant_changes.variants_profile
+                        callback_histogram = $status.callback_tail.histogram
+                        acquisition_work = $status.acquisition_work
                         callback_profile = $status.callback_profile
-                        callback_histogram = $status.callback_tail.histogram; slowest = $status.callback_tail.slowest
                         spool_bytes = $status.spool_bytes; pool_bytes = $status.pool_bytes
                         dropped_frames = $status.dropped_frames; write_errors = $status.write_errors
                     } | ConvertTo-Json -Compress -Depth 16))

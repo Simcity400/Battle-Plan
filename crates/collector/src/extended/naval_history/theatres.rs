@@ -58,7 +58,6 @@ pub(crate) struct NavalJob {
     pub(super) capacity_charge: crate::raw_memory::Charge,
     pub(super) positive_span_end: usize,
     pub(super) positive_raw_complete: bool,
-    pub(super) reserved_native_count: Option<u32>,
     pub(super) reserved_first_failure: Option<&'static str>,
     pub(super) reserved_capacity_short: bool,
     pub(super) reserved_required_rows: usize,
@@ -210,7 +209,6 @@ impl NavalJob {
     fn clear_reserved(&mut self) {
         self.positive_span_end = 0;
         self.positive_raw_complete = false;
-        self.reserved_native_count = None;
         self.reserved_first_failure = None;
         self.reserved_capacity_short = false;
         self.reserved_required_rows = 0;
@@ -356,7 +354,6 @@ impl NavalJob {
 pub(crate) struct NavalCopyReport {
     pub raw_ok: bool,
     pub copy_ticks: [u64; NAVAL_PACK_N],
-    pub raw_bytes: [u64; NAVAL_PACK_N],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1609,7 +1606,6 @@ fn copy_reserved_land_headers(job: &mut NavalJob, memory: &impl Memory, base: us
         let mut bytes = [0; 16];
         bytes.copy_from_slice(&job.log.bytes[header..header + 16]);
         let theatres = Array::from_header(bytes, 8).ok_or("reserved land vector invalid")?;
-        job.reserved_native_count = Some(theatres.count);
         job.reserved_required_rows = theatres.count as usize;
         job.reserved_raw_demand = super::reserved_raw_demand(Some(theatres.count));
         bounded_demand = false;
@@ -1787,7 +1783,6 @@ pub(crate) fn copy_naval_refresh(
     NavalCopyReport {
         raw_ok: job.positive_raw_complete,
         copy_ticks: ticks,
-        raw_bytes: job.log.raw_bytes,
     }
 }
 
@@ -1810,11 +1805,6 @@ impl Captured {
     pub(crate) fn fail_naval_capture(&mut self, reason: &'static str) {
         self.reserved_land_count = None;
         self.reserved_land_required_rows = 0;
-        self.reserved_land_first_failure = Some(reason);
-        self.reserved_land_native_count = None;
-        self.reserved_land_typed_capacity_short = false;
-        self.reserved_land_raw_capacity_short = false;
-        self.reserved_land_raw_demand = None;
         macro_rules! reject {
             ($($field:ident = $slot:literal),+ $(,)?) => {
                 $({
@@ -1849,11 +1839,6 @@ pub(crate) fn decode_naval_payload(
 ) {
     captured.reserved_land_count = None;
     captured.reserved_land_required_rows = 0;
-    captured.reserved_land_first_failure = None;
-    captured.reserved_land_native_count = job.reserved_native_count;
-    captured.reserved_land_typed_capacity_short = false;
-    captured.reserved_land_raw_capacity_short = job.reserved_capacity_short;
-    captured.reserved_land_raw_demand = job.reserved_raw_demand;
     captured.active[4] = true;
     captured.active[5..10].fill(job.theatres_active);
     let recorded = match crate::raw::Recorded::build_range(&job.log, 0..job.positive_span_end) {
@@ -1949,41 +1934,33 @@ pub(crate) fn decode_naval_payload(
     // Replay the logical failure order even when a later staged header failed:
     // its callback must first retain an earlier OOB refusal. A staging refusal
     // can veto a successful whole batch, but can never authorize publication.
-    match crate::raw::Recorded::build_range_cached(
+    if let Ok(recorded) = crate::raw::Recorded::build_range_cached(
         &job.log,
         job.positive_span_end..job.log.spans.len(),
         &job.reserved_index,
     ) {
-        Ok(recorded) => {
-            let source = RosterReplay {
-                inner: &recorded,
-                roster: None,
-                reserved: job
-                    .roster
-                    .reserved_observation(base, job.game_state)
-                    .map(|root| (base, job.game_state, root)),
-            };
-            captured.capture_reserved_land_inner(
-                &source,
-                base,
-                source
-                    .authenticated_reserved_country(base, job.game_state)
-                    .unwrap_or(Err("reserved land root observation absent")),
-                Some((&job.log, job.positive_span_end)),
-                job.reserved_first_failure,
-                job.growing,
-            );
-        }
-        Err(reason) => {
-            captured.reserved_land_first_failure = Some(reason);
-        }
+        let source = RosterReplay {
+            inner: &recorded,
+            roster: None,
+            reserved: job
+                .roster
+                .reserved_observation(base, job.game_state)
+                .map(|root| (base, job.game_state, root)),
+        };
+        captured.capture_reserved_land_inner(
+            &source,
+            base,
+            source
+                .authenticated_reserved_country(base, job.game_state)
+                .unwrap_or(Err("reserved land root observation absent")),
+            Some((&job.log, job.positive_span_end)),
+            job.reserved_first_failure,
+            job.growing,
+        );
     }
     // Keep observed raw demand independent from logical certificate refusal.
     // Only the callback's checked representable demand may schedule growth.
-    captured.reserved_land_native_count = job.reserved_native_count;
     captured.reserved_land_required_rows = job.reserved_growth_rows;
-    captured.reserved_land_raw_capacity_short = job.reserved_capacity_short;
-    captured.reserved_land_raw_demand = job.reserved_raw_demand;
     if !job.theatres_active {
         captured.wing_sources.outcome = SKIPPED;
         captured.wings_finished = true;

@@ -13,7 +13,6 @@ use std::mem::size_of;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::StateFlags];
 // Metadata is emitted once by the combined States/StateFlags source group.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

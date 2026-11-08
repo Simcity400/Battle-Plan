@@ -619,32 +619,6 @@ pub fn active() -> usize {
     TOUCHED.active.load(Ordering::SeqCst)
 }
 
-pub fn status() -> impl serde::Serialize {
-    let full = FULL.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "equipment_refusals": crate::status::map(native::EQUIPMENT_REFUSALS.into_iter()
-            .zip(EQUIPMENT_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
-        "configured": cfg!(feature = "air_record_changes"),
-        "poisoned": POISONED.load(Ordering::SeqCst),
-        "calls": TOUCHED.calls.load(Ordering::Relaxed),
-        "unrecorded_calls": TOUCHED.lost_calls.load(Ordering::Relaxed),
-        "set_slots": TOUCHED.capacity(),
-        "carried_hours": counts[0],
-        "touched_holders_read": counts[1],
-        "touched_records_read": counts[2],
-        "new_holders": counts[3],
-        "carried_holders": counts[4],
-        "full_hours": {
-            "first": full[0],
-            "invalidation": full[1],
-            "lost_interval": full[2],
-            "poisoned": full[3],
-            "difference": full[4],
-        },
-        "scope": "cumulative since attach; calls are update_record entries (unrecorded ones lose their interval, and that hour reads every holder); a carried hour reads each touched holder's records dated from the previous capture's hour and carries the rest; a touched holder that cannot be spliced or located disables reuse (difference)"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

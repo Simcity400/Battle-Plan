@@ -196,7 +196,4 @@ fn group_sizing_prepares_retreat_ban_watches_before_the_first_capture() {
     for ordinal in 0..COUNT {
         assert!(Observer.sequence(GROUPS + ordinal * GROUP_STRIDE).is_some());
     }
-    let status = serde_json::to_value(crate::retreat_ban_changes::status()).unwrap();
-    assert_eq!(status["watches"]["refused_registrations"], 0);
-    assert_eq!(status["watches"]["registered"], COUNT);
 }

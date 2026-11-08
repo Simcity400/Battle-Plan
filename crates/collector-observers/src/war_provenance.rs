@@ -506,15 +506,6 @@ pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
 }
 
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "active": active(),
-        "unclassified_callers": UNCLASSIFIED.load(Ordering::Relaxed),
-        "unread_operands": UNREAD.load(Ordering::Relaxed),
-        "first_unread": FIRST_UNREAD.try_lock().ok().and_then(|first| *first),
-        "scope": "cumulative since attach; an unclassified caller or unread cause operand leaves that fact unrecorded (None), never guessed",
-    })
-}
 
 #[cfg(test)]
 mod tests;

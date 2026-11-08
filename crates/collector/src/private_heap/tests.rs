@@ -357,13 +357,11 @@ fn a_full_shard_passes_a_batch_through_the_depot_to_another_shard() {
     freeing.with(|lists| {
         let list = lists[class];
         assert_eq!((list.head, list.count, list.spare), (blocks[2], 1, blocks[1]));
-        assert_eq!((list.kept, list.returned), (3, 0));
     });
     assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), SMALL_LIMIT);
     assert_eq!(allocating.take(class, &heap.0.depots), blocks[0]);
     assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), 0);
     assert!(allocating.take(class, &heap.0.depots).is_null());
-    allocating.with(|lists| assert_eq!((lists[class].hits, lists[class].misses), (1, 1)));
     // A shard drains its list, then its spare, before the depot.
     assert_eq!(freeing.take(class, &heap.0.depots), blocks[2]);
     assert_eq!(freeing.take(class, &heap.0.depots), blocks[1]);
@@ -404,21 +402,6 @@ fn frees_beyond_the_depot_bound_return_to_the_heap() {
         assert_eq!(kept, index < held + 2);
     }
     assert_eq!(heap.0.depots.bytes.load(Ordering::Relaxed), DEPOT_BYTES);
-    // The status itself never allocates; only this test's JSON value does.
-    let snapshot = heap.0.status();
-    crate::test_support::with_allocations_denied(|| {
-        serde_json::to_writer(std::io::sink(), &snapshot).unwrap()
-    });
-    let status = serde_json::to_value(&snapshot).unwrap();
-    let classes = status["classes"].as_array().unwrap();
-    let row = classes
-        .iter()
-        .find(|row| row["bytes"] == SMALL_LIMIT)
-        .unwrap();
-    assert_eq!(row["kept"], held + 2);
-    assert_eq!(row["returned"], 1);
-    assert_eq!(row["cached"], held + 2);
-    assert_eq!(row["depot"], held);
     // A batch taken out makes room for the next one passed on.
     assert!(!heap.0.shards[1].take(class, &heap.0.depots).is_null());
     assert!(heap.0.shards[0].keep(class, blocks[held + 2], &heap.0.depots));

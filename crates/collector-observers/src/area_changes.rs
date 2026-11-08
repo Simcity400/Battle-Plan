@@ -165,25 +165,6 @@ fn refuse(reason: &'static str) {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(reason);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let hours = HOURS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let work = WORK.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let last_refusal = *LAST_REFUSAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    crate::status::status!({
-        "configured": cfg!(feature = "area_changes"),
-        "full_hours": hours[0],
-        "quiet_hours": hours[1],
-        "marked_hours": hours[2],
-        "repointed_provinces": work[0],
-        "read_areas": work[1],
-        "carried_areas": work[2],
-        "refusals": REFUSALS.load(Ordering::Relaxed),
-        "last_refusal": last_refusal,
-        "scope": "cumulative since attach; the Provinces job labels each province's controller and owner areas (gathered with its movement fields) by their smallest member and records each controller area's representative and ordered contacts once; an hour with no territory province mark publishes the held areas, a marked hour reads again the areas of the marked and re-pointed provinces, the areas they left and their neighbours' areas, and a refused or moved take reads every area"
-    })
-}
 
 #[cfg(test)]
 mod tests {

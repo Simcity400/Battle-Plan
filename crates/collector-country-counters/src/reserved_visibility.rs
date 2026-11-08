@@ -7,8 +7,6 @@ use engine_native::{Memory, ccountry, crelation_status};
 #[derive(Default, Clone, Copy)]
 struct Cell {
     value: Option<crelation_status::ReverseZeroVisibilityInputs>,
-    reason: Option<&'static str>,
-    failures: [Option<&'static str>; 4],
 }
 
 pub struct Request<'a> {
@@ -150,14 +148,8 @@ impl Captured {
         self.ticks = self
             .ticks
             .saturating_add(qpc().saturating_sub(begin).max(0) as u64);
-        let (value, reason) = match captured.value {
-            Ok(value) => (Some(value), None),
-            Err(reason) => (None, Some(reason)),
-        };
         *cell = Cell {
-            value,
-            reason,
-            failures: captured.failures,
+            value: captured.value.ok(),
         };
     }
 
@@ -221,102 +213,6 @@ impl Captured {
     }
     pub fn grow(&mut self, capacity: &mut usize) {
         self.cells.grow(capacity);
-    }
-    pub fn observe(&self, work: &mut Work) -> std::io::Result<()> {
-        work.observe(self)
-    }
-}
-
-#[derive(Default)]
-pub struct Work {
-    attempted: u64,
-    available: u64,
-    refused: u64,
-    cells_attempted: u64,
-    cells_available: u64,
-    cells_refused: u64,
-    field_faults: [u64; 4],
-    scalar_faults: u64,
-    refusals: Vec<(&'static str, u64)>,
-    required: usize,
-    allocated: usize,
-    bytes: usize,
-}
-
-impl Work {
-    fn refuse(&mut self, reason: &'static str) -> std::io::Result<()> {
-        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-            Ok(index) => index,
-            Err(index) => {
-                engine_allocation::reserve(&mut self.refusals, 1)?;
-                self.refusals.insert(index, (reason, 0));
-                index
-            }
-        };
-        self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
-        Ok(())
-    }
-
-    fn observe(&mut self, capture: &Captured) -> std::io::Result<()> {
-        if !capture.attempted {
-            return Ok(());
-        }
-        self.attempted = self.attempted.saturating_add(1);
-        if let Some(reason) = capture.refusal() {
-            self.refused = self.refused.saturating_add(1);
-            self.refuse(reason)?;
-        } else {
-            self.available = self.available.saturating_add(1);
-        }
-        if let Some(reason) = capture.scalar_reason {
-            self.scalar_faults = self.scalar_faults.saturating_add(1);
-            // A root/diplomacy failure can be the same whole-source reason;
-            // count that exact attempted refusal once in the reason map.
-            if capture.refusal() != Some(reason) {
-                self.refuse(reason)?;
-            }
-        }
-        for cell in &capture.cells.first[..capture.cells.len] {
-            if let Some(reason) = cell.reason {
-                self.cells_attempted = self.cells_attempted.saturating_add(1);
-                self.cells_refused = self.cells_refused.saturating_add(1);
-                self.refuse(reason)?;
-            } else if cell.value.is_some() {
-                self.cells_attempted = self.cells_attempted.saturating_add(1);
-                self.cells_available = self.cells_available.saturating_add(1);
-            }
-            for (index, reason) in cell.failures.iter().enumerate() {
-                if let Some(reason) = reason {
-                    self.field_faults[index] = self.field_faults[index].saturating_add(1);
-                    self.refuse(reason)?;
-                }
-            }
-        }
-        self.required = capture.cells.required;
-        self.allocated = capture.cells.first.len();
-        self.bytes = capture.allocated_bytes();
-        Ok(())
-    }
-
-    pub fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "attempted": self.attempted,
-            "available": self.available,
-            "refused": self.refused,
-            "cells_attempted": self.cells_attempted,
-            "cells_available": self.cells_available,
-            "cells_refused": self.cells_refused,
-            "source_scalar_faults": self.scalar_faults,
-            "target_faults": self.field_faults[0],
-            "war_faults": self.field_faults[1],
-            "subject_faults": self.field_faults[2],
-            "military_access_faults": self.field_faults[3],
-            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
-            "required": self.required,
-            "allocated": self.allocated,
-            "bytes": self.bytes,
-            "scope": "cumulative actual same-hour attempts; latest live matrix demand and owned arena before growth; full changed Opaque field projection/encoding is O(M), bytes also included in pool_bytes",
-        })
     }
 }
 

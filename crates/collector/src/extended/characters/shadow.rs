@@ -7,8 +7,6 @@ pub(super) struct NativeShadow<R> {
     pub(super) bytes: Vec<u8>,
     required: usize,
     pub(super) output: Weak<TableRows>,
-    hits: u64,
-    misses: u64,
 }
 
 impl<R> NativeShadow<R> {
@@ -17,15 +15,6 @@ impl<R> NativeShadow<R> {
         self.bytes.clear();
         self.required = 0;
         self.output = Weak::new();
-    }
-
-    fn statistics(&self) -> CharacterShadowStats {
-        CharacterShadowStats {
-            hits: self.hits,
-            misses: self.misses,
-            row_capacity_bytes: self.rows.capacity() * size_of::<R>(),
-            arena_capacity_bytes: self.bytes.capacity(),
-        }
     }
 }
 
@@ -40,25 +29,6 @@ pub(crate) struct CharacterShadow {
     pub(super) leaders: NativeShadow<ccountry_leader::Row>,
     pub(super) advisors: NativeShadow<cadvisor::Row>,
     pub(super) traits: NativeShadow<cunit_leader::TraitRow>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CharacterShadowStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub row_capacity_bytes: usize,
-    pub arena_capacity_bytes: usize,
-}
-
-impl CharacterShadow {
-    pub(crate) fn statistics(&self) -> [CharacterShadowStats; 4] {
-        [
-            self.characters.statistics(),
-            self.leaders.statistics(),
-            self.advisors.statistics(),
-            self.traits.statistics(),
-        ]
-    }
 }
 
 /// Cache references must come from this branch's current complete spool cache.
@@ -109,7 +79,6 @@ pub(super) fn shadow_input<R: Copy + PartialEq>(
         && shadow.required == buffer.bytes.required
         && shadow.bytes == bytes
     {
-        shadow.hits = shadow.hits.saturating_add(1);
         return TableInput::SharedComplete(Arc::clone(cached));
     }
     let skipped = matches!(
@@ -118,9 +87,6 @@ pub(super) fn shadow_input<R: Copy + PartialEq>(
             reason: replay_data::cadence::SKIPPED_REASON
         }
     );
-    if !skipped {
-        shadow.misses = shadow.misses.saturating_add(1);
-    }
     // An exact hit above has the same ranges and arena as the previously
     // validated output. Only changed input needs another row-validation pass.
     let source = source.filter(|(rows, bytes)| rows.iter().all(|row| valid_row(row, bytes)));

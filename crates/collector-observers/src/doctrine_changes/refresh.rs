@@ -101,13 +101,6 @@ pub(super) unsafe fn release() {
     }
 }
 
-pub(super) fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "lost": LOST.load(Ordering::Acquire),
-        "unprepared_receivers": UNKNOWN.load(Ordering::Relaxed),
-        "watches": MARKS.each_ref().map(WatchRegistry::status)
-    })
-}
 
 #[cfg(test)]
 mod tests {

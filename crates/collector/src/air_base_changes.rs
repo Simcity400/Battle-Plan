@@ -54,19 +54,3 @@ pub(crate) fn record(report: &SlotReport) {
     }
 }
 
-pub(crate) fn status() -> impl serde::Serialize {
-    let bases = BASES.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let refusals = crate::status::map(
-        DenseRefusal::ALL
-            .iter()
-            .zip(&REFUSALS)
-            .map(|(refusal, count)| (refusal.reason(), count.load(Ordering::Relaxed))),
-    );
-    crate::status::status!({
-        "configured": cfg!(feature = "air_base_changes"),
-        "dense_bases": bases[0],
-        "full_scan_bases": bases[1],
-        "full_scan_reasons": refusals,
-        "scope": "cumulative since attach; AirBaseRegistrations reads a base's country-container vector only at the slot words of the containers its dense list names, since country-container creation and country access removal write both in the same call; a list that does not prove the slots (full_scan_reasons) reads every chunk; containers, pools, wings, capacity and fuel are read every hour"
-    })
-}

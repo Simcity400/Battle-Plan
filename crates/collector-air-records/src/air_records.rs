@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::AirRegionCombat];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 /// The rows live in the family's store, sized from the holders it reads.
 pub type Capacities = ();
 

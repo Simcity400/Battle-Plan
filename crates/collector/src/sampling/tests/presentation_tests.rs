@@ -470,19 +470,6 @@ fn final_status_publication_dispatches_stitch_before_unrelated_join() {
     }
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.caller_executed, 0);
-    let timing = serde_json::to_value(&calibration).unwrap();
-    assert_eq!(
-        timing["presentation_continuations"][1]["edge"],
-        "preparation_to_settle"
-    );
-    assert_eq!(
-        timing["presentation_continuations"][2]["edge"],
-        "status_to_stitch"
-    );
-    for index in [1, 2] {
-        assert_eq!(timing["presentation_continuations"][index]["dispatched"], 1);
-        assert_eq!(timing["presentation_continuations"][index]["rejected"], 0);
-    }
 }
 
 #[test]

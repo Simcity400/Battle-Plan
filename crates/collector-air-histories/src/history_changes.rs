@@ -88,8 +88,8 @@ impl Watches {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn status(&self) -> impl serde::Serialize {
-        self.registry.status()
+    pub fn capacity(&self) -> usize {
+        self.registry.capacity()
     }
 }
 
@@ -236,45 +236,6 @@ pub fn record_menu_refusals(counts: &[u64; engine_air_history::menu_history::REF
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let event_counts = WATCHES
-        .calls
-        .each_ref()
-        .map(|value| value.load(Ordering::Relaxed));
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(event_counts)
-            .map(|(site, n)| (site.name, n)),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let restarts = RESTARTS
-        .each_ref()
-        .map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "history_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_countries": reads[0],
-        "read_countries": reads[1],
-        "advanced_histories": reads[2],
-        "refreshed_histories": reads[3],
-        "quiet_hours": reads[4],
-        "patched_histories": reads[5],
-        "scenario_refusals": crate::status::map(engine_air_history::air_kamikaze::SCENARIO_REFUSALS.into_iter()
-            .zip(SCENARIO_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
-        "retained_buffers": crate::air_histories::retained_buffers(),
-        "menu_refusals": crate::status::map(engine_air_history::menu_history::REFUSALS.into_iter()
-            .zip(MENU_REFUSALS.iter().map(|count| count.load(Ordering::Relaxed)))),
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "restarts": {
-            "invalidation": restarts[0],
-            "table_install": restarts[1],
-            "failed_hour": restarts[2],
-        },
-        "scope": "cumulative since attach; a quiet hour reuses every country's histories and an observed advance is applied without a read; a country with adds rereads only the regions they touched, and of a touched history without an advance only its daily current record (patched); a restart is an hour that copied every held history afresh: after a load, gap, recovery or attach, a larger watch table, or an hour whose part or AirMissions job failed or that was dropped before decoding"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

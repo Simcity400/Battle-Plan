@@ -694,43 +694,6 @@ impl Hooks {
         self.hooks.iter().flat_map(Hook::executable_ranges)
     }
 }
-pub fn status() -> impl serde::Serialize {
-    let hooks = std::array::from_fn::<_, 3, _>(|i| {
-        let site = native::SITES[i];
-        crate::status::status!({
-            "name": site.name, "rva": site.rva.0, "span": site.span,
-            "installed": INSTALLED[i].load(Ordering::Acquire),
-            "enabled": SITE_ENABLED[i].load(Ordering::SeqCst),
-            "active": ACTIVE[i].load(Ordering::SeqCst),
-            "calls": CALLS[i].load(Ordering::Relaxed),
-            "last_thread": CALL_THREADS[i].load(Ordering::Relaxed),
-        })
-    });
-    crate::status::status!({
-        "hooks": crate::status::sequence(hooks.into_iter()),
-        "unhooked": UNHOOKED.get(),
-        "interval_unavailable": POISONED.load(Ordering::SeqCst),
-        "events": EVENTS.load(Ordering::Relaxed),
-        "overflow": OVERFLOW.load(Ordering::Relaxed),
-        "refusals": REFUSALS.load(Ordering::Relaxed),
-        "lost_drains": LOST.load(Ordering::Relaxed),
-        "overlaps": OVERLAPS.load(Ordering::Relaxed),
-        "event_capacity": capacity(),
-        "birth_capacity": BIRTH_CAPACITY.load(Ordering::Acquire),
-        "offered_capacity": OFFERED_CAPACITY.load(Ordering::Acquire),
-        "event_demand": EVENT_DEMAND.load(Ordering::Relaxed),
-        "birth_demand": BIRTH_DEMAND.load(Ordering::Relaxed),
-        "hourly_peak_events": HOURLY_PEAK.load(Ordering::Relaxed),
-        "hourly_peak_capacity": HOURLY_PEAK_CAPACITY.load(Ordering::Relaxed),
-        "game_thread": GAME_THREAD.load(Ordering::Relaxed),
-        "thread_mismatches": THREAD_MISMATCHES.load(Ordering::Relaxed),
-        "prepare_failures": PREPARE_FAILURES.load(Ordering::Relaxed),
-        "population_read_failures": POPULATION_READ_FAILURES.load(Ordering::Relaxed),
-        "unknown_constructors": UNKNOWN_CONSTRUCTORS.load(Ordering::Relaxed),
-        "native_unwinds": UNWINDS.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; first/branch and recovery intervals partial; skipped result creation invokes neither result tap",
-    })
-}
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -64,21 +64,3 @@ pub(crate) fn record(counts: Counts) {
     }
 }
 
-pub(crate) fn status() -> impl serde::Serialize {
-    let navies = NAVIES.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let leaders = LEADERS
-        .each_ref()
-        .map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "navy_ledger_changes"),
-        "skipped_navies": navies[0],
-        "read_navies": navies[1],
-        "carried_navies": navies[2],
-        "fingerprint_leaders": {
-            "carried": leaders[0],
-            "resolved": leaders[1],
-            "scope": "cumulative since attach; each naval mission country's fingerprint resolves a task force's fleet-leader reference only when the navy leader held for it no longer has the naval tree certificate taken before its authentication (construction, copy and destruction move it)",
-        },
-        "scope": "cumulative since attach; NavalMissionLedgers republishes a navy's held registrations, reading only their regions' presence counts, while its ledger certificate (registration, removal, reset and navy lifecycle writers) holds outside a full hour; a read navy reads its region ledger headers only when its registered-mission set is nonempty, since every ledger writer writes the set in the same call"
-    })
-}

@@ -1,6 +1,7 @@
 use super::*;
 use crate::sampling::divisions_test_kit as kit;
 use std::cell::{Cell, RefCell};
+use std::sync::atomic::Ordering;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CoreEvent {
@@ -424,22 +425,11 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
     assert!(!memory.reads.borrow().iter().any(|&(address, _)| {
         address == kit::GAME_STATE + cgame_state::PROVINCES || address == 0x40000
     }));
-    let input_bytes = staged.payload_bytes();
-    assert_eq!(
-        input_bytes,
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .map(|&(_, len)| len as u64)
-            .sum::<u64>()
-    );
 
     staged.capture_core(&memory, 64);
     assert_eq!(staged.outcome(64), Outcome::Rows { len: 3 });
     assert!(Arc::ptr_eq(&lease, staged.unit_inputs().unwrap()));
     assert_eq!(staged.allocated_bytes(), allocated);
-    assert!(staged.payload_bytes() > input_bytes);
     assert!(
         !memory.reads.borrow()[boundary..]
             .iter()
@@ -450,21 +440,11 @@ fn input_stage_can_be_leased_before_core_without_repeating_the_census() {
                     || address == 0x23100
             })
     );
-    assert_eq!(
-        staged.payload_bytes(),
-        memory
-            .reads
-            .borrow()
-            .iter()
-            .map(|&(_, len)| len as u64)
-            .sum::<u64>()
-    );
 
     let mut combined = Census::new();
     combined.capture(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE, 64);
     assert_eq!(staged.rows(64), combined.rows(64));
     assert_eq!(staged.sources(64), combined.sources(64));
-    assert_eq!(staged.payload_bytes(), combined.payload_bytes());
     let completed_reads = memory.reads.borrow().len();
     staged.capture_core(&memory, 64);
     assert_eq!(memory.reads.borrow().len(), completed_reads);
@@ -526,9 +506,7 @@ fn intel_pointer_outcome_survives_private_seed_capacity_failure() {
     );
     assert_eq!(lease.intel_sources().outcome, Outcome::Rows { len: 3 });
     assert_eq!(lease.intel_sources().entries.len(), 3);
-    let bytes_before = census.payload_bytes();
     census.capture_core(&kit::memory(&bytes), 64);
-    assert_eq!(census.payload_bytes(), bytes_before);
 }
 
 #[test]
@@ -608,7 +586,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
             let mut census = Census::new();
             census.capture_inputs(&kit::memory(&bytes), kit::BASE, kit::GAME_STATE);
             let allocated = census.allocated_bytes();
-            let input_bytes = census.payload_bytes();
             let seeds = census.unit_inputs().unwrap().seeds().to_vec();
             assert_eq!(seeds.len(), 10);
             let roots = census.core_roots.unwrap();
@@ -645,7 +622,7 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
             // province batches can precede the owner link, so their trace
             // need not be a subsequence of the original row-at-a-time walk.
             // Persistent faults must still preserve its rows and refusal;
-            // successful reads and byte accounting remain exact below.
+            // successful reads remain exact below.
             if expected.is_ok() && capacity > 0 {
                 assert_eq!(actual_reads.len(), 1 + capacity + 7);
             }
@@ -653,18 +630,6 @@ fn core_identity_reuse_keeps_serial_rows_and_first_source_failures() {
             assert_eq!(census.sources.len(), rows.len());
             assert_eq!(census.unit_inputs().unwrap().seeds(), seeds);
             assert_eq!(census.allocated_bytes(), allocated);
-            assert_eq!(
-                census.payload_bytes() - input_bytes,
-                observed
-                    .reads
-                    .borrow()
-                    .iter()
-                    .filter(|&&(address, len)| !fault.is_some_and(|fault| {
-                        address <= fault && address.saturating_add(len) > fault
-                    }))
-                    .map(|&(_, len)| len as u64)
-                    .sum::<u64>()
-            );
             assert_eq!(
                 census.outcome(capacity),
                 match expected {

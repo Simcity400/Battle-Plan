@@ -120,15 +120,6 @@ pub unsafe fn release() {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    crate::status::status!({
-        "events": crate::status::map(SITES.iter().zip(&CALLS).map(|(site, count)| (site.name, count.load(Ordering::Relaxed)))),
-        "watches": WATCHES.each_ref().map(WatchRegistry::status),
-        "refreshes": refresh::status(),
-        "pending": pending::status(),
-        "scope": "prepared receiver marks select Slow-worker reads; grant snapshots retain native ordering; cost receivers refresh on Slow; prepared gain operands and expiry counts settle on Slow; loss rebuilds the baseline"
-    })
-}
 
 /// Constructed and published with the enclosing world-input family. All sites
 /// take integer/pointer operands and return only RAX (or no value).

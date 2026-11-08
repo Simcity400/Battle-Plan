@@ -31,8 +31,6 @@ pub(crate) use role_store::RoleStore;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::CharacterRoleTraits, TableId::CharacterOperatives];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("character role traits and operative links", 0, &[0, 1])];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
@@ -149,45 +147,7 @@ struct HeldTraits {
     values_required: usize,
 }
 
-/// Optional name failures keep the preexisting row and are counted off-thread.
-#[derive(Default)]
-pub(crate) struct NamingWork {
-    refusals: Vec<(&'static str, u64)>,
-}
-
-impl NamingWork {
-    pub(super) fn refuse(&mut self, reason: &'static str) -> std::io::Result<()> {
-        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-            Ok(index) => index,
-            Err(index) => {
-                engine_allocation::reserve(&mut self.refusals, 1)?;
-                self.refusals.insert(index, (reason, 0));
-                index
-            }
-        };
-        self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
-        Ok(())
-    }
-
-    pub(crate) fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "refused": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
-            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
-            "scope": "optional hourly CharacterOperatives names and UnitLeaders codenames; existing row fields remain available",
-        })
-    }
-}
-
 impl Captured {
-    pub(crate) fn observe_naming(&self, work: &mut NamingWork) -> std::io::Result<()> {
-        for row in &self.operatives.rows[..self.operatives.outcome.len()] {
-            for reason in [row.name_reason, row.codename_reason].into_iter().flatten() {
-                work.refuse(reason)?;
-            }
-        }
-        Ok(())
-    }
-
     /// Allocation-free placeholder while a worker owns the capture buffers.
     pub(crate) fn vacant() -> Self {
         Self::with_capacities(&Capacities {

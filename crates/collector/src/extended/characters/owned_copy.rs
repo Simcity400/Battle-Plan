@@ -214,10 +214,6 @@ pub(super) enum AppendedRole {
 }
 
 impl CharactersJob {
-    pub(crate) fn quiet_roster(&self) -> bool {
-        self.roster.quiet
-    }
-
     /// Whether recycling keeps the job. A leader role job that carried its
     /// rows from the census copied no raw log, but its held rows are its
     /// storage: dropping it would start every later hour cold.
@@ -582,7 +578,6 @@ pub(crate) struct CharactersCopyReport {
     /// A stopped prepared pass may not fall back to another native capture.
     pub plan_failed: bool,
     pub copy_ticks: [u64; N],
-    pub raw_bytes: [u64; N],
 }
 
 /// Acquisition parameters, bundled to keep the refresh entry small.
@@ -2927,7 +2922,6 @@ pub(super) fn copy_advisor_sections(
     job: &mut CharactersJob,
 ) {
     use std::cell::RefCell;
-    use std::sync::atomic::Ordering::Relaxed;
     struct Roots<'a, M> {
         memory: &'a M,
         log: RefCell<&'a mut crate::raw::RawLog<N>>,
@@ -2968,16 +2962,7 @@ pub(super) fn copy_advisor_sections(
             break;
         }
         let part = if index == 0 { &mut *job } else { &mut *dynamic };
-        let started = std::time::Instant::now();
         copy_pass(memory, ctx, part, Some(array));
-        ADVISOR_SECTION_NS[index].fetch_add(
-            started.elapsed().as_nanos().min(u64::MAX as u128) as u64,
-            Relaxed,
-        );
-        ADVISOR_SECTION_CALLS[index].fetch_add(1, Relaxed);
-        if part.log.planned_capture_succeeded() {
-            ADVISOR_SECTION_PLANNED[index].fetch_add(1, Relaxed);
-        }
     }
     job.advisor_dynamic = Some(dynamic);
 }

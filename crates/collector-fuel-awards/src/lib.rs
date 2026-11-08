@@ -6,6 +6,7 @@ use collector_observers::output_log;
 use collector_primitives::country_slots as country_scale;
 use collector_primitives::raw_memory;
 use collector_primitives::table_capture;
+#[cfg(feature = "callback_profile")]
 use collector_status::status;
 #[cfg(test)]
 use collector_test_support as test_support;

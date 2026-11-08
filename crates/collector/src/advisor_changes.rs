@@ -194,22 +194,6 @@ pub fn record(counts: Counts) {
         target.fetch_add(value, Ordering::Relaxed);
     }
 }
-pub fn status() -> impl serde::Serialize {
-    let counts = COUNTS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(event_counts)
-            .map(|(site, count)| (site.name, count)),
-    );
-    crate::status::status!({ "configured": cfg!(feature = "advisor_changes"),
-        "poisoned": POISONED.load(Ordering::SeqCst),
-        "reused_characters": counts[0], "read_characters": counts[1],
-        "reused_roles": counts[2], "planned_sections": counts[3], "events": events,
-        "notification_ticks": NOTIFICATION_TICKS.load(Ordering::Relaxed),
-        "scope": "QPC notification bookkeeping ticks including guarded owner lookup, excluding native bodies; capture wall includes all cache work" })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

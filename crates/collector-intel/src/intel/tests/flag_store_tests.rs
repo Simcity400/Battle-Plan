@@ -589,10 +589,10 @@ fn preinstall_flag_sizing_includes_empty_scopes_and_embedded_stores() {
     crate::flag_changes::offer_embedded(embedded);
     assert_eq!(script_flag_demand(&memory, BASE, GAME), Some(4));
     crate::flag_changes::boundary(false);
-    let status = serde_json::to_value(crate::flag_changes::status()).unwrap();
-    let capacity = status["watches"]["capacity"].as_u64().unwrap() as usize;
-    assert_eq!(capacity, ((scopes + embedded) * 4).next_power_of_two());
-    assert_eq!(status["watches"]["installs"], 1);
+    assert_eq!(
+        crate::flag_changes::capacity(),
+        ((scopes + embedded) * 4).next_power_of_two()
+    );
 
     // The same prepared demand certifies every scope, even when almost all
     // managers are empty. The next hour walks and reads none of them.
@@ -631,8 +631,7 @@ fn refused_flag_sizing_keeps_the_prior_watch_demand() {
         None
     );
     crate::flag_changes::boundary(false);
-    let status = serde_json::to_value(crate::flag_changes::status()).unwrap();
-    assert_eq!(status["watches"]["capacity"], 4_096);
+    assert_eq!(crate::flag_changes::capacity(), 4_096);
 }
 
 #[test]

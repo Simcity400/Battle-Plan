@@ -11,7 +11,6 @@ use replay_frame::frame::TableInput;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::LeaderPortraits];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

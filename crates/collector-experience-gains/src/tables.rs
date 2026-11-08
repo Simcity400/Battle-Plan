@@ -12,7 +12,6 @@ use replay_frame::frame::TableView;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::CountryExperienceGains];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub type Capacities = usize;
 pub struct Captured {
     rows: CaptureRows<CountryExperienceGainRow>,

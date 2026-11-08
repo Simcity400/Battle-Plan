@@ -30,7 +30,6 @@ use replay_data::{rows::ProvinceUnitOrderRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceUnitOrder];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct CaptureContext {

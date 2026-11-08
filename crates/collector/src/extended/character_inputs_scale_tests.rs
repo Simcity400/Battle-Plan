@@ -4,7 +4,7 @@
 //! and scientist role (one trait each) and an operative reference the
 //! registry does not hold, and a retired character.
 
-use super::{Capacities, Captured, Demand, NamingWork};
+use super::{Capacities, Captured, Demand};
 use engine_characters::cscientist;
 use engine_native::{
     Memory, cadvisor, ccharacter, ccharacter_manager, ccountry, ccountry_characters,
@@ -342,18 +342,6 @@ fn operative_name_byte_shortfalls_keep_resolved_rows_and_count_both_reasons() {
                 .unwrap()
                 .is_none()
     }));
-    let mut work = NamingWork::default();
-    captured.observe_naming(&mut work).unwrap();
-    assert_eq!(
-        work.refusals,
-        [
-            (
-                "operative codename byte capacity exceeded",
-                COUNTRIES as u64
-            ),
-            ("operative name byte capacity exceeded", COUNTRIES as u64),
-        ]
-    );
 }
 
 #[test]

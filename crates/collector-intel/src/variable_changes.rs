@@ -446,37 +446,6 @@ pub fn record(counts: &Counts, scopes: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|((site, _, _), n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let (taken, refused_takes) = WATCHES.registry.takes();
-    crate::status::status!({
-        "configured": cfg!(feature = "variable_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_stores": reads[0],
-        "read_stores": reads[1],
-        "reused_rows": reads[2],
-        "read_rows": reads[3],
-        "quiet_hours": reads[4],
-        "visited_stores": reads[5],
-        "taken_stores": taken,
-        "refused_takes": refused_takes,
-        "structure_token": WATCHES.structure.load(Ordering::Relaxed),
-        "cxx_exceptions": WATCHES.exceptions.load(Ordering::Relaxed),
-        "exception_handler": !HANDLER.load(Ordering::Relaxed).is_null(),
-        "exception_handler_failures": HANDLER_FAILURES.load(Ordering::Relaxed),
-        "events": events,
-        "unread_contexts": WATCHES.unread_contexts.load(Ordering::Relaxed),
-        "unlocated_threads": UNLOCATED_THREADS.load(Ordering::Relaxed),
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a quiet hour (quiet_hours) publishes the held walk's rows and reads only the stores a hooked writer marked since the previous hour's take, freshly registered and unobserved ones (visited_stores), when the take's epoch and structure token (every release and every first-chance C++ exception, cxx_exceptions, moves it), the character roster's token, the global root, the country census and the state slots all equal the held walk's; any other hour reads every scope's identity and every store's vtable, header and seed, and carries a store's entries and keys when it is the store held for the same scope with the same hash header and no hooked writer touched it since its read; when no release or exception moved the structure token since the held walk, a store no writer touched whose header or seed moved is read afresh; the handler (exception_handler, installed with the family, never handling an exception) moves the token so that the hour after an exception walks every scope; events count notified calls, get_mutable_value and erase_variable calls on the calling thread's temporary store run without one, and a context end (end_*) notifies only a context that may change its store's seed (hook_timing counts every call)"
-    })
-}
 
 /// The game's static TLS index, read at installation; `usize::MAX` before.
 static TLS_INDEX: AtomicUsize = AtomicUsize::new(usize::MAX);
@@ -892,8 +861,7 @@ mod tests {
         presize_watches(&watches.registry, 5_000, 3_000, 1_500);
         assert!(watches.registry.boundary(false).installed());
         watches.registry.set_enabled(true);
-        let status = serde_json::to_value(watches.registry.status()).unwrap();
-        assert_eq!(status["capacity"], 65_536);
+        assert_eq!(watches.registry.capacity(), 65_536);
         let stores: Vec<_> = (1..=9_500).map(|index| index * 0x100).collect();
         let certificates: Vec<_> = stores
             .iter()
@@ -921,8 +889,6 @@ mod tests {
         let mut marked = Vec::new();
         watches.take(&mut |store| marked.push(store)).unwrap();
         assert_eq!(marked, [changed]);
-        let status = serde_json::to_value(watches.registry.status()).unwrap();
-        assert_eq!(status["refused_registrations"], 0);
     }
 
     #[test]

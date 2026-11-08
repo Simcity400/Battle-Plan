@@ -142,7 +142,6 @@ fn unknown_zero_theatre_requires_both_fresh_empty_rosters() {
     assert_eq!(staged.land.outcome, direct.land.outcome);
     assert_eq!(staged.land.rows[..2], direct.land.rows[..2]);
     assert_eq!(job.reserved_raw_demand, Some((80, 7)));
-    assert_eq!(staged.reserved_land_raw_demand, job.reserved_raw_demand);
     assert_eq!(job.log.spans.len() - job.positive_span_end, 7);
     assert_eq!(memory.count(ZERO_THEATRE + ctheatre::ORDERS_GROUP_DATA), 1);
     assert_eq!(memory.count(ZERO_THEATRE + ctheatre::ARMY_GROUP_DATA), 1);
@@ -165,10 +164,6 @@ fn unknown_nonempty_regular_or_army_roster_never_means_empty() {
         let (staged, _) = stage(&memory);
         assert_eq!(staged.reserved_land_count(), None);
         assert_eq!(staged.land.outcome, direct.land.outcome);
-        assert_eq!(
-            staged.reserved_land_first_failure,
-            direct.reserved_land_first_failure
-        );
         assert_eq!(
             memory.count(ZERO_REGULAR),
             0,
@@ -267,10 +262,6 @@ fn failed_prior_roster_is_not_retried_and_keeps_oob_failure_precedence() {
     let (staged, job) = stage(&memory);
     assert_eq!(staged.land.outcome, Outcome::Rows { len: 1 });
     assert_eq!(staged.reserved_land_count(), None);
-    assert_eq!(
-        staged.reserved_land_first_failure,
-        direct.reserved_land_first_failure
-    );
     assert!(job.reserved_first_failure.is_some());
     assert_eq!(memory.count(fault), 1);
 }
@@ -305,7 +296,6 @@ fn optional_shortages_grow_without_promoting_positive_faults() {
     let mut direct = typed(&memory, 1);
     assert_eq!(direct.land.outcome, Outcome::Rows { len: 1 });
     assert_eq!(direct.reserved_land_count(), None);
-    assert!(direct.reserved_land_typed_capacity_short);
     assert_eq!(direct.reserved_land_required_rows, 1);
     let mut capacity = Capacities::fixture();
     capacity.rows[4] = 1;
@@ -313,7 +303,7 @@ fn optional_shortages_grow_without_promoting_positive_faults() {
     assert!(capacity.rows[4] >= 2);
     assert!(direct.land.rows.len() >= 2);
     assert_eq!(direct.land.outcome, Outcome::Rows { len: 1 });
-    let (baseline_capture, baseline) = stage(&memory);
+    let (_, baseline) = stage(&memory);
     let prefix_bytes = baseline.log.spans[..baseline.positive_span_end]
         .iter()
         .filter(|span| span.ok)
@@ -334,12 +324,6 @@ fn optional_shortages_grow_without_promoting_positive_faults() {
     decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
     assert_eq!(captured.land.outcome, Outcome::Rows { len: 1 });
     assert_eq!(captured.reserved_land_count(), None);
-    assert!(captured.reserved_land_raw_capacity_short);
-    assert_eq!(captured.reserved_land_raw_demand, job.reserved_raw_demand);
-    assert_eq!(
-        captured.reserved_land_first_failure,
-        baseline_capture.reserved_land_first_failure
-    );
     job.grow();
     assert!(job.log.bytes.capacity() > prefix_bytes + 48);
 }
@@ -372,12 +356,9 @@ fn optional_batch_never_promotes_incomplete_positive_theatres() {
         );
         assert_eq!(captured.land.outcome, outcome);
         assert_eq!(captured.reserved_land_count(), None);
-        assert_eq!(captured.reserved_land_native_count, Some(1));
         assert_eq!(captured.reserved_land_required_rows, 1);
         captured.reset();
-        assert_eq!(captured.reserved_land_native_count, None);
         assert_eq!(captured.reserved_land_required_rows, 0);
-        assert_eq!(captured.reserved_land_first_failure, None);
     }
 }
 
@@ -422,16 +403,8 @@ fn committed_suffix_growth_counts_rows_once_and_restored_naming_failure_removes_
         );
         assert_eq!(extended.naval_history.land.rows[0], positive);
         assert_eq!(
-            extended.naval_history.reserved_land_native_count,
-            Some(count)
-        );
-        assert_eq!(
             extended.naval_history.reserved_land_required_rows,
             count as usize
-        );
-        assert_eq!(
-            extended.naval_history.reserved_land_first_failure,
-            Some("reserved naming singleton prefix unavailable")
         );
         assert!(
             extended.naval_history.land.rows[1..1 + count as usize]
@@ -535,7 +508,6 @@ fn failed_selected_root_alias_survives_cold_and_cached_copy_and_decode() {
             let mut captured = Captured::with_capacities(&Capacities::fixture());
             decode_naval_payload(&mut captured, kit::BASE, &job, &mut [0; NAVAL_PACK_N]);
             assert_eq!(captured.land.outcome, Outcome::Unavailable { reason });
-            assert_eq!(captured.reserved_land_first_failure, Some(reason));
             assert_eq!(captured.reserved_land_count(), None);
             assert_eq!(
                 source.attempts.get(),

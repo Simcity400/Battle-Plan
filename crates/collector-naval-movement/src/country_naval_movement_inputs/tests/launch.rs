@@ -161,11 +161,6 @@ fn slot_zero_identity_failure_is_not_retried_for_launch_or_borrowers() {
             .iter()
             .any(|row| row.slot == 0 && row.identity_reason == Some(reason))
     );
-    let mut work = Work::default();
-    work.observe(&captured, &launch).unwrap();
-    assert_eq!(work.launch_refused, 1);
-    // Named once for the physical slot and once for the launch provider.
-    assert_eq!(work.refusals, [(reason, 2)]);
 }
 
 #[test]
@@ -248,7 +243,6 @@ fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
     let (capacity, launch_capacity) = launch_capacity();
     let mut captured = Captured::new(capacity);
     let mut launch = Launch::new(launch_capacity);
-    let mut work = Work::default();
     for hour in 71..=74 {
         if hour == 72 {
             pointer(&mut memory.bytes, 0xa100, 0);
@@ -282,17 +276,7 @@ fn native_null_projection_is_fresh_and_distinct_from_lists_and_read_faults() {
             _ => unreachable!(),
         }
         assert_eq!(memory.count(0xa100), 1);
-        work.observe(&captured, &launch).unwrap();
     }
-    assert_eq!(work.launch_available, 3);
-    assert_eq!(work.launch_native_null, 1);
-    assert_eq!(work.launch_refused, 1);
-    let status = serde_json::to_value(work.status()).unwrap();
-    assert_eq!(status["sampled_hours"], 4);
-    assert_eq!(status["reserved_launch_naval_available_hours"], 3);
-    assert_eq!(status["reserved_launch_naval_native_null_hours"], 1);
-    assert_eq!(status["reserved_launch_naval_refused_hours"], 1);
-    assert_eq!(status["reserved_launch_naval_bases_required"], 3);
     launch.reset();
     assert!(launch.projection_launch(None).unwrap().is_none());
 }

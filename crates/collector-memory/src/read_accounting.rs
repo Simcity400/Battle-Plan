@@ -1,7 +1,7 @@
-//! Per-frame native read work, independent of copied payloads and wall time.
+//! Table scopes for native reads: a read under a table's scope that resolves a withheld site
+//! withholds that table. Test builds also count each scope's reads (CountedMemory) as evidence.
 //!
-//! CountedMemory wraps the native source below caches. These thread-local
-//! scopes assign its counters without allocating or synchronizing per read.
+//! These thread-local scopes assign work without allocating or synchronizing per read.
 //! Shared country authentication belongs to Countries; the shared unit census
 //! belongs to Divisions. Nested detail scopes retain their existing timing
 //! anchors, so consumers of owned bytes never charge the source work again.
@@ -30,6 +30,7 @@ pub type TableCounts = [ReadCounts; TABLE_COUNT];
 pub const ZERO: TableCounts = [ReadCounts::ZERO; TABLE_COUNT];
 
 struct State {
+    #[cfg(any(test, feature = "test-support"))]
     tables: TableCounts,
     current: usize,
 }
@@ -37,13 +38,17 @@ struct State {
 impl State {
     const fn new() -> Self {
         Self {
+            #[cfg(any(test, feature = "test-support"))]
             tables: ZERO,
             current: TableId::Clock.index(),
         }
     }
 
     fn flush(&mut self) {
-        self.tables[self.current] += ReadCounts::take_current();
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.tables[self.current] += ReadCounts::take_current();
+        }
         if let Some(key) = engine_sites::take_taint() {
             withhold(self.current, key);
         }
@@ -121,9 +126,7 @@ pub fn with_table<R>(owner: TableId, work: impl FnOnce() -> R) -> R {
 }
 
 /// Keep this guard outside the job's panic boundary. Its table guards unwind
-/// inside that boundary, so finish still returns all attempted native work.
-/// The parent's counts are saved and restored in place: no second set of
-/// counts is ever built on the opening thread's stack.
+/// inside that boundary, so the parent's scope is restored after a panic.
 #[must_use]
 pub struct Capture {
     previous: MaybeUninit<State>,
@@ -150,10 +153,14 @@ impl Capture {
             let previous = capture.previous.as_mut_ptr();
             // SAFETY: every field of `previous` is written before `open` is set.
             unsafe {
+                #[cfg(any(test, feature = "test-support"))]
                 std::ptr::addr_of_mut!((*previous).tables).write(state.tables);
                 std::ptr::addr_of_mut!((*previous).current).write(state.current);
             }
-            state.tables = ZERO;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                state.tables = ZERO;
+            }
             state.current = TableId::Clock.index();
         });
         capture.open = true;
@@ -168,12 +175,13 @@ impl Capture {
     }
 
     /// `finish` into the caller's storage, without a copy on this stack.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn finish_into(mut self, tables: &mut TableCounts) {
         self.restore(Some(tables));
     }
 
     /// Restore the parent; this capture's counts go to `tables` when given.
-    fn restore(&mut self, tables: Option<&mut TableCounts>) {
+    fn restore(&mut self, #[allow(unused_variables)] tables: Option<&mut TableCounts>) {
         if !std::mem::take(&mut self.open) {
             return;
         }
@@ -182,10 +190,13 @@ impl Capture {
         STATE.with(|state| {
             let mut state = state.borrow_mut();
             state.flush();
-            if let Some(tables) = tables {
-                *tables = state.tables;
+            #[cfg(any(test, feature = "test-support"))]
+            {
+                if let Some(tables) = tables {
+                    *tables = state.tables;
+                }
+                state.tables = previous.tables;
             }
-            state.tables = previous.tables;
             state.current = previous.current;
         });
     }
@@ -200,6 +211,7 @@ impl Drop for Capture {
 
 /// Merge a collected completion after restoring its caller's Capture. Borrowed,
 /// so a collector merges in place without copying the counts onto its stack.
+#[cfg(any(test, feature = "test-support"))]
 pub fn merge(counts: &TableCounts) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
@@ -219,6 +231,7 @@ pub fn snapshot() -> TableCounts {
 }
 
 /// `snapshot` into the caller's storage, without a copy on this stack.
+#[cfg(any(test, feature = "test-support"))]
 pub fn snapshot_into(tables: &mut TableCounts) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();

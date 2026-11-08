@@ -20,12 +20,6 @@ fn refused(reason: &'static str) {
     let mut counts = REFUSALS.lock().unwrap_or_else(|error| error.into_inner());
     *counts.entry(reason).or_default() += 1;
 }
-pub(crate) fn status() -> impl serde::Serialize {
-    REFUSALS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .clone()
-}
 use cair_base::{CarrierIndexedCertificate, CarrierPool, CarrierRegistration, ContainerFuel};
 
 #[derive(Debug, Default)]

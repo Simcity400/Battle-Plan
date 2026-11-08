@@ -17,8 +17,6 @@ use std::sync::Mutex;
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::ProvinceNames];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("province name overrides and province census", 0, &[0])];
 
 /// The latest complete read's rows and override bytes.
 type Names = (Vec<cprovince::NameRow>, Vec<u8>);

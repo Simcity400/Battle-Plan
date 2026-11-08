@@ -2,13 +2,6 @@
 use engine_native::{Memory, cgame_state, read};
 use engine_production::construction_ic_sites;
 
-static FAILURES: collector_extended_support::demand::DemandFailures =
-    collector_extended_support::demand::DemandFailures::new();
-
-pub(super) fn status() -> impl serde::Serialize {
-    FAILURES.diagnostics()
-}
-
 pub(super) fn presize(memory: &impl Memory, base: usize) -> Result<(), &'static str> {
     let demand = (|| {
         let state = engine_sites::at(base, cgame_state::SINGLETON_RVA)
@@ -20,7 +13,6 @@ pub(super) fn presize(memory: &impl Memory, base: usize) -> Result<(), &'static 
         }
         construction_ic_sites::events_per_pass(memory, base, state)
     })();
-    let demand = FAILURES.observe(demand);
     // Burst pressure can grow even with unchanged content, or a failed hint.
     super::presize(demand.as_ref().copied().unwrap_or(0));
     demand.map(|_| ())

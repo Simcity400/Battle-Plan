@@ -172,34 +172,6 @@ pub fn record(counts: &[Counts; 2], receivers: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&WATCHES.calls)
-            .map(|(site, n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let table = |index: usize| {
-        let reads = READS[index]
-            .each_ref()
-            .map(|value| value.load(Ordering::Relaxed));
-        crate::status::status!({
-            "reused_countries": reads[0],
-            "read_countries": reads[1],
-            "reused_rows": reads[2],
-            "read_rows": reads[3],
-        })
-    };
-    crate::status::status!({
-        "configured": cfg!(feature = "party_changes"),
-        "poisoned": WATCHES.registry.poisoned(),
-        "political_parties": table(0),
-        "active_ideas": table(1),
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; a country's PoliticalParties rows are carried when its political status, party array header and every party pointer are those of the held read and no hooked writer touched a listed party since that read, with each party's popularity and the ruling flag read every hour; its ActiveIdeas rows are carried when its status, idea array header and every idea pointer are those of the held read in the same epoch"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

@@ -166,27 +166,6 @@ pub(crate) fn record(counts: &Counts, slots: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(&DOMAIN.calls)
-            .map(|(site, n)| (site.name, n.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": CARRY,
-        "poisoned": DOMAIN.provinces.poisoned(),
-        "reused_provinces": reads[0],
-        "read_provinces": reads[1],
-        "quiet_hours": reads[2],
-        "full_reads": reads[3],
-        "events": events,
-        "unnamed_receivers": DOMAIN.unnamed.load(Ordering::Relaxed),
-        "province_set": DOMAIN.provinces.status(),
-        "scope": "cumulative since attach; the province array header is read each hour, and while it and the take's epoch are those of the held complete walk only the marked provinces are read (slot, record, lanes and occupants) and every other province's ProvinceUnitOrder lists are carried from the held walk; otherwise every province is read"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

@@ -38,16 +38,6 @@ pub const TABLES: [TableId; N] = [
 ];
 /// The `raid_state` family's tables (owner: state) among [`TABLES`].
 pub const STATE_TABLES: [usize; 4] = [0, 1, 2, 4];
-/// The walk reads once for the first four tables; the inputs table carries
-/// it. The core lists are their own read.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    (
-        "state resource trigger operands and state modifiers",
-        0,
-        &[0, 1, 2, 3],
-    ),
-    ("state cores, claims and strategic locations", 4, &[4]),
-];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

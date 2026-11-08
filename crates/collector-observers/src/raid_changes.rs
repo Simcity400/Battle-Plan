@@ -269,21 +269,6 @@ impl Watches {
         None
     }
 
-    /// Calls of writer `site`, the capacity setter's unchanged stores
-    /// included.
-    fn site_calls(&self, site: usize) -> u64 {
-        let calls = if site == ORIGIN_ROUTE_SITE {
-            self.origin_calls.load(Ordering::Relaxed)
-        } else {
-            self.calls.total(site)
-        };
-        if site == CAPACITY_SITE {
-            calls + self.unchanged_capacities.load(Ordering::Relaxed)
-        } else {
-            calls
-        }
-    }
-
     /// A forwarded building write of the status with `flags` and `location`:
     /// a state status marks its state, whose infrastructure building it may
     /// hold; a province status holds none a row reads.
@@ -572,45 +557,6 @@ pub fn record(family: Family, counts: &Counts, ids: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .enumerate()
-            .map(|(index, (site, _))| (site.name, WATCHES.site_calls(index))),
-    );
-    let family = |family: Family| {
-        let reads = READS[family as usize]
-            .each_ref()
-            .map(|value| value.load(Ordering::Relaxed));
-        crate::status::status!({
-            "hours": reads[0],
-            "marked": reads[1],
-            "read_owners": reads[2],
-            "carried_owners": reads[3],
-            "early_owners": reads[4],
-            "full_reads": reads[5],
-            "poisoned": WATCHES.sets()[family as usize].poisoned(),
-            "set": WATCHES.sets()[family as usize].status(),
-        })
-    };
-    crate::status::status!({
-        "configured": cfg!(feature = "raid_changes"),
-        "states": family(Family::States),
-        "countries": family(Family::Countries),
-        "sites": family(Family::Sites),
-        "routes": family(Family::Routes),
-        "events": events,
-        "unnamed_receivers": WATCHES.unnamed.load(Ordering::Relaxed),
-        "building_writes": WATCHES.buildings[0].load(Ordering::Relaxed),
-        "unnamed_building_writes": WATCHES.buildings[1].load(Ordering::Relaxed),
-        "unchanged_capacities": WATCHES.unchanged_capacities.load(Ordering::Relaxed),
-        "certified_daily_passes": WATCHES.daily_passes[0].load(Ordering::Relaxed),
-        "per_call_daily_passes": WATCHES.daily_passes[1].load(Ordering::Relaxed),
-        "untimed_certified_capacities": WATCHES.untimed_capacities.load(Ordering::Relaxed),
-        "scope": "cumulative since attach; each hour the RaidState job reads the daily slice of states holding a resource origin, whose supply-route flag no hook observes, and the RaidState and RaidLaunch jobs read every owner a hooked writer marked since the previous hour (early_owners; the capacity setter marks only a store that changes the value, unchanged_capacities counts the others; a daily capacity pass whose every store keeps its value and that withdraws no base is read once before it runs and its stores skip the setter's own read (certified_daily_passes), while any other pass leaves each store to the setter (per_call_daily_passes)) and every new or unpublished owner, and carry every other census owner's rows with no read (carried_owners); untimed_certified_capacities counts the certified stores omitted from hook_timing on normally returned daily passes, not a measurement of zero cost, so the raid state rows, CountryBuildingResources, RaidAirSites and TradeRoutes equal the game's at every hour (changed route membership, storage or market endpoint demand marks its census owner too; supply port-to-port updates and origin inline clears mark their route owners), except StateResourceInputs.supply_route, which follows the hourly supply rebuild and is read with its origin state's daily slice; an hour whose take does not return the previous read's epoch (disabled, poisoned, an unnamed writer, an id beyond the bitmap, an invalidating hour) reads every owner (full_reads)"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,
@@ -1363,7 +1309,6 @@ mod tests {
                     mutation.name
                 );
             }
-            assert_eq!(watches.site_calls(index), 2);
         }
         // An origin without a state marks nothing and keeps both epochs.
         let watches = Watches::enabled(64, 64);
@@ -1491,7 +1436,6 @@ mod tests {
         assert_eq!(take(&watches, Family::Sites), (epoch, vec![]));
         drop(watches.capacity(site, true, || Target::Site(Some(5))));
         assert_eq!(take(&watches, Family::Sites), (epoch, vec![5]));
-        assert_eq!(watches.site_calls(site), 2);
         assert_eq!(watches.unchanged_capacities.load(Ordering::Relaxed), 1);
         drop(watches.notify(site, Target::EverySite));
         assert_ne!(take(&watches, Family::Sites).0, epoch);

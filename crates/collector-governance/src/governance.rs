@@ -1,5 +1,5 @@
 //! Governance rows and arenas are allocated off the game thread.
-//! Shared-walk costs are charged once to each READ_GROUPS leader, in QPC ticks.
+//! Shared-walk costs are charged once to the walk's leading table, in QPC ticks.
 
 use crate::{
     clock::qpc,
@@ -35,7 +35,6 @@ mod leader_store;
 mod modifier_store;
 mod party_store;
 mod politics_hour;
-pub use demand::status as demand_status;
 pub use leader_store::{LeaderReuse, LeaderStore};
 pub use party_store::{PartyStore, PoliticsReuse};
 pub use politics_hour::PoliticsWalk;
@@ -68,31 +67,6 @@ pub const TABLES: [TableId; N] = [
     TableId::PowerBalanceModifierBreakdowns,
     TableId::TimedIdeas,
     TableId::DecisionRandomItems,
-];
-/// Name, local cost anchor and local members. Reports sum member ticks;
-/// physically shared walks charge their anchor once and leave followers zero.
-/// Country authentication is included in hourly Politics and shared by tables 0..13.
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("Focus", 0, &[0, 1]),
-    ("Research technologies and definitions", 2, &[2, 4]),
-    ("Research slots", 3, &[3]),
-    (
-        "Politics, parties, party leaders, ideas and shared country authentication",
-        5,
-        &[5, 6, 7, 21],
-    ),
-    ("Decision counts and state", 8, &[8, 9]),
-    ("Dynamic modifiers", 10, &[10]),
-    ("Preferred tactic", 11, &[11]),
-    ("Technology sharing", 12, &[12, 13]),
-    ("Power balance and children", 14, &[14, 15, 16, 17, 22]),
-    (
-        "Sliced research inputs, bonuses and modifiers",
-        18,
-        &[18, 19, 20],
-    ),
-    ("Timed ideas", 23, &[23]),
-    ("Decision random counts", 24, &[24]),
 ];
 
 /// Callback-local inputs for an exclusively owned governance acquisition.

@@ -181,33 +181,6 @@ pub fn record(counts: Counts) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let counts = COUNTS.each_ref().map(|v| v.load(Ordering::Relaxed));
-    let event_counts = EVENTS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .zip(event_counts)
-            .map(|(site, n)| (site.name, n)),
-    );
-    crate::status::status!({
-        "configured": cfg!(feature = "portrait_changes"),
-        "poisoned": POISONED.load(Ordering::SeqCst),
-        "reused_characters": counts[0], "reused_entries": counts[1],
-        "read_characters": counts[2],
-        "planned_parts": PLANNED_PARTS.load(Ordering::Relaxed),
-        "quiet_parts": QUIET_PARTS.load(Ordering::Relaxed),
-        "work": {
-            "planned_calls": WORK[0].load(Ordering::Relaxed),
-            "planned_ticks": WORK[1].load(Ordering::Relaxed),
-            "walk_calls": WORK[2].load(Ordering::Relaxed),
-            "walk_ticks": WORK[3].load(Ordering::Relaxed),
-            "scope": "QPC ticks for complete part acquisition, including certification, source reads and row work; not game-thread pause"
-        },
-        "events": events,
-        "scope": "cumulative acquisition observations since attach; a quiet part (quiet_parts, also counted in planned_parts) repeats a census share with no writer of a watched holder since its last complete capture and reads nothing; pooled buffers have independent baselines; bounded watch exhaustion disables reuse for that address"
-    })
-}
 
 pub struct Hooks {
     hooks: Vec<Hook>,

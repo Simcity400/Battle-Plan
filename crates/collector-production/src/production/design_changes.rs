@@ -6,7 +6,6 @@ mod diagnostics;
 mod forward;
 pub(super) mod held;
 pub(super) mod liveness;
-pub mod profile;
 mod repair;
 mod scalar;
 mod snapshots;
@@ -825,7 +824,6 @@ pub(super) fn cold_storage(
 }
 
 fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: impl FnOnce()) {
-    let _phase = profile::Timer::new(profile::Phase::ColdCertificates);
     let Some(demand) = cold_demand(registry, variants) else {
         RECOVER.store(true, Ordering::Release);
         unobserved!();
@@ -2252,7 +2250,6 @@ fn drain_speculating(
     snapshots: &mut snapshots::Shared,
     speculation: Option<&mut Speculation<'_>>,
 ) -> Result<usize, &'static str> {
-    let _phase = profile::Timer::new(profile::Phase::Drain);
     output.clear();
     snapshots.clear();
     let revision = REVISION.load(Ordering::Acquire);
@@ -2315,10 +2312,7 @@ fn drain_speculating(
         cache.finish(&batch);
         drop(cache);
         drop(retained);
-        {
-            let _phase = profile::Timer::new(profile::Phase::Liveness);
-            liveness::refresh_context(memory, base, &batch.events)?;
-        }
+        liveness::refresh_context(memory, base, &batch.events)?;
         for watch in &repairs.watches {
             let value = repair::snapshot(memory, base, hour, watch.pointer, &batch.events)?;
             if value.definition.id != watch.id {
@@ -2348,15 +2342,9 @@ fn drain_speculating(
                 ..Default::default()
             });
         }
-        {
-            let _phase = profile::Timer::new(profile::Phase::Held);
-            held::apply_shared(&batch.events, output, snapshots)?;
-        }
+        held::apply_shared(&batch.events, output, snapshots)?;
         held::check_lifetimes(&batch.events)?;
-        {
-            let _phase = profile::Timer::new(profile::Phase::Prune);
-            sources::prune_interests()?;
-        }
+        sources::prune_interests()?;
         if active() != 0
             || revision != REVISION.load(Ordering::Acquire)
             || epoch != EPOCH.load(Ordering::Acquire)
@@ -2834,14 +2822,10 @@ impl Captured {
         .and_then(|repaired| {
             self.repaired = repaired;
             self.liveness = liveness::observation()?;
-            let _phase = profile::Timer::new(profile::Phase::Bonuses);
             self.dictionary = super::bonus_snapshots::snapshot()?;
             Ok(())
         });
-        {
-            let _phase = profile::Timer::new(profile::Phase::Context);
-            (self.context, self.templates) = context(&memory).unwrap_or_default();
-        }
+        (self.context, self.templates) = context(&memory).unwrap_or_default();
         self.context_acquired = true;
         self.outcome = match result {
             Ok(()) => Outcome::Rows {
@@ -3023,79 +3007,6 @@ impl Drop for Hooks {
     }
 }
 
-#[derive(serde::Serialize)]
-struct MissedAt {
-    file: &'static str,
-    line: u32,
-}
-
-#[derive(serde::Serialize)]
-pub struct Status {
-    enabled: bool,
-    writer_audit_refusal: Option<&'static str>,
-    active: usize,
-    needs_recovery: bool,
-    missed: bool,
-    next_sequence: u64,
-    refused_intervals: u64,
-    running_refusals: u64,
-    missed_refusals: u64,
-    competing_writer_rejections: u64,
-    lock_contentions: u64,
-    store_wait_ns: u64,
-    store_max_wait_ns: u64,
-    unknown_receivers: u64,
-    claim_capacity_refusals: u64,
-    repaired_intervals: u64,
-    repaired_receivers: u64,
-    missed_sources: diagnostics::Report,
-    refusal_reasons: diagnostics::Reasons,
-    last_missed_at: Option<MissedAt>,
-    last_refusal: Option<&'static str>,
-    bonus_snapshots: super::bonus_snapshots::Status,
-    country_context: super::design_context::Status,
-    templates: super::design_template_changes::Status,
-    variants_profile: profile::Status,
-}
-pub fn status() -> Status {
-    Status {
-        enabled: enabled(),
-        writer_audit_refusal: native::mutations::WRITER_AUDIT_REFUSAL,
-        active: active(),
-        needs_recovery: RECOVER.load(Ordering::Acquire),
-        missed: MISSED.load(Ordering::Acquire),
-        next_sequence: SEQUENCE.load(Ordering::Acquire),
-        refused_intervals: REFUSED_INTERVALS.load(Ordering::Relaxed),
-        running_refusals: RUNNING_REFUSALS.load(Ordering::Relaxed),
-        missed_refusals: MISSED_REFUSALS.load(Ordering::Relaxed),
-        competing_writer_rejections: COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed),
-        lock_contentions: LOCK_CONTENTIONS.load(Ordering::Relaxed),
-        store_wait_ns: STORE_WAIT_NS.load(Ordering::Relaxed),
-        store_max_wait_ns: STORE_MAX_WAIT_NS.load(Ordering::Relaxed),
-        unknown_receivers: UNKNOWN_RECEIVERS.load(Ordering::Relaxed),
-        claim_capacity_refusals: CLAIM_CAPACITY_REFUSALS.load(Ordering::Relaxed),
-        repaired_intervals: REPAIRED_INTERVALS.load(Ordering::Relaxed),
-        repaired_receivers: REPAIRED_RECEIVERS.load(Ordering::Relaxed),
-        missed_sources: diagnostics::Report,
-        refusal_reasons: diagnostics::Reasons,
-        // Caller locations have static storage; callbacks publish no borrowed
-        // native memory and do no diagnostic formatting or allocation.
-        last_missed_at: unsafe { LAST_MISSED_AT.load(Ordering::Acquire).as_ref() }.map(|at| {
-            MissedAt {
-                file: at.file(),
-                line: at.line(),
-            }
-        }),
-        last_refusal: *LAST_REFUSAL
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner),
-        bonus_snapshots: super::bonus_snapshots::status(),
-        country_context: super::design_context::status(),
-        templates: super::design_template_changes::status(),
-        variants_profile: profile::Status,
-    }
-}
-
 #[cfg(test)]
 fn decode_batch(
     batch: &Batch,
@@ -3134,7 +3045,6 @@ fn decode_batch_with_cache(
     cache: &mut snapshots::Cache<'_>,
     speculation: Option<&mut Speculation<'_>>,
 ) -> Result<(), &'static str> {
-    let _phase = profile::Timer::new(profile::Phase::DecodeBatch);
     snapshots.reserve(batch.events.len())?;
     if let Some(speculation) = speculation {
         // Pure walks for the burst's likely misses run on the lanes first; the ordered

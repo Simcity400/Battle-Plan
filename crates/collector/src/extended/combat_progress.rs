@@ -56,11 +56,6 @@ static DAILY_OBSERVERS: Mutex<Option<DailyObservers>> = Mutex::new(None);
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::LandCombatProgress, TableId::CombatLogObservers];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[(
-    "land combat casualty and observer operands (census charged to LandCombats)",
-    0,
-    &[0, 1],
-)];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {

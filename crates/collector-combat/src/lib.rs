@@ -3,7 +3,6 @@
 use collector_memory::{read_accounting, terminal as allocation};
 use collector_primitives::{clock, country_slots as country_scale, table_capture};
 use collector_projection::table_conversion;
-use collector_status::status;
 #[cfg(test)]
 use collector_test_support as _;
 

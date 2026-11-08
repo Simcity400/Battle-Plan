@@ -7,7 +7,7 @@
 //! `held`) and nothing of it is read. Each read template's movement speed keys
 //! (DivisionTemplateIcons.speed_keys, [`engine_native::carmy::movement_speed_keys`])
 //! are read after the walk from its template object; a refused read is that
-//! row's None, counted in [`speed_key_data`].
+//! row's None.
 use crate::{
     sampling::qpc,
     spooling::{table, unavailable},
@@ -29,24 +29,6 @@ pub const TABLES: [TableId; N] = [
     TableId::DivisionTemplateIcons,
     TableId::CountryTemplateState,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("division template dictionary and country census", 0, &[0]),
-    ("division template counter and model inputs", 1, &[1]),
-    ("country template configuration", 2, &[2]),
-];
-
-/// Cumulative DivisionTemplateIcons.speed_keys reads and refusals.
-static SPEED_KEY_COUNTS: [std::sync::atomic::AtomicU64; 2] =
-    [const { std::sync::atomic::AtomicU64::new(0) }; 2];
-
-pub(crate) fn speed_key_data() -> impl serde::Serialize {
-    use std::sync::atomic::Ordering::Relaxed;
-    crate::status::status!({
-        "reads": SPEED_KEY_COUNTS[0].load(Relaxed),
-        "refusals": SPEED_KEY_COUNTS[1].load(Relaxed),
-        "scope": "cumulative fresh DivisionTemplateIcons.speed_keys reads of the movement priority sub-unit's and its categories' modifier keys; carried templates publish their held keys without native reads, and a refused fresh read is that row's None",
-    })
-}
 
 /// Distinct failure reasons one hour's summary keeps by name; the rest are
 /// counted together.
@@ -831,10 +813,10 @@ impl Captured {
             .rows
             .get(..self.icon_rows.outcome.len())
             .unwrap_or(&[]);
-        let mut counts = [0_u64; 2];
+        let mut refused = 0_u64;
         if engine_allocation::reserve(&mut self.speed_spans, rows.len()).is_err() {
             // No span to publish: every row refuses.
-            counts[1] = rows.len() as u64;
+            refused = rows.len() as u64;
         } else {
             for row in rows {
                 let start = self.speed_keys.len();
@@ -845,7 +827,7 @@ impl Captured {
                             self.speed_keys.extend_from_slice(keys);
                             (start, keys.len())
                         });
-                    counts[1] += u64::from(span.is_none());
+                    refused += u64::from(span.is_none());
                     span
                 } else {
                     let span = engine_native::carmy::movement_speed_keys(
@@ -856,7 +838,7 @@ impl Captured {
                     )
                     .ok()
                     .map(|()| (start, self.speed_keys.len() - start));
-                    counts[usize::from(span.is_none())] += 1;
+                    refused += u64::from(span.is_none());
                     self.core.remember_speed(
                         row.template,
                         span.map(|(start, len)| &self.speed_keys[start..start + len]),
@@ -867,10 +849,7 @@ impl Captured {
                 self.speed_spans.push((row.template, span));
             }
         }
-        for (total, count) in SPEED_KEY_COUNTS.iter().zip(counts) {
-            total.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-        }
-        counts[1]
+        refused
     }
 
     /// The template's speed keys this hour; `None` is its refusal.
@@ -889,6 +868,7 @@ impl Captured {
     }
 
     /// This hour's rows whose model inputs failed, by reason.
+    #[cfg(test)]
     pub(crate) fn model_failures(&self) -> ModelFailures {
         self.model_failures
     }

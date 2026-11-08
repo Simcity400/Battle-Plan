@@ -15,111 +15,6 @@ use engine_native::{
     Memory, cequipment_variant_pool, cequipment_variant_pool::DivisionSource, walk::Outcome,
 };
 use replay_data::rows::TableId;
-use std::cell::Cell;
-
-/// Counts successfully copied source bytes, including repeated reads. This is
-/// acquisition traffic, not owned buffer size. Batches are forwarded intact;
-/// failed fields may have copied a partial prefix that cannot be measured and
-/// is deliberately excluded. No bytes or address lookup state are retained.
-pub(crate) struct CountedMemory<'a, M> {
-    memory: &'a M,
-    bytes: Cell<u64>,
-}
-
-impl<'a, M: Memory> CountedMemory<'a, M> {
-    pub(crate) fn new(memory: &'a M) -> Self {
-        Self {
-            memory,
-            bytes: Cell::new(0),
-        }
-    }
-
-    pub(crate) fn bytes(&self) -> u64 {
-        self.bytes.get()
-    }
-
-    fn add(&self, bytes: u64) {
-        self.bytes.set(self.bytes.get().saturating_add(bytes));
-    }
-}
-
-impl<M: Memory> Memory for CountedMemory<'_, M> {
-    #[inline]
-    fn prefetch(&self, address: usize, len: usize) {
-        // Hints acquire no bytes; retain the source adapter's hint handling
-        // without adding acquisition traffic or consuming a guarded read.
-        self.memory.prefetch(address, len);
-    }
-
-    #[inline]
-    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
-        let value = self.memory.read_scalar::<T>(address)?;
-        self.add(std::mem::size_of::<T>() as u64);
-        Some(value)
-    }
-
-    #[inline]
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        let copied = self.memory.copy(address, destination);
-        if copied {
-            self.add(destination.len() as u64);
-        }
-        copied
-    }
-
-    #[inline]
-    fn copy_scattered<const N: usize>(
-        &self,
-        addresses: [usize; N],
-        destinations: &mut [&mut [u8]; N],
-    ) -> usize {
-        let copied = self.memory.copy_scattered(addresses, destinations);
-        self.add(
-            destinations
-                .iter()
-                .take(copied)
-                .fold(0_u64, |sum, span| sum.saturating_add(span.len() as u64)),
-        );
-        copied
-    }
-
-    #[inline]
-    fn copy_records(
-        &self,
-        sources: engine_native::memory::RecordSources<'_>,
-        layout: &engine_native::memory::RecordLayout<'_>,
-        destination: &mut [u8],
-    ) -> usize {
-        let copied = self.memory.copy_records(sources, layout, destination);
-        self.add(layout.completed_bytes(copied) as u64);
-        copied
-    }
-
-    fn authenticated_countries(
-        &self,
-        base: usize,
-        game_state: usize,
-    ) -> Option<engine_native::ccountry::AuthenticatedRoster<'_>> {
-        self.memory.authenticated_countries(base, game_state)
-    }
-
-    fn authenticated_reserved_country(
-        &self,
-        base: usize,
-        game_state: usize,
-    ) -> Option<Result<engine_native::ccountry::Country, &'static str>> {
-        self.memory.authenticated_reserved_country(base, game_state)
-    }
-
-    fn authenticated_reserved_country_observation(
-        &self,
-        base: usize,
-        game_state: usize,
-    ) -> Option<engine_native::ccountry::ReservedCountryObservation> {
-        self.memory
-            .authenticated_reserved_country_observation(base, game_state)
-    }
-}
 
 const EMPTY: Outcome = Outcome::Unavailable {
     reason: "division details not captured",
@@ -136,7 +31,6 @@ pub(crate) struct OwnedDetails {
     deliveries: Vec<cupgrade_delivery::Row>,
     produced: Vec<cupgrade_delivery::ProducedRow>,
     outcomes: [Outcome; 5],
-    acquired_bytes: [u64; 5],
     required: [usize; 5],
 }
 
@@ -149,7 +43,6 @@ impl Default for OwnedDetails {
             deliveries: Vec::new(),
             produced: Vec::new(),
             outcomes: [EMPTY; 5],
-            acquired_bytes: [0; 5],
             required: [0; 5],
         }
     }
@@ -183,21 +76,18 @@ impl OwnedDetails {
                 cupgrade_delivery::ProducedRow,
             >(required[4])),
             outcomes: [EMPTY; 5],
-            acquired_bytes: [0; 5],
             required,
         }
     }
 
     pub(crate) fn clear(&mut self) {
         self.outcomes = [EMPTY; 5];
-        self.acquired_bytes = [0; 5];
     }
 
     pub(crate) fn mark_skipped(&mut self) {
         self.outcomes = [Outcome::Unavailable {
             reason: replay_data::cadence::SKIPPED_REASON,
         }; 5];
-        self.acquired_bytes = [0; 5];
     }
 
     fn capacities(&self) -> [usize; 5] {
@@ -246,10 +136,6 @@ impl OwnedDetails {
         self.outcomes
     }
 
-    pub(crate) fn acquired_bytes(&self) -> [u64; 5] {
-        self.acquired_bytes
-    }
-
     pub(crate) fn capture(
         &mut self,
         memory: &impl Memory,
@@ -268,22 +154,20 @@ impl OwnedDetails {
             }
         };
         self.grow(sources.len());
-        let memory = CountedMemory::new(memory);
         let equipment_reads = read_accounting::table(TableId::DivisionEquipment);
         let started = qpc();
         self.outcomes[0] = cequipment_variant_pool::walk_divisions_growing(
-            &memory,
+            memory,
             base,
             sources,
             &mut self.equipment,
         );
-        self.acquired_bytes[0] = memory.bytes();
         let equipment_ticks = qpc().saturating_sub(started).max(0) as u64;
         drop(equipment_reads);
         let _upgrade_reads = read_accounting::table(TableId::ArmyUpgradeGroups);
         let started = qpc();
         let result = carmy_upgrades_status::walk_growing(
-            &memory,
+            memory,
             base,
             sources,
             &mut self.groups,
@@ -300,7 +184,6 @@ impl OwnedDetails {
         // The existing read group assigns its shared traversal cost to groups;
         // child zero slots therefore never claim that their acquisition is free.
         let upgrade_ticks = qpc().saturating_sub(started).max(0) as u64;
-        self.acquired_bytes[1] = memory.bytes().saturating_sub(self.acquired_bytes[0]);
         [equipment_ticks, upgrade_ticks, 0, 0, 0]
     }
 
@@ -338,36 +221,7 @@ fn install<R>(rows: &mut Vec<R>, outcome: Outcome, captured: &mut CaptureRows<R>
 mod tests {
     use super::*;
     use engine_native::{carmy, memory::SliceMemory};
-
-    #[test]
-    fn counted_memory_forwards_hints_without_reading_or_charging_bytes() {
-        #[derive(Default)]
-        struct Hints {
-            hints: std::cell::RefCell<Vec<(usize, usize)>>,
-            copies: Cell<usize>,
-        }
-        impl Memory for Hints {
-            fn copy(&self, _: usize, destination: &mut [u8]) -> bool {
-                self.copies.set(self.copies.get() + 1);
-                destination.fill(7);
-                true
-            }
-
-            fn prefetch(&self, address: usize, len: usize) {
-                self.hints.borrow_mut().push((address, len));
-            }
-        }
-        let memory = Hints::default();
-        let counted = CountedMemory::new(&memory);
-        counted.prefetch(0x1000, 0xaa);
-        counted.prefetch(usize::MAX, 8);
-        assert_eq!(*memory.hints.borrow(), [(0x1000, 0xaa), (usize::MAX, 8)]);
-        assert_eq!(memory.copies.get(), 0);
-        assert_eq!(counted.bytes(), 0);
-        assert!(counted.copy(0x1000, &mut [0; 8]));
-        assert_eq!(memory.copies.get(), 1);
-        assert_eq!(counted.bytes(), 8);
-    }
+    use std::cell::Cell;
 
     #[test]
     fn recycled_details_size_from_live_rows() {
@@ -537,10 +391,6 @@ mod tests {
             assert_eq!(memory.reads.take(), reads);
             assert_eq!(memory.scalars.replace(0), scalars);
             assert_eq!(
-                owned.acquired_bytes().iter().sum::<u64>(),
-                reads.iter().map(|&(_, len)| len as u64).sum::<u64>()
-            );
-            assert_eq!(
                 owned.outcomes(),
                 [
                     equipment,
@@ -565,12 +415,6 @@ mod tests {
                 assert_eq!(owned.groups[1], carmy_upgrades_requests::Row::default());
             }
         }
-        let counted = CountedMemory::new(&memory);
-        assert!(counted.read_scalar::<u32>(source.pointer).is_some());
-        assert_eq!(counted.bytes(), 4);
-        assert_eq!(counted.read_scalar::<u64>(bytes.len() - 4), None);
-        assert_eq!(counted.bytes(), 4);
-        assert_eq!(memory.scalars.get(), 2);
     }
 
     #[test]

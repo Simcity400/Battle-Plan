@@ -85,38 +85,11 @@ impl Default for ProjectionScratch {
     }
 }
 
-/// Counters copied out of one table's scratch for status.
-#[derive(Clone, Copy)]
-struct OrderingStatus {
-    compared: u64,
-    reused: u64,
-    converted: u64,
-    updated: u64,
-    updated_rows: u64,
-    sorted: u64,
-    ns: u64,
-    capacity_bytes: usize,
-}
-
 impl ProjectionScratch {
     fn table(&self, table: replay_data::rows::TableId) -> MutexGuard<'_, Ordering> {
         self.tables[table.index()]
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn ordering_status(&self, table: replay_data::rows::TableId) -> OrderingStatus {
-        let order = self.table(table);
-        OrderingStatus {
-            compared: order.compared,
-            reused: order.reused,
-            converted: order.converted,
-            updated: order.updated,
-            updated_rows: order.updated_rows,
-            sorted: order.sorted,
-            ns: order.ns,
-            capacity_bytes: order.indices.capacity() * std::mem::size_of::<usize>(),
-        }
     }
 
     /// `table`'s republished and converted hours, cumulative.
@@ -137,22 +110,6 @@ impl ProjectionScratch {
         self.table(table).held = None;
     }
 
-    pub fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "scope": "current complete native payload compared with encoder baseline; cumulative conversion decisions including later failed writes",
-            "tables": crate::status::sequence(replay_data::rows::TableId::ALL.into_iter().map(|table| (table, self.ordering_status(table))).filter(|(_, order)| order.compared != 0 || order.converted != 0).map(|(table, order)| crate::status::status!({
-                "table": crate::status::DebugValue(table),
-                "compared": order.compared,
-                "reused": order.reused,
-                "converted": order.converted,
-                "updated": order.updated,
-                "updated_rows": order.updated_rows,
-                "sorted": order.sorted,
-                "ns": order.ns,
-                "ordering_capacity_bytes": order.capacity_bytes,
-            }))),
-        })
-    }
 }
 
 /// One hour's comparison context. Clones share the encoder borrow and the
@@ -1245,7 +1202,6 @@ mod tests {
             let actual: DecodedFrame = projected_decoder.apply(&actual).unwrap();
             assert_eq!(actual, ordinary_decoder.apply(&expected).unwrap());
         }
-        assert_eq!(scratch.ordering_status(TableId::States).reused, 5);
     }
 
     #[test]

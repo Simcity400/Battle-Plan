@@ -892,7 +892,7 @@ fn daily_statistics_skip_reads_and_capacity_preflight() {
                 &mut stats,
             );
             assert!(!report.raw_ok && !stats.grow_for_next());
-            assert_eq!((report.copy_ticks, report.raw_bytes), ([0], [0]));
+            assert_eq!(report.copy_ticks, [0]);
             captured.fail_air_stats_capture("worker failed");
             let mut ticks = [0];
             decode_air_stats_payload(&mut captured, 0, &stats, &mut ticks);
@@ -1154,7 +1154,7 @@ fn stats_split_copy_matches_direct_walk() {
         );
         assert_eq!(capture.finish(), read_accounting::ZERO);
         assert!(!skipped.raw_ok && !job.grow_for_next());
-        assert_eq!((skipped.copy_ticks, skipped.raw_bytes), ([0], [0]));
+        assert_eq!(skipped.copy_ticks, [0]);
     }
     assert_eq!(refreshes, 1);
     let measured = counts[anchor.index()];

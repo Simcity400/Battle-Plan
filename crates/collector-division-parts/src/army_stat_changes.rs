@@ -367,36 +367,6 @@ pub fn record(counts: &Counts, divisions: Option<usize>) {
     }
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .enumerate()
-            .map(|(index, site)| (site.name, WATCHES.calls.total(index))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "configured": cfg!(feature = "army_stat_changes"),
-        "witness": WITNESS,
-        "poisoned": WATCHES.registry.poisoned(),
-        "reused_divisions": reads[0],
-        "read_divisions": reads[1],
-        "refused_divisions": reads[2],
-        "witnessed_divisions": reads[3],
-        "maxima_reused_divisions": reads[4],
-        "names_reused_divisions": reads[5],
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "unit_history": unit_history_changes::status(),
-        "division_panel": collector_observers::division_panel_changes::status(),
-        "experience_watches": WATCHES.experience.status(),
-        "observations": crate::observations::status(),
-        "progression_watches": WATCHES.progression.status(),
-        "progression_refusals": crate::status::map(PROGRESSION_FAILURE_NAMES.into_iter().zip(PROGRESSION_FAILURES.iter().map(|n| n.load(Ordering::Relaxed)))),
-        "experience_refusals": crate::status::map(EXPERIENCE_FAILURE_NAMES.into_iter().zip(EXPERIENCE_FAILURES.iter().map(|n| n.load(Ordering::Relaxed)))),
-        "scope": "cumulative since attach; a division's DivisionStatus.attack_stats are carried when the hour's take of the marks returned the held capture's epoch, its army has the address and stat block of the held read and no hooked update_active_stats marked it since; every other division's stat block is read; witnessed_divisions counts the attack_witness diagnostic's native operands; maxima_reused_divisions counts divisions whose DivisionStatus maxima (same block, same writer, same marks) were carried rather than read, and names_reused_divisions those whose name member span and cached-name lookup cache text (marked on the member by cached-name refresh, the country-wide refresh moving the epoch) were"
-    })
-}
 
 // Only a failed attach/detach allocates this diagnostic, retained for the runtime's
 // static failure interface. Publication is atomic across the listed sites.

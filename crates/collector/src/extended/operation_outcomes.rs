@@ -13,8 +13,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::OperationCompletions];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] =
-    &[("operation completion observations", 0, &[0])];
 const ASSEMBLED: &str = "operation completion observations assembled by spool";
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

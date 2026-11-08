@@ -173,27 +173,6 @@ pub fn record(counts: &Counts) {
     GROUPS.fetch_max((counts.carried + counts.read) as usize, Ordering::Relaxed);
 }
 
-pub fn status() -> impl serde::Serialize {
-    let events = crate::status::map(
-        MUTATIONS
-            .iter()
-            .map(|(site, _)| site.name)
-            .zip(&WATCHES.calls)
-            .chain(std::iter::once(("destroy", &WATCHES.destroyed)))
-            .map(|(name, calls)| (name, calls.load(Ordering::Relaxed))),
-    );
-    let reads = READS.each_ref().map(|value| value.load(Ordering::Relaxed));
-    crate::status::status!({
-        "observed": PATCHED.load(Ordering::Relaxed) && FORWARDED.load(Ordering::Relaxed),
-        "poisoned": WATCHES.registry.poisoned(),
-        "carried_groups": reads[0],
-        "read_groups": reads[1],
-        "untouched_daily_updates": WATCHES.untouched_daily.load(Ordering::Relaxed),
-        "events": events,
-        "watches": WATCHES.registry.status(),
-        "scope": "cumulative since attach; each hour the division census carries a group's identity, leader word, training byte and HQ provider word without reading the group (carried_groups) while no hooked writer touched it since the held read (events: each patched site's calls, the template family's forwarded destroy calls; a daily update notifies only a group training to its maximum, untouched_daily_updates counts the others); every other group is read and its fields held (read_groups)"
-    })
-}
 
 /// Observe while this family's patches and the forwarder's are enabled. Enabling starts a
 /// new epoch, so nothing held from before a gap certifies.

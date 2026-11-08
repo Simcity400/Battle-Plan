@@ -88,15 +88,6 @@ impl Launch {
         }
     }
 
-    fn capacity(&self) -> LaunchCapacities {
-        LaunchCapacities {
-            launch_bases: self
-                .launch_bases
-                .first
-                .len()
-                .min(self.launch_scratch.first.len()),
-        }
-    }
 
     pub fn launch_sample_hour(&self) -> Option<i32> {
         self.sample_hour
@@ -212,11 +203,6 @@ impl Captured {
         self.navies.required = self.navies.required.max(demand.navies);
     }
 
-    fn capacity(&self) -> Capacities {
-        Capacities {
-            navies: self.navies.first.len(),
-        }
-    }
 
     /// One original holder acquires all physical manager slots before the
     /// mission pass, including aliases and native nulls. Controls survive
@@ -301,78 +287,6 @@ impl Captured {
             .ok_or("physical navy original control retired")
     }
 
-    fn refusals(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.physical_count.err().into_iter().chain(
-            self.navies.first[..self.navies.len]
-                .iter()
-                .filter_map(|row| row.identity_reason),
-        )
-    }
-}
-
-/// Spool-thread scalar diagnostics of the physical navy pass and launch bases.
-#[derive(Default)]
-pub struct Work {
-    sampled: u64,
-    launch_available: u64,
-    launch_native_null: u64,
-    launch_refused: u64,
-    refusals: Vec<(&'static str, u64)>,
-    required: Capacities,
-    launch_required: LaunchCapacities,
-    capacity: Capacities,
-    launch_capacity: LaunchCapacities,
-}
-
-impl Work {
-    pub fn observe(&mut self, capture: &Captured, launch: &Launch) -> std::io::Result<()> {
-        if capture.sample_hour.is_none() {
-            return Ok(());
-        }
-        self.sampled = self.sampled.saturating_add(1);
-        self.required.raise(capture.required());
-        self.launch_required.raise(launch.required());
-        self.capacity = capture.capacity();
-        self.launch_capacity = launch.capacity();
-        match launch.launch_result {
-            Ok(provider) => {
-                self.launch_available = self.launch_available.saturating_add(1);
-                if matches!(
-                    provider,
-                    ccountry::launch_sources::NavalProvider::NativeNull
-                ) {
-                    self.launch_native_null = self.launch_native_null.saturating_add(1);
-                }
-            }
-            Err(_) => self.launch_refused = self.launch_refused.saturating_add(1),
-        }
-        for reason in capture.refusals().chain(launch.launch_result.err()) {
-            let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-                Ok(index) => index,
-                Err(index) => {
-                    engine_allocation::reserve(&mut self.refusals, 1)?;
-                    self.refusals.insert(index, (reason, 0));
-                    index
-                }
-            };
-            self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
-        }
-        Ok(())
-    }
-
-    pub fn status(&self) -> impl serde::Serialize + '_ {
-        crate::status::status!({
-            "sampled_hours": self.sampled,
-            "reserved_launch_naval_available_hours": self.launch_available,
-            "reserved_launch_naval_native_null_hours": self.launch_native_null,
-            "reserved_launch_naval_refused_hours": self.launch_refused,
-            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
-            "physical_slots_required": self.required.navies,
-            "reserved_launch_naval_bases_required": self.launch_required.launch_bases,
-            "physical_slots_capacity": self.capacity.navies,
-            "reserved_launch_naval_bases_capacity": self.launch_capacity.launch_bases,
-        })
-    }
 }
 
 #[cfg(test)]

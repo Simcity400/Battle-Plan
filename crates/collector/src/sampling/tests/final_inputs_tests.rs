@@ -97,41 +97,28 @@ fn final_sources_early_join_requires_every_successful_report_without_consuming_a
             .all(|p| pending_complete(batch, p))
             .then_some(())
     });
-    let latest = producers
-        .iter()
-        .map(|pending| {
-            let PendingAcquisition::Accepted(ticket) = pending else {
-                panic!()
-            };
-            batch.completed_state(*ticket).unwrap().1
-        })
-        .max()
-        .unwrap();
     crate::test_support::with_allocations_denied(|| {
-        assert_eq!(
-            final_sources_published(&batch, producers.each_ref().map(Some)),
-            Some(latest)
-        );
-        assert!(
-            final_sources_published(
-                &batch,
-                [Some(&producers[0]), Some(&producers[1]), None, None]
-            )
-            .is_some()
-        );
+        assert!(final_sources_published(
+            &batch,
+            producers.each_ref().map(Some)
+        ));
+        assert!(final_sources_published(
+            &batch,
+            [Some(&producers[0]), Some(&producers[1]), None, None]
+        ));
     });
     assert_eq!(pool.calibration().executor.uncollected, 4);
     for index in [0, 1] {
         let mut refs = producers.each_ref().map(Some);
         refs[index] = None;
-        assert!(final_sources_published(&batch, refs).is_none());
+        assert!(!final_sources_published(&batch, refs));
     }
     for index in 1..4 {
         let bad = unsafe { submit_acquisition(&shared, &mut batch, source(index, 1)) };
         batch.wait_ready(|batch| pending_complete(batch, &bad).then_some(()));
         let mut refs = producers.each_ref().map(Some);
         refs[index] = Some(&bad);
-        assert!(final_sources_published(&batch, refs).is_none());
+        assert!(!final_sources_published(&batch, refs));
         drop(unsafe { finish_acquisition(&shared, &mut batch, bad) });
     }
     let rejected = park(&mut batch, source(0, 0));
@@ -142,13 +129,13 @@ fn final_sources_early_join_requires_every_successful_report_without_consuming_a
     for missing in [&rejected, &unpublished] {
         let mut refs = producers.each_ref().map(Some);
         refs[0] = Some(missing);
-        assert!(final_sources_published(&batch, refs).is_none());
+        assert!(!final_sources_published(&batch, refs));
     }
     let failed = unsafe { submit_acquisition(&shared, &mut batch, source(0, 2)) };
     batch.wait_ready(|batch| pending_complete(batch, &failed).then_some(()));
     let mut refs = producers.each_ref().map(Some);
     refs[0] = Some(&failed);
-    assert!(final_sources_published(&batch, refs).is_none());
+    assert!(!final_sources_published(&batch, refs));
 }
 
 #[test]
@@ -221,7 +208,7 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
             let countries = Arc::clone(&request.countries);
             let bytes = request.allocated_bytes();
             crate::test_support::with_allocations_denied(|| {
-                dispatch.arm(request, required, qpc());
+                dispatch.arm(request, required);
             });
             if arm_before_last && let Some(last) = last {
                 assert!(
@@ -263,13 +250,6 @@ fn final_inputs_publication_waits_for_every_part_and_the_admission_fence_without
                 (counters.accepted, counters.completed, counters.rejected),
                 (1, 1, 0)
             );
-            let timing = serde_json::to_value(&calibration).unwrap();
-            assert_eq!(
-                timing["presentation_continuations"][3]["edge"],
-                "final_inputs"
-            );
-            assert_eq!(timing["presentation_continuations"][3]["dispatched"], 1);
-            assert_eq!(timing["presentation_continuations"][3]["rejected"], 0);
         }
     }
 }
@@ -327,7 +307,7 @@ fn final_inputs_failed_incomplete_and_unnotified_characters_return_the_unrun_loa
         let request = final_request();
         let countries = Arc::clone(&request.countries);
         let bytes = request.allocated_bytes();
-        dispatch.arm(request, 1 << 2, qpc());
+        dispatch.arm(request, 1 << 2);
         // Collection joins the failed producer but performs no successor admission.
         drop(unsafe { finish_acquisition(&shared, &mut batch, pending) });
         let (pending, request) = dispatch.take();
@@ -356,7 +336,7 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
     let request = final_request();
     let countries = Arc::clone(&request.countries);
-    dispatch.arm(request, 0, qpc());
+    dispatch.arm(request, 0);
     let (pending, request) = dispatch.take();
     assert!(request.is_none());
     let (ticket, parked) = batch.adopt_presentation_ticket(pending.unwrap());
@@ -375,9 +355,6 @@ fn final_inputs_rejected_successor_uses_the_existing_parked_failure_without_nati
     let calibration = pool.calibration();
     assert_eq!(calibration.executor.uncollected, 0);
     assert_eq!(calibration.executor.caller_executed, 0);
-    let timing = serde_json::to_value(&calibration).unwrap();
-    assert_eq!(timing["presentation_continuations"][3]["rejected"], 1);
-    assert_eq!(timing["presentation_continuations"][3]["dispatched"], 0);
 }
 
 #[test]
@@ -427,7 +404,7 @@ fn final_inputs_unadopted_successors_drain_on_unwind_and_pool_storage_rearms() {
                     running.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
                 }
                 let dispatch = batch.final_inputs();
-                dispatch.arm(request, 0, qpc());
+                dispatch.arm(request, 0);
                 if failure == 2 {
                     batch.stop_for_contained_panic(acquisition::Role::OrdersStitch);
                 } else {
@@ -513,10 +490,11 @@ fn final_inputs_dispatches_while_the_unrelated_variant_job_is_still_running() {
     let producers: [PendingAcquisition; 4] = std::array::from_fn(|index| unsafe {
         submit_acquisition(&shared, &mut batch, source(index, 0))
     });
-    let published =
-        batch.wait_ready(|batch| final_sources_published(batch, producers.each_ref().map(Some)));
+    batch.wait_ready(|batch| {
+        final_sources_published(batch, producers.each_ref().map(Some)).then_some(())
+    });
     assert!(!pending_complete(&batch, &variant));
-    batch.final_inputs().arm(final_request(), 0, published);
+    batch.final_inputs().arm(final_request(), 0);
     finish.recv_timeout(crate::TEST_HANG_GUARD).unwrap();
     assert!(!pending_complete(&batch, &variant));
     gate.release();

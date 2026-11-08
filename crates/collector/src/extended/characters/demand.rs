@@ -3,9 +3,8 @@
 use super::{
     Capacities, Memory, ccharacter, ccharacter_manager, cunit_leader, read, unit_identity,
 };
-use crate::country_scale::{DemandFailures, raise, rows};
+use crate::country_scale::{raise, rows};
 
-static FAILURES: [DemandFailures; 6] = [const { DemandFailures::new() }; 6];
 static LIVE_ROLES: [std::sync::atomic::AtomicUsize; 4] =
     [const { std::sync::atomic::AtomicUsize::new(0) }; 4];
 static LIVE_TRAITS: [std::sync::atomic::AtomicUsize; 2] =
@@ -22,21 +21,6 @@ pub(super) fn initial_traits() -> cunit_leader::TraitDemand {
     }
 }
 
-pub(crate) fn status() -> impl serde::Serialize {
-    crate::status::map(
-        [
-            "roster",
-            "unit_leaders",
-            "unit_leader_traits",
-            "country_leader_roles",
-            "unit_leader_text",
-            "advisor_definitions",
-        ]
-        .into_iter()
-        .zip(FAILURES.iter().map(DemandFailures::diagnostics)),
-    )
-}
-
 pub(super) fn presize(
     capacity: &mut Capacities,
     memory: &impl Memory,
@@ -45,11 +29,11 @@ pub(super) fn presize(
 ) -> Result<(), &'static str> {
     // Both character vectors retain every occurrence, and each occurrence
     // keeps its own leader; duplicate pointers are demand, not deduplication.
-    let roster = FAILURES[0].observe(ccharacter_manager::Roster::read(memory, base, state))?;
+    let roster = ccharacter_manager::Roster::read(memory, base, state)?;
     super::census::remember_roster(roster.count() as usize);
-    if let Ok(demand) = FAILURES[5].observe(engine_native::cadvisor::definitions_demand(
+    if let Ok(demand) = engine_native::cadvisor::definitions_demand(
         memory, base, state,
-    )) {
+    ) {
         let total_rows = demand[0].rows.saturating_add(demand[1].rows);
         let total_bytes = demand[0].bytes.saturating_add(demand[1].bytes);
         raise(&mut capacity.rows[2], rows(total_rows, 1));
@@ -65,7 +49,7 @@ pub(super) fn presize(
             .ok_or("country leader demand overflow"),
         engine_native::walk::Outcome::Unavailable { reason } => Err(reason),
     };
-    if let Ok(leaders) = FAILURES[3].observe(leaders) {
+    if let Ok(leaders) = leaders {
         raise(&mut capacity.rows[1], rows(leaders, 1));
         LIVE_ROLES[1].fetch_max(leaders, std::sync::atomic::Ordering::Relaxed);
     }
@@ -87,7 +71,7 @@ pub(super) fn presize(
             }
             Ok(Some((pointer, unit_identity(memory, pointer, id)?)))
         })();
-        let (pointer, id) = match FAILURES[1].observe(unit) {
+        let (pointer, id) = match unit {
             Ok(Some(unit)) => unit,
             Ok(None) => continue,
             Err(reason) => {
@@ -108,7 +92,7 @@ pub(super) fn presize(
                 .ok_or("unit leader text demand overflow")?;
             Ok(())
         })();
-        if let Err(reason) = FAILURES[4].observe(text) {
+        if let Err(reason) = text {
             refusal.get_or_insert(reason);
         }
         let demand =
@@ -125,7 +109,7 @@ pub(super) fn presize(
                 };
                 Ok(())
             });
-        if let Err(reason) = FAILURES[2].observe(demand) {
+        if let Err(reason) = demand {
             refusal.get_or_insert(reason);
         }
     }

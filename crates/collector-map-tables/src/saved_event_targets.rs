@@ -11,7 +11,6 @@ use replay_data::{rows::GlobalSavedEventTargetRow, rows::TableId, rows::tables};
 use replay_frame::frame::TableView;
 pub const N: usize = 1;
 pub const TABLES: [TableId; N] = [TableId::GlobalSavedEventTargets];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 pub type Capacities = native::Demand;
 pub struct Captured {
     rows: CaptureRows<native::Row>,

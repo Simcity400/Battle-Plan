@@ -531,11 +531,6 @@ fn occupied_roster_split_copy_preserves_settings_on_short_arena_and_native_failu
                 settings[0].occupied,
                 rows::Recorded::Value((!failure && storage == 1).then(|| vec![1]))
             );
-            let mut work = super::super::country_counters::RosterWork::default();
-            split.observe_occupied(&mut work).unwrap();
-            let status = serde_json::to_value(work.status().unwrap()).unwrap();
-            assert_eq!(status["refused"], u64::from(failure || storage == 0));
-            assert_eq!(status["occupied_required"], 1);
         }
     }
 }

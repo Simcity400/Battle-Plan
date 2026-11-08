@@ -18,7 +18,6 @@ pub const TABLES: [TableId; N] = [
     TableId::FloatingHarborDeployments,
     TableId::FacilityMapFlags,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub struct Capacities {

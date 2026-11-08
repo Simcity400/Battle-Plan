@@ -23,41 +23,6 @@ pub use carry::CounterStore;
 
 pub const N: usize = 2;
 pub const TABLES: [TableId; N] = [TableId::CountryCounterInputs, TableId::CountryCivilWars];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[];
-
-/// Wall phases charged to CountryCounterInputs, in acquisition order. The
-/// physical navy pass runs in the Ordinary job before the counter pass. The
-/// owner transport speeds of the retired selected transport preview are not
-/// read.
-pub const PHASES: [&str; 4] = ["physical_navies", "counter_walk", "relations", "total"];
-const PHYSICAL_NAVIES: usize = 0;
-const COUNTER_WALK: usize = 1;
-const RELATIONS: usize = 2;
-const TOTAL: usize = 3;
-
-/// One acquisition's measured phases (QPC ticks); None was not run this hour.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Phases([Option<u64>; PHASES.len()]);
-
-impl Phases {
-    fn set(&mut self, phase: usize, ticks: u64) {
-        self.0[phase] = Some(ticks);
-        self.0[TOTAL] = Some(
-            self.0[..TOTAL]
-                .iter()
-                .flatten()
-                .fold(0_u64, |sum, ticks| sum.saturating_add(*ticks)),
-        );
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn get(&self, phase: &str) -> Option<u64> {
-        PHASES
-            .iter()
-            .position(|name| *name == phase)
-            .and_then(|index| self.0[index])
-    }
-}
 
 fn elapsed(begin: i64) -> u64 {
     qpc().saturating_sub(begin).max(0) as u64
@@ -107,231 +72,6 @@ impl Navies {
     /// Retire the pass's borrowed controls once its borrowers returned.
     pub fn finish(&mut self) {
         self.holder.finish();
-    }
-}
-
-#[derive(Default)]
-pub struct RosterWork {
-    captured: u64,
-    refusals: Vec<(&'static str, u64)>,
-    states_required: usize,
-    leaders_required: usize,
-    neighbors_required: usize,
-    policies_required: usize,
-    occupied_captured: u64,
-    occupied_required: usize,
-    co_belligerents_captured: u64,
-    zero_war_captured: u64,
-    zero_subject_captured: u64,
-    forward_visibility_captured: u64,
-    forward_visibility_refused: u64,
-    forward_visibility_faults: [u64; 4],
-    co_belligerents_required: usize,
-    co_belligerents_capacity: usize,
-    pride_names_captured: u64,
-    pride_names_absent: u64,
-    pride_names_required: usize,
-    pride_names_capacity: usize,
-    phases: [collector_extended_support::distribution::Distribution; PHASES.len()],
-}
-
-impl RosterWork {
-    fn refuse(&mut self, reason: &'static str) -> std::io::Result<()> {
-        let index = match self.refusals.binary_search_by_key(&reason, |entry| entry.0) {
-            Ok(index) => index,
-            Err(index) => {
-                engine_allocation::reserve(&mut self.refusals, 1)?;
-                self.refusals.insert(index, (reason, 0));
-                index
-            }
-        };
-        self.refusals[index].1 = self.refusals[index].1.saturating_add(1);
-        Ok(())
-    }
-
-    pub fn observe_occupied(
-        &mut self,
-        rows: &[engine_occupation::ccountry_occupation_status::Row],
-        arena: &Arena<u32>,
-    ) -> std::io::Result<()> {
-        for row in rows {
-            let reason = row.occupied_reason.or_else(|| match row.occupied {
-                None => Some("occupied-country roster unobserved"),
-                Some(span) if !valid_span(arena, span.start, span.count) => {
-                    Some("occupied-country roster span outside acquired arena")
-                }
-                Some(_) => None,
-            });
-            if let Some(reason) = reason {
-                self.refuse(reason)?;
-            } else {
-                self.occupied_captured = self.occupied_captured.saturating_add(1);
-            }
-        }
-        self.occupied_required = arena.required;
-        Ok(())
-    }
-
-    fn observe(&mut self, capture: &Captured, frequency: u64) -> std::io::Result<()> {
-        for (distribution, ticks) in self.phases.iter_mut().zip(capture.phases.0) {
-            if let Some(ticks) = ticks {
-                distribution.record_ticks(i64::try_from(ticks).unwrap_or(i64::MAX), frequency);
-            }
-        }
-        let rows = capture
-            .rows
-            .rows
-            .get(..capture.rows.outcome.len())
-            .ok_or_else(|| std::io::Error::other("country counter row count exceeds buffer"))?;
-        for (index, row) in rows.iter().enumerate() {
-            let reason = row.roster_reason.or_else(|| {
-                (row.state_rosters.is_none()
-                    || row.leader_rosters.is_none()
-                    || row.sent_expeditionaries.is_none())
-                .then_some("country roster inputs unobserved")
-            });
-            let neighbor_reason = row.neighbor_reason.or_else(|| {
-                row.neighbors
-                    .filter(|span| !valid_span(&capture.neighbors, span.start, span.count))
-                    .map(|_| "country neighbor roster span outside acquired arena")
-            });
-            let policy_reason = row.policy_reason.or_else(|| {
-                row.mio_policies
-                    .filter(|span| !valid_span(&capture.policies, span.start, span.count))
-                    .map(|_| "MIO policy roster span outside acquired arena")
-            });
-            for reason in [reason, neighbor_reason, policy_reason]
-                .into_iter()
-                .flatten()
-            {
-                self.refuse(reason)?;
-            }
-            if reason.is_none() && neighbor_reason.is_none() && policy_reason.is_none() {
-                self.captured = self.captured.saturating_add(1);
-            }
-            if let Some(relation) = capture
-                .relations
-                .first
-                .get(index)
-                .filter(|_| index < capture.relations.len)
-            {
-                if row.pride_of_the_fleet != 0 {
-                    if let Some(reason) = relation.pride_name_reason {
-                        self.refuse(reason)?;
-                    } else if relation.pride_name.is_some_and(|(start, count)| {
-                        valid_span(&capture.pride_names, start, count)
-                    }) {
-                        self.pride_names_captured = self.pride_names_captured.saturating_add(1);
-                    } else if relation.pride_name.is_none() {
-                        self.pride_names_absent = self.pride_names_absent.saturating_add(1);
-                    } else {
-                        self.refuse("pride ship name span outside acquired arena")?;
-                    }
-                }
-                if let Some(reason) = relation.co_reason {
-                    self.refuse(reason)?;
-                } else if relation.co_belligerents.is_some_and(|span| {
-                    valid_span(&capture.co_belligerents, span.start, span.count)
-                }) {
-                    self.co_belligerents_captured = self.co_belligerents_captured.saturating_add(1);
-                } else {
-                    self.refuse("country co-belligerent inputs unobserved")?;
-                }
-                if let Some(reason) = relation.zero_reason {
-                    self.refuse(reason)?;
-                } else if relation.zero_war.is_some() {
-                    self.zero_war_captured = self.zero_war_captured.saturating_add(1);
-                } else {
-                    self.refuse("country zero-war inputs unobserved")?;
-                }
-                if let Some(reason) = relation.zero_subject_reason {
-                    self.refuse(reason)?;
-                }
-                if relation.zero_subject.is_some() {
-                    self.zero_subject_captured = self.zero_subject_captured.saturating_add(1);
-                } else if relation.zero_subject_reason.is_none() {
-                    self.refuse("country zero-subject inputs unobserved")?;
-                }
-                let old_reasons = [
-                    relation.co_reason,
-                    relation.zero_reason,
-                    relation.zero_subject_reason,
-                ];
-                if let Some(reason) = relation.forward_visibility_reason {
-                    self.forward_visibility_refused =
-                        self.forward_visibility_refused.saturating_add(1);
-                    if !old_reasons.contains(&Some(reason)) {
-                        self.refuse(reason)?;
-                    }
-                } else if relation.forward_visibility.is_some() {
-                    self.forward_visibility_captured =
-                        self.forward_visibility_captured.saturating_add(1);
-                } else {
-                    self.forward_visibility_refused =
-                        self.forward_visibility_refused.saturating_add(1);
-                    self.refuse("country forward visibility inputs unobserved")?;
-                }
-                for (index, reason) in relation.forward_visibility_failures.iter().enumerate() {
-                    if let Some(reason) = reason {
-                        self.forward_visibility_faults[index] =
-                            self.forward_visibility_faults[index].saturating_add(1);
-                        if Some(*reason) != relation.forward_visibility_reason
-                            && !old_reasons.contains(&Some(*reason))
-                        {
-                            self.refuse(reason)?;
-                        }
-                    }
-                }
-            } else {
-                self.refuse("country relation suffix row outside acquired arena")?;
-            }
-        }
-        self.states_required = capture.states.required;
-        self.leaders_required = capture.leaders.required;
-        self.neighbors_required = capture.neighbors.required;
-        self.policies_required = capture.policies.required;
-        self.co_belligerents_required = capture.co_belligerents.required;
-        self.co_belligerents_capacity = capture.co_belligerents.first.len();
-        self.pride_names_required = capture.pride_names.required;
-        self.pride_names_capacity = capture.pride_names.first.len();
-        Ok(())
-    }
-
-    pub fn status(&self) -> std::io::Result<impl serde::Serialize + '_> {
-        let mut phases =
-            [collector_extended_support::distribution::DistributionStatus::default(); PHASES.len()];
-        for (status, distribution) in phases.iter_mut().zip(&self.phases) {
-            *status = distribution.status()?;
-        }
-        Ok(crate::status::status!({
-            "acquisition_phases": crate::status::map(PHASES.into_iter().zip(phases)),
-            "acquisition_phases_scope": "per-hour CountryCounterInputs acquisition wall by phase over processed frames; the physical navy pass and the counter pass run in the Ordinary job; relations exclude reserved-country naming; total sums the phases run that hour",
-            "captured": self.captured,
-            "refused": self.refusals.iter().fold(0_u64, |sum, (_, count)| sum.saturating_add(*count)),
-            "refusals": crate::status::map(self.refusals.iter().map(|&(reason, count)| (reason, count))),
-            "states_required": self.states_required,
-            "leaders_required": self.leaders_required,
-            "neighbors_required": self.neighbors_required,
-            "policies_required": self.policies_required,
-            "occupied_captured": self.occupied_captured,
-            "occupied_required": self.occupied_required,
-            "co_belligerents_captured": self.co_belligerents_captured,
-            "zero_war_captured": self.zero_war_captured,
-            "zero_subject_captured": self.zero_subject_captured,
-            "forward_visibility_captured": self.forward_visibility_captured,
-            "forward_visibility_refused": self.forward_visibility_refused,
-            "forward_visibility_target_faults": self.forward_visibility_faults[0],
-            "forward_visibility_war_faults": self.forward_visibility_faults[1],
-            "forward_visibility_subject_faults": self.forward_visibility_faults[2],
-            "forward_visibility_military_access_faults": self.forward_visibility_faults[3],
-            "co_belligerents_required": self.co_belligerents_required,
-            "co_belligerents_capacity": self.co_belligerents_capacity,
-            "pride_names_captured": self.pride_names_captured,
-            "pride_names_absent": self.pride_names_absent,
-            "pride_names_required": self.pride_names_required,
-            "pride_names_capacity": self.pride_names_capacity,
-            "scope": "stored country roster and directed relation-cache inputs at host cadence; independent suffix refusals preserve existing row values",
-        }))
     }
 }
 
@@ -417,7 +157,6 @@ pub struct Captured {
     co_belligerents: Arena<u32>,
     pride_names: Arena<u8>,
     naval: naval::Captured,
-    phases: Phases,
     manpower_references: std::sync::Mutex<Vec<(u32, ManpowerReferences)>>,
 }
 
@@ -458,7 +197,6 @@ impl Captured {
             co_belligerents: Arena::new(capacity.co_belligerents),
             pride_names: Arena::new(capacity.pride_names),
             naval: naval::Captured::new(capacity.naval),
-            phases: Phases::default(),
             manpower_references: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -473,7 +211,6 @@ impl Captured {
         self.co_belligerents.reset();
         self.pride_names.reset();
         self.naval.reset();
-        self.phases = Phases::default();
     }
     pub fn fail(&mut self) {
         let demand = self.naval.required();
@@ -522,26 +259,8 @@ impl Captured {
         }
     }
 
-    /// Return the pass with its measured wall (charged to this table's
-    /// physical-navy phase when it ran).
     pub fn restore_navies(&mut self, navies: Navies) {
         self.naval = navies.holder;
-        if let Some(ticks) = navies.ticks {
-            self.phases.set(PHYSICAL_NAVIES, ticks);
-        }
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn phases(&self) -> Phases {
-        self.phases
-    }
-
-    pub fn observe_physical_navies(
-        &self,
-        work: &mut naval::Work,
-        launch: &naval::Launch,
-    ) -> std::io::Result<()> {
-        work.observe(&self.naval, launch)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -630,7 +349,6 @@ impl Captured {
             self.neighbors.required = effects.required.neighbors;
             self.policies.len = effects.policy_len;
             self.policies.required = effects.required.policies;
-            let walked = qpc();
             let reverse_ticks = self.capture_relations_with_reverse::<_, true>(
                 memory,
                 base,
@@ -642,14 +360,7 @@ impl Captured {
             if let Some(store) = store {
                 store.finish(self);
             }
-            let related = qpc();
             ticks[0] = elapsed(begin).saturating_sub(reverse_ticks);
-            self.phases
-                .set(COUNTER_WALK, walked.saturating_sub(begin).max(0) as u64);
-            self.phases.set(
-                RELATIONS,
-                (related.saturating_sub(walked).max(0) as u64).saturating_sub(reverse_ticks),
-            );
         }
         {
             let _reads = crate::read_accounting::table(TABLES[1]);
@@ -889,10 +600,6 @@ impl Captured {
     }
     pub fn outcomes(&self) -> [Outcome; N] {
         [self.rows.outcome, self.civil_wars.outcome]
-    }
-
-    pub fn observe_rosters(&self, work: &mut RosterWork, frequency: u64) -> std::io::Result<()> {
-        work.observe(self, frequency)
     }
 
     pub fn tables(&self) -> [TableView; N] {
@@ -1147,9 +854,8 @@ pub fn co_belligerent_demand(
     memory: &impl Memory,
     base: usize,
     state: usize,
-    failures: &collector_extended_support::demand::DemandFailures,
 ) -> (usize, Option<&'static str>) {
-    let countries = match failures.observe(ccountry::Reader::new(memory, base, state)) {
+    let countries = match ccountry::Reader::new(memory, base, state) {
         Ok(countries) => countries,
         Err(reason) => return (0, Some(reason)),
     };
@@ -1172,7 +878,7 @@ pub fn co_belligerent_demand(
                     })
                     .transpose()
             });
-        match failures.observe(observed) {
+        match observed {
             Ok(Some(total)) => required = total,
             Ok(None) => {}
             Err(reason) => {
@@ -1692,16 +1398,6 @@ mod tests {
             assert_eq!(rows[0].zero_war, Recorded::Value(Some([0, 0])));
             assert_eq!(rows[0].co_belligerents, Recorded::Value(Some(vec![0, 2])));
             assert_eq!(rows[1].owned_state_count, 8);
-            let mut work = RosterWork::default();
-            capture.observe_rosters(&mut work, 10_000_000).unwrap();
-            assert_eq!(work.zero_subject_captured, 2);
-            assert_eq!(
-                work.refusals
-                    .iter()
-                    .find(|entry| entry.0 == "slot-0 subject first party unreadable")
-                    .copied(),
-                reason.map(|reason| (reason, 1)),
-            );
         }
     }
 
@@ -1712,8 +1408,7 @@ mod tests {
             base: 0,
             bytes: &bytes,
         };
-        let failures = collector_extended_support::demand::DemandFailures::new();
-        let known = co_belligerent_demand(&memory, 0, CO_STATE, &failures);
+        let known = co_belligerent_demand(&memory, 0, CO_STATE);
         assert_eq!(known, (4, None)); // candidate2 + explicitzero1, secondowner zero1.
         co_put64(&mut bytes, CO_DIPLOMACY[1], 0);
         assert_eq!(
@@ -1724,13 +1419,9 @@ mod tests {
                 },
                 0,
                 CO_STATE,
-                &failures,
             ),
             (3, Some("diplomacy vtable mismatch"))
         );
-        let diagnostics = serde_json::to_value(failures.diagnostics()).unwrap();
-        assert_eq!(diagnostics["failed_observations"], 1);
-        assert_eq!(diagnostics["last_reason"], "diplomacy vtable mismatch");
         let mut capture = co_capture(3);
         capture.capture_relations(
             &SliceMemory {
@@ -1757,7 +1448,6 @@ mod tests {
 
     #[test]
     fn co_belligerent_hint_names_root_country_and_each_owner_failure() {
-        let failures = collector_extended_support::demand::DemandFailures::new();
         let (floor, refusal) = co_belligerent_demand(
             &SliceMemory {
                 base: 0,
@@ -1765,16 +1455,11 @@ mod tests {
             },
             0,
             CO_STATE,
-            &failures,
         );
         assert_eq!(floor, 0);
-        let reason = refusal.unwrap();
-        let diagnostics = serde_json::to_value(failures.diagnostics()).unwrap();
-        assert_eq!(diagnostics["failed_observations"], 1);
-        assert_eq!(diagnostics["last_reason"], reason);
+        assert!(refusal.is_some());
         let mut bytes = co_world();
         co_put64(&mut bytes, CO_COUNTRIES[0], 0);
-        let failures = collector_extended_support::demand::DemandFailures::new();
         let (floor, refusal) = co_belligerent_demand(
             &SliceMemory {
                 base: 0,
@@ -1782,18 +1467,13 @@ mod tests {
             },
             0,
             CO_STATE,
-            &failures,
         );
         assert_eq!(floor, 1); // The independent second owner remains readable.
-        let reason = refusal.unwrap();
-        let diagnostics = serde_json::to_value(failures.diagnostics()).unwrap();
-        assert_eq!(diagnostics["failed_observations"], 1);
-        assert_eq!(diagnostics["last_reason"], reason);
+        assert!(refusal.is_some());
         let mut bytes = co_world();
         for diplomacy in CO_DIPLOMACY {
             co_put64(&mut bytes, diplomacy, 0);
         }
-        let failures = collector_extended_support::demand::DemandFailures::new();
         let (floor, refusal) = co_belligerent_demand(
             &SliceMemory {
                 base: 0,
@@ -1801,13 +1481,9 @@ mod tests {
             },
             0,
             CO_STATE,
-            &failures,
         );
         assert_eq!(floor, 0);
         assert_eq!(refusal, Some("diplomacy vtable mismatch"));
-        let diagnostics = serde_json::to_value(failures.diagnostics()).unwrap();
-        assert_eq!(diagnostics["failed_observations"], 2);
-        assert_eq!(diagnostics["last_reason"], "diplomacy vtable mismatch");
     }
 
     #[test]
@@ -1849,9 +1525,6 @@ mod tests {
         assert_eq!(rows[0].owned_state_count, 7);
         assert_eq!(rows[0].mio_policies, Recorded::Value(None));
         assert_eq!(rows[0].neighbors, Recorded::Value(Some(Vec::new())));
-        let mut work = RosterWork::default();
-        captured.observe_rosters(&mut work, 10_000_000).unwrap();
-        assert_eq!(work.refusals, [("MIO policy production status is null", 1)]);
     }
     #[test]
     fn unreadable_census_is_unavailable_and_country_operands_preserve_primary_values() {
@@ -1902,65 +1575,6 @@ mod tests {
                 ordinal: 0,
                 target: 0x8000_0002,
             }]
-        );
-    }
-
-    #[test]
-    fn acquisition_phases_report_each_measured_phase_per_processed_hour() {
-        let memory = SliceMemory {
-            base: 0,
-            bytes: &[],
-        };
-        let mut capture = Captured::with_capacities(&Capacities {
-            rows: 1,
-            civil_wars: 2,
-            ..Default::default()
-        });
-        let mut work = RosterWork::default();
-        capture.capture(&memory, 0, 0);
-        let phases = capture.phases();
-        // The counter pass measures its own phases even when they refuse.
-        for phase in ["counter_walk", "relations"] {
-            assert!(phases.get(phase).is_some(), "{phase}");
-        }
-        // The physical navy pass belongs to the Ordinary job around this pass.
-        assert_eq!(phases.get("physical_navies"), None);
-        // The river, naval movement, selected-attack and selected transport
-        // owner-speed phases are gone.
-        for retired in [
-            "naval_begin",
-            "controller_domain",
-            "river",
-            "naval_finish",
-            "attack_inputs",
-            "movement_setup",
-            "region_domain",
-            "transport",
-        ] {
-            assert!(!PHASES.contains(&retired), "{retired}");
-        }
-        let measured = PHASES[..PHASES.len() - 1]
-            .iter()
-            .filter_map(|phase| phases.get(phase))
-            .sum::<u64>();
-        assert_eq!(phases.get("total"), Some(measured));
-        capture.observe_rosters(&mut work, 10_000_000).unwrap();
-        // A failed Ordinary job measures nothing for this hour.
-        capture.fail();
-        assert_eq!(capture.phases(), Phases::default());
-        capture.observe_rosters(&mut work, 10_000_000).unwrap();
-        let status = serde_json::to_value(work.status().unwrap()).unwrap();
-        let phases = &status["acquisition_phases"];
-        assert_eq!(phases["counter_walk"]["calls"], 1);
-        assert_eq!(phases["relations"]["calls"], 1);
-        assert_eq!(phases["physical_navies"]["calls"], 0);
-        assert_eq!(phases["total"]["calls"], 1);
-        assert_eq!(
-            PHASES
-                .iter()
-                .filter(|phase| phases.get(**phase).is_some())
-                .count(),
-            PHASES.len()
         );
     }
 
@@ -2169,22 +1783,6 @@ mod tests {
             assert_eq!(row.army_leaders, Recorded::Value(None));
             assert_eq!(row.navy_leaders, Recorded::Value(None));
         }
-        let mut work = RosterWork::default();
-        captured.observe_rosters(&mut work, 10_000_000).unwrap();
-        assert_eq!(work.captured, 0);
-        assert_eq!(
-            work.refusals,
-            [
-                ("country state roster arena capacity exceeded", COUNTRIES as u64 / 2),
-                ("unit leader vtable mismatch", COUNTRIES as u64 / 2),
-            ]
-        );
-        let status = serde_json::to_value(work.status().unwrap()).unwrap();
-        assert_eq!(status["refused"], COUNTRIES);
-        assert_eq!(status["states_required"], COUNTRIES * 9);
-        captured.reset();
-        captured.observe_rosters(&mut work, 10_000_000).unwrap();
-        assert_eq!(work.refusals[0].1, COUNTRIES as u64 / 2);
     }
 
     #[test]
@@ -2301,15 +1899,11 @@ mod tests {
         assert_eq!(value.subject, Some(Default::default()));
         assert_eq!(rows[0].zero_war, Recorded::Value(Some([0, 0])));
         assert_eq!(rows[1].owned_state_count, 8);
-        let mut work = RosterWork::default();
-        capture.observe_rosters(&mut work, 10_000_000).unwrap();
-        assert_eq!(work.forward_visibility_faults, [0, 0, 0, 1]);
         assert_eq!(
-            work.refusals
-                .iter()
-                .find(|entry| entry.0 == "forward-zero military access pointer unreadable")
-                .map(|entry| entry.1),
-            Some(1)
+            capture.relations.first[0]
+                .forward_visibility_failures
+                .map(|failure| failure.is_some()),
+            [false, false, false, true]
         );
         capture.reset();
         // The next authenticated prefix is admitted before its suffix pass.
@@ -2341,16 +1935,12 @@ mod tests {
         };
         let mut capture = co_capture(3);
         capture.capture_relations(&memory, 0, CO_STATE);
-        let mut work = RosterWork::default();
-        capture.observe_rosters(&mut work, 10_000_000).unwrap();
         assert_eq!(memory.attempts.get(), 1);
-        assert_eq!(work.forward_visibility_faults, [0, 1, 0, 0]);
         assert_eq!(
-            work.refusals
-                .iter()
-                .find(|entry| entry.0 == "slot-0 war pointer unreadable")
-                .map(|entry| entry.1),
-            Some(1)
+            capture.relations.first[0]
+                .forward_visibility_failures
+                .map(|failure| failure.is_some()),
+            [false, true, false, false]
         );
         assert_eq!(capture.relations.first[0].zero_war, None);
         assert_eq!(

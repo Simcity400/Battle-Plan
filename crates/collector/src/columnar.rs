@@ -23,10 +23,12 @@ use std::{
     collections::{HashSet, VecDeque},
     fs, io,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
+mod durability;
+pub(crate) use durability::Durability;
 #[cfg(test)]
 mod tests;
 
@@ -40,7 +42,7 @@ pub(crate) fn finished_status() -> Vec<Value> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .iter()
-        .map(|counters| counters.status(&[], &[], 0, true))
+        .map(|counters| counters.status(&[], &[], 0, true, None))
         .collect()
 }
 
@@ -126,6 +128,10 @@ pub(crate) struct Live {
     /// command.
     controls: Vec<Vec<u8>>,
     journal: Option<JournalWriter>,
+    /// Makes the journal's ended segments durable; the session's, shared by its recordings.
+    durability: Arc<Durability>,
+    /// This recording's failed segment syncs.
+    sync_failure: Box<durability::Slot>,
     run: Option<Run>,
     /// Committed hours whose rows' write has not completed, in order.
     pending: VecDeque<Pending>,
@@ -184,6 +190,8 @@ struct Counters {
     ended_ns: [u64; TABLE_COUNT],
     /// Each table's hours prepared again in table order after a lane, in runs that ended.
     ended_retried: [u64; TABLE_COUNT],
+    /// The journal's segment syncs, kept once the recording finished.
+    durability: Option<durability::Timing>,
 }
 
 /// A run's start as the journal records it.
@@ -219,7 +227,12 @@ struct Pending {
 impl Columnar {
     /// The campaign's columnar recording in `directory`, opened at its first hour; off when
     /// it cannot be held.
-    pub(crate) fn open(directory: &Path, campaign: &str, session: &SessionStart) -> Self {
+    pub(crate) fn open(
+        directory: &Path,
+        campaign: &str,
+        session: &SessionStart,
+        durability: &Arc<Durability>,
+    ) -> Self {
         let live = engine_allocation::advisory(|| -> io::Result<Box<Live>> {
             let (identity, capture) = identity(campaign, session)?;
             engine_allocation::boxed(Live {
@@ -234,6 +247,8 @@ impl Columnar {
                 staged: Vec::new(),
                 controls: Vec::new(),
                 journal: None,
+                durability: Arc::clone(durability),
+                sync_failure: engine_allocation::boxed(durability::Slot::default())?,
                 run: None,
                 pending: VecDeque::new(),
                 last: None,
@@ -366,6 +381,13 @@ impl Columnar {
             #[cfg(test)]
             Self::Off => None,
         }
+    }
+}
+
+impl Drop for Live {
+    fn drop(&mut self) {
+        // A sync in flight may still report into this recording's slot.
+        self.durability.settle();
     }
 }
 
@@ -710,10 +732,24 @@ impl Live {
     /// segment. A failure names the step that failed.
     fn write(&mut self, pending: Pending) -> Result<(), (&'static str, io::Error)> {
         const APPEND: &str = "appending an hour to the journal";
+        const DURABLE: &str = "making an ended journal segment durable";
         let started = Instant::now();
+        if let Some(error) = self.sync_failure.take() {
+            return Err((DURABLE, error));
+        }
         if let Some(start) = pending.starts {
-            self.journal()
-                .map_err(|error| ("opening the journal", error))?
+            let journal = self
+                .journal()
+                .map_err(|error| ("opening the journal", error))?;
+            if let Some(ended) = journal
+                .next_segment()
+                .map_err(|error| ("starting the journal's next segment", error))?
+            {
+                self.durability.give(ended, &self.sync_failure);
+            }
+            self.journal
+                .as_mut()
+                .ok_or_else(|| ("starting a run in the journal", invalid("A run starts in its journal")))?
                 .run(start.branch, start.epoch, start.first_hour)
                 .map_err(|error| ("starting a run in the journal", error))?;
             self.counters.runs += 1;
@@ -738,9 +774,12 @@ impl Live {
             + sections.iter().map(|section| section.len()).sum::<usize>())
             as u64;
         if (pending.ordinal + 1) % envelope::UNIT_ORDINALS == 0 {
-            journal
+            if let Some(ended) = journal
                 .next_segment()
-                .map_err(|error| ("starting the journal's next segment", error))?;
+                .map_err(|error| ("starting the journal's next segment", error))?
+            {
+                self.durability.give(ended, &self.sync_failure);
+            }
         }
         self.last = Some((pending.branch, pending.hour));
         let elapsed = started.elapsed().as_nanos() as u64;
@@ -774,6 +813,10 @@ impl Live {
         self.pending.clear();
         self.drop_unwritten();
         self.end_run();
+        self.durability.settle();
+        if let Some(error) = self.sync_failure.take() {
+            self.stop("making an ended journal segment durable", &error);
+        }
         self.finished = true;
         let Some(journal) = self.journal.take() else {
             return;
@@ -802,6 +845,7 @@ impl Live {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if kept.try_reserve(1).is_ok() {
+            self.counters.durability = Some(self.durability.timing());
             kept.push(std::mem::replace(&mut self.counters, Counters::new()));
         }
     }
@@ -811,7 +855,9 @@ impl Live {
             .run
             .as_ref()
             .map_or((&[][..], &[][..]), |run| (run.frames.table_ns(), run.frames.retried()));
-        self.counters.status(current, retried, self.pending.len(), self.finished)
+        let durability = self.durability.timing();
+        self.counters
+            .status(current, retried, self.pending.len(), self.finished, Some(&durability))
     }
 
     /// The journal, begun at its capture's number after every one the directory holds, so the
@@ -875,6 +921,9 @@ impl Live {
             // no reason of its own over the one the next capture's gap holds.
             let _ = stop.and_then(|stop| journal.finish(Some(&stop)));
         }
+        // The stopped capture's syncs end here; the next capture's slot starts empty.
+        self.durability.settle();
+        let _ = self.sync_failure.take();
     }
 
     /// Hours `first..=last` of `branch` the rows wrote and a failed capture lost: a gap the next
@@ -951,6 +1000,7 @@ impl Counters {
             append_max_ns: 0,
             ended_ns: [0; TABLE_COUNT],
             ended_retried: [0; TABLE_COUNT],
+            durability: None,
         }
     }
 
@@ -962,6 +1012,7 @@ impl Counters {
         current_retried: &[u64],
         pending: usize,
         finished: bool,
+        durability: Option<&durability::Timing>,
     ) -> Value {
         let mut tables = self.ended_ns;
         for (total, ns) in tables.iter_mut().zip(current) {
@@ -1003,6 +1054,7 @@ impl Counters {
             "stopped": self.stopped.as_ref().map(Reason::text),
             "failures": self.failures,
             "lost_hours": self.lost,
+            "segment_syncs": durability.or(self.durability.as_ref()).map(durability::Timing::status),
             "scope": "cumulative over the campaign: hours committed and failed, runs written, hours waiting for their rows' write; the sixteen tables with the most frame-writer wall, summed over the lanes; the sixteen tables whose lane hours were most often prepared again on the spool thread, for a string the run had not used or a failure; bytes of manifests and sections the journal holds; spool-thread wall preparing and committing hours, and appending them to the journal",
         })
     }

@@ -1,7 +1,6 @@
 //! Native world-reset observation and occurrence admission shared by between-tick captures. An invalidation starts a new occurrence at the next readable hourly boundary. Hook installation and lifetime state remain inside the same collector DLL.
 
 use collector_hooks::hook;
-use collector_status::status;
 use collector_timing::hook_timing;
 
 pub mod world_lifetime;

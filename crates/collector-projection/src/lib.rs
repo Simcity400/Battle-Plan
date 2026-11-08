@@ -1,7 +1,6 @@
 //! Checked projection and conversion of owned native rows into replay table outcomes. Sorting, exact row counts, duplicate refusals, cached comparisons and terminal allocation guards are shared by capture packs and spool composition.
 
 use collector_memory::terminal as allocation;
-use collector_status::status;
 
 pub mod certified;
 pub mod projection;

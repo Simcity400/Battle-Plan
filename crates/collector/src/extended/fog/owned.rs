@@ -13,7 +13,6 @@ pub(crate) struct OwnedFogJob<R> {
     pub(super) acquired: bool,
     pub(super) growing: bool,
     pub(super) active: bool,
-    pub(super) raw_bytes: u64,
     pub(super) capacity_charge: crate::raw_memory::Charge,
 }
 
@@ -36,7 +35,6 @@ impl<R: Default + Copy> OwnedFogJob<R> {
             acquired: false,
             growing: false,
             active: false,
-            raw_bytes: 0,
             capacity_charge: Default::default(),
         };
         job.update_capacity_charge();
@@ -58,7 +56,6 @@ impl<R: Default + Copy> OwnedFogJob<R> {
         self.acquired = false;
         self.growing = false;
         self.active = false;
-        self.raw_bytes = 0;
     }
     pub fn allocated_bytes(&self) -> usize {
         self.rows.capacity() * size_of::<R>() + self.provinces.capacity() * size_of::<u32>()
@@ -115,84 +112,10 @@ impl IntelJob {
     }
 }
 
-/// Count successful bytes while preserving the native guarded batch operations.
-struct FogMemory<'a, M> {
-    inner: &'a M,
-    bytes: std::cell::Cell<u64>,
-}
-impl<M: Memory> FogMemory<'_, M> {
-    fn count(&self, bytes: usize) {
-        self.bytes
-            .set(self.bytes.get().saturating_add(bytes as u64));
-    }
-}
-impl<M: Memory> Memory for FogMemory<'_, M> {
-    fn read_scalar<T: engine_native::memory::Raw>(&self, address: usize) -> Option<T> {
-        let value = self.inner.read_scalar::<T>(address);
-        if value.is_some() {
-            self.count(size_of::<T>());
-        }
-        value
-    }
-    fn authenticated_countries(
-        &self,
-        base: usize,
-        state: usize,
-    ) -> Option<ccountry::AuthenticatedRoster<'_>> {
-        self.inner.authenticated_countries(base, state)
-    }
-
-    fn authenticated_reserved_country(
-        &self,
-        base: usize,
-        state: usize,
-    ) -> Option<Result<ccountry::Country, &'static str>> {
-        self.inner.authenticated_reserved_country(base, state)
-    }
-
-    fn authenticated_reserved_country_observation(
-        &self,
-        base: usize,
-        state: usize,
-    ) -> Option<ccountry::ReservedCountryObservation> {
-        self.inner
-            .authenticated_reserved_country_observation(base, state)
-    }
-    fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
-        let succeeded = self.inner.copy(address, destination);
-        if succeeded {
-            self.count(destination.len());
-        }
-        succeeded
-    }
-    fn copy_scattered<const K: usize>(
-        &self,
-        addresses: [usize; K],
-        destinations: &mut [&mut [u8]; K],
-    ) -> usize {
-        let completed = self.inner.copy_scattered(addresses, destinations);
-        for field in destinations.iter().take(completed) {
-            self.count(field.len());
-        }
-        completed
-    }
-    fn copy_records(
-        &self,
-        sources: RecordSources<'_>,
-        layout: &RecordLayout<'_>,
-        destination: &mut [u8],
-    ) -> usize {
-        let completed = self.inner.copy_records(sources, layout, destination);
-        self.count(layout.completed_bytes(completed));
-        completed
-    }
-}
-
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct RadarCopyReport {
     pub raw_ok: bool,
     pub copy_ticks: [u64; RADAR_N],
-    pub raw_bytes: [u64; RADAR_N],
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RadarCopyContext {
@@ -207,7 +130,6 @@ pub(crate) struct RadarCopyContext {
 pub(crate) struct IntelCopyReport {
     pub raw_ok: bool,
     pub copy_ticks: [u64; INTEL_N],
-    pub raw_bytes: [u64; INTEL_N],
 }
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct IntelCopyContext {
@@ -217,15 +139,11 @@ pub(crate) struct IntelCopyContext {
 }
 fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext) {
     let _reads = read_accounting::table(TableId::RadarCoverage);
-    let source = FogMemory {
-        inner: memory,
-        bytes: std::cell::Cell::new(0),
-    };
     let (result, symbols_trusted) =
-        crate::radar_changes::with_symbols(&source, ctx.row_limit, ctx.force_full, |symbols| {
+        crate::radar_changes::with_symbols(memory, ctx.row_limit, ctx.force_full, |symbols| {
             if job.growing {
                 radar_group::walk_growing_with_symbols(
-                    &source,
+                    memory,
                     ctx.base,
                     ctx.game_state,
                     &mut job.rows,
@@ -234,7 +152,7 @@ fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext
                 )
             } else {
                 radar_group::walk_with_symbols(
-                    &source,
+                    memory,
                     ctx.base,
                     ctx.game_state,
                     &mut job.rows[..job.row_limit],
@@ -253,7 +171,6 @@ fn acquire_radar(job: &mut RadarJob, memory: &impl Memory, ctx: RadarCopyContext
     job.outcome = result.outcome;
     job.provinces_len = result.provinces_len;
     job.required_provinces = result.required_provinces;
-    job.raw_bytes = source.bytes.get();
     job.acquired = true;
 }
 fn acquire_intel(
@@ -263,12 +180,8 @@ fn acquire_intel(
     divisions: Option<unit_viewer_entry::DivisionSources<'_>>,
 ) {
     let _reads = read_accounting::table(TableId::UnitIntel);
-    let source = FogMemory {
-        inner: memory,
-        bytes: std::cell::Cell::new(0),
-    };
     job.outcome = unit_viewer_entry::walk_with_divisions_buffer(
-        &source,
+        memory,
         ctx.base,
         ctx.game_state,
         if job.growing {
@@ -278,7 +191,6 @@ fn acquire_intel(
         },
         divisions,
     );
-    job.raw_bytes = source.bytes.get();
     job.acquired = true;
 }
 /// Check destination capacities before acquiring one owned radar snapshot.
@@ -300,7 +212,6 @@ pub(crate) fn copy_radar_refresh(
     RadarCopyReport {
         raw_ok: job.acquired,
         copy_ticks: [elapsed(started)],
-        raw_bytes: [job.raw_bytes],
     }
 }
 /// The caller retains the primary division census until acquisition returns.
@@ -319,7 +230,6 @@ pub(crate) fn copy_intel_refresh_with_divisions(
     IntelCopyReport {
         raw_ok: job.acquired,
         copy_ticks: [elapsed(started)],
-        raw_bytes: [job.raw_bytes],
     }
 }
 
@@ -341,7 +251,6 @@ pub(crate) fn copy_radar_refresh_growing(
     RadarCopyReport {
         raw_ok: job.acquired,
         copy_ticks: [elapsed(started)],
-        raw_bytes: [job.raw_bytes],
     }
 }
 
@@ -359,7 +268,6 @@ pub(crate) fn copy_intel_refresh_with_divisions_growing(
     IntelCopyReport {
         raw_ok: job.acquired,
         copy_ticks: [elapsed(started)],
-        raw_bytes: [job.raw_bytes],
     }
 }
 

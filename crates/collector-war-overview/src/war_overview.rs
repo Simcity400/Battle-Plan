@@ -30,10 +30,6 @@ pub const TABLES: [TableId; N] = [
     TableId::WarCapturedProvinces,
     TableId::WarLendLeaseHistories,
 ];
-pub const READ_GROUPS: &[(&str, usize, &[usize])] = &[
-    ("war overview", 0, &[0, 1, 2, 4, 5, 6]),
-    ("war participation", 7, &[7, 8, 9]),
-];
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct Capacities {
