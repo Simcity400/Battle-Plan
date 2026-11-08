@@ -289,6 +289,20 @@ pub struct Prepared {
 }
 
 impl Prepared {
+    /// What changed since its last save ([`Keyed::save_changes`]).
+    pub fn save_changes(&mut self, whole: bool) -> io::Result<Vec<Vec<u8>>> {
+        self.keyed.save_changes(whole)
+    }
+
+    /// The census its saves' pieces hold, in order; its holders are read whole at its next hour.
+    pub fn resumed(pieces: &[Vec<u8>]) -> io::Result<Self> {
+        let mut prepared = Self::default();
+        for piece in pieces {
+            prepared.keyed.apply_changes(piece)?;
+        }
+        Ok(prepared)
+    }
+
     pub fn observe_changes(&mut self, frame: &DecodedFrame, changes: &FrameChanges) -> io::Result<()> {
         self.observe_edits(frame, changes, None)
     }

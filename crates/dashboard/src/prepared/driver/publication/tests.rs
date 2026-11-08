@@ -782,7 +782,7 @@ fn the_open_tail_publishes_each_arrival_and_an_append_goes_on_after_its_last_hou
     let mut view = &before;
     assert_eq!(
         roots::state(&mut view, "steady", BRANCH, &published).unwrap(),
-        state(1016)
+        state(1016).map(|bytes| vec![bytes])
     );
     assert_eq!(
         roots::carry(&mut view, "steady", BRANCH, &published).unwrap(),
@@ -976,7 +976,7 @@ fn state_and_carry_are_found_by_their_content_wherever_compaction_moves_them() {
     let mut view = &snapshot;
     assert_eq!(
         roots::state(&mut view, "steady", BRANCH, &published).unwrap(),
-        Some(state)
+        Some(vec![state])
     );
     assert_eq!(
         roots::carry(&mut view, "steady", BRANCH, &published).unwrap(),

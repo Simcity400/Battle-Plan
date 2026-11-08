@@ -9,10 +9,7 @@ use crate::{
     prepared::driver::publication::Stage,
     products::convoy_health::{Edit, Prepared as Census},
 };
-use dashboard_base::prepared::{
-    roots::Published,
-    series::{compress, decompress},
-};
+use dashboard_base::prepared::roots::{Published, Saved};
 use dashboard_keyed::table_changes::{self, Change, apply_frame};
 use dashboard_world::{Needs, World};
 use replay::{
@@ -284,17 +281,18 @@ impl Native for Convoys<'_> {
     }
 
     // The census goes on from what it saved; its frame is read whole again.
-    fn save(&self, state: &mut Branch) -> io::Result<Option<Vec<u8>>> {
-        compress(&serde_json::to_vec(&*state.census)?, 3).map(Some)
+    fn save_changes(&self, state: &mut Branch, whole: bool) -> io::Result<Option<Saved>> {
+        let pieces = state.census.save_changes(whole)?;
+        Ok(Some(Saved { whole, pieces }))
     }
 
-    fn resume(
+    fn resume_changes(
         &self,
         _: &mut Stage<'_, '_>,
         _: u64,
         _: &Published,
-        saved: &[u8],
+        pieces: &[Vec<u8>],
     ) -> io::Result<Branch> {
-        Ok(Branch::new(serde_json::from_slice(&decompress(saved)?)?))
+        Ok(Branch::new(Census::resumed(pieces)?))
     }
 }

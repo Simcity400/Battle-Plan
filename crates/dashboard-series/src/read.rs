@@ -239,6 +239,20 @@ impl Reader {
         let id = self.list_page(io, list, ordinal)?;
         self.visit(io, id, kind)
     }
+    /// [`Self::page`] for a pass over a table: this reader does not keep the page.
+    pub fn page_once(
+        &mut self,
+        io: &mut impl PageRead,
+        list: List,
+        ordinal: u64,
+        kind: Kind,
+    ) -> io::Result<Arc<Page>> {
+        let id = self.list_page(io, list, ordinal)?;
+        match self.pages.get(&id) {
+            Some(page) => Ok(Arc::clone(page)),
+            None => pages::shared(io, id, kind),
+        }
+    }
     pub fn record<T: Binary>(
         &mut self,
         io: &mut impl PageRead,

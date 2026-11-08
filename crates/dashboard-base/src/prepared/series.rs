@@ -13,6 +13,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
 };
 use ts_rs::TS;
+mod delta;
 mod finished;
 mod idle;
 mod order;
@@ -499,6 +500,8 @@ pub struct Accumulator {
     states: BTreeMap<u64, KeyState>,
     #[serde(skip)]
     saved: saved::Cache,
+    #[serde(skip)]
+    hashes: delta::Hashes,
     #[serde(skip)]
     idle: idle::Cache,
     frontier: Option<i32>,

@@ -79,15 +79,6 @@ pub struct Metadata<F, X> {
     pub extra: X,
 }
 
-/// [`Metadata`] borrowed, with the family's published `extra`.
-#[derive(Serialize)]
-struct MetadataView<'a, F, E> {
-    fields: &'a BTreeMap<u64, F>,
-    tags: &'a BTreeMap<u32, Vec<(i32, String)>>,
-    refusals: &'a BTreeMap<String, u64>,
-    extra: E,
-}
-
 /// Framing a catalogue change adds beyond its own text.
 pub const EDIT_MARGIN: usize = 32;
 
@@ -109,6 +100,173 @@ pub struct Keyed<F, X> {
     /// Refusal reasons whose counts changed since the last flush.
     #[serde(skip)]
     refused: std::collections::BTreeSet<String>,
+    /// The fields, and each holder's tag runs, its last save or load held ([`Self::save_changes`]).
+    #[serde(skip)]
+    saved: Saved,
+    /// What its catalogue section holds since this run first wrote it ([`Self::flush`]).
+    #[serde(skip)]
+    catalogued: Option<Catalogued>,
+}
+
+/// A catalogue section as this run wrote it.
+struct Catalogued {
+    ranges: u64,
+    base: usize,
+    since: usize,
+    held: Saved,
+    refusals: u64,
+    extra: u64,
+}
+
+fn hash(bytes: &[u8]) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    std::hash::Hasher::write(&mut hasher, bytes);
+    std::hash::Hasher::finish(&hasher)
+}
+
+/// How much of a [`Keyed`]'s append-only metadata its last save or load held.
+#[derive(Default)]
+struct Saved {
+    fields: usize,
+    tags: BTreeMap<u32, usize>,
+}
+
+/// A save's piece of a [`Keyed`]'s values ([`Accumulator::save_changes`]), or of its metadata.
+const VALUES: u8 = b'v';
+const META: u8 = b'm';
+
+/// The metadata a save adds: new fields and tag runs, refusals, facts and last hour.
+#[derive(Serialize)]
+struct MetaPiece<'a, F, X: ?Sized> {
+    whole: bool,
+    fields: Vec<(u64, &'a F)>,
+    tags: Vec<(u32, usize, &'a [(i32, String)])>,
+    refusals: &'a BTreeMap<String, u64>,
+    extra: &'a X,
+    last: Option<i32>,
+}
+
+#[derive(Deserialize)]
+#[serde(bound(deserialize = "F: DeserializeOwned, X: DeserializeOwned"))]
+struct MetaRead<F, X> {
+    whole: bool,
+    fields: Vec<(u64, F)>,
+    tags: Vec<(u32, usize, Vec<(i32, String)>)>,
+    refusals: BTreeMap<String, u64>,
+    extra: X,
+    last: Option<i32>,
+}
+
+impl<F, X> MetaRead<F, X> {
+    /// The metadata a base holds.
+    fn base(self) -> io::Result<Metadata<F, X>> {
+        if !self.whole {
+            return Err(invalid("A keyed catalogue's first range is no base"));
+        }
+        let Self {
+            fields,
+            tags,
+            refusals,
+            extra,
+            ..
+        } = self;
+        let mut meta = Metadata {
+            fields: BTreeMap::new(),
+            tags: BTreeMap::new(),
+            refusals,
+            extra,
+        };
+        extend(&mut meta, fields, tags)?;
+        Ok(meta)
+    }
+
+    /// Applies it to `meta`, what the pieces before it left; its last hour.
+    fn apply(self, meta: &mut Metadata<F, X>) -> io::Result<Option<i32>> {
+        if self.whole {
+            meta.fields.clear();
+            meta.tags.clear();
+        }
+        extend(meta, self.fields, self.tags)?;
+        meta.refusals = self.refusals;
+        meta.extra = self.extra;
+        Ok(self.last)
+    }
+}
+
+/// Adds fields and tag runs to `meta`, each following what it holds.
+fn extend<F, X>(
+    meta: &mut Metadata<F, X>,
+    fields: Vec<(u64, F)>,
+    tags: Vec<(u32, usize, Vec<(i32, String)>)>,
+) -> io::Result<()> {
+    let damaged = || invalid("A saved keyed piece is damaged");
+    for (key, field) in fields {
+        if key != meta.fields.len() as u64 {
+            return Err(damaged());
+        }
+        meta.fields.insert(key, field);
+    }
+    for (slot, from, runs) in tags {
+        let held = meta.tags.entry(slot).or_default();
+        if held.len() != from {
+            return Err(damaged());
+        }
+        held.extend(runs);
+    }
+    Ok(())
+}
+
+impl Saved {
+    fn of<F, X>(meta: &Metadata<F, X>) -> Self {
+        Self {
+            fields: meta.fields.len(),
+            tags: meta.tags.iter().map(|(&slot, runs)| (slot, runs.len())).collect(),
+        }
+    }
+
+    /// Whether `meta` holds fields or tag runs past these.
+    fn behind<F, X>(&self, meta: &Metadata<F, X>) -> bool {
+        meta.fields.len() > self.fields
+            || meta
+                .tags
+                .iter()
+                .any(|(slot, runs)| runs.len() > self.tags.get(slot).copied().unwrap_or(0))
+    }
+}
+
+/// The metadata piece of `meta` past `held` (all of it where `whole`), with `extra` as its facts.
+fn meta_piece<F: Serialize, X: Serialize + ?Sized>(
+    meta_fields: &BTreeMap<u64, F>,
+    meta_tags: &BTreeMap<u32, Vec<(i32, String)>>,
+    refusals: &BTreeMap<String, u64>,
+    extra: &X,
+    last: Option<i32>,
+    (whole, held): (bool, &Saved),
+) -> io::Result<Vec<u8>> {
+    let from = if whole { 0 } else { held.fields };
+    let fields = meta_fields
+        .range(from as u64..)
+        .map(|(&key, field)| (key, field))
+        .collect();
+    let mut tags = Vec::new();
+    for (&slot, runs) in meta_tags {
+        let before = if whole {
+            0
+        } else {
+            held.tags.get(&slot).copied().unwrap_or(0)
+        };
+        if runs.len() > before {
+            tags.push((slot, before, &runs[before..]));
+        }
+    }
+    Ok(serde_json::to_vec(&MetaPiece {
+        whole,
+        fields,
+        tags,
+        refusals,
+        extra,
+        last,
+    })?)
 }
 
 impl<F, X: Default> Default for Keyed<F, X> {
@@ -125,6 +283,8 @@ impl<F, X: Default> Default for Keyed<F, X> {
             index: BTreeMap::new(),
             changed: 0,
             refused: std::collections::BTreeSet::new(),
+            saved: Saved::default(),
+            catalogued: None,
         }
     }
 }
@@ -283,9 +443,73 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
     ) -> io::Result<()> {
         self.values
             .flush(writer, &values_section(family, branch), 0, cancelled)?;
-        series::write_catalogue(writer, family, branch, &self.keys()?, &self.meta)
-            .map_err(structural)?;
+        let extra = serde_json::value::to_raw_value(&self.meta.extra)?;
+        self.write_catalogue(writer, family, branch, &extra)?;
         self.published();
+        Ok(())
+    }
+
+    /// Writes what its metadata added since this run last did, or a base ([`read_metadata`]).
+    fn write_catalogue(
+        &mut self,
+        writer: &mut store::Writer,
+        family: &str,
+        branch: u64,
+        extra: &serde_json::value::RawValue,
+    ) -> io::Result<()> {
+        let refusals = hash(&serde_json::to_vec(&self.meta.refusals)?);
+        let extra_hash = hash(extra.get().as_bytes());
+        let section = series::catalogue_section(family, branch);
+        let whole = match &self.catalogued {
+            None => true,
+            Some(written) => {
+                if !written.held.behind(&self.meta)
+                    && written.refusals == refusals
+                    && written.extra == extra_hash
+                {
+                    return Ok(());
+                }
+                written.since >= written.base
+            }
+        };
+        let empty = Saved::default();
+        let held = self.catalogued.as_ref().map_or(&empty, |written| &written.held);
+        let piece = meta_piece(
+            &self.meta.fields,
+            &self.meta.tags,
+            &self.meta.refusals,
+            extra,
+            None,
+            (whole, held),
+        )?;
+        let range = series::compress(&piece, 3)?;
+        let held = Saved::of(&self.meta);
+        match (&mut self.catalogued, whole) {
+            (Some(written), false) => {
+                writer.write_at(&section, written.ranges, range.as_slice())?;
+                written.ranges += 1;
+                written.since += range.len();
+                written.held = held;
+                written.refusals = refusals;
+                written.extra = extra_hash;
+            }
+            (written, _) => {
+                writer.write_at(&section, 0, range.as_slice())?;
+                // A base this run did not write may be followed by changes of its own.
+                let stale = writer.range_count(&section)?.unwrap_or(0);
+                for at in 1..stale {
+                    writer.write_at(&section, at, &[][..])?;
+                }
+                *written = Some(Catalogued {
+                    ranges: 1,
+                    base: range.len(),
+                    since: 0,
+                    held,
+                    refusals,
+                    extra: extra_hash,
+                });
+            }
+        }
         Ok(())
     }
 
@@ -300,26 +524,16 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
             .flush(writer, &values_section(family, branch), 0, cancelled)
     }
 
-    /// The catalogue with `extra` as its facts; `base` notes the base range's length.
-    #[allow(clippy::too_many_arguments)]
+    /// The catalogue with `extra` as its facts ([`Self::flush`]).
     pub fn publish_catalogue(
-        &self,
+        &mut self,
         writer: &mut store::Writer,
         family: &str,
         branch: u64,
-        catalogue: &mut series::CatalogueWriter,
-        base: &mut Option<usize>,
         extra: &impl Serialize,
     ) -> io::Result<()> {
-        let meta = MetadataView {
-            fields: &self.meta.fields,
-            tags: &self.meta.tags,
-            refusals: &self.meta.refusals,
-            extra,
-        };
-        catalogue
-            .write(&mut BaseWatch { writer, base }, family, branch, &self.keys()?, &meta)
-            .map_err(structural)
+        let extra = serde_json::value::to_raw_value(extra)?;
+        self.write_catalogue(writer, family, branch, &extra)
     }
 
     pub fn published(&mut self) {
@@ -327,57 +541,46 @@ impl<F: Serialize + DeserializeOwned + Ord + Clone, X: Serialize + DeserializeOw
         self.refused.clear();
     }
 
-}
-
-/// A malformed stored catalogue ends the run rather than refusing the family.
-fn structural(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::InvalidData {
-        io::Error::other(error)
-    } else {
-        error
+    /// What changed since its last save: its values' pieces, then its metadata's.
+    pub fn save_changes(&mut self, whole: bool) -> io::Result<Vec<Vec<u8>>> {
+        let mut pieces = self.values.save_changes(whole)?;
+        for piece in &mut pieces {
+            piece.insert(0, VALUES);
+        }
+        let mut meta = vec![META];
+        meta.extend(meta_piece(
+            &self.meta.fields,
+            &self.meta.tags,
+            &self.meta.refusals,
+            &self.meta.extra,
+            self.last,
+            (whole, &self.saved),
+        )?);
+        pieces.push(meta);
+        self.saved = Saved::of(&self.meta);
+        Ok(pieces)
     }
+
+    /// Takes up a save's pieces, in order, over what the saves before left.
+    pub fn apply_changes(&mut self, piece: &[u8]) -> io::Result<()> {
+        let invalid_piece = || invalid("A saved keyed piece is damaged");
+        match piece.split_first() {
+            Some((&VALUES, values)) => self.values.apply_changes(values),
+            Some((&META, meta)) => {
+                let read: MetaRead<F, X> = serde_json::from_slice(meta)?;
+                self.last = read.apply(&mut self.meta)?;
+                self.index.clear();
+                self.saved = Saved::of(&self.meta);
+                Ok(())
+            }
+            _ => Err(invalid_piece()),
+        }
+    }
+
 }
 
 /// A catalogue patch's header and frame.
 pub const CATALOGUE_MARGIN: usize = 256;
-
-/// A writer noting the length of the base range it reads or writes.
-struct BaseWatch<'a> {
-    writer: &'a mut store::Writer,
-    base: &'a mut Option<usize>,
-}
-
-impl dashboard_base::prepared::pages::Pages for BaseWatch<'_> {
-    fn write_at(&mut self, section: &str, range: u64, data: &[u8]) -> io::Result<()> {
-        dashboard_base::prepared::pages::Pages::write_at(self.writer, section, range, data)?;
-        if range == 0 {
-            *self.base = Some(data.len());
-        }
-        Ok(())
-    }
-
-    fn write(&mut self, section: &str, data: &[u8]) -> io::Result<u64> {
-        dashboard_base::prepared::pages::Pages::write(self.writer, section, data)
-    }
-
-    fn read_at(&mut self, section: &str, range: u64) -> io::Result<Option<Vec<u8>>> {
-        let bytes = dashboard_base::prepared::pages::Pages::read_at(self.writer, section, range)?;
-        if range == 0
-            && let Some(bytes) = &bytes
-        {
-            *self.base = Some(bytes.len());
-        }
-        Ok(bytes)
-    }
-
-    fn range_ids(
-        &mut self,
-        section: &str,
-        count: u64,
-    ) -> io::Result<Option<Vec<Option<store::RangeId>>>> {
-        dashboard_base::prepared::pages::Pages::range_ids(self.writer, section, count)
-    }
-}
 
 pub fn json_len(value: &impl Serialize) -> usize {
     struct Count(usize);
@@ -403,6 +606,42 @@ pub fn values_section(family: &str, branch: u64) -> String {
     format!("{family}-values-{branch}")
 }
 
+/// A family's published metadata on `branch`: its catalogue's base and changes, in order.
+pub fn read_metadata<F: DeserializeOwned, X: DeserializeOwned>(
+    store: &store::Store,
+    key: &store::SourceKey,
+    family: &str,
+    branch: u64,
+) -> io::Result<Option<Metadata<F, X>>> {
+    let section = series::catalogue_section(family, branch);
+    if !dashboard_base::prepared::coverage::accepts_pages(store, key, &section, branch)? {
+        return Ok(None);
+    }
+    let Some(session) = store.session(key)? else {
+        return Ok(None);
+    };
+    let mut meta: Option<Metadata<F, X>> = None;
+    let mut at = 0;
+    while let Some(mut range) = session.read(&section, at)? {
+        if range.is_empty() {
+            break;
+        }
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut range, &mut bytes)?;
+        let read: MetaRead<F, X> = serde_json::from_slice(&series::decompress(&bytes)?)?;
+        meta = Some(match meta.take() {
+            None => read.base()?,
+            Some(mut held) if !read.whole => {
+                read.apply(&mut held)?;
+                held
+            }
+            Some(_) => return Err(invalid("A keyed catalogue holds a base past its first range")),
+        });
+        at += 1;
+    }
+    Ok(meta)
+}
+
 /// A family's published catalogue and a reader of its values.
 pub struct Published<'a, F, X> {
     pub meta: Metadata<F, X>,
@@ -421,8 +660,7 @@ impl<'a, F: DeserializeOwned, X: DeserializeOwned> Published<'a, F, X> {
         through: i32,
         cancelled: &'a AtomicBool,
     ) -> io::Result<Option<Self>> {
-        let Some((_, meta)) = series::read_catalogue::<Metadata<F, X>>(store, key, family, branch)?
-        else {
+        let Some(meta) = read_metadata::<F, X>(store, key, family, branch)? else {
             return Ok(None);
         };
         Ok(Some(Self {

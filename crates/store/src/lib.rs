@@ -2679,11 +2679,31 @@ struct Shared {
 
 /// Empties packs under half live at commit into one new pack, in manifest order.
 struct Mover<'a> {
+    stopped: Option<&'a dyn Fn() -> bool>,
+    created: &'a Unpublished<'a>,
     directory: &'a Path,
     compact: HashSet<u64>,
     fresh: &'a HashMap<u64, Shared>,
     opened: Opened,
     into: Option<Pack>,
+}
+
+/// The pack a commit's moves created, removed unless the commit published it.
+struct Unpublished<'a>(std::cell::Cell<Option<u64>>, &'a Path);
+
+impl Drop for Unpublished<'_> {
+    fn drop(&mut self) {
+        if let Some(id) = self.0.take() {
+            let _ = posix_delete(&self.1.join(pack_name(id)));
+        }
+    }
+}
+
+fn interrupted() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Interrupted,
+        "Compacting the prepared store was cancelled",
+    )
 }
 
 impl Mover<'_> {
@@ -2693,6 +2713,9 @@ impl Mover<'_> {
         }
         if !self.compact.contains(&id.pack) {
             return Ok(id);
+        }
+        if self.stopped.is_some_and(|stopped| stopped()) {
+            return Err(interrupted());
         }
         let file = match self.fresh.get(&id.pack) {
             Some(shared) => Arc::clone(&shared.file),
@@ -2707,7 +2730,11 @@ impl Mover<'_> {
         };
         let into = match &mut self.into {
             Some(into) => into,
-            into => into.insert(Pack::create(self.directory)?),
+            into => {
+                let pack = into.insert(Pack::create(self.directory)?);
+                self.created.0.set(Some(pack.id));
+                pack
+            }
         };
         into.copy(file, id, scratch)
     }
@@ -3895,8 +3922,37 @@ impl Writer {
         self.commit_with_scratch(&mut [0; COMMIT_SCRATCH])
     }
 
+    /// [`Self::commit_continue`] into one new pack; `stopped` interrupts it, publishing nothing.
+    pub fn commit_compacted_continue(self, stopped: &dyn Fn() -> bool) -> io::Result<Writer> {
+        let lock = self._lock.try_clone()?;
+        let key = self.key.clone();
+        let store = Store {
+            directory: self.directory.clone(),
+            source: Mutex::default(),
+        };
+        self.commit_inner(&mut [0; COMMIT_SCRATCH], Some(stopped))?;
+        if !key.recording_current()? {
+            return Err(sources_changed(
+                "before preparation resumed",
+                &key.recording.path,
+            ));
+        }
+        store.continue_locked(&key, key.clone(), lock)
+    }
+
     /// Publishes with caller-admitted scratch, at least 96 bytes; no historical entry buffer.
-    pub fn commit_with_scratch(mut self, scratch: &mut [u8]) -> io::Result<()> {
+    pub fn commit_with_scratch(self, scratch: &mut [u8]) -> io::Result<()> {
+        self.commit_inner(scratch, None)
+    }
+
+    fn commit_inner(
+        mut self,
+        scratch: &mut [u8],
+        compacting: Option<&dyn Fn() -> bool>,
+    ) -> io::Result<()> {
+        if compacting.is_some_and(|stopped| stopped()) {
+            return Err(interrupted());
+        }
         if scratch.len() < 3 * ENTRY_BYTES as usize {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -3938,7 +3994,9 @@ impl Writer {
         // entries that name another published pack reads every entry,
         // so published packs are emptied together, once the listed packs
         // hold more than a quarter dead bytes.
-        let under = |live: u64, size: u64| u128::from(live) * 2 < u128::from(size);
+        let compact_all = compacting.is_some();
+        let under =
+            |live: u64, size: u64| compact_all || u128::from(live) * 2 < u128::from(size);
         let pinned: HashSet<u64> = {
             let mut registry = STAGING.lock().unwrap_or_else(|error| error.into_inner());
             active_stages(&mut registry, &self.directory)
@@ -3960,7 +4018,7 @@ impl Writer {
                 (all_live + u128::from(live), all_size + u128::from(size))
             },
         );
-        let published_too = size.saturating_sub(live) * 4 > live;
+        let published_too = compact_all || size.saturating_sub(live) * 4 > live;
         let compact: HashSet<u64> = table
             .iter()
             .filter(|(id, (live, size))| {
@@ -3977,7 +4035,10 @@ impl Writer {
             .base
             .as_ref()
             .is_some_and(|base| base.packs.iter().any(|pack| compact.contains(&pack.id)));
+        let created = Unpublished(std::cell::Cell::new(None), &self.directory);
         let mut mover = Mover {
+            stopped: compacting,
+            created: &created,
             directory: &self.directory,
             compact,
             fresh: &fresh,
@@ -4213,8 +4274,12 @@ impl Writer {
         #[cfg(test)]
         tests::MANIFEST_BYTES.set(tests::MANIFEST_BYTES.get() + written);
         let _ = written;
+        if compacting.is_some_and(|stopped| stopped()) {
+            return Err(interrupted());
+        }
         let manifest = self.directory.join(MANIFEST);
         put(&manifest, |file| file.write_all(&root))?;
+        created.0.set(None);
         // The new manifest is visible: it is this key's from now on, also when its flush fails.
         *self.key.binding.lock().unwrap() = Some((self.directory.clone(), source, true));
         self.key.rejected.store(false, Ordering::Release);

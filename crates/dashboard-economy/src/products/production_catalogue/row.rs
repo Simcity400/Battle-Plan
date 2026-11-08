@@ -8,7 +8,7 @@ mod observe;
 
 use super::*;
 use crate::products::keyed::{self, Published, branch_of, clip_text, selected_spans};
-use dashboard_base::prepared::{frame_changes::FrameChanges, series::CatalogueWriter};
+use dashboard_base::prepared::frame_changes::FrameChanges;
 use replay_data::{format::FormatVersion, rows::TableId};
 use replay_frame::frame::DecodedFrame;
 use std::{collections::BTreeSet, io, sync::atomic::AtomicBool};
@@ -80,11 +80,6 @@ pub struct Prepared {
     /// What observing the next hour by its changes needs; never saved.
     #[serde(skip)]
     open: observe::Open,
-    #[serde(skip)]
-    catalogue: CatalogueWriter,
-    /// The catalogue's base range length, once a flush saw it.
-    #[serde(skip)]
-    base: Option<usize>,
 }
 
 impl Prepared {
@@ -158,7 +153,7 @@ impl Prepared {
             .collect();
         self.keyed.flush_values(writer, FAMILY, branch, cancelled)?;
         let held = &self.keyed.meta.extra;
-        let extra = ExtraView {
+        let extra = serde_json::value::to_raw_value(&ExtraView {
             texts: &held.texts,
             organisations: &held.organisations,
             variants: Named {
@@ -166,9 +161,8 @@ impl Prepared {
                 versions: &self.variants.versions,
             },
             designs_from: &held.designs_from,
-        };
-        self.keyed
-            .publish_catalogue(writer, FAMILY, branch, &mut self.catalogue, &mut self.base, &extra)?;
+        })?;
+        self.keyed.publish_catalogue(writer, FAMILY, branch, &extra)?;
         self.keyed.published();
         Ok(())
     }

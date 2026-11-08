@@ -109,6 +109,33 @@ pub(crate) trait Native: Send + Sync {
         Ok(None)
     }
 
+    /// [`Self::save`] as a base where `whole`, else changes; None for a family saving whole.
+    fn save_changes(
+        &self,
+        state: &mut Self::Branch,
+        whole: bool,
+    ) -> io::Result<Option<roots::Saved>> {
+        let _ = (state, whole);
+        Ok(None)
+    }
+
+    /// [`Self::resume`] from the pieces [`Self::save_changes`] wrote, in order.
+    fn resume_changes(
+        &self,
+        stage: &mut Stage<'_, '_>,
+        branch: u64,
+        published: &Published,
+        pieces: &[Vec<u8>],
+    ) -> io::Result<Self::Branch> {
+        match pieces {
+            [saved] => self.resume(stage, branch, published, saved),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "A family saved whole holds changes",
+            )),
+        }
+    }
+
     /// The state of `branch` going on from `saved`, what [`Self::save`] wrote with the family's
     /// committed publication `published` there.
     fn resume(
@@ -700,9 +727,9 @@ impl<N: Native> Emit<'_, '_, N> {
     /// The state of `going`'s branch, from what was saved with its committed publication.
     fn resume(&mut self, native: &N, going: &Going) -> io::Result<N::Branch> {
         let (branch, published) = (going.branch, &going.published);
-        let saved = roots::state(self.stage.pages()?, self.name, branch, published)?
+        let pieces = roots::state(self.stage.pages()?, self.name, branch, published)?
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "No state was saved"))?;
-        native.resume(&mut self.stage, branch, published, &saved)
+        native.resume_changes(&mut self.stage, branch, published, &pieces)
     }
 
     fn observe(&mut self, native: &N, branch: u64, item: Output<N>) -> io::Result<()> {
@@ -818,12 +845,19 @@ impl<N: Native> Emit<'_, '_, N> {
             }
             if !self.short.remove(&branch) {
                 let carry = self.carries.get(&branch);
+                let whole = self.stage.rebases(branch);
+                let mut span = replay_frame::timeline::span("save").lane(self.name);
                 let saved = match self.states.get_mut(&branch) {
                     Some(state) if carry.is_none_or(Option::is_some) => {
-                        native.save(state).map_err(alone)?
+                        match native.save_changes(state, whole).map_err(alone)? {
+                            Some(saved) => Some(saved),
+                            None => native.save(state).map_err(alone)?.map(roots::Saved::whole),
+                        }
                     }
                     _ => None,
                 };
+                span.bytes(saved.as_ref().map_or(0, roots::Saved::bytes));
+                drop(span);
                 let carry = saved.as_ref().and(carry.cloned().flatten());
                 self.stage.keep(branch, saved, carry).map_err(alone)?;
             }

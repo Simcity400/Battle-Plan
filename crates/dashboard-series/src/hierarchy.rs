@@ -41,22 +41,20 @@ pub(crate) struct HeldRun {
 }
 
 impl Built {
-    /// A node of a resumed hierarchy, which no writer kept, read back.
+    /// A node of a resumed hierarchy, which no writer kept: its pages are read as it merges.
     fn load(io: &mut impl PageRead, reader: &mut Reader, reference: NodeRef) -> io::Result<Self> {
-        let node = reader.child(io, reference)?;
         Ok(Self {
-            entries: listed(io, reader, node.entries.list)?,
-            domains: listed(io, reader, node.domains.list)?,
-            late: listed(io, reader, node.late.list)?,
-            metadata: listed(io, reader, node.metadata.list)?,
-            node,
+            node: reader.child(io, reference)?,
+            entries: Vec::new(),
+            domains: Vec::new(),
+            late: Vec::new(),
+            metadata: Vec::new(),
             held: None,
-            paged: true,
+            paged: false,
         })
     }
 
-    /// Lets go of its pages, which it reads back when it merges ([`Self::page_in`]); its held
-    /// runs stay, which would be read from the segments that began them.
+    /// Lets go of its pages, which a merge reads back a page at a time.
     pub(crate) fn let_go(&mut self) {
         self.entries = Vec::new();
         self.domains = Vec::new();
@@ -64,39 +62,61 @@ impl Built {
         self.metadata = Vec::new();
         self.paged = false;
     }
-
-    /// Reads back the pages [`Self::let_go`] let go.
-    fn page_in(&mut self, io: &mut impl PageRead, reader: &mut Reader) -> io::Result<()> {
-        let node = Arc::clone(&self.node);
-        self.entries = listed(io, reader, node.entries.list)?;
-        self.domains = listed(io, reader, node.domains.list)?;
-        self.late = listed(io, reader, node.late.list)?;
-        self.metadata = listed(io, reader, node.metadata.list)?;
-        self.paged = true;
-        Ok(())
-    }
 }
 
-fn listed(io: &mut impl PageRead, reader: &mut Reader, list: List) -> io::Result<Vec<Arc<Page>>> {
-    let mut pages = Vec::new();
-    for ordinal in 0..list.pages {
-        pages.try_push(reader.page(io, list, ordinal, Kind::Records)?)?;
-    }
-    Ok(pages)
+/// A child's table read in order, a page at a time: its writer's kept page, else read back.
+struct Paged<'b> {
+    kept: &'b [Arc<Page>],
+    list: List,
+    page: Option<(u64, Arc<Page>)>,
 }
 
-fn record<T: Binary>(pages: &[Arc<Page>], index: u64) -> io::Result<T> {
-    let per = per_page::<T>() as u64;
-    let page = usize::try_from(index / per)
-        .ok()
-        .and_then(|at| pages.get(at))
-        .ok_or_else(|| invalid("series record outside its table"))?;
-    let at = (index % per) as usize * T::SIZE;
-    let bytes = page
-        .bytes()
-        .get(at..at + T::SIZE)
-        .ok_or_else(|| invalid("series record outside its page"))?;
-    T::decode(&mut Decode::new(bytes))
+impl<'b> Paged<'b> {
+    fn new(kept: &'b [Arc<Page>], list: List) -> Self {
+        Self {
+            kept,
+            list,
+            page: None,
+        }
+    }
+
+    fn get(
+        &mut self,
+        io: &mut impl PageRead,
+        reader: &mut Option<Reader>,
+        ordinal: u64,
+    ) -> io::Result<Arc<Page>> {
+        if let Some(page) = usize::try_from(ordinal).ok().and_then(|at| self.kept.get(at)) {
+            return Ok(Arc::clone(page));
+        }
+        if let Some((at, page)) = &self.page
+            && *at == ordinal
+        {
+            return Ok(Arc::clone(page));
+        }
+        let page = reader
+            .as_mut()
+            .ok_or_else(|| invalid("series frontier reader"))?
+            .page_once(io, self.list, ordinal, Kind::Records)?;
+        self.page = Some((ordinal, Arc::clone(&page)));
+        Ok(page)
+    }
+
+    fn record<T: Binary>(
+        &mut self,
+        io: &mut impl PageRead,
+        reader: &mut Option<Reader>,
+        index: u64,
+    ) -> io::Result<T> {
+        let per = per_page::<T>() as u64;
+        let page = self.get(io, reader, index / per)?;
+        let at = (index % per) as usize * T::SIZE;
+        let bytes = page
+            .bytes()
+            .get(at..at + T::SIZE)
+            .ok_or_else(|| invalid("series record outside its page"))?;
+        T::decode(&mut Decode::new(bytes))
+    }
 }
 
 /// The children one merge replaced, and what was kept of them, to put back.
@@ -128,12 +148,11 @@ pub(crate) fn settle(
             if reader.is_none() {
                 reader = Some(Reader::frontier(nodes)?);
             }
-            let reader = reader
-                .as_mut()
-                .ok_or_else(|| invalid("series frontier reader"))?;
-            match &mut built[index] {
-                Some(kept) => kept.page_in(io, reader)?,
-                None => built[index] = Some(Built::load(io, reader, nodes[index])?),
+            if built[index].is_none() {
+                let reader = reader
+                    .as_mut()
+                    .ok_or_else(|| invalid("series frontier reader"))?;
+                built[index] = Some(Built::load(io, reader, nodes[index])?);
             }
         }
         let (node, merged) = merge(io, &mut reader, &nodes[at..], &built[at..])?;
@@ -150,39 +169,45 @@ pub(crate) fn settle(
 
 /// Entries of one directory, read page by page in key order.
 struct Stream<'b> {
-    pages: &'b [Arc<Page>],
-    ordinal: usize,
+    pages: Paged<'b>,
+    ordinal: u64,
+    current: Option<Arc<Page>>,
     count: usize,
     at: usize,
     head: Option<u64>,
 }
 impl<'b> Stream<'b> {
-    fn new(pages: &'b [Arc<Page>]) -> Self {
+    fn new(kept: &'b [Arc<Page>], list: List) -> Self {
         Self {
-            pages,
+            pages: Paged::new(kept, list),
             ordinal: 0,
+            current: None,
             count: 0,
             at: 0,
             head: None,
         }
     }
-    fn page(&self) -> io::Result<&'b Page> {
-        self.ordinal
-            .checked_sub(1)
-            .and_then(|at| self.pages.get(at))
-            .map(|page| &**page)
+    fn page(&self) -> io::Result<&Page> {
+        self.current
+            .as_deref()
             .ok_or_else(|| invalid("series directory stream"))
     }
     /// The next entry's key, decoded once until it is taken.
-    fn peek(&mut self) -> io::Result<Option<u64>> {
+    fn peek(
+        &mut self,
+        io: &mut impl PageRead,
+        reader: &mut Option<Reader>,
+    ) -> io::Result<Option<u64>> {
         if self.head.is_some() {
             return Ok(self.head);
         }
-        while self.ordinal == 0 || self.at == self.count {
-            let Some(page) = self.pages.get(self.ordinal) else {
+        while self.current.is_none() || self.at == self.count {
+            if self.ordinal >= self.pages.list.pages {
                 return Ok(None);
-            };
+            }
+            let page = self.pages.get(io, reader, self.ordinal)?;
             self.count = entry_count(page.bytes())?;
+            self.current = Some(page);
             self.ordinal += 1;
             self.at = 0;
         }
@@ -200,10 +225,14 @@ impl<'b> Stream<'b> {
     }
 }
 /// The smallest next key among `streams`, each stream's head decoded once.
-fn least(streams: &mut [Stream<'_>]) -> io::Result<Option<u64>> {
+fn least(
+    io: &mut impl PageRead,
+    reader: &mut Option<Reader>,
+    streams: &mut [Stream<'_>],
+) -> io::Result<Option<u64>> {
     let mut key = None;
     for stream in streams {
-        if let Some(next) = stream.peek()? {
+        if let Some(next) = stream.peek(io, reader)? {
             key = Some(key.map_or(next, |k: u64| k.min(next)));
         }
     }
@@ -389,15 +418,15 @@ fn merge_entries(key: u64, parts: &[Option<Entry>]) -> io::Result<Entry> {
 
 /// The next late event by (key, native, sequence) among the children's late tables.
 struct LateStream<'b> {
-    pages: &'b [Arc<Page>],
+    pages: Paged<'b>,
     count: u64,
     at: u64,
     head: Option<Late>,
 }
 impl LateStream<'_> {
-    fn fill(&mut self) -> io::Result<()> {
+    fn fill(&mut self, io: &mut impl PageRead, reader: &mut Option<Reader>) -> io::Result<()> {
         if self.head.is_none() && self.at < self.count {
-            self.head = Some(record::<Late>(self.pages, self.at)?);
+            self.head = Some(self.pages.record::<Late>(io, reader, self.at)?);
             self.at += 1;
         }
         Ok(())
@@ -439,24 +468,24 @@ fn merge(
         children[children.len() - 1].hours.last,
     )?;
 
-    let mut late = Records::<Late>::keeping();
+    let mut late = Records::<Late>::new();
     let mut lates: Vec<LateStream<'_>> = engine_allocation::vec(nodes.len())?;
     for child in &nodes {
         lates.push(LateStream {
-            pages: &child.late,
+            pages: Paged::new(&child.late, child.node.late.list),
             count: child.node.late.count,
             at: 0,
             head: None,
         });
     }
-    let mut entries = Entries::keeping();
+    let mut entries = Entries::new();
     let mut held = Vec::new();
     let mut cursors = [0_usize; FANOUT];
     let mut streams: Vec<Stream<'_>> = engine_allocation::vec(nodes.len())?;
     for child in &nodes {
-        streams.push(Stream::new(&child.entries));
+        streams.push(Stream::new(&child.entries, child.node.entries.list));
     }
-    while let Some(key) = least(&mut streams)? {
+    while let Some(key) = least(io, reader, &mut streams)? {
         let mut parts = [None; FANOUT];
         for (at, stream) in streams.iter_mut().enumerate() {
             if stream.head == Some(key) {
@@ -479,7 +508,7 @@ fn merge(
         loop {
             let mut best: Option<(usize, (u64, i32, u64))> = None;
             for (at, stream) in lates.iter_mut().enumerate() {
-                stream.fill()?;
+                stream.fill(io, reader)?;
                 if let Some(head) = &stream.head {
                     let order = late_order(head);
                     if order.0 == key && best.is_none_or(|(_, b)| order < b) {
@@ -510,12 +539,12 @@ fn merge(
         return Err(invalid("series late event without an entry"));
     }
 
-    let mut domains = Entries::keeping();
+    let mut domains = Entries::new();
     let mut streams: Vec<Stream<'_>> = engine_allocation::vec(nodes.len())?;
     for child in &nodes {
-        streams.push(Stream::new(&child.domains));
+        streams.push(Stream::new(&child.domains, child.node.domains.list));
     }
-    while let Some(key) = least(&mut streams)? {
+    while let Some(key) = least(io, reader, &mut streams)? {
         let mut parts = [None; FANOUT];
         for (at, stream) in streams.iter_mut().enumerate() {
             if stream.head == Some(key) {
@@ -528,14 +557,18 @@ fn merge(
         domains.push(io, &merge_entries(key, &parts[..nodes.len()])?)?;
     }
 
-    let mut metadata = Records::<Meta>::keeping();
+    let mut metadata = Records::<Meta>::new();
+    let mut metas: Vec<Paged<'_>> = engine_allocation::vec(nodes.len())?;
+    for child in &nodes {
+        metas.push(Paged::new(&child.metadata, child.node.metadata.list));
+    }
     let mut positions = [0_u64; FANOUT];
     let mut heads: [Option<Meta>; FANOUT] = [None; FANOUT];
     loop {
         let mut next: Option<(u64, usize)> = None;
         for (at, child) in nodes.iter().enumerate() {
             if heads[at].is_none() && positions[at] < child.node.metadata.count {
-                heads[at] = Some(record::<Meta>(&child.metadata, positions[at])?);
+                heads[at] = Some(metas[at].record::<Meta>(io, reader, positions[at])?);
             }
             if let Some(meta) = heads[at] {
                 if next.is_none_or(|(id, _)| meta.id <= id) {
@@ -556,10 +589,10 @@ fn merge(
         metadata.push(io, &value)?;
     }
 
-    let (entries, entry_pages) = entries.finish_kept(io)?;
-    let (domains, domain_pages) = domains.finish_kept(io)?;
-    let (late, late_pages) = late.finish_kept(io)?;
-    let (metadata, metadata_pages) = metadata.finish_kept(io)?;
+    let entries = entries.finish(io)?;
+    let domains = domains.finish(io)?;
+    let late = late.finish(io)?;
+    let metadata = metadata.finish(io)?;
     let (first, last) = (&nodes[0].node, &nodes[nodes.len() - 1].node);
     let node = Node {
         level,
@@ -587,14 +620,15 @@ fn merge(
             segments,
             hours,
         },
+        // Its pages are read back a page at a time when it merges a level up.
         Built {
             node: Arc::new(node),
-            entries: entry_pages,
-            domains: domain_pages,
-            late: late_pages,
-            metadata: metadata_pages,
+            entries: Vec::new(),
+            domains: Vec::new(),
+            late: Vec::new(),
+            metadata: Vec::new(),
             held: Some(held),
-            paged: true,
+            paged: false,
         },
     ))
 }

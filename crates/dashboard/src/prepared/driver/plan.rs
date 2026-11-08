@@ -193,6 +193,7 @@ impl Plan {
         let mut hash = blake3::Hasher::new();
         hash.update(&crate::prepared::coverage::SCHEMA.to_le_bytes());
         hash.update(&dashboard_text::catalogue::CONTENT_DIAGNOSTICS_FORMAT.to_le_bytes());
+        hash.update(&dashboard_base::prepared::roots::STATE_FORMAT.to_le_bytes());
         let Some(family) = self.family(name) else {
             let job = registry::job(name)?;
             hash.update(job.name.as_bytes());

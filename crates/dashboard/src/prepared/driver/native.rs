@@ -778,6 +778,9 @@ fn run(
     let span = replay_frame::timeline::span("refuse");
     let unshown = refuse(&publisher, &shape, &recording, &mut failed)?;
     drop(span);
+    let span = replay_frame::timeline::span("compact");
+    publisher.compact(cancelled)?;
+    drop(span);
     let done = report(&failed, status::stored(&store)?);
     let measured = options
         .measure

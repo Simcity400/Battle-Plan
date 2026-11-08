@@ -31,7 +31,10 @@ use std::{
     cmp::Ordering,
     collections::{BTreeMap, VecDeque},
     io,
-    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, Ordering as AtomicOrdering},
+    },
 };
 
 /// Segments of a branch a batch goes through at most; one in background mode
@@ -623,14 +626,31 @@ impl<'s> Publisher<'s> {
         self.changed.notify_all();
     }
 
+    /// Commits the store compacted whole, for a preparation that is done; `cancelled` stops it.
+    pub(crate) fn compact(&self, cancelled: &AtomicBool) -> io::Result<()> {
+        self.coordinate_with(|writer| {
+            writer.commit_compacted_continue(&|| cancelled.load(AtomicOrdering::Acquire))
+        })
+    }
+
     /// Writes what the coordinator itself publishes, as `write` does, with the root writer and
     /// commits it once no group commit is under way. Its failure stops publication.
     pub(crate) fn coordinate(
         &self,
         write: impl FnOnce(&mut store::Writer) -> io::Result<()>,
     ) -> io::Result<()> {
+        self.coordinate_with(|mut writer| {
+            write(&mut writer)?;
+            self.commit_writer(writer)
+        })
+    }
+
+    fn coordinate_with(
+        &self,
+        commit: impl FnOnce(store::Writer) -> io::Result<store::Writer>,
+    ) -> io::Result<()> {
         let mut inner = self.lock();
-        let mut writer = loop {
+        let writer = loop {
             if let Some(stopped) = &inner.stopped {
                 return Err(stopped.error());
             }
@@ -645,7 +665,7 @@ impl<'s> Publisher<'s> {
         drop(inner);
         let mut leading = Leading(self, true);
         let span = replay_frame::timeline::span("commit");
-        let committed = write(&mut writer).and_then(|()| self.commit_writer(writer));
+        let committed = commit(writer);
         drop(span);
         leading.1 = false;
         let mut inner = self.lock();
@@ -1412,7 +1432,7 @@ struct Step {
     /// Where the batch leaves it; None before its first hours of the branch.
     frontier: Option<roots::Frontier>,
     intervals: Vec<Interval>,
-    state: Option<Vec<u8>>,
+    state: Option<roots::Saved>,
     carry: Option<Vec<u8>>,
     segments: u64,
     prepared: u64,
@@ -1430,6 +1450,8 @@ struct Branch {
     series: Option<roots::Series>,
     /// Its hierarchy, until the first segment it cuts takes it to the family's line.
     tree: Option<dashboard_series::Tree>,
+    /// Bytes of the base this run saved there and of the changes after it.
+    saved: Option<(usize, usize)>,
 }
 
 /// A family's lane: its open batch, written into a stage of its own once it needs one.
@@ -1496,6 +1518,7 @@ impl Stage<'_, '_> {
                     resumes: committed,
                     series: None,
                     tree: None,
+                    saved: None,
                 },
             );
         }
@@ -1705,7 +1728,7 @@ impl Stage<'_, '_> {
             }
         }
         let segments = frontier.segments;
-        step.state = state;
+        step.state = state.map(roots::Saved::whole);
         step.carry = carry;
         self.ends |= boundary
             || !hours.ends_segment
@@ -1724,16 +1747,37 @@ impl Stage<'_, '_> {
     pub(crate) fn keep(
         &mut self,
         branch: u64,
-        state: Option<Vec<u8>>,
+        state: Option<roots::Saved>,
         carry: Option<Vec<u8>>,
     ) -> io::Result<()> {
+        let saved = state.as_ref().map(|saved| (saved.whole, saved.bytes()));
         let step = self
             .steps
             .get_mut(&branch)
             .ok_or_else(|| refused("A branch the open batch holds no hours of"))?;
         step.state = state;
         step.carry = carry;
+        let held = self
+            .branches
+            .get_mut(&branch)
+            .ok_or_else(|| io::Error::other("A stage lost a branch"))?;
+        held.saved = match (saved, held.saved) {
+            (None, _) => None,
+            (Some((true, bytes)), _) => Some((bytes, 0)),
+            (Some((false, bytes)), Some((base, since))) => Some((base, since + bytes)),
+            (Some((false, _)), None) => {
+                return Err(refused("A family's state changes no base this run saved"));
+            }
+        };
         Ok(())
+    }
+
+    /// Whether the next save on `branch` is a base: none saved this run, or changes outweigh it.
+    pub(crate) fn rebases(&self, branch: u64) -> bool {
+        self.branches
+            .get(&branch)
+            .and_then(|branch| branch.saved)
+            .is_none_or(|(base, since)| since >= base)
     }
 
     /// Whether the open batch ends by the recording: the lane submits it.

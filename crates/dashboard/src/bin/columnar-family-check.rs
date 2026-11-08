@@ -6,13 +6,14 @@
 //! peak resident bytes, with every status row that failed. `served-check` checks the replies.
 //! `columnar-family-check --recording <r.battleplan> --columnar <c.h4col> --output <new folder>
 //!   [--family F[,F...]|ported] [--threads N] [--background [--promote-after SECONDS]]
-//!   [--content-cache DIR] [--scopes] [--walk-only]`
+//!   [--cancel-after SECONDS] [--resume] [--content-cache DIR] [--scopes] [--walk-only]`
 //! Game content comes from BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR, or none when neither is set. Its
 //! hashes are kept in `--content-cache`, by default the app's own cache, so a run resolves it as
 //! the app would; the report says what the resolve read.
 //! `--background` prepares as a job ahead of the user, in background mode
 //! ([`replay::segments::Background`]); `--promote-after` has the user join it that many seconds
 //! in, when it goes on as any run on `--threads` workers.
+//! `--cancel-after S` cancels S seconds in, keeping commits; `--resume` goes on in `--output`.
 //! `--scopes` also reports the CPU each accounting scope charged. `--walk-only` walks the runs
 //! with one lane doing no family's work, for the floor decode, apply and the world cost.
 //! report.json also holds the timeline of every task and phase, from the process's start.
@@ -53,6 +54,7 @@ static ALLOCATOR: labels::Counting<engine_heap::Heap> = labels::Counting(engine_
 const USAGE: &str = "columnar-family-check --recording R --columnar C --output NEW \
                      [--family F[,F...]|ported] [--threads N] \
                      [--background [--promote-after SECONDS]] \
+                     [--cancel-after SECONDS] [--resume] \
                      [--content-cache DIR] [--scopes] [--walk-only]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -99,7 +101,7 @@ fn run() -> io::Result<()> {
     let mut families: Option<String> = None;
     let mut threads = std::thread::available_parallelism().map_or(1, usize::from);
     let (mut scopes, mut walk_only, mut background) = (false, false, false);
-    let mut promote = None;
+    let (mut promote, mut cancel_after, mut resume) = (None, None, false);
     let mut content_cache = None;
     let mut args = std::env::args_os().skip(1);
     while let Some(flag) = args.next() {
@@ -115,6 +117,10 @@ fn run() -> io::Result<()> {
             background = true;
             continue;
         }
+        if flag == "--resume" {
+            resume = true;
+            continue;
+        }
         let value = args.next().ok_or_else(|| invalid(USAGE))?;
         match flag.to_str() {
             Some("--recording") => recording = Some(PathBuf::from(value)),
@@ -124,6 +130,7 @@ fn run() -> io::Result<()> {
             Some("--content-cache") => content_cache = Some(PathBuf::from(value)),
             Some("--threads") => threads = positive(&value)?,
             Some("--promote-after") => promote = Some(positive(&value)?),
+            Some("--cancel-after") => cancel_after = Some(positive(&value)?),
             _ => return Err(invalid(USAGE)),
         }
     }
@@ -137,7 +144,11 @@ fn run() -> io::Result<()> {
         .as_deref()
         .filter(|list| *list != "ported")
         .map(|list| list.split(',').collect());
-    std::fs::create_dir(&output)?;
+    if resume {
+        std::fs::create_dir_all(&output)?;
+    } else {
+        std::fs::create_dir(&output)?;
+    }
     // Read before the scratch store moves LOCALAPPDATA.
     let content_cache = content_cache.map_or_else(Config::content_cache_dir, Ok);
     let local = output.join("local");
@@ -163,10 +174,18 @@ fn run() -> io::Result<()> {
     // The check works on this recording alone, with its own executable tables.
     engine_executable::executable_tables::enter(source.tables());
     drop(span);
-    let cancelled = AtomicBool::new(false);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if let Some(seconds) = cancel_after {
+        let cancelled = Arc::clone(&cancelled);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(seconds as u64));
+            cancelled.store(true, Ordering::Release);
+        });
+    }
+    let cancelled = &*cancelled;
     let options = content.as_ref().map(|content| &content.options);
     let (damage, accepted, measured, failure) =
-        source.resolving_ahead(options, &cancelled, || -> io::Result<_> {
+        source.resolving_ahead(options, cancelled, || -> io::Result<_> {
             let span = replay_frame::timeline::span("recording open");
             let file = Recording::open_path(&columnar)?;
             let damage: Vec<String> = file.damage().iter().map(ToString::to_string).collect();
@@ -181,7 +200,7 @@ fn run() -> io::Result<()> {
                     named.as_deref(),
                     threads,
                     walk_only,
-                    &cancelled,
+                    cancelled,
                 )
             };
             let (accepted, measured, failure) = if background {

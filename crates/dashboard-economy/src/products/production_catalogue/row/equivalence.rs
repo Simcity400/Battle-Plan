@@ -3,15 +3,12 @@
 use super::Field;
 use super::*;
 use crate::products::{
-    keyed::{Keyed, Metadata, Observed, Tags},
+    keyed::{Keyed, Observed, Tags},
     test_support::*,
 };
 use dashboard_base::prepared::{
     frame_changes::FrameChangeTracker,
-    series::{
-        self,
-        tests::{Fixture, assert_payloads_equal},
-    },
+    series::tests::{Fixture, assert_payloads_equal},
 };
 use replay_data::rows::*;
 use replay_frame::frame::{FrameDecoder, FrameEncoder, TableView};
@@ -329,25 +326,23 @@ impl Reference {
             })
             .collect();
         let held = &state.keyed.meta.extra;
-        let meta = Metadata {
-            fields: state.keyed.meta.fields.clone(),
-            tags: state.keyed.meta.tags.clone(),
-            refusals: state.keyed.meta.refusals.clone(),
-            extra: Extra {
-                texts: held.texts.clone(),
-                organisations: held.organisations.clone(),
-                variants: named
-                    .into_iter()
-                    .filter_map(|id| Some((id, state.variants.versions.get(&id)?.clone())))
-                    .collect(),
-                designs_from: held.designs_from,
-            },
+        let extra = Extra {
+            texts: held.texts.clone(),
+            organisations: held.organisations.clone(),
+            variants: named
+                .into_iter()
+                .filter_map(|id| Some((id, state.variants.versions.get(&id)?.clone())))
+                .collect(),
+            designs_from: held.designs_from,
         };
         state
             .keyed
             .flush_values(writer, FAMILY, 1, &AtomicBool::new(false))
             .unwrap();
-        series::write_catalogue(writer, FAMILY, 1, &state.keyed.keys().unwrap(), &meta).unwrap();
+        state
+            .keyed
+            .publish_catalogue(writer, FAMILY, 1, &extra)
+            .unwrap();
     }
 }
 

@@ -44,6 +44,38 @@ pub fn ledger_section(family: &str, branch: u64) -> String {
     format!("{LEDGER}{family}-{branch}")
 }
 
+/// The state section's layout ([`Saved`]), stamped into every family's publications.
+pub const STATE_FORMAT: u32 = 1;
+
+/// One save of a family's state: a base's pieces where `whole`, else what changed since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Saved {
+    pub whole: bool,
+    pub pieces: Vec<Vec<u8>>,
+}
+
+impl Saved {
+    /// A state saved whole, in one piece.
+    pub fn whole(bytes: Vec<u8>) -> Self {
+        Self {
+            whole: true,
+            pieces: vec![bytes],
+        }
+    }
+
+    pub fn bytes(&self) -> usize {
+        self.pieces.iter().map(Vec::len).sum()
+    }
+}
+
+/// The digest naming a chain of ranges after `range` follows those `before` names.
+fn chained(before: [u8; 32], range: &[u8]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(&before);
+    hash.update(blake3::hash(range).as_bytes());
+    *hash.finalize().as_bytes()
+}
+
 /// The section of the emit state a family goes on with on a branch.
 pub fn state_section(family: &str, branch: u64) -> String {
     format!("{STATE}{family}-{branch}")
@@ -184,7 +216,7 @@ pub struct Frontier {
     /// family going on past a lost run answers after it, each total it keeps counted from that
     /// run's end; none answers an hour within one.
     pub holes: Vec<Interval>,
-    /// The emit state and projector carry it goes on with.
+    /// Its emit state chain (range count, chained digest) and projector carry.
     pub state: Option<Content>,
     pub carry: Option<Content>,
     pub end: Option<End>,
@@ -382,18 +414,34 @@ pub fn holes(published: &Published, first: i32, last: i32) -> Vec<Interval> {
     holes
 }
 
-/// The emit state `published` names on its branch; None when it names none.
+/// The pieces of the state chain `published` names on its branch, in order.
 pub fn state(
     view: &mut impl View,
     family: &str,
     branch: u64,
     published: &Published,
-) -> io::Result<Option<Vec<u8>>> {
-    named_bytes(
-        view,
-        &state_section(family, branch),
-        published.frontier.state,
-    )
+) -> io::Result<Option<Vec<Vec<u8>>>> {
+    let Some(content) = published.frontier.state else {
+        return Ok(None);
+    };
+    let section = state_section(family, branch);
+    let mut digest = [0; 32];
+    let mut pieces = Vec::new();
+    for at in 0..content.len {
+        let mut range = view
+            .range(&section, at)?
+            .ok_or_else(|| invalid("A family's state is missing"))?;
+        let mut bytes = Vec::new();
+        range.read_to_end(&mut bytes)?;
+        digest = chained(digest, &bytes);
+        pieces.push(crate::prepared::series::decompress(&bytes)?);
+    }
+    if digest != content.digest {
+        return Err(invalid(
+            "A family's state is not the one its frontier names",
+        ));
+    }
+    Ok(Some(pieces))
 }
 
 /// The projector carry `published` names on its branch; None when it names none.
@@ -486,7 +534,7 @@ pub struct Step<'a> {
     pub frontier: Frontier,
     /// The hours it processed, in order, after the previous frontier's.
     pub intervals: &'a [Interval],
-    pub state: Option<Vec<u8>>,
+    pub state: Option<Saved>,
     pub carry: Option<Vec<u8>>,
 }
 
@@ -532,7 +580,8 @@ pub struct Cut {
     pub frontier: Frontier,
     /// The ledger pages it writes, by index.
     ledger: Vec<(u64, Vec<Interval>)>,
-    state: Option<Vec<u8>>,
+    /// The state section's ranges it writes, from the first.
+    state: Option<(u64, Vec<Vec<u8>>)>,
     carry: Option<Vec<u8>>,
 }
 
@@ -605,7 +654,33 @@ pub fn cut(
             }
         }
     }
-    frontier.state = state.as_deref().map(Content::of);
+    let state = match state {
+        None => {
+            frontier.state = None;
+            None
+        }
+        Some(saved) => {
+            let (first, mut digest) = if saved.whole {
+                (0, [0; 32])
+            } else {
+                let base = before
+                    .and_then(|before| before.frontier.state)
+                    .ok_or_else(|| refused("A family's state changes no state saved before"))?;
+                (base.len, base.digest)
+            };
+            let mut ranges = Vec::with_capacity(saved.pieces.len());
+            for piece in &saved.pieces {
+                let range = crate::prepared::series::compress(piece, 3)?;
+                digest = chained(digest, &range);
+                ranges.push(range);
+            }
+            frontier.state = Some(Content {
+                len: first + ranges.len() as u64,
+                digest,
+            });
+            Some((first, ranges))
+        }
+    };
     frontier.carry = carry.as_deref().map(Content::of);
     let generation = |publication: series::Publication| publication.generation;
     if previous.map(generation) < before.map(|before| generation(before.publication)) {
@@ -664,8 +739,18 @@ pub fn write(
     for (index, page) in &cut.ledger {
         writer.write_at(&ledger, *index, serde_json::to_vec(page)?.as_slice())?;
     }
-    if let Some(bytes) = &cut.state {
-        writer.write_at(&state_section(family, branch), 0, bytes.as_slice())?;
+    if let Some((first, ranges)) = &cut.state {
+        let section = state_section(family, branch);
+        for (at, range) in (*first..).zip(ranges) {
+            writer.write_at(&section, at, range.as_slice())?;
+        }
+        // A base empties the chain it replaces, so no stale range stays live.
+        if *first == 0 {
+            let held = writer.range_count(&section)?.unwrap_or(0);
+            for at in ranges.len() as u64..held {
+                writer.write_at(&section, at, &[][..])?;
+            }
+        }
     }
     if let Some(bytes) = &cut.carry {
         writer.write_at(&carry_section(family, branch), 0, bytes.as_slice())?;
