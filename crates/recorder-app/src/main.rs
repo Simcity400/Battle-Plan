@@ -9,12 +9,15 @@ mod snapshot;
 mod startup;
 mod targets;
 mod tray;
+mod updates;
 mod worker;
 
-use replay::recorder_settings::RecorderSettings;
 use std::sync::Arc;
 
 fn main() {
+    if app_update::refused_during_setup("Battle Plan Recorder") {
+        return;
+    }
     let Some(_instance) = startup::single_instance() else {
         // Another recorder already runs for this user.
         return;
@@ -27,13 +30,11 @@ fn main() {
         .setup(move |app| {
             let handle = app.handle().clone();
             tray::create(&handle, Arc::clone(&recorder))?;
-            // Unreadable settings leave the Run entry as it is; defaults would remove it.
-            let reconciled = RecorderSettings::load()
-                .map_err(|error| format!("Recorder settings could not be read: {error}"))
-                .and_then(|settings| startup::set_start_with_windows(settings.start_with_windows));
-            if let Err(error) = reconciled {
-                eprintln!("{error}");
-            }
+            app_update::init(
+                &handle,
+                app_update::Role::Recorder,
+                Arc::new(updates::Host(Arc::clone(&recorder))),
+            )?;
             recorder.start(handle)?;
             Ok(())
         })
@@ -56,6 +57,12 @@ fn main() {
             commands::recordings,
             commands::act_on_waiting,
             commands::reveal_recording,
+            app_update::commands::app_update_state,
+            app_update::commands::app_update_check,
+            app_update::commands::app_update_download,
+            app_update::commands::app_update_install,
+            app_update::commands::app_update_set_channel,
+            app_update::commands::app_update_open_release,
         ])
         .build(tauri::generate_context!())
         .expect("Could not start Battle Plan Recorder");

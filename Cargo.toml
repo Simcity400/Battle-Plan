@@ -13,7 +13,6 @@ license = "MIT"
 [workspace.dependencies]
 # Begin generated declarations (tools/check-feature-unification.py --fix; do not edit).
 test-unify = { path = "crates/test-unify" }
-unify-base64 = { package = "base64", version = "0.22.1", default-features = false, features = ["alloc", "default", "std"] }
 unify-bitflags = { package = "bitflags", version = "1.3.2", default-features = false, features = ["default"] }
 unify-bytemuck = { package = "bytemuck", version = "1.25.2", default-features = false, features = ["bytemuck_derive", "derive", "extern_crate_alloc", "min_const_generics"] }
 unify-dpi = { package = "dpi", version = "0.1.2", default-features = false, features = ["default", "serde", "std"] }
@@ -24,6 +23,7 @@ unify-once_cell = { package = "once_cell", version = "1.21.4", default-features 
 unify-proc-macro2 = { package = "proc-macro2", version = "1.0.107", default-features = false, features = ["default", "proc-macro"] }
 unify-tauri = { package = "tauri", version = "2.11.5", default-features = false, features = ["common-controls-v6", "compression", "dbus", "default", "dynamic-acl", "tauri-runtime-wry", "tray-icon", "webkit2gtk", "webview2-com", "wry", "x11"] }
 unify-thiserror = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }
+unify-tracing = { package = "tracing", version = "0.1.44", default-features = false, features = ["std"] }
 unify-uuid = { package = "uuid", version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
 unify-wgpu = { package = "wgpu", version = "30.0.1", default-features = false, features = ["default", "dx12", "fragile-send-sync-non-atomic-wasm", "gles", "metal", "parking_lot", "std", "vulkan", "web", "webgl", "webgpu", "wgpu-core", "wgsl"] }
 unify-winapi-util = { package = "winapi-util", version = "0.1.11", default-features = false, features = [] }
@@ -273,6 +273,7 @@ png = "0.18"
 pollster = "0.4"
 job-priority = { path = "crates/job-priority" }
 replay = { path = "crates/replay" }
+app-update = { path = "crates/app-update" }
 replay-data = { path = "crates/replay-data" }
 core-events = { path = "crates/core-events" }
 core-shared-owners = { path = "crates/core-shared-owners" }
@@ -305,7 +306,9 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
     "Win32_System_Performance",
+    "Win32_System_Pipes",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
     "Win32_System_SystemServices",
     "Win32_System_Threading",

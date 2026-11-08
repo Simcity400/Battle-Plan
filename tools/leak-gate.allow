@@ -1,0 +1,7 @@
+# Path globs tools/leak-gate.py exempts, each from one kind. Term and key kinds are never exempt.
+# Third-party licence notices carry their authors' addresses, which their licences require to ship.
+LICENSE email
+*/LICENSE email
+LICENSES/* email
+*/LICENSES/* email
+*/shader-tools/dxc/LICEN?E-* email

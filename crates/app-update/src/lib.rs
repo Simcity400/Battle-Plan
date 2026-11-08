@@ -1,0 +1,730 @@
+//! In-app updates for Battle Plan and Battle Plan Recorder. Both apps carry one version and one
+//! installer replaces both, so either app checks the channel's feed, downloads the signed
+//! installer and starts it once neither app is busy.
+mod channel;
+pub mod commands;
+mod control;
+mod feed;
+mod install;
+
+pub use channel::Channel;
+pub use control::install_blocked;
+
+use serde::Serialize;
+use std::{
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use tauri::{AppHandle, Emitter, Manager};
+
+/// Where the release pipeline publishes, as `https://github.com/<owner>/<repo>/releases`; absent
+/// in builds made elsewhere.
+const RELEASES: Option<&str> = option_env!("battle-plan_RELEASES");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const STATE_EVENT: &str = "app-update-state";
+const FIRST_CHECK: Duration = Duration::from_secs(15);
+const CHECK_EVERY: Duration = Duration::from_secs(4 * 60);
+/// How often a downloaded update asks again whether the apps may be replaced.
+const BLOCKED_EVERY: Duration = Duration::from_secs(5);
+
+/// Which app this is: each answers on its own pipe and restarts itself after the installer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Role {
+    Dashboard,
+    Recorder,
+}
+
+impl Role {
+    fn pipe(self) -> &'static str {
+        match self {
+            Self::Dashboard => "dashboard",
+            Self::Recorder => "recorder",
+        }
+    }
+
+    fn app(self) -> &'static str {
+        match self {
+            Self::Dashboard => "Battle Plan",
+            Self::Recorder => "Battle Plan Recorder",
+        }
+    }
+
+    /// Passive update; `/R` reopens Battle Plan, `/HOI4RECORDER` the recorder. A name starting
+    /// `/R` would also match the installer's `/R`.
+    fn installer_arguments(self) -> &'static str {
+        match self {
+            Self::Dashboard => "/P /UPDATE /R",
+            Self::Recorder => "/P /UPDATE /HOI4RECORDER",
+        }
+    }
+}
+
+/// Starts the verified installer; why it could not, otherwise.
+pub type Launch = Box<dyn FnOnce() -> Result<(), String> + Send>;
+
+/// What only the app itself knows about being replaced.
+pub trait Host: Send + Sync + 'static {
+    /// Why the apps cannot be replaced now, if they cannot.
+    fn install_blocked(&self) -> Option<String>;
+    /// Run `launch` once this app may be replaced, then close; why not, otherwise.
+    fn install(&self, launch: Launch) -> Result<(), String>;
+    /// The installer asks this app to close; why it will not, otherwise.
+    fn close_for_update(&self) -> Result<(), String>;
+    /// Close, now that the installer has the answer.
+    fn closed_for_update(&self) {}
+}
+
+/// The running build, from its version and whether the release pipeline made it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Build {
+    Stable,
+    Nightly,
+    Preview,
+    Development,
+}
+
+impl Build {
+    fn current() -> Self {
+        if VERSION.contains("-preview.") {
+            Self::Preview
+        } else if RELEASES.is_none() {
+            Self::Development
+        } else if VERSION.contains("-nightly.") {
+            Self::Nightly
+        } else {
+            Self::Stable
+        }
+    }
+
+    fn disabled(self) -> Option<&'static str> {
+        match self {
+            Self::Preview => {
+                Some("Preview builds test the release pipeline and are never updated.")
+            }
+            Self::Development => {
+                Some("Updates are off in builds made outside the release pipeline.")
+            }
+            Self::Stable | Self::Nightly => None,
+        }
+    }
+
+    /// A channel nobody chose follows the build.
+    fn channel(self) -> Channel {
+        if self == Self::Nightly {
+            Channel::Nightly
+        } else {
+            Channel::Stable
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Status {
+    Disabled,
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Downloading,
+    Downloaded,
+    Error,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Action {
+    Check,
+    Download,
+    Install,
+}
+
+/// What both apps' update controls show.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateState {
+    pub enabled: bool,
+    pub status: Status,
+    pub channel: Channel,
+    pub build: Build,
+    pub current_version: &'static str,
+    pub available_version: Option<String>,
+    pub downloaded_version: Option<String>,
+    /// The offered release's publication time, as the feed gives it.
+    pub released_at: Option<String>,
+    /// The offered release's notes, one change per line.
+    pub notes: Vec<String>,
+    pub download_percent: Option<f64>,
+    /// Milliseconds since 1970 of the last finished check.
+    pub checked_at: Option<u64>,
+    /// Why the last action failed, or why updates are off.
+    pub message: Option<String>,
+    pub error_context: Option<Action>,
+    /// Why the downloaded update cannot be installed now.
+    pub install_blocked: Option<String>,
+}
+
+struct Inner {
+    state: UpdateState,
+    /// The release the state offers.
+    update: Option<feed::Release>,
+    /// Its installer, verified against the release's signature.
+    package: Option<Arc<Vec<u8>>>,
+    /// A check, download or install runs.
+    busy: bool,
+    /// The running action is a check, which a download or install waits out.
+    checking: bool,
+}
+
+/// One app's updater, managed as Tauri state.
+pub struct Updates {
+    role: Role,
+    host: Arc<dyn Host>,
+    /// Why setup could not ask this app to close: its control pipe failed.
+    control_error: Option<String>,
+    /// A check is due now: the channel changed in the other app.
+    check_now: std::sync::atomic::AtomicBool,
+    client: Option<reqwest::Client>,
+    current: semver::Version,
+    inner: Mutex<Inner>,
+    wake: Condvar,
+}
+
+fn now_ms() -> Option<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| elapsed.as_millis() as u64)
+}
+
+/// Lines of the release notes the pipeline wrote, without list markers.
+fn notes(body: Option<&str>) -> Vec<String> {
+    body.unwrap_or_default()
+        .lines()
+        .map(|line| line.trim().trim_start_matches(['-', '*']).trim())
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn feed(channel: Channel) -> Result<String, String> {
+    let releases = RELEASES.ok_or("This build has no update feed.")?;
+    Ok(format!(
+        "{releases}/download/{}/latest.json",
+        channel.name()
+    ))
+}
+
+/// The mutex setup holds while it replaces or removes the apps (`installer-hooks.nsh`).
+const SETUP_GUARD: &str = "Local\\HOI4Replay.Setup";
+
+/// Whether setup is replacing or removing the apps now.
+pub fn setup_running() -> bool {
+    use windows_sys::Win32::{Foundation::CloseHandle, System::Threading::OpenMutexW};
+    const SYNCHRONIZE: u32 = 0x0010_0000;
+    let name: Vec<u16> = SETUP_GUARD.encode_utf16().chain(Some(0)).collect();
+    let guard = unsafe { OpenMutexW(SYNCHRONIZE, 0, name.as_ptr()) };
+    if guard.is_null() {
+        return false;
+    }
+    unsafe { CloseHandle(guard) };
+    true
+}
+
+/// While setup runs, `app` says so and does not start: its files are being replaced. The notice
+/// is shown by Windows PowerShell, so this process exits at once and holds no installed file.
+pub fn refused_during_setup(app: &str) -> bool {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    if !setup_running() {
+        return false;
+    }
+    let quoted = |text: &str| format!("'{}'", text.replace('\'', "''"));
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show({}, {}, 'OK', 'Information')",
+        quoted(&format!(
+            "{app} is being installed or updated. Open it again once setup has finished."
+        )),
+        quoted(app),
+    );
+    let encoded = STANDARD.encode(
+        script
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<u8>>(),
+    );
+    let shown = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn();
+    if let Err(error) = shown {
+        eprintln!("{app} did not start while setup runs, and could not say so: {error}");
+    }
+    true
+}
+
+/// Manage this app's updater, answer on its pipe and check the feed in the background.
+pub fn init(app: &AppHandle, role: Role, host: Arc<dyn Host>) -> std::io::Result<()> {
+    let build = Build::current();
+    let saved = channel::load();
+    let client = feed::client(VERSION);
+    let disabled = build
+        .disabled()
+        .map(str::to_owned)
+        .or_else(|| client.as_ref().err().cloned());
+    let state = UpdateState {
+        enabled: disabled.is_none(),
+        status: if disabled.is_some() {
+            Status::Disabled
+        } else {
+            Status::Idle
+        },
+        channel: saved
+            .as_ref()
+            .ok()
+            .copied()
+            .flatten()
+            .unwrap_or(build.channel()),
+        build,
+        current_version: VERSION,
+        available_version: None,
+        downloaded_version: None,
+        released_at: None,
+        notes: Vec::new(),
+        download_percent: None,
+        checked_at: None,
+        message: disabled.clone().or(saved.err()),
+        error_context: None,
+        install_blocked: None,
+    };
+    let control_error = control::serve(role, Arc::new(Answering(Arc::clone(&host))))
+        .err()
+        .map(|error| {
+            format!(
+                "Setup could not ask {} to close, so it cannot be updated now: {error}",
+                role.app()
+            )
+        });
+    let updates = Arc::new(Updates {
+        role,
+        host: Arc::clone(&host),
+        control_error,
+        check_now: std::sync::atomic::AtomicBool::new(false),
+        client: client.ok(),
+        current: semver::Version::parse(VERSION).expect("Cargo versions are semver"),
+        inner: Mutex::new(Inner {
+            state,
+            update: None,
+            package: None,
+            busy: false,
+            checking: false,
+        }),
+        wake: Condvar::new(),
+    });
+    app.manage(Arc::clone(&updates));
+    if disabled.is_none() {
+        let app = app.clone();
+        std::thread::Builder::new()
+            .name("update checks".into())
+            .spawn(move || updates.poll(&app))?;
+    }
+    Ok(())
+}
+
+/// The dashboard's headless preparer answers on Battle Plan's pipe: it closes for any update,
+/// running `close`, and the installer starts it again.
+pub fn serve_preparer(close: impl Fn() + Send + Sync + 'static) -> std::io::Result<()> {
+    struct Preparer<F>(F);
+    impl<F: Fn() + Send + Sync + 'static> control::Answer for Preparer<F> {
+        fn close_for_update(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn closed_for_update(&self) {
+            (self.0)();
+        }
+        fn install_blocked(&self) -> Option<String> {
+            None
+        }
+        fn preparer(&self) -> bool {
+            true
+        }
+    }
+    control::serve(Role::Dashboard, Arc::new(Preparer(close)))
+}
+
+struct Answering(Arc<dyn Host>);
+
+impl control::Answer for Answering {
+    fn close_for_update(&self) -> Result<(), String> {
+        self.0.close_for_update()
+    }
+
+    fn closed_for_update(&self) {
+        self.0.closed_for_update()
+    }
+
+    fn install_blocked(&self) -> Option<String> {
+        self.0.install_blocked()
+    }
+}
+
+impl Updates {
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn emit(&self, app: &AppHandle, state: UpdateState) {
+        if let Err(error) = app.emit(STATE_EVENT, state) {
+            eprintln!("The update state could not reach the window: {error}");
+        }
+    }
+
+    /// Change the state under the lock, then show it.
+    fn change<T>(&self, app: &AppHandle, change: impl FnOnce(&mut Inner) -> T) -> T {
+        let (result, state) = {
+            let mut inner = self.lock();
+            let result = change(&mut inner);
+            (result, inner.state.clone())
+        };
+        self.emit(app, state);
+        result
+    }
+
+    /// Start an action once any running check has finished; why it cannot start, otherwise.
+    /// It blocks, so it runs only on threads made for blocking.
+    fn start<T>(
+        &self,
+        app: &AppHandle,
+        checking: bool,
+        start: impl FnOnce(&mut Inner) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let (found, state) = {
+            let mut inner = self.lock();
+            while inner.checking {
+                inner = self
+                    .wake
+                    .wait(inner)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            Self::available(&inner)?;
+            // A refusal may have changed the state too.
+            let found = start(&mut inner);
+            if found.is_ok() {
+                inner.busy = true;
+                inner.checking = checking;
+            }
+            (found, inner.state.clone())
+        };
+        self.emit(app, state);
+        found
+    }
+
+    /// Why no action can start now.
+    fn available(inner: &Inner) -> Result<(), String> {
+        if !inner.state.enabled {
+            return Err(inner.state.message.clone().unwrap_or_default());
+        }
+        if inner.busy {
+            return Err(match inner.state.status {
+                Status::Downloading => "An update is downloading.".into(),
+                _ => "The update is being installed.".into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn finish(&self, app: &AppHandle, change: impl FnOnce(&mut Inner)) -> UpdateState {
+        let state = self.change(app, |inner| {
+            inner.busy = false;
+            inner.checking = false;
+            change(inner);
+            inner.state.clone()
+        });
+        self.wake.notify_all();
+        state
+    }
+
+    pub fn state(&self) -> UpdateState {
+        self.lock().state.clone()
+    }
+
+    /// Check soon after start, then every few minutes; while an update waits, keep asking whether
+    /// the apps may be replaced.
+    fn poll(self: Arc<Self>, app: &AppHandle) {
+        let mut next_check = Instant::now() + FIRST_CHECK;
+        loop {
+            let now = Instant::now();
+            let asked = self
+                .check_now
+                .swap(false, std::sync::atomic::Ordering::AcqRel);
+            if now >= next_check || asked {
+                next_check = now + CHECK_EVERY;
+                // Refused only while another action runs; a failure is in the state.
+                let _ = tauri::async_runtime::block_on(self.check(app));
+            }
+            let waiting = self.lock().package.is_some();
+            if waiting {
+                self.refresh_blocked(app);
+            }
+            let until = next_check.saturating_duration_since(Instant::now());
+            let inner = self.lock();
+            if self.check_now.load(std::sync::atomic::Ordering::Acquire) {
+                continue;
+            }
+            let _ = self
+                .wake
+                .wait_timeout(
+                    inner,
+                    if waiting {
+                        until.min(BLOCKED_EVERY)
+                    } else {
+                        until
+                    },
+                )
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn refresh_blocked(&self, app: &AppHandle) {
+        let blocked = self.blocked();
+        let changed = {
+            let mut inner = self.lock();
+            let changed = inner.state.install_blocked != blocked;
+            inner.state.install_blocked = blocked;
+            changed.then(|| inner.state.clone())
+        };
+        if let Some(state) = changed {
+            self.emit(app, state);
+        }
+    }
+
+    pub async fn check(&self, app: &AppHandle) -> Result<UpdateState, String> {
+        // The other app may have changed the channel since.
+        let saved = channel::load();
+        let channel = self.start(app, true, |inner| {
+            let channel = match &saved {
+                Ok(saved) => saved.unwrap_or(inner.state.build.channel()),
+                Err(_) => inner.state.channel,
+            };
+            if channel != inner.state.channel {
+                inner.state.channel = channel;
+                Self::forget_offer(inner);
+            }
+            // An offered update, and why its last action failed, stay shown while the feed is
+            // read again.
+            if inner.update.is_none() {
+                inner.state.status = Status::Checking;
+                inner.state.error_context = None;
+                inner.state.message = None;
+            }
+            Ok(channel)
+        })?;
+        let result = match (saved, feed(channel), &self.client) {
+            (Err(error), _, _) | (_, Err(error), _) => Err(error),
+            (_, _, None) => Err("The update client did not start.".to_owned()),
+            (Ok(_), Ok(url), Some(client)) => feed::newer(client, &url, &self.current)
+                .await
+                .map_err(|error| {
+                    format!(
+                        "The {} update feed could not be read: {error}.",
+                        channel.name()
+                    )
+                }),
+        };
+        let state = self.finish(app, |inner| {
+            inner.state.checked_at = now_ms();
+            match result {
+                Ok(Some(update)) => {
+                    let kept = inner.package.is_some()
+                        && inner.state.downloaded_version.as_deref()
+                            == Some(update.version.as_str());
+                    if kept {
+                        inner.state.status = Status::Downloaded;
+                    } else {
+                        inner.package = None;
+                        inner.state.downloaded_version = None;
+                        inner.state.install_blocked = None;
+                        inner.state.status = Status::Available;
+                    }
+                    inner.state.available_version = Some(update.version.clone());
+                    inner.state.released_at = update.released_at.clone();
+                    inner.state.notes = notes(update.notes.as_deref());
+                    inner.state.error_context = None;
+                    inner.state.message = None;
+                    inner.update = Some(update);
+                }
+                Ok(None) => {
+                    Self::forget_offer(inner);
+                    inner.state.status = Status::UpToDate;
+                    inner.state.error_context = None;
+                    inner.state.message = None;
+                }
+                Err(error) => {
+                    // An update found earlier is still offered; the failed check is said beside it.
+                    if inner.update.is_none() {
+                        inner.state.status = Status::Error;
+                    }
+                    inner.state.error_context = Some(Action::Check);
+                    inner.state.message = Some(error);
+                }
+            }
+        });
+        match state.error_context {
+            Some(Action::Check) => Err(state.message.clone().unwrap_or_default()),
+            _ => Ok(state),
+        }
+    }
+
+    /// Why the apps may not be replaced now: this app's pipe failed, or its host says why.
+    fn blocked(&self) -> Option<String> {
+        self.control_error
+            .clone()
+            .or_else(|| self.host.install_blocked())
+    }
+
+    /// The channel saved for both apps, which the other app may have changed since this one last
+    /// read it: an offer from the channel left behind is dropped and the new one checked now.
+    /// Called under the action lock, once no check runs, so no offer can arrive after it.
+    fn reconcile_channel(&self, inner: &mut Inner) -> Result<(), String> {
+        let channel = channel::load()?.unwrap_or(inner.state.build.channel());
+        if channel == inner.state.channel {
+            return Ok(());
+        }
+        inner.state.channel = channel;
+        Self::forget_offer(inner);
+        inner.state.status = Status::Idle;
+        inner.state.error_context = None;
+        inner.state.message = None;
+        // Under the lock, so the poller sees it before it waits.
+        self.check_now
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.wake.notify_all();
+        Err(format!(
+            "The update channel was changed to {} in the other app, so this update was dropped. \
+             The {} feed is being checked now.",
+            channel.name(),
+            channel.name()
+        ))
+    }
+
+    fn forget_offer(inner: &mut Inner) {
+        inner.update = None;
+        inner.package = None;
+        inner.state.available_version = None;
+        inner.state.downloaded_version = None;
+        inner.state.released_at = None;
+        inner.state.notes.clear();
+        inner.state.download_percent = None;
+        inner.state.install_blocked = None;
+    }
+
+    pub async fn download(self: &Arc<Self>, app: &AppHandle) -> Result<UpdateState, String> {
+        let update = self.start(app, false, |inner| {
+            self.reconcile_channel(inner)?;
+            let update = inner
+                .update
+                .clone()
+                .filter(|_| inner.package.is_none())
+                .ok_or("No update is waiting to be downloaded.")?;
+            inner.state.status = Status::Downloading;
+            inner.state.download_percent = None;
+            inner.state.error_context = None;
+            inner.state.message = None;
+            Ok(update)
+        })?;
+        let progress = {
+            let updates = Arc::clone(self);
+            let app = app.clone();
+            move |received: u64, total: Option<u64>| {
+                let Some(total) = total.filter(|&total| total > 0) else {
+                    return;
+                };
+                let percent = (received as f64 * 100.0 / total as f64).min(100.0);
+                let shown = updates.lock().state.download_percent;
+                // A whole percent at a time is enough for the ring.
+                if shown.is_none_or(|shown| percent.floor() > shown.floor()) {
+                    updates.change(&app, |inner| inner.state.download_percent = Some(percent));
+                }
+            }
+        };
+        let result = match &self.client {
+            Some(client) => feed::download(client, &update, progress).await,
+            None => Err("the update client did not start".to_owned()),
+        };
+        let blocked = result.as_ref().ok().and_then(|_| self.blocked());
+        let state = self.finish(app, |inner| {
+            inner.state.download_percent = None;
+            match result {
+                Ok(package) => {
+                    inner.package = Some(Arc::new(package));
+                    inner.state.status = Status::Downloaded;
+                    inner.state.downloaded_version = Some(update.version.clone());
+                    inner.state.install_blocked = blocked;
+                }
+                Err(error) => {
+                    inner.state.status = Status::Error;
+                    inner.state.error_context = Some(Action::Download);
+                    inner.state.message =
+                        Some(format!("Update {} failed: {error}.", update.version));
+                }
+            }
+        });
+        match state.error_context {
+            Some(Action::Download) => Err(state.message.clone().unwrap_or_default()),
+            _ => Ok(state),
+        }
+    }
+
+    /// Start the installer once neither app is busy; this app then closes.
+    pub fn install(&self, app: &AppHandle) -> Result<(), String> {
+        let (package, version) = self.start(app, false, |inner| {
+            self.reconcile_channel(inner)?;
+            let found = inner
+                .package
+                .clone()
+                .zip(inner.state.downloaded_version.clone())
+                .ok_or("No update has been downloaded.")?;
+            inner.state.error_context = None;
+            inner.state.message = None;
+            Ok(found)
+        })?;
+        if let Some(reason) = self.blocked() {
+            self.finish(app, |inner| {
+                inner.state.install_blocked = Some(reason.clone())
+            });
+            return Err(reason);
+        }
+        let arguments = self.role.installer_arguments();
+        let launch: Launch = Box::new(move || install::launch(&version, &package, arguments));
+        let result = self.host.install(launch);
+        // Once the installer starts this app is closing, so it stays busy.
+        if let Err(error) = &result {
+            self.finish(app, |inner| {
+                inner.state.status = Status::Error;
+                inner.state.error_context = Some(Action::Install);
+                inner.state.message = Some(error.clone());
+            });
+        }
+        result
+    }
+
+    pub fn set_channel(&self, app: &AppHandle, channel: Channel) -> Result<UpdateState, String> {
+        self.change(app, |inner| {
+            if inner.busy {
+                return Err("Wait for the update to finish before changing the channel.".into());
+            }
+            Self::available(inner)?;
+            channel::save(channel)?;
+            if inner.state.channel != channel {
+                inner.state.channel = channel;
+                Self::forget_offer(inner);
+                inner.state.status = Status::Idle;
+                inner.state.error_context = None;
+                inner.state.message = None;
+            }
+            Ok(inner.state.clone())
+        })
+    }
+}

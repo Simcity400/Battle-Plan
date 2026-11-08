@@ -15,24 +15,129 @@ test = false
 doctest = false
 
 [dependencies]
+adler2 = { version = "2.0.1", default-features = false, features = [] }
+aho-corasick = { version = "1.1.5", default-features = false, features = ["perf-literal", "std"] }
+alloc-no-stdlib = { version = "2.0.4", default-features = false, features = [] }
+alloc-stdlib = { version = "0.2.4", default-features = false, features = [] }
+anyhow = { version = "1.0.104", default-features = false, features = ["default", "std"] }
+base64 = { version = "0.23.1", default-features = false, features = ["alloc", "default", "simd-unsafe", "std"] }
 bitflags = { version = "2.13.1", default-features = false, features = ["serde", "serde_core"] }
+block-buffer = { version = "0.10.4", default-features = false, features = [] }
+brotli = { version = "8.0.4", default-features = false, features = ["alloc-stdlib", "std"] }
+brotli-decompressor = { version = "5.0.3", default-features = false, features = ["alloc-stdlib", "std"] }
+byteorder = { version = "1.5.0", default-features = false, features = ["default", "std"] }
+bytes = { version = "1.12.1", default-features = false, features = ["default", "std"] }
+cfb = { version = "0.7.3", default-features = false, features = [] }
 cfg-if = { version = "1.0.4", default-features = false, features = [] }
+cpufeatures = { version = "0.2.17", default-features = false, features = [] }
+crc32fast = { version = "1.5.1", default-features = false, features = ["default", "std"] }
 crossbeam-utils = { version = "0.8.23", default-features = false, features = ["default", "std"] }
+crypto-common = { version = "0.1.7", default-features = false, features = ["std"] }
+ctor = { version = "0.8.0", default-features = false, features = ["proc_macro", "std"] }
+deranged = { version = "0.5.8", default-features = false, features = ["default"] }
+digest = { version = "0.10.7", default-features = false, features = ["alloc", "block-buffer", "core-api", "default", "std"] }
+dirs = { version = "6.0.0", default-features = false, features = [] }
+dirs-sys = { version = "0.5.0", default-features = false, features = [] }
+dunce = { version = "1.0.5", default-features = false, features = [] }
 either = { version = "1.18.0", default-features = false, features = ["default", "std", "use_std"] }
+equivalent = { version = "1.0.2", default-features = false, features = [] }
+erased-serde = { version = "0.4.10", default-features = false, features = ["alloc"] }
+fdeflate = { version = "0.3.7", default-features = false, features = [] }
+flate2 = { version = "1.1.10", default-features = false, features = ["any_impl", "default", "miniz_oxide", "runtime_detection", "rust_backend"] }
+fnv = { version = "1.0.7", default-features = false, features = ["default", "std"] }
 foldhash = { version = "0.2.0", default-features = false, features = ["default", "std"] }
+form_urlencoded = { version = "1.2.2", default-features = false, features = ["alloc", "std"] }
+generic-array = { version = "0.14.7", default-features = false, features = ["more_lengths"] }
+glob = { version = "0.3.4", default-features = false, features = [] }
+hashbrown = { version = "0.17.1", default-features = false, features = ["default-hasher", "inline-more"] }
+heck = { version = "0.5.0", default-features = false, features = [] }
+http = { version = "1.5.0", default-features = false, features = ["default", "std"] }
+icu_collections = { version = "2.3.0", default-features = false, features = [] }
+icu_locale_core = { version = "2.3.0", default-features = false, features = ["zerovec"] }
+icu_normalizer = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+icu_normalizer_data = { version = "2.3.0", default-features = false, features = [] }
+icu_properties = { version = "2.3.0", default-features = false, features = ["compiled_data"] }
+icu_properties_data = { version = "2.3.0", default-features = false, features = [] }
+icu_provider = { version = "2.3.1", default-features = false, features = ["baked"] }
+idna = { version = "1.1.0", default-features = false, features = ["alloc", "compiled_data", "std"] }
+idna_adapter = { version = "1.2.2", default-features = false, features = ["compiled_data"] }
+indexmap = { version = "2.14.2", default-features = false, features = ["default", "std"] }
+infer = { version = "0.19.0", default-features = false, features = ["alloc", "cfb", "default", "std"] }
+json-patch = { version = "3.0.1", default-features = false, features = ["default", "diff"] }
+jsonptr = { version = "0.6.3", default-features = false, features = ["assign", "default", "delete", "json", "resolve", "serde", "std"] }
+libc = { version = "0.2.189", default-features = false, features = ["default", "std"] }
+litemap = { version = "0.8.3", default-features = false, features = [] }
+lock_api = { version = "0.4.14", default-features = false, features = ["arc_lock", "atomic_usize", "default"] }
 memchr = { version = "2.8.3", default-features = false, features = ["alloc", "default", "std"] }
+miniz_oxide-0-8 = { package = "miniz_oxide", version = "0.8.9", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
+miniz_oxide-0-9 = { package = "miniz_oxide", version = "0.9.1", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
+num-conv = { version = "0.2.2", default-features = false, features = [] }
 num-traits = { version = "0.2.19", default-features = false, features = ["default", "i128", "libm", "std"] }
+option-ext = { version = "0.2.0", default-features = false, features = [] }
+parking_lot = { version = "0.12.5", default-features = false, features = ["arc_lock", "default"] }
+percent-encoding = { version = "2.3.2", default-features = false, features = ["alloc", "default", "std"] }
+phf = { version = "0.13.1", default-features = false, features = ["default", "macros", "phf_macros", "std"] }
+plist = { version = "1.10.1", default-features = false, features = ["default", "serde"] }
+potential_utf = { version = "0.1.6", default-features = false, features = ["zerovec"] }
+powerfmt = { version = "0.2.0", default-features = false, features = [] }
+quick-xml = { version = "0.42.0", default-features = false, features = ["default"] }
+regex = { version = "1.13.1", default-features = false, features = ["default", "perf", "perf-backtrack", "perf-cache", "perf-dfa", "perf-inline", "perf-literal", "perf-onepass", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
+regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "dfa-onepass", "hybrid", "meta", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
+regex-syntax = { version = "0.8.11", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
+rustc-hash = { version = "2.1.3", default-features = false, features = ["default", "std"] }
+same-file = { version = "1.0.6", default-features = false, features = [] }
+serde = { version = "1.0.229", default-features = false, features = ["alloc", "default", "derive", "rc", "serde_derive", "std"] }
+serde-untagged = { version = "0.1.9", default-features = false, features = [] }
 serde_core = { version = "1.0.229", default-features = false, features = ["alloc", "rc", "result", "std"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc", "default", "float_roundtrip", "raw_value", "std"] }
+serde_spanned = { version = "1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
+serde_with = { version = "3.23.0", default-features = false, features = ["alloc", "default", "macros", "std"] }
+sha2 = { version = "0.10.9", default-features = false, features = ["default", "std"] }
+simd-adler32 = { version = "0.3.10", default-features = false, features = ["const-generics", "default", "std"] }
+siphasher = { version = "1.0.3", default-features = false, features = ["default", "std"] }
 smallvec = { version = "1.16.0", default-features = false, features = ["const_generics", "const_new", "union"] }
+thiserror-1 = { package = "thiserror", version = "1.0.69", default-features = false, features = [] }
+thiserror-2 = { package = "thiserror", version = "2.0.20", default-features = false, features = ["default", "std"] }
+time = { version = "0.3.55", default-features = false, features = ["alloc", "default", "formatting", "macros", "parsing", "std"] }
+time-core = { version = "0.1.9", default-features = false, features = [] }
+tinystr = { version = "0.8.4", default-features = false, features = ["zerovec"] }
+toml = { version = "1.1.6", default-features = false, features = ["default", "display", "parse", "serde", "std"] }
+toml_datetime = { version = "1.1.1", default-features = false, features = ["alloc", "serde", "std"] }
+toml_parser = { version = "1.1.3", default-features = false, features = ["alloc", "std"] }
+toml_writer = { version = "1.1.2", default-features = false, features = ["alloc", "std"] }
+typeid = { version = "1.0.3", default-features = false, features = [] }
+typenum = { version = "1.20.1", default-features = false, features = [] }
+unic-char-property = { version = "0.9.0", default-features = false, features = [] }
+unic-char-range = { version = "0.9.0", default-features = false, features = ["default"] }
+unic-common = { version = "0.9.0", default-features = false, features = ["default"] }
+unic-ucd-ident = { version = "0.9.0", default-features = false, features = ["default", "id", "xid"] }
+unic-ucd-version = { version = "0.9.0", default-features = false, features = [] }
 unicode-ident = { version = "1.0.24", default-features = false, features = [] }
-windows-sys = { version = "0.61.2", default-features = false, features = ["Win32", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_UI", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "default"] }
+url = { version = "2.5.8", default-features = false, features = ["default", "serde", "std"] }
+urlpattern = { version = "0.3.0", default-features = false, features = [] }
+utf8_iter = { version = "1.0.4", default-features = false, features = [] }
+uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+walkdir = { version = "2.5.0", default-features = false, features = [] }
+winapi-util = { version = "0.1.11", default-features = false, features = [] }
+windows-sys = { version = "0.61.2", default-features = false, features = ["Wdk", "Wdk_Foundation", "Wdk_Storage", "Wdk_Storage_FileSystem", "Wdk_System", "Wdk_System_IO", "Win32", "Win32_Foundation", "Win32_Globalization", "Win32_Graphics", "Win32_Graphics_Gdi", "Win32_Networking", "Win32_Networking_WinSock", "Win32_Security", "Win32_Security_Authentication", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Com", "Win32_System_Console", "Win32_System_Diagnostics", "Win32_System_Diagnostics_Debug", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Environment", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_JobObjects", "Win32_System_Kernel", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Performance", "Win32_System_Pipes", "Win32_System_Registry", "Win32_System_RemoteDesktop", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI", "Win32_UI_Accessibility", "Win32_UI_Controls", "Win32_UI_HiDpi", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_WindowsAndMessaging", "default"] }
+windows-targets = { version = "0.52.6", default-features = false, features = [] }
+windows_x86_64_msvc = { version = "0.52.6", default-features = false, features = [] }
+winnow = { version = "1.0.4", default-features = false, features = [] }
+writeable = { version = "0.6.4", default-features = false, features = [] }
+yoke = { version = "0.8.3", default-features = false, features = ["derive", "zerofrom"] }
+zerofrom = { version = "0.1.8", default-features = false, features = ["derive"] }
+zerotrie = { version = "0.2.5", default-features = false, features = ["yoke", "zerofrom"] }
+zerovec = { version = "0.11.8", default-features = false, features = ["derive", "yoke"] }
 zstd-sys = { version = "2.1.0", default-features = false, features = ["experimental", "legacy", "std", "zdict_builder"] }
 
 [build-dependencies]
 cc = { version = "1.4.5", default-features = false, features = ["parallel"] }
+getrandom = { version = "0.4.3", default-features = false, features = ["std"] }
 proc-macro2 = { version = "1.0.107", default-features = false, features = ["default", "proc-macro", "span-locations"] }
 quote = { version = "1.0.47", default-features = false, features = ["default", "proc-macro"] }
 syn-2 = { package = "syn", version = "2.0.119", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro", "visit"] }
 syn-3 = { package = "syn", version = "3.0.5", default-features = false, features = ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit"] }
+tauri-build = { version = "2.6.3", default-features = false, features = ["config-json", "default"] }
+tauri-utils = { version = "2.9.3", default-features = false, features = ["brotli", "build-2", "cargo_metadata", "compression", "html-manipulation-2", "proc-macro2", "quote", "resources", "schema", "schemars", "swift-rs", "walkdir"] }
+uuid = { version = "1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
 windows-sys = { version = "0.61.2", default-features = false, features = ["Win32", "Win32_Foundation", "Win32_Globalization", "Win32_Storage", "Win32_Storage_FileSystem", "Win32_System", "Win32_System_Com", "Win32_System_Console", "Win32_System_SystemInformation", "Win32_UI", "Win32_UI_Shell", "default"] }

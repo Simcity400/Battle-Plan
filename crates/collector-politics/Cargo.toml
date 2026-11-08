@@ -53,7 +53,6 @@ collector-timing = { workspace = true, features = ["test-support"] }
 collector-certificates = { workspace = true, features = ["test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
 collector-politics = { workspace = true, features = ["default", "politics_capture", "test-support"] }
-engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-frame = { workspace = true, features = ["test-support"] }

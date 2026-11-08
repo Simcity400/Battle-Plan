@@ -1,0 +1,36 @@
+/* The update button both apps share: a round 32 px button whose face is the update's state. */
+.update-button { position: relative; display: inline-grid; place-items: center; flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  background: transparent; color: color-mix(in srgb, var(--muted) 70%, transparent); cursor: pointer; transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.update-button:hover:not([aria-disabled='true']) { background: var(--hover); color: var(--text); }
+.update-button.is-offered { background: var(--control-fill); color: var(--text); }
+.update-button[aria-disabled='true'] { cursor: not-allowed; }
+.update-button[aria-disabled='true']:not(.is-offered) { opacity: .6; }
+.update-icon { position: relative; display: grid; place-items: center; width: 16px; height: 16px; }
+.update-icon > svg { width: 16px; height: 16px; }
+.update-icon.is-checking > svg { animation: spin .9s linear infinite; }
+[data-motion='reduced'] .update-icon.is-checking > svg { animation-duration: 2.4s; }
+.update-icon.is-downloading { width: 32px; height: 32px; }
+.update-ring { position: absolute; inset: 0; width: 32px !important; height: 32px !important; transform: rotate(-90deg); pointer-events: none; }
+.update-ring circle { fill: none; stroke-width: 1.5; }
+.update-ring-track { stroke: color-mix(in srgb, currentColor 22%, transparent); }
+.update-ring-done { stroke: currentColor; stroke-linecap: round; transition: stroke-dashoffset 300ms var(--ease); }
+[data-motion='reduced'] .update-ring-done { transition: none; }
+.update-icon.is-downloading > svg:not(.update-ring) { width: 16px; height: 16px; }
+.update-badge { position: absolute; border-radius: 50%; }
+.update-badge.is-dot { top: -2px; right: -2px; width: 6px; height: 6px; background: currentColor; box-shadow: 0 0 0 2px var(--control-fill); }
+.update-badge.is-alert { top: -2px; right: -2px; width: 7px; height: 7px; background: var(--warning); box-shadow: 0 0 0 2px var(--surface); }
+.update-badge.is-ready { right: -4px; bottom: -4px; display: grid; place-items: center; width: 10px; height: 10px; background: var(--text); color: var(--surface); box-shadow: 0 0 0 2px var(--control-fill); }
+.update-badge.is-ready > svg { width: 8px; height: 8px; stroke-width: 3; }
+
+.update-popover { width: 300px; }
+.update-popover-title { display: block; margin: 2px 2px 6px; font-weight: 600; }
+.update-popover-text { margin: 0 2px 8px; color: var(--muted); font-size: 0.75rem; line-height: 1.45; }
+.update-notes { display: grid; gap: 3px; margin: 0 2px 10px; padding: 0 0 0 16px; color: var(--text); font-size: 0.75rem; line-height: 1.4; }
+.update-notes-more { color: var(--muted); list-style: none; margin-left: -16px; }
+.update-popover-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.update-grow { flex: 1; }
+
+/* Settings: restarting asks first, under the version row. */
+.update-confirm { align-items: flex-start; }
+.update-confirm .update-notes { margin: 6px 0 0; }
+.update-confirm-actions { display: flex; flex: none; align-items: center; gap: 6px; }

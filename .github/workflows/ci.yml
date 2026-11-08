@@ -1,0 +1,210 @@
+name: CI
+
+# What a pull request must pass: the UI typecheck, the repository's dependency checks and
+# `cargo check` of every crate and target. Product tests are not run here; they run daily on the
+# maintainer's machine. The label `release-preview` also builds, signs and verifies the installer
+# as release-build.yml does for a release, publishing nothing.
+#
+# Every job runs on the self-hosted runner on that machine (tools/release-runner.ps1): the free
+# minutes would not cover a check per push. Compiling waits for any game run and takes a slot of
+# the shared prep lock, at below-normal priority, in the runner's own build folder.
+#
+# Only pushes and pull requests from this repository's own branches, which only collaborators can
+# push, run there: a pull request from a fork would run its author's build scripts on that
+# machine. Its Check fails, saying a maintainer pushes the reviewed commit to a branch here.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Skips jobs a change cannot affect. Adding any other label runs nothing.
+  changes:
+    name: Changes
+    if: >-
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event.action != 'labeled' || github.event.label.name == 'release-preview')
+    runs-on: [self-hosted, windows, release]
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The filter reads a pull request's changed files from GitHub.
+      pull-requests: read
+    outputs:
+      ui: ${{ steps.filter.outputs.ui }}
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: filter
+        name: Detect affected jobs
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            ui:
+              - "ui/**"
+              - "package.json"
+              - "package-lock.json"
+              - "tools/test-ui.mjs"
+              - ".github/workflows/ci.yml"
+            rust:
+              - "crates/**"
+              - "vendor/**"
+              - "fuzz/**"
+              - "Cargo.toml"
+              - "Cargo.lock"
+              - "rust-toolchain.toml"
+              - ".cargo/**"
+              - "tools/check-build-dependencies.py"
+              - "tools/check-content-dependencies.py"
+              - "tools/check-feature-unification.py"
+              - "tools/with-machine-locks.sh"
+              - ".github/workflows/ci.yml"
+
+  ui:
+    name: UI typecheck
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
+    runs-on: [self-hosted, windows, release]
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run check:ui
+
+  rust:
+    name: Rust check
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: [self-hosted, windows, release]
+    timeout-minutes: 360
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check the runner
+        run: |
+          for name in CARGO_TARGET_DIR BATTLE_PLAN_PREP_LOCK BATTLE_PLAN_GAME_LOCK BATTLE_PLAN_TARGET_CAP_GB; do
+            [[ -n "${!name:-}" ]] || { echo "::error::The runner's .env must set $name (tools/release-runner.ps1 writes it)."; exit 1; }
+          done
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install the Rust toolchain
+        run: rustup toolchain install
+      - name: Build dependencies
+        run: python tools/check-build-dependencies.py
+      - name: Content dependencies
+        run: python tools/check-content-dependencies.py
+      - name: Feature unification
+        run: python tools/check-feature-unification.py
+      # Both apps embed the built frontend; a check needs only its folder.
+      - name: Check every crate and target
+        run: |
+          mkdir -p ui/dist
+          bash tools/with-machine-locks.sh ci-check cargo check --workspace --all-targets --locked
+      - name: Prune the build folder
+        if: always()
+        run: python tools/release.py prune --target "$CARGO_TARGET_DIR" --cap-gb "$BATTLE_PLAN_TARGET_CAP_GB"
+
+  preview-version:
+    name: Preview version
+    needs: changes
+    if: >-
+      github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+      && contains(github.event.pull_request.labels.*.name, 'release-preview')
+    runs-on: [self-hosted, windows, release]
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            Cargo.toml
+            tools/release.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - id: version
+        run: python tools/release.py version --channel preview --date "$(date -u +%Y%m%d)" --run "${{ github.run_number }}" --github-output
+
+  release-preview:
+    name: Release preview
+    needs: preview-version
+    uses: ./.github/workflows/release-build.yml
+    with:
+      channel: preview
+      version: ${{ needs.preview-version.outputs.version }}
+      ref: ${{ github.event.pull_request.head.sha }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+      LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
+
+  # One required check: fails when any job failed or was cancelled. A job may be skipped only
+  # because `changes` found nothing for it, or, for the preview, because the label is absent.
+  check:
+    name: Check
+    if: always() && (github.event.action != 'labeled' || github.event.label.name == 'release-preview')
+    needs: [changes, ui, rust, preview-version, release-preview]
+    # A fork's pull request reaches only this, on GitHub's runner, and is refused.
+    runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows","release"]') || 'ubuntu-24.04' }}
+    timeout-minutes: 5
+    steps:
+      - name: Refuse a fork's pull request
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+        run: |
+          echo "::error::Checks run on the maintainer's machine only for this repository's branches. A maintainer pushes the reviewed commit to a branch here to check it."
+          exit 1
+      - name: Require every job to pass
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+          LABELLED: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'release-preview') }}
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          results = json.loads(os.environ["RESULTS"])
+          changed = results["changes"].get("outputs", {})
+          labelled = os.environ["LABELLED"] == "true"
+          def allowed(name, result):
+              if result == "success":
+                  return True
+              if result != "skipped":
+                  return False
+              if name in ("ui", "rust"):
+                  return changed.get(name) == "false"
+              return name in ("preview-version", "release-preview") and not labelled
+          failed = [f"{name}: {job['result']}" for name, job in results.items() if not allowed(name, job["result"])]
+          for name, job in results.items():
+              print(f"{name}: {job['result']}")
+          sys.exit(f"Not passed: {', '.join(failed)}" if failed else 0)
+          EOF

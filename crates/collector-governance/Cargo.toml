@@ -61,7 +61,6 @@ collector-timing = { workspace = true, features = ["test-support"] }
 [target.'cfg(all())'.dev-dependencies]
 collector-governance = { workspace = true, features = ["advisor_changes", "character_changes", "default", "party_changes", "party_leader_changes", "test-support"] }
 collector-lifetime = { workspace = true, features = ["test-support"] }
-engine-allocation = { workspace = true, features = ["test-support", "zstd"] }
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay-data = { workspace = true, features = ["test-support"] }
 replay-derive = { workspace = true, features = ["test-support"] }

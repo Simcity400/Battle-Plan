@@ -26,6 +26,30 @@ const TICK: Duration = Duration::from_secs(1);
 /// How long recordings waiting for disk space wait before free space is measured again.
 const SPACE_RETRY: Duration = Duration::from_secs(60);
 
+/// An update asked this preparer to close: its job stops at the next block boundary, as when the game
+/// starts, and the queue waits for the preparer the installer starts again.
+static CLOSING: AtomicBool = AtomicBool::new(false);
+
+/// Close for an update; the queue is kept.
+pub fn close() {
+    CLOSING.store(true, Ordering::Release);
+}
+
+fn closing() -> bool {
+    CLOSING.load(Ordering::Acquire)
+}
+
+/// Wait `duration`, a tick at a time; whether the preparer is closing.
+fn rest(duration: Duration) -> bool {
+    let mut left = duration;
+    while !closing() && !left.is_zero() {
+        let step = left.min(TICK);
+        std::thread::sleep(step);
+        left -= step;
+    }
+    closing()
+}
+
 fn invalid(what: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, what.into())
 }
@@ -50,6 +74,8 @@ enum Turn {
     Off,
     /// A later save superseded the revision it prepared: it is taken up again.
     Again,
+    /// Closing for an update.
+    Closing,
 }
 
 /// Works the queue with `args`, those after [`ROLE`], asked for too.
@@ -79,7 +105,7 @@ pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> io::Result<()> {
         worked?;
         written?;
         // An ask made as the queue emptied found the runner held.
-        if background::requests()?.is_empty() {
+        if closing() || background::requests()?.is_empty() {
             return Ok(());
         }
     }
@@ -89,6 +115,9 @@ pub fn run(args: impl Iterator<Item = std::ffi::OsString>) -> io::Result<()> {
 fn work(status: &mut Status) -> io::Result<()> {
     let mut kept: BTreeSet<PathBuf> = BTreeSet::new();
     loop {
+        if closing() {
+            return Ok(());
+        }
         let waiting = background::requests()?;
         withdrawn(status, &waiting)?;
         if waiting.is_empty() {
@@ -98,7 +127,9 @@ fn work(status: &mut Status) -> io::Result<()> {
             return turned_off(status);
         }
         let Some(mut request) = next(waiting, &kept) else {
-            std::thread::sleep(SPACE_RETRY);
+            if rest(SPACE_RETRY) {
+                return Ok(());
+            }
             kept.clear();
             continue;
         };
@@ -110,7 +141,9 @@ fn work(status: &mut Status) -> io::Result<()> {
                     return turned_off(status);
                 }
                 withdrawn(status, &background::requests()?)?;
-                std::thread::sleep(Duration::from_secs(5));
+                if rest(Duration::from_secs(5)) {
+                    return Ok(());
+                }
             }
             continue;
         }
@@ -140,8 +173,10 @@ fn work(status: &mut Status) -> io::Result<()> {
         // A job stops at its next block boundary, keeping what it published.
         service.shutdown();
         drop(service);
-        if let Turn::Off = ended {
-            return turned_off(status);
+        match ended {
+            Turn::Off => return turned_off(status),
+            Turn::Closing => return Ok(()),
+            _ => {}
         }
     }
 }
@@ -203,7 +238,8 @@ fn game_running() -> io::Result<bool> {
         .map_err(|error| io::Error::other(format!("the game's processes could not be listed: {error}")))
 }
 
-/// Shuts the service down the moment the game starts, whatever it is doing then.
+/// Shuts the service down the moment the game starts, or an update asks the preparer to close,
+/// whatever it is doing then.
 struct GameWatch {
     game: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
@@ -220,15 +256,17 @@ impl GameWatch {
             let (game, error, stop) = (Arc::clone(&game), Arc::clone(&error), Arc::clone(&stop));
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Acquire) {
-                    match game_running() {
-                        Ok(false) => {
-                            std::thread::sleep(TICK);
-                            continue;
-                        }
-                        Ok(true) => game.store(true, Ordering::Release),
-                        Err(failure) => {
-                            *error.lock().unwrap_or_else(|error| error.into_inner()) =
-                                Some(failure.to_string())
+                    if !closing() {
+                        match game_running() {
+                            Ok(false) => {
+                                std::thread::sleep(TICK);
+                                continue;
+                            }
+                            Ok(true) => game.store(true, Ordering::Release),
+                            Err(failure) => {
+                                *error.lock().unwrap_or_else(|error| error.into_inner()) =
+                                    Some(failure.to_string())
+                            }
                         }
                     }
                     service.shutdown();
@@ -284,6 +322,7 @@ fn prepare(
     // Held so its job's outcome stays readable once the service lets the job go.
     let source = match service.open_map(path, None) {
         Ok(source) => source,
+        Err(_) if closing() => return Ok(Turn::Closing),
         Err(_) if watch.game()? => {
             show(Activity::WaitingForGame, None, None)?;
             return Ok(Turn::Game);
@@ -312,6 +351,9 @@ fn prepare(
         || crate::protocol::replay_revision(path).is_ok_and(|now| now != source.key().revision);
     let mut stalled = 0;
     loop {
+        if closing() {
+            return Ok(Turn::Closing);
+        }
         if watch.game()? {
             show(Activity::WaitingForGame, None, None)?;
             return Ok(Turn::Game);
@@ -381,6 +423,7 @@ fn prepare(
         // the disk margin.
         match service.prepare_library(std::slice::from_ref(path)) {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(_) if closing() => return Ok(Turn::Closing),
             Err(_) if watch.game()? => {
                 show(Activity::WaitingForGame, None, None)?;
                 return Ok(Turn::Game);

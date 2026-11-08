@@ -97,8 +97,6 @@ pub struct RecorderSettings {
     /// The Paradox user folder; absent finds it automatically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_folder: Option<PathBuf>,
-    #[serde(default)]
-    pub start_with_windows: bool,
     #[serde(default = "enabled")]
     pub start_with_replay: bool,
     /// A campaign recorded in another mode continues in a new file.
@@ -147,7 +145,6 @@ impl Default for RecorderSettings {
             save_folder: None,
             earlier_save_folders: Vec::new(),
             user_folder: None,
-            start_with_windows: false,
             start_with_replay: true,
             capture_mode: CaptureMode::Full,
             campaigns: BTreeMap::new(),
@@ -371,7 +368,7 @@ mod tests {
         let path = root.join("settings.json");
         let settings = RecorderSettings::load_from(&path).unwrap();
         assert!(settings.record_every_campaign && settings.auto_save);
-        assert!(settings.start_with_replay && !settings.start_with_windows);
+        assert!(settings.start_with_replay);
         assert_eq!(settings.capture_mode, CaptureMode::Full);
         assert!(settings.save_folder.is_none() && settings.user_folder.is_none());
         assert!(settings.campaigns.is_empty() && settings.chosen_names.is_empty());

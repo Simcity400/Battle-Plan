@@ -14,6 +14,11 @@ import { captureModeFixed, dateText, discardConsequence, discardDetail, followSt
   settingsQueue, sizeText, spanText, spoolTotalText, stopPromptVisible, stopQuestion, untilNextMinute, waitingDiscardQuestion, whatToRecord } from './status.ts';
 import type { CaptureMode, FlagImage, Head, NextLoad, RecorderSettings, Recordings, SavedRecording, Snapshot, UnsavedRecording } from './status';
 import type { Compression } from './compression';
+import { setUpdateChannel, updatesAvailable } from '../update/api';
+import type { UpdateChannel, UpdateState } from '../update/api';
+import { CHANNEL_LABELS, channelDescription, updateAction, updateButtonLabel, updateDescription, updateDisabled, updateTooltip } from '../update/logic';
+import { UpdateIcon, useUpdateActions } from '../update/UpdateControl';
+import { useUpdateState } from '../update/useUpdateState';
 import './recorder.css';
 
 export type View = 'main' | 'settings' | 'record' | 'recordings';
@@ -65,6 +70,20 @@ export interface PanelViewProps {
   discarding?: boolean;
   /** The recording waiting to be saved whose Discard asks to confirm, by `waitingKey`. */
   confirmingWaiting?: string | null;
+  /** The update both apps share; absent outside the desktop app. */
+  update?: PanelUpdate;
+}
+
+/** The panel's update button, its question and its settings. */
+export interface PanelUpdate {
+  state: UpdateState | null;
+  /** Restarting asks first; a finished download says so. */
+  ask: 'confirm' | 'downloaded' | null;
+  pending: boolean;
+  press(): void;
+  restart(): void;
+  dismiss(): void;
+  channel(channel: UpdateChannel): void;
 }
 
 /** A recording waiting to be saved: its session and campaign. */
@@ -117,7 +136,7 @@ const waitingCount = (recordings: Recordings | null | undefined) => recordings?.
 
 /** The panel for one snapshot: every state of the approved design. */
 export function PanelView({ snapshot, settings, view, asking, error, now, actions, root, compact = false, recordings = null, quitting = false,
-  discarding = false, confirmingWaiting = null }: PanelViewProps) {
+  discarding = false, confirmingWaiting = null, update }: PanelViewProps) {
   const problem = error ?? snapshot.problem?.text ?? null;
   const notice: ReactNode = problem && <div className="notice warning" role="status">
     <Icon name="alert" /><span>{problem}</span>
@@ -235,11 +254,12 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
           <Select label="Paradox user folder" value={settings.userFolder ? 'custom' : 'automatic'} options={userOptions}
             onChange={value => { if (value !== 'custom') actions.userFolder(value === 'choose'); }} /></div>
       </section>
-      <section className="recorder-section is-last">
+      <section className={`recorder-section${update ? '' : ' is-last'}`}>
         <div className="recorder-label">Start automatically</div>
         <Switch label="With Windows" checked={settings.startWithWindows} onChange={startWithWindows => actions.settings({ startWithWindows })} />
         <Switch label="With Battle Plan" checked={settings.startWithReplay} onChange={startWithReplay => actions.settings({ startWithReplay })} />
       </section>
+      {update && <UpdateSection update={update} />}
       {footer()}
     </div>;
   }
@@ -281,13 +301,47 @@ export function PanelView({ snapshot, settings, view, asking, error, now, action
             onChange={next => actions.campaign(campaign, { next })} /></div>
       </section>}
     </>}
+    {update?.ask && update.state && <UpdateAsk update={update} />}
     {footer(<>
+      {update && <button type="button" className="update-button" aria-label={updateTooltip(update.state)} data-tooltip={updateTooltip(update.state)}
+        aria-disabled={updateDisabled(update.state) || update.pending || undefined} onClick={update.press}><UpdateIcon state={update.state} /></button>}
       <button type="button" className="button small quiet recorder-recordings" aria-label={waiting ? `Recordings, ${waiting} waiting to be saved` : undefined}
         onClick={() => actions.view('recordings')}>Recordings{waiting > 0 && <span className="recorder-badge" aria-hidden="true">{waiting}</span>}</button>
       <button type="button" className="icon-button" aria-label="Settings" data-tooltip="Settings" disabled={!settings} onClick={() => actions.view('settings')}>
         <Icon name="settings" /></button>
     </>)}
   </div>;
+}
+
+/** Restart to update, asked above the footer; while the recorder records it waits, and says why. */
+function UpdateAsk({ update }: { update: PanelUpdate }) {
+  const state = update.state!;
+  const version = state.downloadedVersion ?? state.availableVersion ?? '';
+  const blocked = state.installBlocked;
+  return <div className="recorder-ask recorder-update-ask" role="alertdialog" aria-label="Update">
+    <span data-tooltip={blocked ?? 'Battle Plan and Battle Plan Recorder close and reopen on the new version.'}>
+      {update.ask === 'downloaded' ? <><b>Update {version}</b> downloaded</> : <><b>Restart</b> to update to {version}?</>}</span>
+    <button key="later" type="button" className="button small quiet" onClick={update.dismiss}>{update.ask === 'downloaded' ? 'Later' : 'Cancel'}</button>
+    <button key="restart" type="button" className="button small primary" autoFocus disabled={blocked != null || update.pending}
+      data-tooltip={blocked ?? undefined} onClick={update.restart}>Restart</button>
+    {blocked && <p className="recorder-update-blocked" role="status">{blocked}</p>}
+  </div>;
+}
+
+/** The panel's Updates settings: the version, its action and the channel both apps follow. */
+function UpdateSection({ update }: { update: PanelUpdate }) {
+  const { state } = update;
+  return <section className="recorder-section is-last">
+    <div className="recorder-label">Updates</div>
+    <div className="recorder-row"><span>Battle Plan Recorder {state?.currentVersion ?? ''}</span>
+      <button type="button" className={`button small${updateAction(state) === 'install' ? ' primary' : ''}`} disabled={updateDisabled(state) || update.pending}
+        data-tooltip={updateTooltip(state)} onClick={update.press}>{updateButtonLabel(state)}</button></div>
+    <div className="recorder-row"><span>Channel</span>
+      {state?.enabled ? <Segmented<UpdateChannel> label="Update channel" value={state.channel}
+        options={(['stable', 'nightly'] as const).map(value => ({ value, label: CHANNEL_LABELS[value] }))} onChange={update.channel} />
+        : <span className="recorder-value">{state ? CHANNEL_LABELS[state.channel] : ''}</span>}</div>
+    <p className="recorder-note">{updateDescription(state)} {channelDescription(state)}</p>
+  </section>;
 }
 
 function UnsavedRow({ row, actions, confirming }: { row: UnsavedRecording; actions: PanelActions; confirming: boolean }) {
@@ -340,6 +394,12 @@ export default function RecorderPanel() {
   const visit = useRef({ number: 0, open: false });
   const opened = useRef<ReturnType<typeof api.panelOpened> | null>(null);
   const [queue] = useState(() => settingsQueue<RecorderSettings>(api.recorderSettings, setSettings));
+  const { state: updateState } = useUpdateState();
+  const updates = useUpdateActions();
+  // The question is about one download: it no longer shows once that download is gone.
+  const [updateAsk, setUpdateAsk] = useState<{ kind: 'confirm' | 'downloaded'; version: string } | null>(null);
+  // An update action that failed says why where the panel's other failures do.
+  useEffect(() => { if (updates.failure) setError(`${updates.failure.title}: ${updates.failure.detail}`); }, [updates.failure]);
 
   useEffect(() => {
     let active = true;
@@ -478,6 +538,23 @@ export default function RecorderPanel() {
     reveal: path => run(() => api.revealRecording(path)),
     dismiss: () => setError(null),
   };
+  const update: PanelUpdate = {
+    state: updateState, pending: updates.pending,
+    ask: updateAsk && updateAsk.version === updateState?.downloadedVersion ? updateAsk.kind : null,
+    press: () => {
+      const action = updateAction(updateState);
+      setError(null);
+      if (action === 'check') void updates.check();
+      const offered = updateState?.availableVersion ?? null;
+      const downloaded = updateState?.downloadedVersion ?? null;
+      if (action === 'download' && offered) void updates.download().then(done => { if (done) { setView('main'); setUpdateAsk({ kind: 'downloaded', version: offered }); } });
+      if (action === 'install' && downloaded) { setView('main'); setUpdateAsk({ kind: 'confirm', version: downloaded }); }
+    },
+    restart: () => { setUpdateAsk(null); setError(null); void updates.install(); },
+    dismiss: () => setUpdateAsk(null),
+    channel: channel => { setError(null); void updates.run('Could not change the update channel', () => setUpdateChannel(channel)); },
+  };
   return <PanelView snapshot={snapshot} settings={settings} view={view} asking={asking} error={error} now={Date.now()} actions={actions} root={root}
-    compact={compact} recordings={recordings} quitting={quitting} discarding={discarding} confirmingWaiting={confirmingWaiting} />;
+    compact={compact} recordings={recordings} quitting={quitting} discarding={discarding} confirmingWaiting={confirmingWaiting}
+    update={updatesAvailable ? update : undefined} />;
 }

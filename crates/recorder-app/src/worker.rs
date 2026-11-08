@@ -19,7 +19,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Condvar, Mutex, MutexGuard},
+    sync::{Arc, Condvar, Mutex, MutexGuard, mpsc},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -83,6 +83,57 @@ struct Inner {
     flag_folders: Option<(PathBuf, PathBuf)>,
     /// The last flag shown for each campaign, shown again while not recording it.
     last_flags: BTreeMap<String, FlagImage>,
+    /// An update's request to close, carried out at the top of the record loop.
+    leaving: Option<Leaving>,
+    /// The record loop agreed to close for an update.
+    closing: bool,
+    /// Waiting recordings the panel is saving or discarding.
+    acting: usize,
+}
+
+/// What an update asks of the record loop.
+pub enum Leave {
+    /// The installer asks the recorder to close.
+    Exit,
+    /// This recorder starts the installer, then closes.
+    Install(app_update::Launch),
+}
+
+struct Leaving {
+    leave: Leave,
+    reply: mpsc::SyncSender<Result<(), String>>,
+}
+
+/// How long an update waits for the record loop to reach a point where it may close.
+const LEAVE_WAIT: Duration = Duration::from_secs(30);
+const SAVING_FOR_UPDATE: &str =
+    "Battle Plan Recorder is saving a recording. Restart to update once it has saved.";
+const RECORDING_FOR_UPDATE: &str =
+    "Battle Plan Recorder is recording. Restart to update once the recording stops.";
+const ATTACHED_FOR_UPDATE: &str =
+    "Battle Plan Recorder is attached to HOI4. Restart to update once the game has closed.";
+const CLOSING_FOR_UPDATE: &str = "Battle Plan Recorder is closing for an update.";
+
+/// Why the recorder may not close for an update now.
+fn update_busy(inner: &Inner) -> Option<&'static str> {
+    if inner.unloading || inner.acting > 0 || inner.snapshot.phase == Phase::Saving {
+        Some(SAVING_FOR_UPDATE)
+    } else if inner.capturing && inner.snapshot.phase == Phase::Recording {
+        Some(RECORDING_FOR_UPDATE)
+    } else if inner.capturing {
+        Some(ATTACHED_FOR_UPDATE)
+    } else {
+        None
+    }
+}
+
+/// Held while the panel saves or discards a waiting recording, which an update waits out.
+pub struct Acting(Arc<Recorder>);
+
+impl Drop for Acting {
+    fn drop(&mut self) {
+        self.0.lock().acting -= 1;
+    }
 }
 
 #[derive(Default)]
@@ -115,7 +166,10 @@ fn request_flag(app: &AppHandle, (game_dir, user_dir): (PathBuf, PathBuf), ask: 
                 .flag_content(&ask.session, game_dir, user_dir)
                 .and_then(|content| content.find(&ask.keys))
                 .unwrap_or_else(|error| {
-                    eprintln!("The flag of {} could not be resolved: {error}", ask.campaign);
+                    eprintln!(
+                        "The flag of {} could not be resolved: {error}",
+                        ask.campaign
+                    );
                     None
                 });
             recorder.update(&app, |inner| flag_found(inner, &ask, flag));
@@ -588,6 +642,85 @@ impl Recorder {
         self.wake.notify_all();
     }
 
+    /// Why the apps may not be replaced now, if they may not.
+    pub fn update_blocked(&self) -> Option<&'static str> {
+        let inner = self.lock();
+        update_busy(&inner).or(inner.closing.then_some(CLOSING_FOR_UPDATE))
+    }
+
+    /// Close for an update, or start the installer and close, once the record loop reaches its
+    /// top: never while it is attached to the game or saving.
+    pub fn leave(&self, leave: Leave) -> Result<(), String> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        {
+            let mut inner = self.lock();
+            // The installer asks each running copy until it is gone.
+            if inner.closing && matches!(leave, Leave::Exit) {
+                return Ok(());
+            }
+            if let Some(reason) = update_busy(&inner) {
+                return Err(reason.into());
+            }
+            if inner.closing || inner.leaving.is_some() {
+                return Err(CLOSING_FOR_UPDATE.into());
+            }
+            inner.leaving = Some(Leaving { leave, reply });
+        }
+        self.wake.notify_all();
+        match answer.recv_timeout(LEAVE_WAIT) {
+            Ok(result) => result,
+            Err(_) => {
+                // Still waiting for the loop: withdrawn. Taken by it: its answer comes next.
+                if self.lock().leaving.take().is_some() {
+                    return Err(
+                        "Battle Plan Recorder stayed busy, so it did not close for the update.".into(),
+                    );
+                }
+                answer.recv().unwrap_or_else(|_| {
+                    Err("Battle Plan Recorder stopped before it answered the update.".into())
+                })
+            }
+        }
+    }
+
+    /// The panel saves or discards a waiting recording; refused while closing for an update.
+    pub fn acting(self: &Arc<Self>) -> Result<Acting, String> {
+        let mut inner = self.lock();
+        if inner.closing || inner.leaving.is_some() {
+            return Err(CLOSING_FOR_UPDATE.into());
+        }
+        inner.acting += 1;
+        Ok(Acting(Arc::clone(self)))
+    }
+
+    /// At the top of the record loop, nothing is attached: carry out an update's request.
+    /// Whether the recorder is closing.
+    fn leave_now(&self, app: &AppHandle, leaving: Leaving) -> bool {
+        let refused = {
+            let mut inner = self.lock();
+            let refused = (inner.acting > 0).then_some(SAVING_FOR_UPDATE);
+            inner.closing = refused.is_none();
+            refused
+        };
+        if let Some(reason) = refused {
+            let _ = leaving.reply.send(Err(reason.into()));
+            return false;
+        }
+        let result = match leaving.leave {
+            Leave::Exit => Ok(()),
+            Leave::Install(launch) => launch(),
+        };
+        let closing = result.is_ok();
+        if !closing {
+            self.lock().closing = false;
+        }
+        let _ = leaving.reply.send(result);
+        if closing {
+            app.exit(0);
+        }
+        closing
+    }
+
     fn wait(&self, timeout: Duration) {
         let inner = self.lock();
         if inner.record_requested {
@@ -626,6 +759,12 @@ impl Recorder {
                         .unwrap_or_else(|error| error.into_inner());
                     continue;
                 }
+            }
+            let leaving = self.lock().leaving.take();
+            if let Some(leaving) = leaving
+                && self.leave_now(app, leaving)
+            {
+                return;
             }
             // Only once the ended session's unload work is done.
             if self.exit_requested() {
@@ -948,7 +1087,9 @@ impl Recorder {
                 read.auto_save
             }
             Err(error) => {
-                eprintln!("Recorder settings could not be read; Auto save stays as it was: {error}");
+                eprintln!(
+                    "Recorder settings could not be read; Auto save stays as it was: {error}"
+                );
                 last_auto_save.get()
             }
         };
@@ -1348,7 +1489,6 @@ fn unload_finished(inner: &mut Inner, result: Result<(), String>) {
         inner.seen = false;
     }
 }
-
 
 /// When the worker next looks again at abandoned sessions a pass left busy or failed.
 #[derive(Default)]

@@ -11,8 +11,8 @@ use windows_sys::Win32::{
     },
     System::{
         Registry::{
-            HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RegDeleteKeyValueW, RegGetValueW,
-            RegSetKeyValueW,
+            HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ, RegDeleteKeyValueW,
+            RegGetValueW, RegSetKeyValueW,
         },
         Threading::CreateMutexW,
     },
@@ -59,6 +59,33 @@ pub fn single_instance() -> Option<Instance> {
         return None;
     }
     Some(Instance(handle))
+}
+
+/// Whether the user's Run key starts the recorder: the setting itself, which the installer and
+/// the panel's switch both write.
+pub fn starts_with_windows() -> Result<bool, String> {
+    let key = wide(OsStr::new(RUN_KEY));
+    let value = wide(OsStr::new(RUN_VALUE));
+    let mut size = 0_u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut size,
+        )
+    };
+    match status {
+        ERROR_SUCCESS => Ok(true),
+        ERROR_FILE_NOT_FOUND => Ok(false),
+        status => Err(format!(
+            "Start with Windows could not be read: {}",
+            std::io::Error::from_raw_os_error(status as i32)
+        )),
+    }
 }
 
 /// Write or remove this executable's entry in the user's Run key.

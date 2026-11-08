@@ -10,6 +10,7 @@ import { VIDEO_OPTION_LABELS } from './VideoSettings';
 import GameFolderSettings from './GameFolderSettings';
 import PreparationSetting from './PreparationSetting';
 import RecordingCompressionSetting from './RecordingCompressionSetting';
+import UpdateSettings from '../update/UpdateSettings';
 import type { ContentFolders, DesktopState, ReplayMetadata } from './api';
 import AppearanceSettings, { newThemeId, SettingsBlock } from './appearance/AppearanceSettings';
 import ThemeEditor from './appearance/ThemeEditor';
@@ -58,6 +59,8 @@ const searchItems: SettingsTarget[] = [
   ...[...MAP_OPTION_LABELS.slice(0, 2), ...VIDEO_OPTION_LABELS, ...MAP_OPTION_LABELS.slice(2)]
     .map(title => ({ section: 'graphics' as const, title, keywords: title === MAP_OPTION_LABELS[0] ? 'msaa' : title === VIDEO_OPTION_LABELS[1] ? 'zoom ui size' : title === VIDEO_OPTION_LABELS[2] ? 'counters icons labels size gui_scale' : 'map graphics' })),
   { section: 'graphics', title: 'Visual mods', keywords: 'mods artwork' },
+  { section: 'updates', title: 'Check for updates', id: 'updates-version', keywords: 'version update upgrade download install restart' },
+  { section: 'updates', title: 'Update channel', id: 'updates-channel', keywords: 'stable nightly channel track beta' },
   { section: 'diagnostics', title: 'Technical overlay', id: 'diagnostics-overlay', keywords: 'diagnostics stats frame rate debug overlay f3 map' },
   { section: 'diagnostics', title: 'Recording', id: 'diagnostics-recording', keywords: 'gaps branches coverage complete stopped early notes missing' },
   { section: 'diagnostics', title: 'Map problems', id: 'diagnostics-map', keywords: 'map report viewer problems errors' },
@@ -212,6 +215,7 @@ export default function Settings({ section, target, onTargetShown, appearance, l
         </SettingsBlock>}
         {section === 'preparation' && client.preparationPreferences && <SettingsBlock id="preparation-background" title="Background preparation"><PreparationSetting client={client} /></SettingsBlock>}
         {section === 'recording' && <SettingsBlock id="recording-compression" title="Recording compression"><RecordingCompressionSetting client={client} /></SettingsBlock>}
+        {section === 'updates' && <SettingsBlock id="updates" title="Updates"><UpdateSettings /></SettingsBlock>}
         {section === 'diagnostics' && <MapDiagnostics native={native} metadata={metadata} branch={branch} />}
       </div>
     </div>

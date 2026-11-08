@@ -1,0 +1,305 @@
+name: Release
+
+# How releases are made. Battle Plan and Battle Plan Recorder share one version and one installer.
+#
+# - Stable: set `version` under [workspace.package] in Cargo.toml in a pull request, merge it,
+#   then push the tag `v<version>` on that commit of main. The tag must match Cargo.toml.
+# - Nightly: every day at 18:30 UTC (04:30 AEST, 05:30 AEDT on the build machine, after its 03:00
+#   daily tests), only when main has commits the last nightly did not build; or on demand with
+#   Run workflow > nightly. Its version is the next patch,
+#   `<major>.<minor>.<patch+1>-nightly.<yyyymmdd>.<run>`.
+# - Preview: Run workflow > preview on any branch builds, signs and verifies the installer as a
+#   workflow artifact and publishes nothing; the build carries no update feed.
+#
+# Stable and nightly releases are published on this repository's own Releases, by
+# github-actions[bot] with the workflow's token, so no personal token or identity is involved. The
+# repository must be public: installed apps read their update feed from it. Its releases tagged
+# `stable` and `nightly` each hold `latest.json`, the feed the apps check, which records the commit
+# it was built from. A release's installer is uploaded before its feed points at it.
+#
+# Nothing is published that tools/leak-gate.py has not passed: the installer and everything it
+# installs (release-build.yml), then the manifest, the notes and the release text here. Notes are
+# the merged pull requests' titles. The private terms come from the secret LEAK_GATE_TERMS.
+#
+# The build runs on the self-hosted runner on the maintainer's machine (release-build.yml); resolving
+# and publishing run on GitHub's runners.
+#
+# Secrets: TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD sign updates for the
+# public key in crates/app-update/updater.pub. Authenticode signing starts once AZURE_TENANT_ID,
+# AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_SIGNING_ENDPOINT, AZURE_SIGNING_ACCOUNT and
+# AZURE_SIGNING_PROFILE are set (Azure Artifact Signing).
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  schedule:
+    # Off the hour, when GitHub's scheduled jobs are busiest; see the nightly above for local times.
+    - cron: "30 18 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel
+        type: choice
+        default: preview
+        options:
+          - preview
+          - nightly
+
+# Stable tags queue behind each other, as do nightlies and previews; every queued run is kept
+# (queue: max) and nothing that publishes is cancelled. A feed only ever moves to a newer version.
+concurrency:
+  group: release-${{ github.event_name == 'push' && 'stable' || 'nightly' }}
+  cancel-in-progress: false
+  queue: max
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    name: Resolve the release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # Release notes are the merged pull requests' titles.
+      pull-requests: read
+    outputs:
+      channel: ${{ steps.release.outputs.channel }}
+      due: ${{ steps.release.outputs.due }}
+      ref: ${{ steps.release.outputs.ref }}
+      releases: ${{ steps.release.outputs.releases }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
+    steps:
+      # Notes and ancestry need history, not file contents.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          filter: blob:none
+          persist-credentials: false
+
+      - id: release
+        name: Resolve the channel and the commit
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCHED: ${{ inputs.channel }}
+          REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            push) channel=stable ;;
+            schedule) channel=nightly ;;
+            *) channel="$DISPATCHED" ;;
+          esac
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "ref=$SHA" >> "$GITHUB_OUTPUT"
+          if [[ "$channel" == preview ]]; then
+            echo "Preview of $REF at $SHA: built and verified as an artifact, published nowhere."
+            echo "due=true" >> "$GITHUB_OUTPUT"
+            echo "releases=" >> "$GITHUB_OUTPUT"
+            : > previous
+            exit 0
+          fi
+          if [[ "$EVENT" == workflow_dispatch && "$REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Nightlies are built from $DEFAULT_BRANCH; use the preview channel for $REF."
+            exit 1
+          fi
+          git fetch --quiet --filter=blob:none origin "$DEFAULT_BRANCH"
+          if ! git merge-base --is-ancestor "$SHA" "origin/$DEFAULT_BRANCH"; then
+            echo "::error::$SHA is not on $DEFAULT_BRANCH; releases are built only from it."
+            exit 1
+          fi
+          private="$(gh api "repos/$REPOSITORY" --jq .private)"
+          if [[ "$private" != false ]]; then
+            echo "::error::$REPOSITORY is private, so installed apps could not read its update feed."
+            exit 1
+          fi
+          releases="https://github.com/$REPOSITORY/releases"
+          echo "releases=$releases" >> "$GITHUB_OUTPUT"
+          # The commit the channel's feed was last built from.
+          status="$(curl -sSL -o feed.json -w '%{http_code}' "$releases/download/$channel/latest.json")"
+          case "$status" in
+            200) jq -er '.commit' feed.json > previous; jq -er '.version' feed.json > previous-version ;;
+            404) : > previous; : > previous-version ;;
+            *) echo "::error::The $channel feed answered HTTP $status."; exit 1 ;;
+          esac
+          previous="$(cat previous)"
+          due=true
+          if [[ -n "$previous" ]]; then
+            if [[ "$previous" == "$SHA" ]]; then
+              echo "The last $channel release already built $SHA."
+              due=false
+            elif ! git merge-base --is-ancestor "$previous" "$SHA"; then
+              echo "::error::The last $channel release was built from $previous, which $SHA does not contain."
+              exit 1
+            fi
+          fi
+          # Run workflow > nightly builds even an unchanged main.
+          if [[ "$EVENT" == workflow_dispatch ]]; then due=true; fi
+          echo "due=$due" >> "$GITHUB_OUTPUT"
+
+      - id: version
+        name: Resolve the version
+        if: steps.release.outputs.due == 'true'
+        env:
+          CHANNEL: ${{ steps.release.outputs.channel }}
+          TAG: ${{ github.ref_name }}
+          RUN: ${{ github.run_number }}
+          STARTED: ${{ github.run_started_at }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == stable ]]; then
+            python3 tools/release.py version --channel stable --tag "$TAG" --github-output
+          else
+            python3 tools/release.py version --channel "$CHANNEL" --date "$(date -u -d "$STARTED" +%Y%m%d)" --run "$RUN" --github-output
+          fi
+          if [[ "$CHANNEL" != preview && -s previous-version ]]; then
+            python3 tools/release.py newer --than "$(cat previous-version)" "$(grep '^version=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2)"
+          fi
+
+      - name: Write the release notes
+        if: steps.release.outputs.due == 'true' && steps.release.outputs.channel != 'preview'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/release.py notes --channel "${{ steps.release.outputs.channel }}" --since "$(cat previous)" --until "${{ github.sha }}" --output notes.md
+
+      # The notes are pull request titles: checked before any artifact holds them.
+      - name: Check the release notes for leaks
+        if: steps.release.outputs.due == 'true' && steps.release.outputs.channel != 'preview'
+        env:
+          LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
+        run: python3 tools/leak-gate.py notes.md
+
+      - name: Upload the release notes
+        if: steps.release.outputs.due == 'true' && steps.release.outputs.channel != 'preview'
+        uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: notes.md
+          if-no-files-found: error
+
+  build:
+    name: Build
+    needs: resolve
+    if: needs.resolve.outputs.due == 'true'
+    uses: ./.github/workflows/release-build.yml
+    with:
+      channel: ${{ needs.resolve.outputs.channel }}
+      version: ${{ needs.resolve.outputs.version }}
+      ref: ${{ needs.resolve.outputs.ref }}
+      releases: ${{ needs.resolve.outputs.releases }}
+    secrets:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SIGNING_ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+      AZURE_SIGNING_ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+      AZURE_SIGNING_PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+      LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
+
+  publish:
+    name: Publish
+    needs: [resolve, build]
+    if: needs.resolve.outputs.channel != 'preview' && needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      CHANNEL: ${{ needs.resolve.outputs.channel }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      TAG: ${{ needs.resolve.outputs.tag }}
+      NAME: ${{ needs.resolve.outputs.name }}
+      COMMIT: ${{ needs.resolve.outputs.ref }}
+      RELEASES: ${{ needs.resolve.outputs.releases }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            tools/release.py
+            tools/leak-gate.py
+            tools/leak-gate.allow
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the installer
+        uses: actions/download-artifact@v8
+        with:
+          name: installer
+          path: dist
+
+      - name: Download the release notes
+        uses: actions/download-artifact@v8
+        with:
+          name: notes
+
+      - name: Write the update manifest
+        run: |
+          set -euo pipefail
+          installer="battle-plan-${VERSION}-x64-setup.exe"
+          python3 tools/release.py manifest --version "$VERSION" --signature "dist/$installer.sig" \
+            --url "$RELEASES/download/$TAG/$installer" --notes notes.md --commit "$COMMIT" --output latest.json
+
+      - name: Write the release text
+        run: '{ cat notes.md; echo; echo "Built from commit ${COMMIT}."; } > body.md'
+
+      # Everything this job publishes; the build job checked the installer's contents already.
+      - name: Check for leaks
+        env:
+          LEAK_GATE_TERMS: ${{ secrets.LEAK_GATE_TERMS }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: python3 tools/leak-gate.py dist latest.json notes.md body.md
+
+      # Runs of a channel follow each other (concurrency above); this refuses one that would move its
+      # feed, or GitHub's latest stable release, back to an older version.
+      - name: Refuse an older version
+        run: |
+          set -euo pipefail
+          status="$(curl -sSL -o current.json -w '%{http_code}' "$RELEASES/download/$CHANNEL/latest.json")"
+          case "$status" in
+            200) python3 tools/release.py newer --than "$(jq -er '.version' current.json)" "$VERSION" ;;
+            404) ;;
+            *) echo "::error::The $CHANNEL feed answered HTTP $status."; exit 1 ;;
+          esac
+          if [[ "$CHANNEL" == stable ]]; then
+            if latest="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name 2> latest.err)"; then
+              python3 tools/release.py newer --than "${latest#v}" "$VERSION"
+            elif ! grep -q 'HTTP 404' latest.err; then
+              echo "::error::GitHub's latest release could not be read: $(cat latest.err)"
+              exit 1
+            fi
+          fi
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          if [[ "$CHANNEL" == nightly ]]; then
+            flags=(--prerelease --latest=false)
+          else
+            flags=(--latest)
+          fi
+          gh release create "$TAG" --target "$COMMIT" --title "$NAME" --notes-file body.md "${flags[@]}" dist/*
+
+      # Only now does the feed name the release, whose installer is already public.
+      - name: Point the feed at the release
+        run: |
+          set -euo pipefail
+          if ! gh release view "$CHANNEL" > /dev/null 2>&1; then
+            gh release create "$CHANNEL" --target "$COMMIT" --title "${CHANNEL^} update feed" --latest=false \
+              --notes "latest.json, which Battle Plan and Battle Plan Recorder on the $CHANNEL channel check for updates. Not an installer."
+          fi
+          gh release upload "$CHANNEL" latest.json --clobber
+          echo "The $CHANNEL feed now offers $VERSION."

@@ -1,0 +1,70 @@
+//! The commands both apps register. Tauri cannot export commands from a library's root.
+use crate::{Channel, RELEASES, UpdateState, Updates, install};
+use std::sync::Arc;
+use tauri::{AppHandle, Manager, State};
+
+fn updates(app: &AppHandle) -> Arc<Updates> {
+    Arc::clone(app.state::<Arc<Updates>>().inner())
+}
+
+#[tauri::command]
+pub fn app_update_state(updates: State<'_, Arc<Updates>>) -> UpdateState {
+    updates.state()
+}
+
+/// Run `work` on a thread made for blocking: an action waits out a running check.
+async fn blocking<T: Send + 'static>(
+    app: AppHandle,
+    work: impl FnOnce(&AppHandle, Arc<Updates>) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(move || work(&app, updates(&app)))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn app_update_check(app: AppHandle) -> Result<UpdateState, String> {
+    blocking(app, |app, updates| {
+        tauri::async_runtime::block_on(updates.check(app))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn app_update_download(app: AppHandle) -> Result<UpdateState, String> {
+    blocking(app, |app, updates| {
+        tauri::async_runtime::block_on(updates.download(app))
+    })
+    .await
+}
+
+/// Answers only when the installer did not start; once it starts, both apps close.
+#[tauri::command]
+pub async fn app_update_install(app: AppHandle) -> Result<(), String> {
+    blocking(app, |app, updates| updates.install(app)).await
+}
+
+/// Save the channel for both apps and read its feed; a failed read is in the answered state.
+#[tauri::command]
+pub async fn app_update_set_channel(
+    app: AppHandle,
+    channel: Channel,
+) -> Result<UpdateState, String> {
+    blocking(app, move |app, updates| {
+        updates.set_channel(app, channel)?;
+        let _ = tauri::async_runtime::block_on(updates.check(app));
+        Ok(updates.state())
+    })
+    .await
+}
+
+/// Open the release page of `version` on the release repository.
+#[tauri::command]
+pub fn app_update_open_release(version: String) -> Result<(), String> {
+    let releases = RELEASES.ok_or("This build has no release page.")?;
+    let version_like = |byte: u8| byte.is_ascii_alphanumeric() || b".-".contains(&byte);
+    if version.is_empty() || !version.bytes().all(version_like) {
+        return Err("That is not a release version.".into());
+    }
+    install::browse(&format!("{releases}/tag/v{version}"))
+}

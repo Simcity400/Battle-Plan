@@ -1,0 +1,7 @@
+{
+  "main": "replay-desktop.exe",
+  "cargo": ["viewer", "recorder-app", "collector"],
+  "built": ["battle-plan-recorder.exe", "collector.dll", "viewer.exe"],
+  "tools": ["shader-tools/dxc"],
+  "repository": ["LICENSE", "LICENSES"]
+}

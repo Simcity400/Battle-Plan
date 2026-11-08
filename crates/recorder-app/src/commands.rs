@@ -14,7 +14,7 @@ use std::{
     os::windows::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, PoisonError},
+    sync::Arc,
 };
 use tauri::{AppHandle, Manager, State, WebviewWindow};
 use windows_sys::Win32::System::Threading::{CREATE_NEW_PROCESS_GROUP, DETACHED_PROCESS};
@@ -27,31 +27,32 @@ async fn blocking<T: Send + 'static>(
         .map_err(|error| error.to_string())?
 }
 
-/// The settings with the folder recordings are actually saved to.
+/// The settings with the folder recordings are actually saved to, and whether Windows starts
+/// the recorder: its Run entry, which the installer also writes, is that setting.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsView {
     #[serde(flatten)]
     settings: RecorderSettings,
     effective_save_folder: String,
+    start_with_windows: bool,
 }
 
-impl From<RecorderSettings> for SettingsView {
-    fn from(settings: RecorderSettings) -> Self {
-        let effective_save_folder = save_folder(&settings).display().to_string();
-        Self {
-            settings,
-            effective_save_folder,
-        }
-    }
+fn view(settings: RecorderSettings) -> Result<SettingsView, String> {
+    let effective_save_folder = save_folder(&settings).display().to_string();
+    Ok(SettingsView {
+        settings,
+        effective_save_folder,
+        start_with_windows: startup::starts_with_windows()?,
+    })
 }
 
 fn update(
     change: impl FnOnce(&mut RecorderSettings) + Send + 'static,
 ) -> Result<SettingsView, String> {
     RecorderSettings::update(change)
-        .map(|(settings, ())| settings.into())
         .map_err(|error| format!("Recorder settings could not be saved: {error}"))
+        .and_then(|(settings, ())| view(settings))
 }
 
 #[tauri::command]
@@ -116,8 +117,8 @@ pub fn cancel_stop_prompt(recorder: State<'_, Arc<Recorder>>) {
 pub async fn recorder_settings() -> Result<SettingsView, String> {
     blocking(|| {
         RecorderSettings::load()
-            .map(SettingsView::from)
             .map_err(|error| format!("Recorder settings could not be read: {error}"))
+            .and_then(view)
     })
     .await
 }
@@ -133,9 +134,6 @@ pub struct SettingsPatch {
     compression: Option<replay::compression::Compression>,
 }
 
-/// Held while Start with Windows and its saved setting change together.
-static START_WITH_WINDOWS: Mutex<()> = Mutex::new(());
-
 #[tauri::command]
 pub async fn update_recorder_settings(
     app: AppHandle,
@@ -149,21 +147,10 @@ pub async fn update_recorder_settings(
         })
         .transpose()?;
     let view = blocking(move || {
-        // The Run entry must change before its setting is saved.
-        let _serial = START_WITH_WINDOWS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let previous = match patch.start_with_windows {
-            Some(enabled) => {
-                let previous = RecorderSettings::load()
-                    .map_err(|error| format!("Recorder settings could not be read: {error}"))?
-                    .start_with_windows;
-                startup::set_start_with_windows(enabled)?;
-                Some(previous)
-            }
-            None => None,
-        };
-        let view = update(move |settings| {
+        if let Some(enabled) = patch.start_with_windows {
+            startup::set_start_with_windows(enabled)?;
+        }
+        update(move |settings| {
             let set = |field: &mut bool, value: Option<bool>| {
                 if let Some(value) = value {
                     *field = value;
@@ -174,7 +161,6 @@ pub async fn update_recorder_settings(
                 patch.record_every_campaign,
             );
             set(&mut settings.auto_save, patch.auto_save);
-            set(&mut settings.start_with_windows, patch.start_with_windows);
             set(&mut settings.start_with_replay, patch.start_with_replay);
             if let Some(compression) = patch.compression {
                 settings.choose_compression(compression);
@@ -182,18 +168,7 @@ pub async fn update_recorder_settings(
             if let Some(mode) = capture_mode {
                 settings.capture_mode = mode;
             }
-        });
-        if view.is_err()
-            && let Some(previous) = previous
-        {
-            // A save can fail after replacement; restore the Run entry from what is now saved.
-            let saved =
-                RecorderSettings::load().map_or(previous, |settings| settings.start_with_windows);
-            if let Err(error) = startup::set_start_with_windows(saved) {
-                eprintln!("{error}");
-            }
-        }
-        view
+        })
     })
     .await?;
     app.state::<Arc<Recorder>>().settings_changed();
@@ -385,6 +360,8 @@ pub async fn act_on_waiting(
     discard: bool,
 ) -> Result<Option<String>, String> {
     let recorder = Arc::clone(app.state::<Arc<Recorder>>().inner());
+    // An update waits until the save or discard is done.
+    let _acting = recorder.acting()?;
     let (session, live) = waiting_part(&recorder, &session, &campaign)?;
     let target = match live {
         Some(target) => target,

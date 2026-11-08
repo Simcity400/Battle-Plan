@@ -11,6 +11,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 replay.workspace = true
+app-update.workspace = true
 engine-executable.workspace = true
 installed-content-settings.workspace = true
 replay-data.workspace = true

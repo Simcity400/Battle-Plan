@@ -102,11 +102,7 @@
 .sidebar-utility { width: 32px; height: 32px; color: color-mix(in srgb, var(--muted) 70%, transparent); }
 .sidebar-utility svg { width: 20px; height: 20px; transition: transform var(--t-slow) var(--ease); }
 .sidebar-utility[data-sidebar-icon='settings']:hover:not(:disabled) svg { transform: rotate(45deg); }
-.update-button { display: inline-grid; place-items: center; width: 32px; height: 32px; margin-left: auto; padding: 0; border: 0; border-radius: 50%; background: transparent;
-  color: color-mix(in srgb, var(--muted) 70%, transparent); transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
-.update-button:hover { background: var(--hover); color: var(--text); }
-.update-button svg { width: 16px; height: 16px; }
-.update-button.is-checking svg { animation: spin .9s linear infinite; }
+.sidebar-footer .update-button { margin-left: auto; }
 
 /* Top bar */
 .shell-header { grid-column: 2 / -1; grid-row: 1; display: flex; flex-wrap: wrap; align-items: flex-start; min-width: 0; container-type: inline-size; box-shadow: inset 1px 0 0 var(--line-soft); }

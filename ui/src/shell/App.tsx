@@ -36,6 +36,8 @@ import { hasMapOverlay, isMapOverlay } from './mapOverlays';
 import { useDiagnosticsShortcut } from './diagnosticsSetting';
 import { BuildNotice, RecordingNotice } from './recordingNotice';
 import { commitZone } from './commitCount';
+import { UpdateButton } from '../update/UpdateControl';
+import { useUpdateState } from '../update/useUpdateState';
 
 const browserRecordings = import.meta.env.DEV && !desktopAvailable;
 
@@ -148,14 +150,10 @@ function useSidebarState() {
 }
 
 /** Where the app's update control will live. No update service exists yet, so a check only reports that. */
-function UpdateButton() {
-  const [checking, setChecking] = useState(false);
-  const [checked, setChecked] = useState(false);
-  const label = checking ? 'Checking for updates…' : checked ? 'Automatic updates are not available in this build yet' : 'Check for updates';
-  return <button type="button" className={`update-button${checking ? ' is-checking' : ''}`} aria-label={label} data-tooltip={label}
-    onClick={() => { if (checking) return; setChecking(true); setTimeout(() => { setChecking(false); setChecked(true); }, 900); }}>
-    <Icon name="refresh-cw" />
-  </button>;
+/** The update button, after T3 Code's, as its own component so update events render only it. */
+function SidebarUpdate() {
+  const { state } = useUpdateState();
+  return <UpdateButton state={state} />;
 }
 
 function MapState({ icon = 'map', eyebrow, title, children, busy = false, alert = false }: { icon?: IconName; eyebrow: string; title: string; children?: ReactNode; busy?: boolean; alert?: boolean }) {
@@ -394,7 +392,7 @@ export default function App() {
         <div className="sidebar-footer">
           {tab !== 'settings' && <button id="tab-settings" type="button" className="icon-button sidebar-utility" data-sidebar-icon="settings" disabled={switching} aria-label="Settings" data-tooltip="Settings"
             onClick={() => void changeTab('settings')}><StyledIcon icon={iconMenu.icon('settings')} fallback="settings" colour="var(--sidebar-icon-settings)" /></button>}
-          <UpdateButton />
+          <SidebarUpdate />
         </div>
         </div>
         {!sidebar.hidden && <div className="sidebar-rail" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" data-tooltip="Drag to resize · double-click to reset"

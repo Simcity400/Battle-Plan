@@ -7,12 +7,13 @@ mod popout;
 mod preparation;
 mod recorder;
 mod replay_library;
+mod updates;
 mod video;
 
 use dashboard::protocol::{DashboardMapView, ViewBounds};
 use dashboard_service::DashboardService;
 use native::{HostStatus, NativeHost};
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::Arc};
 use tauri::{Manager, State, WebviewWindow};
 
 // Preparation and widget requests contend on the Windows process heap; the viewer ships this too.
@@ -195,6 +196,14 @@ fn main() {
         .next()
         .is_some_and(|role| role == dashboard::prepared::headless::ROLE)
     {
+        // Setup is replacing the files: the queue waits for the preparer setup starts after.
+        if app_update::setup_running() {
+            return;
+        }
+        // An update closes it as Battle Plan; the installer starts it again on the queue.
+        if let Err(error) = app_update::serve_preparer(dashboard::prepared::headless::close) {
+            eprintln!("The preparer cannot be asked to close for updates: {error}");
+        }
         if let Err(error) = dashboard::prepared::headless::run(args) {
             eprintln!("{} {error}", dashboard::prepared::headless::ROLE);
             std::process::exit(1);
@@ -205,6 +214,9 @@ fn main() {
         println!(
             "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nViewer options such as --branch, --hour and --camera are forwarded to the\nnative viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"
         );
+        return;
+    }
+    if app_update::refused_during_setup("Battle Plan") {
         return;
     }
     perf::init();
@@ -229,6 +241,11 @@ fn main() {
                     .lock()
                     .map_err(|e| std::io::Error::other(e.to_string()))? = Err(error);
             }
+            app_update::init(
+                app.handle(),
+                app_update::Role::Dashboard,
+                Arc::new(updates::Host(app.handle().clone())),
+            )?;
             recorder::start_recorder();
             app.state::<preparation::PreparationMonitor>()
                 .start(app.handle())?;
@@ -293,6 +310,12 @@ fn main() {
             perf::perf_write,
             perf::perf_finished,
             perf::perf_stop,
+            app_update::commands::app_update_state,
+            app_update::commands::app_update_check,
+            app_update::commands::app_update_download,
+            app_update::commands::app_update_install,
+            app_update::commands::app_update_set_channel,
+            app_update::commands::app_update_open_release,
         ])
         .build(tauri::generate_context!())
         .expect("Could not initialize the replay desktop");
