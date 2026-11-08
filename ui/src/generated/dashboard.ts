@@ -233,9 +233,8 @@ fullResolution: boolean, highGfxShaders: boolean, waterReflections: boolean,
  */
 shadows: boolean,
 /**
- * The day/night cycle; the inverse of `hide_daynight_cycle`, on in a fresh campaign.
- * Off fixes the virtual lights while simulation time and province clocks stay
- * authoritative.
+ * The day/night cycle, the game's `hide_daynight_cycle` inverted. Off fixes the virtual
+ * lights while simulation time and province clocks stay authoritative.
  */
 dayNight: boolean, water: boolean,
 /**
@@ -315,8 +314,7 @@ battlePlans: boolean, frontLines: boolean,
  */
 offensiveLines: boolean, plannedMovement: boolean, navalInvasions: boolean, paradrops: boolean, raidPaths: boolean, planLabels: boolean,
 /**
- * Allied battle plans; `show_allied_plans`. A fresh campaign shows them off, and the
- * game stores the key only once its map-mode button is used.
+ * Allied battle plans, the game's `show_allied_plans`.
  */
 showAlliedPlans: boolean,
 /**
@@ -6015,3 +6013,5 @@ export const CONTENT_PRODUCTS = ["diplomacy-state", "national-focus", "focus-art
 export const INTERACTIVE_PRODUCTS = ["campaign-clock", "player-apm", "focus-artwork", "focus-art", "technology-artwork", "country-flags", "doctrines", "game-window", "unit-leader-portraits", "land-battle-terrain", "combat-log-history", "army-losses", "division-careers", "division-record", "division-templates", "division-equipment", "training-queue", "place-names", "country-styles", "faction-details", "wargoals", "country-people", "air-ace-portraits", "naval-management", "politics-state", "equipment-design-detail", "equipment-stockpile-at", "stockpile-artwork", "market-lendlease", "intel-details", "sprite-artwork", "naval-repairs", "naval-refits"] as const;
 /** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */
 export const COUNTRY_COLOURS_OVER_BUDGET = "Country colours exceed the product reply budget";
+/** What every map option is until the user chooses. */
+export const MAP_OPTION_DEFAULTS = { dayNight: true, alliedPlans: false, fog: true, countryCounterColours: false, playerCounters: false, radar: false } as const;

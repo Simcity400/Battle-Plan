@@ -90,8 +90,8 @@ pub struct DayNight {
     pub hour_fraction: f32,
     /// Settled, normalized seasonal direction from the weather simulation.
     pub sun_direction: [f32; 3],
-    /// `vFoWOpacity_..._MaxGameSpeed.w`: settled display strength, 0 when the
-    /// viewer disables the cycle, otherwise 1.
+    /// `vFoWOpacity_..._MaxGameSpeed.w`: the display strength [`DayNightPlayback`] eases
+    /// toward, 1 while the cycle shows ([`GameSpeeds::shows_cycle`]), otherwise 0.
     pub strength: f32,
 }
 
@@ -150,6 +150,50 @@ impl DayNight {
             defines.moon[0],
             map.y() - defines.sun[0],
         ]
+    }
+}
+
+/// `NGame.GAME_SPEED_SECONDS`: each game speed's shortest wall time per in-game hour, slowest
+/// first.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GameSpeeds([f64; 5]);
+
+impl GameSpeeds {
+    /// The game's last speed, the one that hides the cycle.
+    const FASTEST: usize = 4;
+
+    /// The speeds as the game stores them: `f32`, a short list padded with 0 and a long one cut
+    /// to its first five.
+    pub fn load(defines: &installed_content_core::defines::Defines) -> Result<Self, String> {
+        let read = defines
+            .numbers("NGame", "GAME_SPEED_SECONDS")
+            .map_err(|error| error.to_string())?;
+        let mut seconds = [0.0; 5];
+        for (slot, value) in seconds.iter_mut().zip(read) {
+            *slot = f64::from(value as f32);
+        }
+        Ok(Self(seconds))
+    }
+
+    /// The shipped content's values, for synthetic fixtures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn test() -> Self {
+        Self([2.0_f32, 0.5, 0.2, 0.1, 0.0].map(f64::from))
+    }
+
+    /// The slowest game speed that reaches `hours_per_second`; the fastest when none does. A
+    /// speed of zero or less ticks every frame, so it reaches any rate.
+    pub fn level(&self, hours_per_second: f64) -> usize {
+        self.0
+            .iter()
+            .position(|&seconds| seconds <= 0.0 || seconds * hours_per_second <= 1.0)
+            .unwrap_or(Self::FASTEST)
+    }
+
+    /// Whether the game draws the day/night cycle it is set to: while paused, or below its
+    /// fastest speed. At the fastest it fades the cycle out so the map does not flash.
+    pub fn shows_cycle(&self, playing: bool, hours_per_second: f64) -> bool {
+        !playing || self.level(hours_per_second) < Self::FASTEST
     }
 }
 

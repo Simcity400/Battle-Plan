@@ -47,7 +47,6 @@ pub enum ViewEvent {
 }
 
 /// The picker's state in one view.
-#[derive(Default)]
 pub struct PickerState {
     /// Rotating radar ranges, separately from station icons.
     pub radar: bool,
@@ -61,6 +60,21 @@ pub struct PickerState {
     /// Hidden in the map-only pop-out; its shortcuts still work.
     pub hidden: bool,
     labels: Option<PickerLabels>,
+}
+
+impl Default for PickerState {
+    fn default() -> Self {
+        Self {
+            radar: dashboard::map_display::option_defaults::RADAR,
+            picker: Default::default(),
+            open: Default::default(),
+            slots: Vec::new(),
+            requested: None,
+            events: Vec::new(),
+            hidden: false,
+            labels: None,
+        }
+    }
 }
 
 impl PickerState {
@@ -123,17 +137,17 @@ impl PickerState {
 }
 
 fn dump_toggles(document: &Document, options: &crate::Options) -> Toggles {
-    let settings = options.counter_settings(document.game_counters);
+    let settings = options.counter_settings(document.game_nato);
     Toggles {
         day_night: None,
-        player_counters: Some(false),
+        player_counters: Some(dashboard::map_display::option_defaults::PLAYER_COUNTERS),
         counter_colors: Some(
             settings.color_mode == viewer_counters::map::counters::CounterColorMode::Country,
         ),
         allied_plans: None,
         fog: viewer_foundation::map::perspective::fog_recorded(document.capture_mode())
             .then_some(options.perspective.fog),
-        radar: Some(false),
+        radar: Some(dashboard::map_display::option_defaults::RADAR),
     }
 }
 
@@ -953,8 +967,9 @@ mod tests {
         assert!(!viewer.dashboard_map);
         assert!(!viewer.playing);
         let hour = 60_828_400;
+        let speeds = Ok(viewer_foundation::map::frame::GameSpeeds::test());
         let initial = viewer.follow_map_settings(&service, campaign.clone());
-        let light = viewer.frame_day_night(hour);
+        let light = viewer.frame_day_night(hour, &speeds);
         assert_eq!(light.strength, 1.0);
         let unchanged = viewer.follow_map_settings(&service, campaign.clone());
         assert!(Arc::ptr_eq(&initial, &unchanged));
@@ -976,7 +991,7 @@ mod tests {
         let off = viewer.follow_map_settings(&service, campaign.clone());
         assert!(!Arc::ptr_eq(&initial, &off));
         assert_eq!(viewer.picker_toggles().day_night, Some(false));
-        let dark = viewer.frame_day_night(hour);
+        let dark = viewer.frame_day_night(hour, &speeds);
         assert_eq!(dark.strength, 0.0);
         assert_eq!(dark.hour_fraction, light.hour_fraction);
         assert_eq!(dark.sun_direction, light.sun_direction);
@@ -987,18 +1002,18 @@ mod tests {
         host.save(widget, settings).unwrap();
         service.reload_map_settings();
         viewer.follow_map_settings(&service, campaign.clone());
-        assert_eq!(viewer.frame_day_night(hour).strength, 0.0);
+        assert_eq!(viewer.frame_day_night(hour, &speeds).strength, 0.0);
 
         // The Campaign map's picker uses the same host-owned store, at campaign scope.
         viewer.picker_toggle("day_night_toggle");
         let [toggle]: [dashboard::protocol::MapToggle; 1] =
             toggles(&mut viewer).try_into().unwrap();
         host.flip(campaign.clone(), toggle.setting).unwrap();
-        assert_eq!(viewer.frame_day_night(hour).strength, 0.0);
+        assert_eq!(viewer.frame_day_night(hour, &speeds).strength, 0.0);
         service.reload_map_settings();
         viewer.follow_map_settings(&service, campaign);
         assert_eq!(viewer.picker_toggles().day_night, Some(true));
-        assert_eq!(viewer.frame_day_night(hour).strength, 1.0);
+        assert_eq!(viewer.frame_day_night(hour, &speeds).strength, 1.0);
         assert!(!viewer.playing);
         service.shutdown();
         unsafe {

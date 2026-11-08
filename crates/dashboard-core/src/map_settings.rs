@@ -376,8 +376,8 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
             .unwrap_or(fallback)
     };
     let mut result = MapGraphics::default();
-    let counters = installed_content_settings::settings::Counters::read(keys).map_err(crate::invalid)?;
-    result.nato_counters = Some(counters.nato == 1);
+    result.nato_counters =
+        Some(installed_content_settings::settings::nato_counters(keys).map_err(crate::invalid)?);
     result.full_resolution = map("draw_map_full_res", result.full_resolution);
     result.trees = map("draw_trees", result.trees);
     // Map shadows use the map-rendering option; the graphics shadows
@@ -393,13 +393,7 @@ fn parse_game_keys(keys: &installed_content_settings::settings::SettingsKeys) ->
     result.units = map("draw_units", result.units);
     result.city_sprawl = map("draw_citysprawl", result.city_sprawl);
     result.weather = map("draw_weather_effects", result.weather);
-    // The map-mode buttons' choices, stored at the top level.
-    if let Some(hide) = keys.bool_at(&["hide_daynight_cycle"]) {
-        result.day_night = !hide;
-    }
-    if let Some(show) = keys.bool_at(&["show_allied_plans"]) {
-        result.show_allied_plans = show;
-    }
+    // The map-mode buttons' choices are map options, which keep the app's defaults.
     if let Some(value) = keys.i32_at(&["graphics", "multi_sampling"]) {
         result.samples = u32::try_from(value)
             .map_err(|_| crate::invalid("Invalid game anti-aliasing"))?
@@ -603,11 +597,9 @@ mod tests {
         );
         store.game.graphics.trees = false;
         store.game.graphics.sky = false;
-        store.game.graphics.show_allied_plans = true;
         let campaign = store.get("campaign");
         assert!(campaign.graphics.trees);
         assert!(!campaign.graphics.sky);
-        assert!(campaign.graphics.show_allied_plans);
         store.game.graphics.sky = true;
         assert!(store.get("campaign").graphics.sky);
         // The stored form keeps its inheritance markers.
@@ -704,6 +696,15 @@ mod tests {
             parse_game_graphics(b"template_counter=invalid graphics={} mapRenderingOptions={}")
                 .is_err()
         );
+        // Counter colours are a map option, never imported, so their value cannot refuse.
+        assert_eq!(
+            parse_game_graphics(
+                b"counter_color_mode=yes template_counter=1 graphics={} mapRenderingOptions={}"
+            )
+            .unwrap()
+            .nato_counters,
+            Some(true)
+        );
         assert!(
             parse_game_graphics(b"graphics={} mapRenderingOptions={draw_map_full_res=invalid}")
                 .unwrap()
@@ -712,7 +713,7 @@ mod tests {
     }
 
     #[test]
-    fn imports_the_map_mode_choices_and_volumes() {
+    fn imports_the_volumes_and_keeps_the_map_option_defaults() {
         engine_executable::executable_tables::initialize_for_tests()
             .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
         let game = parse_game(
@@ -721,8 +722,13 @@ mod tests {
               graphics={} mapRenderingOptions={}",
         )
         .unwrap();
-        assert!(!game.graphics.day_night);
-        assert!(!game.graphics.show_allied_plans);
+        assert_eq!(
+            (game.graphics.day_night, game.graphics.show_allied_plans),
+            (
+                crate::map_display::option_defaults::DAY_NIGHT,
+                crate::map_display::option_defaults::ALLIED_PLANS
+            )
+        );
         assert_eq!(
             [
                 game.audio.master,
@@ -745,24 +751,12 @@ mod tests {
             b"hide_daynight_cycle=no show_allied_plans=yes graphics={} mapRenderingOptions={}",
         )
         .unwrap();
-        assert!(shown.graphics.day_night && shown.graphics.show_allied_plans);
-        // Unstored choices keep their defaults.
+        assert_eq!(shown.graphics, game.graphics);
         let unstored = parse_game(b"graphics={} mapRenderingOptions={}").unwrap();
-        assert_eq!(
-            unstored.graphics.day_night,
-            MapGraphics::default().day_night
-        );
-        assert_eq!(
-            unstored.graphics.show_allied_plans,
-            MapGraphics::default().show_allied_plans
-        );
         assert_eq!(unstored.audio, MapAudio::default());
     }
 
     /// The values a fresh install writes on first launch (synthetic, the imported keys only).
-    /// It stores neither map-mode choice, so both keep their defaults: a fresh campaign shows
-    /// allied plans off and the day/night cycle on, and storing `show_allied_plans=yes` takes
-    /// one press of its button.
     #[test]
     fn a_fresh_install_imports_as_the_defaults() {
         engine_executable::executable_tables::initialize_for_tests()

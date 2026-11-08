@@ -13,6 +13,19 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// What every map option is until the user chooses: the day/night cycle and fog of war on, every
+/// other option off. These are the app's own defaults; the game's settings never set them.
+pub mod option_defaults {
+    pub const DAY_NIGHT: bool = true;
+    pub const FOG: bool = true;
+    pub const ALLIED_PLANS: bool = false;
+    /// Counters tinted by their owner's colour rather than by allegiance.
+    pub const COUNTRY_COUNTER_COLOURS: bool = false;
+    /// Only the viewing country's own counters.
+    pub const PLAYER_COUNTERS: bool = false;
+    pub const RADAR: bool = false;
+}
+
 /// Declares a resolved preference struct, its per-choice override form and the resolution.
 macro_rules! inheritable {
     (
@@ -77,10 +90,9 @@ inheritable! {
         water_reflections: bool = true,
         /// Cast shadows; `draw_shadows`.
         shadows: bool = true,
-        /// The day/night cycle; the inverse of `hide_daynight_cycle`, on in a fresh campaign.
-        /// Off fixes the virtual lights while simulation time and province clocks stay
-        /// authoritative.
-        day_night: bool = true,
+        /// The day/night cycle, the game's `hide_daynight_cycle` inverted. Off fixes the virtual
+        /// lights while simulation time and province clocks stay authoritative.
+        day_night: bool = option_defaults::DAY_NIGHT,
         // World
         water: bool = true,
         /// Main switch of the four border parts.
@@ -151,9 +163,8 @@ inheritable! {
         paradrops: bool = true,
         raid_paths: bool = true,
         plan_labels: bool = true,
-        /// Allied battle plans; `show_allied_plans`. A fresh campaign shows them off, and the
-        /// game stores the key only once its map-mode button is used.
-        show_allied_plans: bool = false,
+        /// Allied battle plans, the game's `show_allied_plans`.
+        show_allied_plans: bool = option_defaults::ALLIED_PLANS,
         /// The selected units' movement arrows.
         movement_arrows: bool = true,
         // Map icons

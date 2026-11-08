@@ -1,8 +1,12 @@
 import type { MapOptions } from '../shell/api';
+import { MAP_OPTION_DEFAULTS } from '../generated/dashboard.ts';
 import type { DashboardClient, DashboardMapView, MapOptionsEvent, MapSettingsTarget, MapToggle, MapToggleEvent, DashboardSource } from './client';
 
 /** The view id the desktop's campaign map reports its picker changes under. */
 export const CAMPAIGN_MAP_VIEW = 'campaign-map';
+
+/** A map view's options before any choice: no country chosen, fog at the map option default. */
+export const DEFAULT_MAP_OPTIONS: MapOptions = { country: null, fog: MAP_OPTION_DEFAULTS.fog };
 
 /** A view's options with fog flipped: a picker fog click applied to the value the host holds now. */
 export const flipFog = (options: MapOptions): MapOptions => ({ ...options, fog: !options.fog });

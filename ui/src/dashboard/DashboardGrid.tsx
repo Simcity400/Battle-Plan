@@ -13,7 +13,7 @@ import { createWidget, GRID_COLUMNS, widgetAtDefault } from './model';
 import { resolveWidgetCampaign } from './campaigns';
 import { recordingDisplayName } from './recordingNames';
 import type { Breakpoint, DashboardTemplate, GridLayouts, WidgetSpec } from './model';
-import { flipFog } from './mapPicker';
+import { DEFAULT_MAP_OPTIONS, flipFog } from './mapPicker';
 import { widgetDefinition } from './definitions';
 import type { WidgetRuntime } from './definitions';
 import { OptionDraft } from './optionDraft';
@@ -133,7 +133,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     return () => { observer.disconnect(); cancel(); };
   }, [slots]);
   useEffect(() => { perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title]);
-  const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
+  const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
   // The native picker's fog click flips this widget's switch, as its control does.
   useEffect(() => runtime.maps.onFog(widget.id, () => setMapOptions(flipFog)), [runtime.maps, widget.id]);
   const definition = widgetDefinition(widget.kind);
@@ -150,9 +150,9 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   // A layout without tracks has no default widget to return to.
   const defaultTrack = template.tracks[0]?.id;
   const reset = definition && defaultTrack !== undefined
-    && !(widgetAtDefault(widget, defaultTrack) && mapOptions.country === null && mapOptions.fog) ? () => {
+    && !(widgetAtDefault(widget, defaultTrack) && mapOptions.country === null && mapOptions.fog === DEFAULT_MAP_OPTIONS.fog) ? () => {
     onApply(createWidget(widget.kind, defaultTrack, widget.id), true);
-    setMapOptions({ country: null, fog: true });
+    setMapOptions(DEFAULT_MAP_OPTIONS);
   } : undefined;
   const effective = resolveWidgetCampaign(widget, { tracks: runtime.campaignTracks }, runtime.defaultRoleId);
   const missing = effective.trackIds.filter((id) => !runtime.tracks.some((track) => track.id === id));

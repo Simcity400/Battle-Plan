@@ -334,3 +334,57 @@ fn the_buffer_layout_matches_the_hlsl_registers() {
     assert_eq!(offset(&zero.ambient_pos_z), 336);
     assert_eq!(offset(&zero.gb_texture_height_sun_specular), 400);
 }
+
+fn game_speeds(seconds: &str) -> Result<GameSpeeds, String> {
+    let defines = installed_content_core::defines::Defines::new().unwrap();
+    let source = format!("NDefines = {{ NGame = {{ GAME_SPEED_SECONDS = {{ {seconds} }} }} }}");
+    defines.load("test.lua", source.as_bytes()).unwrap();
+    GameSpeeds::load(&defines)
+}
+
+/// Each replay rate takes the slowest game speed whose hours are short enough for it; only the
+/// fastest speed hides the cycle, and a pause always shows it.
+#[test]
+fn the_cycle_shows_below_the_games_fastest_speed_and_while_paused() {
+    let speeds = game_speeds("2.0, 0.5, 0.2, 0.1, 0.0").unwrap();
+    assert_eq!(speeds, GameSpeeds::test());
+    // The game's `f32` 0.2 and 0.1 are a little over, so 5 and 10 h/s are just past their speeds.
+    let rates = [0.25, 0.5, 1.0, 2.0, 4.0, 4.99, 5.0, 9.99, 10.0, 24.0, 1440.0];
+    let levels = rates.map(|rate| speeds.level(rate));
+    assert_eq!(levels, [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4]);
+    assert!(speeds.shows_cycle(true, 9.99));
+    assert!(!speeds.shows_cycle(true, 24.0));
+    assert!(speeds.shows_cycle(false, 1440.0));
+    // A mod's own speeds move the line.
+    let slow = game_speeds("2.0, 0.5, 0.2, 0.01, 0.0").unwrap();
+    assert!(slow.shows_cycle(true, 24.0));
+    let unbounded = game_speeds("2.0, 0.5, 0.2, 0.0, 0.0").unwrap();
+    assert!(unbounded.shows_cycle(true, 1440.0));
+}
+
+/// As the game loads them: padded with 0 to five, cut to five, and a speed of zero or less
+/// unbounded; only a table it cannot read as numbers is refused, by name.
+#[test]
+fn speeds_load_as_the_game_resizes_them() {
+    let short = game_speeds("2.0, 0.5").unwrap();
+    assert_eq!(short.level(1440.0), 2);
+    assert!(short.shows_cycle(true, 1440.0));
+    let long = game_speeds("2.0, 0.5, 0.2, 0.1, 0.0, 5.0").unwrap();
+    assert_eq!(long, GameSpeeds::test());
+    let negative = game_speeds("2.0, -0.5, 0.2, 0.1, 0.0").unwrap();
+    assert_eq!(negative.level(1440.0), 1);
+    let error = game_speeds(r#"2.0, "fast", 0.2, 0.1, 0.0"#).unwrap_err();
+    assert!(error.contains("NDefines.NGame.GAME_SPEED_SECONDS"), "{error}");
+}
+
+/// While hidden the strength eases out at the game's frame rate, as the sun direction does.
+#[test]
+fn a_hidden_cycle_fades_out_rather_than_snapping() {
+    let mut clock = DayNightPlayback::default();
+    let shown = DayNight::at_hour(30);
+    clock.update(30, shown, 0.0, 1.0);
+    let hidden = shown.with_cycle(false);
+    let first = clock.update(30, hidden, 1.0 / 60.0, 1.0).strength;
+    assert!((first - 0.8).abs() < 1e-6, "{first}");
+    assert_eq!(clock.update(30, hidden, 1.0, 1.0).strength, 0.0);
+}

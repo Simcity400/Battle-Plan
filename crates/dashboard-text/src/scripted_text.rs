@@ -915,7 +915,7 @@ impl<'a> ScriptedText<'a> {
             frame,
             reserved_tag: std::sync::OnceLock::new(),
             root,
-            nato_counters: installed_content_settings::settings::Counters::default().nato == 1,
+            nato_counters: installed_content_settings::settings::NATO_COUNTERS_DEFAULT,
             lexicon: None,
             world: std::sync::OnceLock::new(),
         }

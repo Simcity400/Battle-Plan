@@ -263,12 +263,13 @@ pub struct Content {
     pub map_defines: MapDefines,
     /// The content's zoom defines with the user's zoom and camera speeds.
     pub camera_law: CameraLaw,
+    /// The recorded speeds the day/night cycle follows, or why they could not be read.
+    pub game_speeds: Result<viewer_foundation::map::frame::GameSpeeds, String>,
     /// The user's `settings.txt` display facts that size the game's interface
     /// on screen, or why they could not be read; see [`crate::map::ui_scale`].
     pub game_display: Result<installed_content_settings::settings::Display, String>,
-    /// The user's `settings.txt` counter options (`counter_color_mode`, `template_counter`),
-    /// which the window's toggles and a dump start from.
-    pub game_counters: counters::CounterSettings,
+    /// The user's `settings.txt` NATO counter frame (`template_counter`).
+    pub game_nato: bool,
     /// The configured user folder's local world target size; no recorder UI state.
     pub game_full_resolution: bool,
     /// Local show-all strategic names preference; never read from the recording.
@@ -1598,6 +1599,7 @@ impl Document {
         // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
         // keep the recorded defines, each named.
         let art_defines = defines.graphics_for(&content.layers);
+        let game_speeds = viewer_foundation::map::frame::GameSpeeds::load(&defines);
         // The defines an artwork loader reads with the stack it was handed: graphics defines
         // with the visual mods, recorded defines when it falls back to the recording.
         let defines_for = |stack: &installed_content_core::ResolvedLayers| {
@@ -1641,9 +1643,7 @@ impl Document {
         let decode = settings.texture_decode();
         // Text is read in the user's game language, not the recording's.
         let language = settings.language()?;
-        let game_counters = installed_content_settings::settings::Counters::read(&settings)
-            .map_err(invalid)?
-            .into();
+        let game_nato = installed_content_settings::settings::nato_counters(&settings).map_err(invalid)?;
         // Only the interface scale's default needs these; without them it falls
         // back to 1.0 and says so, rather than refusing the recording.
         let game_display = installed_content_settings::settings::read_pdx(&options.user_dir)
@@ -2729,8 +2729,9 @@ impl Document {
             map,
             map_defines,
             camera_law,
+            game_speeds,
             game_display,
-            game_counters,
+            game_nato,
             game_full_resolution,
             game_strategic_names,
             game_audio,

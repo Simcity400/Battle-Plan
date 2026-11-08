@@ -11654,6 +11654,7 @@ dependencies = [
 name = "viewer-counters"
 version = "0.1.0"
 dependencies = [
+ "dashboard-core",
  "dashboard-text",
  "dpi",
  "engine-executable",

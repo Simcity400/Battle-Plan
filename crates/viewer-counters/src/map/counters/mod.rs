@@ -1798,8 +1798,7 @@ fn counter_plate_color(
     }
 }
 
-/// The counter options, from the user's `settings.txt` and switchable in the viewer as
-/// in the game's own options.
+/// The counter options, switchable in the viewer as in the game's own options.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct CounterSettings {
     pub color_mode: CounterColorMode,
@@ -1807,25 +1806,23 @@ pub struct CounterSettings {
     pub nato: bool,
 }
 
-impl From<installed_content_settings::settings::Counters> for CounterSettings {
-    /// `counter_color_mode == 1` selects the allegiance palette;
-    /// `template_counter == 1` selects the NATO frame.
-    fn from(settings: installed_content_settings::settings::Counters) -> Self {
-        Self {
-            color_mode: if settings.color_mode == 1 {
-                CounterColorMode::Allegiance
-            } else {
-                CounterColorMode::Country
-            },
-            nato: settings.nato == 1,
-        }
-    }
+impl CounterColorMode {
+    /// The map option's default ([`dashboard_core::map_display::option_defaults`]).
+    pub const DEFAULT: Self =
+        if dashboard_core::map_display::option_defaults::COUNTRY_COUNTER_COLOURS {
+            Self::Country
+        } else {
+            Self::Allegiance
+        };
 }
 
 impl Default for CounterSettings {
-    /// The constructed options ([`installed_content_settings::settings::Counters::default`]).
+    /// The map option's colours and `settings.txt`'s unstored NATO frame.
     fn default() -> Self {
-        installed_content_settings::settings::Counters::default().into()
+        Self {
+            color_mode: CounterColorMode::DEFAULT,
+            nato: installed_content_settings::settings::NATO_COUNTERS_DEFAULT,
+        }
     }
 }
 

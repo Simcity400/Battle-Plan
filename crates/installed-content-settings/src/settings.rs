@@ -335,57 +335,30 @@ pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
     Ok(SettingsKeys::read(&bytes))
 }
 
-/// Counter options from `settings.txt` used by the game's unit counters.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Counters {
-    /// `counter_color_mode`: 1 tints plates by allegiance
-    /// (`NGraphics.COUNTER_MODE_ALLEGIANCE_*`), 0 by the owner's colour.
-    pub color_mode: i32,
-    /// `template_counter`: 1 selects the unit icons' NATO frame.
-    pub nato: i32,
-}
+/// `template_counter`'s value when `settings.txt` stores none: the plain frame.
+pub const NATO_COUNTERS_DEFAULT: bool = false;
 
-impl Default for Counters {
-    /// Defaults: allegiance colour mode 1 and NATO frame selection 0.
-    fn default() -> Self {
-        Self {
-            color_mode: 1,
-            nato: 0,
-        }
+/// `template_counter`, whether the unit icons take the NATO frame, through [`SettingsKeys`]:
+/// bare keywords fold without case, quoted keys reach no case, and each occurrence is read in
+/// file order, the last winning. The signed integer scan ([`crate::crt::scan_i32`]) accepts C
+/// radix prefixes, accumulates in 64 bits and keeps the low 32 bits; a value is clamped to 0..=1
+/// and only 1 selects the frame. An omitted key keeps [`NATO_COUNTERS_DEFAULT`].
+///
+/// A scan converting nothing (a word, lone sign or brace) leaves an uninitialised stack value:
+/// the scan reports an error without storing anything, and recovery does not reset the field.
+/// `Err` names it.
+pub fn nato_counters(settings: &SettingsKeys) -> Result<bool, String> {
+    let mut nato = NATO_COUNTERS_DEFAULT;
+    for key in settings.assignments("template_counter") {
+        let value = crate::crt::scan_i32(&key.value).stored().ok_or_else(|| {
+            format!(
+                "settings.txt template_counter = {:?} is not an integer %i converts, so the                  game stores an uninitialised value because the integer scan stores nothing                  and recovery does not reset it",
+                String::from_utf8_lossy(&key.value)
+            )
+        })?;
+        nato = value.clamp(0, 1) == 1;
     }
-}
-
-impl Counters {
-    /// Both options through [`SettingsKeys`]: bare keywords fold without
-    /// case, quoted keys reach no case, and each occurrence is read in file
-    /// order. Signed integer scans ([`crate::crt::scan_i32`]) accept C radix
-    /// prefixes, accumulate in 64 bits and keep the low 32 bits. Negative
-    /// values store 0 and values above 1 store 1; the last occurrence wins.
-    /// An omitted key keeps its constructor value.
-    ///
-    /// A scan converting nothing (a word, lone sign or brace) leaves an
-    /// uninitialised stack value: the scan reports an error without storing
-    /// anything, and recovery does not reset these fields. `Err` names it.
-    pub fn read(settings: &SettingsKeys) -> Result<Self, String> {
-        let mut counters = Self::default();
-        for (field, name) in [
-            (&mut counters.color_mode, "counter_color_mode"),
-            (&mut counters.nato, "template_counter"),
-        ] {
-            for key in settings.assignments(name) {
-                let value = crate::crt::scan_i32(&key.value).stored().ok_or_else(|| {
-                    format!(
-                        "settings.txt {name} = {:?} is not an integer %i converts, so the game \
-                         stores an uninitialised value because the integer scan stores nothing \
-                         and recovery does not reset it",
-                        String::from_utf8_lossy(&key.value)
-                    )
-                })?;
-                *field = value.clamp(0, 1);
-            }
-        }
-        Ok(counters)
-    }
+    Ok(nato)
 }
 
 /// Reads the user folder's `pdx_settings.txt`, the launcher's display
@@ -900,83 +873,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn counter_options_clamp_as_the_game_reads_them_and_default_to_its_constructor() {
+    fn nato_counters_clamp_as_the_game_reads_them_and_default_to_its_constructor() {
         engine_executable::executable_tables::initialize_for_tests().unwrap();
-        let read = |text: &str| Counters::read(&SettingsKeys::read(text.as_bytes()));
-        assert_eq!(read(""), Ok(Counters::default()));
-        assert_eq!(
-            Counters::default(),
-            Counters {
-                color_mode: 1,
-                nato: 0
-            }
-        );
-        assert_eq!(
-            read(
-                "counter_color_mode=0
-template_counter=1"
-            ),
-            Ok(Counters {
-                color_mode: 0,
-                nato: 1
-            })
-        );
-        assert_eq!(
-            read(
-                "counter_color_mode=-3
-template_counter=7"
-            ),
-            Ok(Counters {
-                color_mode: 0,
-                nato: 1
-            })
-        );
+        let read = |text: &str| nato_counters(&SettingsKeys::read(text.as_bytes()));
+        assert_eq!(read(""), Ok(NATO_COUNTERS_DEFAULT));
+        assert_eq!(read("template_counter=1"), Ok(true));
+        assert_eq!(read("template_counter=7"), Ok(true));
+        assert_eq!(read("template_counter=-3"), Ok(false));
         // `%i` reads a C hexadecimal prefix, and keeps the low 32 bits: 2^32 stores 0.
-        assert_eq!(read("template_counter=0x1").unwrap().nato, 1);
-        assert_eq!(read("counter_color_mode=4294967296").unwrap().color_mode, 0);
+        assert_eq!(read("template_counter=0x1"), Ok(true));
+        assert_eq!(read("template_counter=4294967296"), Ok(false));
         // Ordered writes: the last occurrence wins.
-        assert_eq!(
-            read(
-                "template_counter=1
-template_counter=0"
-            )
-            .unwrap()
-            .nato,
-            0
-        );
-        // Bare keywords fold without case; quoted keys are strings and
-        // reach no counter-setting case.
-        assert_eq!(
-            read(
-                "Template_Counter=1
-COUNTER_COLOR_MODE=0"
-            ),
-            Ok(Counters {
-                color_mode: 0,
-                nato: 1
-            })
-        );
-        assert_eq!(
-            read(
-                "template_counter=1
-TEMPLATE_counter=0"
-            )
-            .unwrap()
-            .nato,
-            0
-        );
-        assert_eq!(
-            read(r#""template_counter"=1 "Counter_Color_Mode"=0"#),
-            Ok(Counters::default())
-        );
+        assert_eq!(read("template_counter=1
+template_counter=0"), Ok(false));
+        // Bare keywords fold without case; quoted keys are strings and reach no case.
+        assert_eq!(read("Template_Counter=1"), Ok(true));
+        assert_eq!(read("template_counter=1
+TEMPLATE_counter=0"), Ok(false));
+        assert_eq!(read(r#""template_counter"=1"#), Ok(NATO_COUNTERS_DEFAULT));
         // A quoted value is converted like a bare one.
-        assert_eq!(read(r#"template_counter="1""#).unwrap().nato, 1);
+        assert_eq!(read(r#"template_counter="1""#), Ok(true));
+        // Counter colours are a map option, never read here, so their value cannot refuse.
+        assert_eq!(read("counter_color_mode=yes
+template_counter=1"), Ok(true));
         // A value `%i` converts nothing from is the game's undefined read, named.
-        for bad in [
-            "counter_color_mode=yes",
-            "template_counter=-",
-            "template_counter={ 1 }",
-        ] {
+        for bad in ["template_counter=-", "template_counter={ 1 }", "template_counter=yes"] {
             let why = read(bad).unwrap_err();
             assert!(
                 why.contains("integer scan stores nothing")

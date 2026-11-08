@@ -91,8 +91,8 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          --fog on|off, the game's fog-of-war switch (default on)
          --allied-plans on|off, viewer-local allied battle-plan visibility (default off)
          --day-night on|off, the map's day/night lighting (default on)
-         --counter-colors allegiance|country --nato-counters on|off, the game's counter
-           options (default: the user folder's settings.txt)
+         --counter-colors allegiance|country, the counters' tint (default allegiance)
+         --nato-counters on|off, NATO counter frames (default: the user folder's settings.txt)
          --combat <full-handle> | --combat-at <province>, open a recorded combat or retained naval result
          --air-region <region>, open the strategic air dialog; --air-details expands its history
          --air-range days|months|years --air-channels <bitmask>, select the history range and series
@@ -350,10 +350,11 @@ struct Options {
     /// `--map-mode <token>`: the map mode a window opens in and a dump renders, a picker
     /// mode's token (`default`, `states`, `factions`, ...) or `scripted:<name>`.
     map_mode: viewer_world::map::map_mode::MapMode,
-    /// Viewer-local allied-plan switch for dumps and window dumps.
+    /// Viewer-local allied-plan switch for dumps and window dumps; unset takes the map option
+    /// default.
     allied_plans: Option<bool>,
-    /// `--day-night`: the map's day/night lighting for dumps and window dumps;
-    /// the desktop app's maps take its graphics preferences.
+    /// `--day-night`: the map's day/night lighting for dumps and window dumps, unset taking the
+    /// map option default; the desktop app's maps take its graphics preferences.
     day_night: Option<bool>,
     /// `--free-overlays`: whether a dump or window dump from a free camera draws the map's
     /// interface standing in the world, as the fly and walk modes' overlay choice does. Off by
@@ -410,8 +411,8 @@ struct Options {
     /// comparison pipeline uses 1.0, so that is the default; the desktop app's
     /// maps take its setting ([`viewer_foundation::map::ui_scale`]).
     ui_scale: Option<f32>,
-    /// `--counter-colors` and `--nato-counters`: the game's counter options
-    /// ([`viewer_counters::map::counters::CounterSettings`]) in place of `settings.txt`'s.
+    /// `--counter-colors` and `--nato-counters`: the counter options
+    /// ([`viewer_counters::map::counters::CounterSettings`]) in place of their defaults.
     counter_colors: Option<viewer_counters::map::counters::CounterColorMode>,
     nato_counters: Option<bool>,
     /// `--diagnostics`: show the map's technical stats and data limitations
@@ -430,14 +431,17 @@ struct Options {
 }
 
 impl Options {
-    /// `settings`, the user's counter options, with the command line's overrides.
+    /// The counter options: the command line's, else the map option default for colours and
+    /// `nato`, the user's `settings.txt` frame.
     pub(crate) fn counter_settings(
         &self,
-        settings: viewer_counters::map::counters::CounterSettings,
+        nato: bool,
     ) -> viewer_counters::map::counters::CounterSettings {
         viewer_counters::map::counters::CounterSettings {
-            color_mode: self.counter_colors.unwrap_or(settings.color_mode),
-            nato: self.nato_counters.unwrap_or(settings.nato),
+            color_mode: self
+                .counter_colors
+                .unwrap_or(viewer_counters::map::counters::CounterColorMode::DEFAULT),
+            nato: self.nato_counters.unwrap_or(nato),
         }
     }
 
@@ -1312,7 +1316,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("{line}");
         }
         // orders: the recorded player's battle plan
-        let show_allied = options.allied_plans.unwrap_or(false);
+        let show_allied = options
+            .allied_plans
+            .unwrap_or(dashboard::map_display::option_defaults::ALLIED_PLANS);
         let order_field = if show_allied {
             document.order_field_with_allied(&options.perspective, true)?
         } else {
@@ -1404,7 +1410,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ui_scale,
             &options.perspective,
             omitted,
-            options.counter_settings(document.game_counters),
+            options.counter_settings(document.game_nato),
             &options.map_mode,
         )?;
         let mut combat_warnings = Vec::new();
@@ -1431,7 +1437,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     extent(options.size, ui_scale),
                     &options.perspective,
                     None,
-                    options.counter_settings(document.game_counters).nato,
+                    options.counter_settings(document.game_nato).nato,
                     false,
                     options.presentation_time + gui_elapsed as f32,
                     true,
@@ -1556,8 +1562,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Request {
                 size: options.size,
                 camera,
-                day_night: DayNight::at_hour(hour)
-                    .with_cycle(options.day_night.unwrap_or(graphics.day_night)),
+                day_night: DayNight::at_hour(hour).with_cycle(
+                    options
+                        .day_night
+                        .unwrap_or(dashboard::map_display::option_defaults::DAY_NIGHT),
+                ),
                 // `vGlobalTime`: zero unless `--presentation-time` names one, so
                 // a headless dump is deterministic either way.
                 animation_time: options.presentation_time,
@@ -1670,7 +1679,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             frame,
             &counter_report.perspective,
             viewer_counter_products::map::counter_tooltips::Style {
-                nato: options.counter_settings(document.game_counters).nato,
+                nato: options.counter_settings(document.game_nato).nato,
                 diagnostics: options.diagnostics,
             },
         );
@@ -1730,7 +1739,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     frame,
                     province,
                     &counter_report.perspective,
-                    options.counter_settings(document.game_counters).nato,
+                    options.counter_settings(document.game_nato).nato,
                     &selected,
                     &replay,
                     &mode,
@@ -2529,7 +2538,10 @@ mod tests {
     fn perspective_and_fog_are_the_two_view_options() {
         let default = parse(&["campaign.battleplan"]).unwrap();
         assert_eq!(default.perspective, Choice::default());
-        assert!(default.perspective.fog);
+        assert_eq!(
+            default.perspective.fog,
+            dashboard::map_display::option_defaults::FOG
+        );
         let options = parse(&[
             "campaign.battleplan",
             "--perspective",
@@ -2550,20 +2562,24 @@ mod tests {
         assert!(parse(&["campaign.battleplan", "--fog"]).is_err());
     }
 
-    /// The counter options default to `settings.txt`'s and take the command line's overrides.
+    /// Counter colours default to the map option's, NATO frames to `settings.txt`'s; the
+    /// command line overrides either.
     #[test]
-    fn counter_options_override_the_users_settings() {
+    fn counter_options_override_the_defaults() {
         use viewer_counters::map::counters::{CounterColorMode, CounterSettings};
-        let from_file = CounterSettings {
-            color_mode: CounterColorMode::Country,
-            nato: true,
-        };
+        let from_file = true;
         let default = parse(&["campaign.battleplan"]).unwrap();
-        assert_eq!(default.counter_settings(from_file), from_file);
+        assert_eq!(
+            default.counter_settings(from_file),
+            CounterSettings {
+                color_mode: CounterColorMode::Allegiance,
+                nato: true,
+            }
+        );
         let options = parse(&[
             "campaign.battleplan",
             "--counter-colors",
-            "Allegiance",
+            "country",
             "--nato-counters",
             "off",
         ])
@@ -2571,7 +2587,7 @@ mod tests {
         assert_eq!(
             options.counter_settings(from_file),
             CounterSettings {
-                color_mode: CounterColorMode::Allegiance,
+                color_mode: CounterColorMode::Country,
                 nato: false,
             }
         );

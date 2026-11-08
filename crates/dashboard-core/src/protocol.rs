@@ -522,7 +522,7 @@ impl Default for MapOptions {
     fn default() -> Self {
         Self {
             country: None,
-            fog: true,
+            fog: crate::map_display::option_defaults::FOG,
             map_mode: None,
             map_mode_slots: Vec::new(),
             picker_hidden: false,

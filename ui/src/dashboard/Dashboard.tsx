@@ -24,6 +24,7 @@ import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
+import { DEFAULT_MAP_OPTIONS } from './mapPicker';
 import { useSourceRoles } from './sources';
 import { PlaybackCountryPicker, PlaybackStrip } from './controls';
 import ReplayLibraryMenu from './ReplayLibraryMenu';
@@ -82,7 +83,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>({});
   const [loadErrors, setLoadErrors] = useState<Record<string, Failure>>({});
   const hasOpened = useRef(false);
-  const [mapOptions, setMapOptions] = useState<MapOptions>({ country: null, fog: true });
+  const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
   // The campaign map's picker choices, sent back with its options so a restarted viewer keeps them.
   const [campaignPicked, setCampaignPicked] = useState<Pick<MapOptions, 'mapMode' | 'mapModeSlots'>>({});
   useEffect(() => {

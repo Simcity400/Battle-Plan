@@ -164,7 +164,7 @@ pub const VISION_TABLES: &[TableId] = &[
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Choice {
     pub country: Country,
-    /// fog of war on, the game's default.
+    /// Fog of war; the map option's default until chosen.
     pub fog: bool,
 }
 
@@ -172,7 +172,7 @@ impl Default for Choice {
     fn default() -> Self {
         Self {
             country: Country::Recorded,
-            fog: true,
+            fog: dashboard_core::map_display::option_defaults::FOG,
         }
     }
 }

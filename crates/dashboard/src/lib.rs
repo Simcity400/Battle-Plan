@@ -231,6 +231,18 @@ pub fn typescript_contract() -> String {
         "/** How a country-colours reply past the product byte budget is refused: ask for fewer hours. */\nexport const COUNTRY_COLOURS_OVER_BUDGET = {:?};\n",
         products::country_colours::OVER_BUDGET
     ));
+    {
+        use map_display::option_defaults as defaults;
+        text.push_str(&format!(
+            "/** What every map option is until the user chooses. */\nexport const MAP_OPTION_DEFAULTS = {{ dayNight: {}, alliedPlans: {}, fog: {}, countryCounterColours: {}, playerCounters: {}, radar: {} }} as const;\n",
+            defaults::DAY_NIGHT,
+            defaults::ALLIED_PLANS,
+            defaults::FOG,
+            defaults::COUNTRY_COUNTER_COLOURS,
+            defaults::PLAYER_COUNTERS,
+            defaults::RADAR,
+        ));
+    }
     text
 }
 

@@ -237,9 +237,7 @@ impl Product for GameWindow {
 /// unit glyphs' frame.
 fn nato(options: &ContentOptions) -> io::Result<bool> {
     let keys = installed_content_settings::settings::read_keys(&options.options.user_dir)?;
-    installed_content_settings::settings::Counters::read(&keys)
-        .map(|counters| counters.nato == 1)
-        .map_err(invalid)
+    installed_content_settings::settings::nato_counters(&keys).map_err(invalid)
 }
 
 /// The stack identity of the content `options` bind: their folders and presentation.

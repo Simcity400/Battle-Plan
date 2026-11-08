@@ -46,7 +46,7 @@ use {
     },
     viewer_foundation::map::{
         camera::{Camera, MapSize},
-        frame::DayNight,
+        frame::{DayNight, GameSpeeds},
     },
 };
 // names
@@ -57,6 +57,7 @@ use std::{
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
+use dashboard::map_display::option_defaults;
 use viewer_foundation::diagnostics_panel::tooltip_warning_lines;
 use viewer_world::map::scene::SceneInput;
 use {
@@ -1515,9 +1516,9 @@ impl Viewer {
         // counters: the perspective starts where the command line put it.
         let perspective = options.perspective.clone();
         let map_mode = options.map_mode.clone();
-        // Replaced with the document's `settings.txt` options when one loads.
+        // Replaced with the document's `settings.txt` NATO frame when one loads.
         let counter_view = CounterView::new(
-            options.counter_settings(viewer_counters::map::counters::CounterSettings::default()),
+            options.counter_settings(installed_content_settings::settings::NATO_COUNTERS_DEFAULT),
         );
         let hidden_since = embedded.as_ref().map(|_| Instant::now());
         // The monitors are read off the UI thread; start before the first map.
@@ -1588,12 +1589,12 @@ impl Viewer {
             // A host's maps take its graphics preferences when their recording
             // opens; a `--window-dump` keeps the dump's options.
             graphics: dashboard::protocol::MapGraphics {
-                day_night: options.day_night.unwrap_or(true),
-                show_allied_plans: options.allied_plans.unwrap_or(false),
+                day_night: options.day_night.unwrap_or(option_defaults::DAY_NIGHT),
+                show_allied_plans: options.allied_plans.unwrap_or(option_defaults::ALLIED_PLANS),
                 ..Default::default()
             },
             counter_filter: Default::default(),
-            player_counters: false,
+            player_counters: option_defaults::PLAYER_COUNTERS,
             volumes: Default::default(),
             overlay_layers: Default::default(),
             counter_owners: Default::default(),
@@ -1715,7 +1716,7 @@ impl Viewer {
         self.clock_anchor = None;
         self.playhead = None;
         self.day_night = Default::default();
-        self.counter_view = CounterView::new(self.options.counter_settings(document.game_counters));
+        self.counter_view = CounterView::new(self.options.counter_settings(document.game_nato));
         self.unit_selection = Default::default();
         self.air_selection = Default::default();
         self.fleet_selection = Default::default();
@@ -1815,8 +1816,13 @@ impl Viewer {
     }
 
     /// Lighting for the frame being drawn, including a setting changed at the same replay hour.
-    fn frame_day_night(&self, hour: i32) -> DayNight {
-        DayNight::at_hour(hour).with_cycle(self.graphics.day_night)
+    /// The cycle shows while it is on and the game would draw it at this playback; without the
+    /// recorded speeds it shows only while paused, and the warnings name why.
+    fn frame_day_night(&self, hour: i32, speeds: &Result<GameSpeeds, String>) -> DayNight {
+        let shown = speeds.as_ref().map_or(!self.playing, |speeds| {
+            speeds.shows_cycle(self.playing, self.speed)
+        });
+        DayNight::at_hour(hour).with_cycle(self.graphics.day_night && shown)
     }
 
     /// The host's campaign or widget settings, including the counter setting.
@@ -1837,7 +1843,7 @@ impl Viewer {
         if let Some(document) = &self.document {
             self.counter_view.settings.nato = graphics
                 .nato_counters
-                .unwrap_or_else(|| self.options.counter_settings(document.game_counters).nato);
+                .unwrap_or_else(|| self.options.counter_settings(document.game_nato).nato);
         }
     }
 
@@ -2177,6 +2183,13 @@ impl Viewer {
             warnings.extend(device_requirements(device.features()));
         }
         warnings.extend(document.warnings.iter().cloned());
+        if self.graphics.day_night
+            && let Err(error) = &document.game_speeds
+        {
+            warnings.push(format!(
+                "Day/night cycle: {error}, so it shows only while paused"
+            ));
+        }
         warnings.extend(shown.political_warnings.iter().cloned());
         warnings.extend(shown.plan_warnings.iter().cloned());
         warnings.extend(shown.building_warnings.iter().cloned());
@@ -2691,7 +2704,7 @@ impl Viewer {
                     self.last_step = now;
                 }
                 self.counter_view =
-                    CounterView::new(self.options.counter_settings(document.game_counters));
+                    CounterView::new(self.options.counter_settings(document.game_nato));
                 if self.embedded.is_none() {
                     self.graphics.full_resolution = document.game_full_resolution;
                     self.volumes = document.game_audio;
@@ -5278,7 +5291,7 @@ impl Viewer {
                 && hit.kind == viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce)
                 .then(|| Arc::clone(&hit.members))
         });
-        let target_light = self.frame_day_night(document.playback.hour());
+        let target_light = self.frame_day_night(document.playback.hour(), &document.game_speeds);
         let day_night = self.day_night.update(
             document.playback.hour(),
             target_light,

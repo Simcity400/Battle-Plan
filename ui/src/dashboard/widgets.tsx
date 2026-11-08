@@ -8,12 +8,12 @@ import type { OptionValue } from './options';
 import WidgetBoundary from './WidgetBoundary';
 import WidgetState from '../components/WidgetState';
 import { scopeReason } from './widgetAvailability';
+import { DEFAULT_MAP_OPTIONS } from './mapPicker';
 
 export type { WidgetRuntime } from './definitions';
 
 interface Props { widget: WidgetSpec; runtime: WidgetRuntime; active?: boolean; mapOptions?: MapOptions; headerSlot?: HTMLElement | null; countrySlot?: HTMLElement | null; onDiagnostics?: (warnings: string[]) => void;
   setOption?: (key: string, value: OptionValue) => void; setOptions?: (values: Readonly<Record<string, OptionValue>>) => void }
-const DEFAULT_MAP_OPTIONS: MapOptions = { country: null, fog: true };
 const noDiagnostics = () => {};
 
 /** Renders the registered widget for a spec; the grid never switches on a kind. */
