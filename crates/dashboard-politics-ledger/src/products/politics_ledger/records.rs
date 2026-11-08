@@ -58,7 +58,7 @@ pub(super) struct DailyRecord {
 
 /// An item as every reply shows it, resolved at its first payment from the facts that payment's
 /// hour recorded and the recorded content. Its tooltip's token is named by its tag and ordinal
-/// as a reply reads it ([`Self::keyed`]): a lens resolves items before the emit numbers them.
+/// as a reply reads it ([`Self::keyed`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct ItemRecord {
     /// Its id is its first payment's.

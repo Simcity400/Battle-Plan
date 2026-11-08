@@ -47,7 +47,11 @@
 
 use dashboard_base::prepared::frame_changes::FrameChanges;
 use dashboard_base::products::{Product, country_groups::HourSpan, politics_content};
-use dashboard_base::{catalogue, source::Source};
+use dashboard_base::{
+    catalogue,
+    prepared::identity::{Digest, Identity},
+    source::Source,
+};
 use dashboard_core::{config::LoadContext, protocol::validate_tag};
 use dashboard_text::identity::character_script_token_in;
 use dashboard_text::{
@@ -88,7 +92,10 @@ pub mod block;
 pub mod columnar;
 pub mod portraits;
 pub mod prepared;
+mod present;
 pub mod served;
+use present::{Present, Requirements};
+pub use present::{Shown, served_content};
 pub const MAX_REPLY_BYTES: usize = dashboard_base::products::MAX_PRODUCT_REPLY_BYTES;
 // Portrait tokens map army 0x289d to 1 and navy 0x289e to 2.
 const PORTRAIT_ARMY: u32 = 1;
@@ -146,8 +153,6 @@ pub struct UnitLeadersParams {
 #[serde(rename_all = "camelCase")]
 #[derive(replay_spool::Spooled)]
 pub struct LeaderPerson {
-    pub character_id: u32,
-    pub token: Option<String>,
     pub name: Option<String>,
     /// Stable recorded read used by the lazy artwork request.
     pub portrait_hour: i32,
@@ -227,6 +232,68 @@ mod trait_indices {
     ) -> Result<Option<Arc<[u32]>>, D::Error> {
         Option::<Vec<u32>>::deserialize(deserializer).map(|traits| traits.map(Arc::from))
     }
+}
+
+/// A person as recorded: the spellings its name derives from, and its portrait's read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Person {
+    token: Option<String>,
+    /// The character's stored name token, None where it is not UTF-8.
+    saved: Option<String>,
+    portrait_hour: i32,
+    reference: u64,
+}
+
+/// A role as recorded: its served rank and attribute names derive from its category and kind.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Role {
+    owner: Option<String>,
+    category: i32,
+    kind: u8,
+    maximum_skill: Option<i32>,
+}
+
+/// A role's identity: its owner's slot, category, kind and ceiling.
+type RoleKey = (Option<u32>, i32, u8, Option<i32>);
+
+/// A run's recorded experience and trait training, from which its progress text derives.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Progress {
+    experience: i64,
+    /// None while the training rows are not read whole.
+    training: Option<Arc<[Trained]>>,
+}
+
+/// A training row: a trait in training, or an experience factor, with its spelling.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Trained {
+    factor: bool,
+    token: Option<Arc<str>>,
+    experience: i64,
+}
+
+/// A run as preparation keeps it: its people, roles and progress as recorded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Run {
+    first_hour: i32,
+    last_hour: i32,
+    value: Values,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(replay_spool::Spooled)]
+pub(crate) struct Values {
+    person: u32,
+    role: u32,
+    skill: Option<i32>,
+    components: [i32; 4],
+    progress: Option<Progress>,
+    traits: Option<Arc<[u32]>>,
 }
 
 mod owner_projection {
@@ -461,7 +528,6 @@ pub struct LeaderTraitInfo {
     pub token: String,
     pub name: Option<String>,
     pub icon: Option<String>,
-    pub missing: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, TS)]
@@ -841,7 +907,7 @@ fn observe(
     }
 }
 
-fn change_date(previous: Option<&UnitLeaderRun>, hour: i32, start: i32) -> LeaderChangeDate {
+fn change_date(previous: Option<&Run>, hour: i32, start: i32) -> LeaderChangeDate {
     let consecutive = previous.is_some_and(|run| run.last_hour.checked_add(1) == Some(hour));
     if hour == start {
         LeaderChangeDate::HeldBefore
@@ -1606,8 +1672,8 @@ pub fn check_content(
         attribute_names(kind, Some(&content.catalogue));
     }
     for effects in content.leaders.traits.iter() {
-        let info = trait_info(&effects.name, Some(&content));
-        if let Some(reason) = info.missing {
+        let (_, missing) = trait_info(&effects.name, Some(&content));
+        if let Some(reason) = missing {
             findings.push(Finding::new(Kind::Refused, &effects.name, reason));
         }
         findings.extend(
@@ -1709,12 +1775,10 @@ fn person(
     row: &UnitLeaderRow,
     character: Option<&CharacterRow>,
     token: Option<&str>,
-    content: Option<&Content>,
     reply: &mut UnitLeadersReply,
-) -> LeaderPerson {
-    let token = token.map(str::to_owned);
-    let name = character.and_then(|c| match std::str::from_utf8(&c.token) {
-        Ok(saved) => content.and_then(|c| c.politics.character_name(token.as_deref(), saved)),
+) -> Person {
+    let saved = character.and_then(|c| match std::str::from_utf8(&c.token) {
+        Ok(saved) => Some(saved.to_owned()),
         Err(_) => {
             reply
                 .warnings
@@ -1722,13 +1786,43 @@ fn person(
             None
         }
     });
-    LeaderPerson {
-        character_id: row.character_id,
-        token,
-        name,
+    Person {
+        token: token.map(str::to_owned),
+        saved,
         portrait_hour: frame.hour(),
-        portrait_reference: handle(row).to_string(),
+        reference: handle(row),
     }
+}
+
+/// A person's identity: the character and kind, its spellings and its portrait holder.
+fn person_identity(
+    row: &UnitLeaderRow,
+    character: Option<&CharacterRow>,
+    token: Option<&str>,
+    holder: Option<&CharacterPortraitRow>,
+) -> Identity {
+    let mut digest = Digest::default();
+    digest
+        .u32(row.character_id)
+        .u8(row.kind)
+        .some(token, |digest, token| {
+            digest.bytes(token.as_bytes());
+        })
+        .some(character, |digest, character| {
+            digest.bytes(&character.token);
+        })
+        .some(holder, |digest, holder| {
+            digest.u32(holder.character).u64(holder.portraits.len() as u64);
+            for portrait in &holder.portraits {
+                digest
+                    .u32(portrait.category)
+                    .u32(portrait.size)
+                    .u8(portrait.is_set)
+                    .u32(portrait.kind)
+                    .bytes(&portrait.identity);
+            }
+        });
+    digest.finish()
 }
 
 #[derive(replay_spool::Spooled)]
@@ -1966,7 +2060,7 @@ impl LeaderState {
 #[derive(Clone, Serialize, Deserialize)]
 #[derive(replay_spool::Spooled)]
 struct StoredRun {
-    run: UnitLeaderRun,
+    run: Run,
     previous: Option<usize>,
     emitted: bool,
 }
@@ -1974,7 +2068,7 @@ struct StoredRun {
 fn append_stored_run(
     state: &mut LeaderState,
     runs: &mut Vec<StoredRun>,
-    value: LeaderValues,
+    value: Values,
     hour: i32,
     start: i32,
 ) {
@@ -1989,47 +2083,10 @@ fn append_stored_run(
     push_run(state, runs, value, hour);
 }
 
-/// [`append_stored_run`] of a projected run whose progress its event writes as `written`. Only a
-/// run still open at its segment's end holds its progress as a value too, so progress is
-/// compared as written: equal values write equal bytes.
-fn append_written_run(
-    state: &mut LeaderState,
-    (runs, progress): (&mut Vec<StoredRun>, &mut HashMap<usize, Arc<[u8]>>),
-    value: LeaderValues,
-    written: Arc<[u8]>,
-    (hour, start): (i32, i32),
-) -> io::Result<()> {
-    note_trait_gains(state, runs, &value, hour, start);
-    if let Some(i) = state.last_run {
-        let last = &runs[i].run;
-        let alike = last.last_hour.checked_add(1) == Some(hour)
-            && last.value.person == value.person
-            && last.value.role == value.role
-            && last.value.skill == value.skill
-            && last.value.components == value.components
-            && last.value.traits == value.traits
-            && match progress.get(&i) {
-                Some(held) => **held == *written,
-                None => serde_json::to_vec(&last.value.progress)?.as_slice() == &*written,
-            };
-        if alike {
-            let last = &mut runs[i].run;
-            last.last_hour = hour;
-            if value.progress.is_some() {
-                last.value.progress = value.progress;
-            }
-            return Ok(());
-        }
-    }
-    push_run(state, runs, value, hour);
-    progress.insert(runs.len() - 1, written);
-    Ok(())
-}
-
 fn note_trait_gains(
     state: &mut LeaderState,
     runs: &[StoredRun],
-    value: &LeaderValues,
+    value: &Values,
     hour: i32,
     start: i32,
 ) {
@@ -2046,11 +2103,11 @@ fn note_trait_gains(
     );
 }
 
-fn push_run(state: &mut LeaderState, runs: &mut Vec<StoredRun>, value: LeaderValues, hour: i32) {
+fn push_run(state: &mut LeaderState, runs: &mut Vec<StoredRun>, value: Values, hour: i32) {
     let known = value.traits.is_some();
     let index = runs.len();
     runs.push(StoredRun {
-        run: UnitLeaderRun {
+        run: Run {
             first_hour: hour,
             last_hour: hour,
             value,
@@ -2240,19 +2297,12 @@ struct NavalSource {
     game_hour: i32,
 }
 
-/// Each training trait's spelling, name and required experience, while the tokens spelling
-/// them stand: a progress read formats only its experience.
+/// Training tokens' spellings, kept while the tokens table stands.
 #[derive(Default)]
 struct TraitNames {
     /// The tokens' epoch and completeness they were read at.
     at: Option<(u64, bool)>,
-    names: HashMap<u32, TraitName>,
-}
-
-struct TraitName {
-    token: Option<String>,
-    name: Option<String>,
-    required_raw: Option<String>,
+    names: HashMap<u32, Option<Arc<str>>>,
 }
 
 impl TraitNames {
@@ -2263,24 +2313,11 @@ impl TraitNames {
         }
     }
 
-    fn named<'s>(
-        &mut self,
-        token: u32,
-        spelled: impl Fn(u32) -> Option<&'s str>,
-        content: Option<&Content>,
-    ) -> &TraitName {
-        self.names.entry(token).or_insert_with(|| {
-            let token = spelled(token);
-            TraitName {
-                token: token.map(str::to_owned),
-                name: token.and_then(|token| {
-                    content.and_then(|c| c.catalogue.localised(token, View::Plain))
-                }),
-                required_raw: token
-                    .and_then(|token| content.and_then(|c| c.leaders.traits.get(token)))
-                    .map(|t| (i64::from(t.required_experience()) * 100_000).to_string()),
-            }
-        })
+    fn spelled<'s>(&mut self, token: u32, spelled: impl Fn(u32) -> Option<&'s str>) -> Option<Arc<str>> {
+        self.names
+            .entry(token)
+            .or_insert_with(|| spelled(token).map(Arc::from))
+            .clone()
     }
 }
 
@@ -2343,13 +2380,15 @@ pub(crate) struct Scan {
     leader_indices: HashMap<u64, usize>,
     leaders: Vec<LeaderState>,
     stored_runs: Vec<StoredRun>,
-    /// Each stored run's progress as its event writes it, where a projection serialized it.
-    #[serde(default)]
-    run_progress: HashMap<usize, Arc<[u8]>>,
     #[serde(skip)]
     row_indices: Vec<Option<(u64, usize)>>,
-    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
-    people: HashMap<String, u32>,
+    #[serde(with = "dashboard_core::map_pairs")]
+    people: HashMap<Identity, u32>,
+    /// The people and roles runs name, by number.
+    persons: Vec<Person>,
+    role_list: Vec<Role>,
+    /// The experience the kept runs' progress requires.
+    requirements: Requirements,
     #[serde(skip)]
     last_people: HashMap<(u32, u8), PersonRead>,
     /// How often the identity, owner and trait tables' views changed at the
@@ -2384,10 +2423,8 @@ pub(crate) struct Scan {
     trait_names: TraitNames,
     #[serde(skip)]
     formation_names: HashMap<u64, (Option<Vec<u8>>, Option<String>)>,
-    #[serde(serialize_with = "dashboard_core::map_pairs::ordered_map")]
-    roles: HashMap<String, u32>,
-    #[serde(skip)]
-    rank_names: HashMap<i32, Option<String>>,
+    #[serde(with = "dashboard_core::map_pairs")]
+    roles: HashMap<RoleKey, u32>,
     #[serde(skip)]
     skill_ceilings: HashMap<(i32, i32), Option<i32>>,
     refusals: catalogue::Refusals,
@@ -2825,7 +2862,7 @@ impl Scan {
         params: &UnitLeadersParams,
         content: Option<&Content>,
         changes: &FrameChanges,
-        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+        admit: &mut impl FnMut(u64, &Role, Option<(u32, u32)>),
     ) -> io::Result<()> {
         self.observe_changes(
             decoded, replay, params, content, changes, changes, None, admit,
@@ -2853,7 +2890,7 @@ impl Scan {
         changes: &FrameChanges,
         tables: &dyn TableChanges,
         kept: Option<&Kept<'_>>,
-        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+        admit: &mut impl FnMut(u64, &Role, Option<(u32, u32)>),
     ) -> io::Result<bool> {
         self.observe_step(
             decoded,
@@ -2877,7 +2914,7 @@ impl Scan {
         changes: &FrameChanges,
         tables: &dyn TableChanges,
         kept: Option<&Kept<'_>>,
-        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+        admit: &mut impl FnMut(u64, &Role, Option<(u32, u32)>),
     ) -> io::Result<bool> {
         // Check mode reads every reused input again, which needs the whole
         // frame.
@@ -3283,7 +3320,7 @@ impl Scan {
         replay: &Replay,
         params: &UnitLeadersParams,
         content: Option<&Content>,
-        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+        admit: &mut impl FnMut(u64, &Role, Option<(u32, u32)>),
     ) -> io::Result<()> {
         self.observe_rows(
             Viewed::decoded(decoded),
@@ -3319,7 +3356,7 @@ impl Scan {
         since: Option<&Since<'_>>,
         kept: Option<&Kept<'_>>,
         selected: Option<&[usize]>,
-        admit: &mut impl FnMut(u64, &LeaderRole, Option<(u32, u32)>),
+        admit: &mut impl FnMut(u64, &Role, Option<(u32, u32)>),
     ) -> io::Result<bool> {
         let _cpu = ::replay_frame::cpu::scope_phase("leaders:rows");
         // A projection binds its commands itself ([`columnar::Work::bind_commands`]).
@@ -3351,6 +3388,8 @@ impl Scan {
             stored_runs,
             row_indices,
             people,
+            persons,
+            role_list,
             last_people,
             identity_epoch,
             identity_tables,
@@ -3364,7 +3403,6 @@ impl Scan {
             trait_names,
             formation_names,
             roles,
-            rank_names,
             skill_ceilings,
             refusals,
             trait_tokens,
@@ -3659,7 +3697,7 @@ impl Scan {
                 .map(|last| last.owner_slot)
                 .unwrap_or_else(|| link_slot_in(&links, row.owner));
             let owner_known = if owner_unchanged {
-                reply.roles[state.last_read.as_ref().expect("cached owner").role as usize]
+                role_list[state.last_read.as_ref().expect("cached owner").role as usize]
                     .owner
                     .is_some()
             } else {
@@ -3842,7 +3880,7 @@ impl Scan {
             let admission_changed = state.last_read.as_ref().is_none_or(|last| {
                 last.holder != holder
                     || last.row.kind != row.kind
-                    || reply.roles[last.role as usize].owner.as_ref() != owner_tags.get(row.owner)
+                    || role_list[last.role as usize].owner.as_ref() != owner_tags.get(row.owner)
             });
             let person_phase = ::replay_frame::cpu::scope_phase("leaders:car_person");
             let person_id = if let Some(last) = state.last_read.as_ref().filter(|last| {
@@ -3871,7 +3909,7 @@ impl Scan {
                     .filter(|cached| {
                         cached.character.as_ref() == character
                             && cached.holder.as_ref() == holder
-                            && reply.people[cached.person as usize].token.as_deref() == token
+                            && persons[cached.person as usize].token.as_deref() == token
                     })
                     .map(|cached| cached.person);
                 if let Some(index) = cached {
@@ -3881,27 +3919,19 @@ impl Scan {
                         .epoch = *identity_epoch;
                     index
                 } else {
-                    let identity = format!(
-                        "{}:{}:{:?}:{:?}:{:?}",
-                        row.character_id,
-                        row.kind,
-                        token,
-                        character.map(|c| &c.token),
-                        holder
-                    );
                     // Retain the operand identity, never the recorded rows themselves.
-                    let identity = blake3::hash(identity.as_bytes()).to_hex().to_string();
+                    let identity = person_identity(row, character, token, holder);
                     let index = if let Some(&index) = people.get(&identity) {
                         index
                     } else {
                         let before = reply.warnings.len();
-                        let person = person(views, row, character, token, content, reply);
-                        let index = reply.people.len() as u32;
+                        let person = person(views, row, character, token, reply);
+                        let index = persons.len() as u32;
                         if let Some(work) = projection {
                             work.person_warnings
                                 .insert(index, reply.warnings[before..].to_vec());
                         }
-                        reply.people.push(person);
+                        persons.push(person);
                         people.insert(identity, index);
                         index
                     };
@@ -3919,7 +3949,7 @@ impl Scan {
             };
             drop(person_phase);
             let owner = if owner_unchanged {
-                reply.roles[state.last_read.as_ref().expect("cached owner").role as usize]
+                role_list[state.last_read.as_ref().expect("cached owner").role as usize]
                     .owner
                     .as_deref()
             } else {
@@ -3976,57 +4006,25 @@ impl Scan {
                 trait_names.at((progress_epochs[1], progress_tokens.is_some()));
                 let training = read.map(|rows| {
                     rows.iter()
-                        .filter(|p| p.list == 0)
                         .map(|p| {
-                            let named = trait_names.named(p.token_id as u32, spelled, content);
-                            if named.token.is_none() {
+                            let token = trait_names.spelled(p.token_id as u32, &spelled);
+                            if token.is_none() {
                                 refusals.note(
                                     "Training trait token is unavailable",
                                     format!("{reference}:{}", p.ordinal),
                                 );
                             }
-                            LeaderTraining {
-                                token: named.token.clone(),
-                                name: named.name.clone(),
-                                experience_raw: p.experience.to_string(),
-                                required_raw: named.required_raw.clone(),
+                            Trained {
+                                factor: p.list == 1,
+                                token,
+                                experience: p.experience,
                             }
                         })
                         .collect()
                 });
-                let factors = read.map(|rows| {
-                    rows.iter()
-                        .filter(|p| p.list == 1)
-                        .map(|p| {
-                            let named = trait_names.named(p.token_id as u32, spelled, content);
-                            if named.token.is_none() {
-                                refusals.note(
-                                    "Training trait token is unavailable",
-                                    format!("{reference}:{}", p.ordinal),
-                                );
-                            }
-                            LeaderTrainingFactor {
-                                token: named.token.clone(),
-                                name: named.name.clone(),
-                                factor_raw: p.experience.to_string(),
-                            }
-                        })
-                        .collect()
-                });
-                Some(Some(LeaderProgress {
-                    experience_raw: row.experience.to_string(),
-                    next_required_raw: (row.skill_status != 0)
-                        .then_some(content)
-                        .flatten()
-                        .and_then(|c| {
-                            c.leaders
-                                .skills
-                                .next_required_experience(row.skill_level, row.category)
-                        })
-                        .flatten()
-                        .map(|v| (i64::from(v) * 100_000).to_string()),
+                Some(Some(Progress {
+                    experience: row.experience,
                     training,
-                    factors,
                 }))
             };
             let training = if progress_same {
@@ -4072,7 +4070,7 @@ impl Scan {
                     })
                     && traits_unchanged
                     && (owner_unchanged
-                        || reply.roles[last.role as usize].owner.as_deref() == owner)
+                        || role_list[last.role as usize].owner.as_deref() == owner)
                     && last.person == person_id
             });
             if unchanged
@@ -4095,7 +4093,7 @@ impl Scan {
                     read.training = training;
                 }
                 if admission_changed {
-                    admit(reference, &reply.roles[read.role as usize], holder);
+                    admit(reference, &role_list[read.role as usize], holder);
                 }
                 continue;
             }
@@ -4139,7 +4137,7 @@ impl Scan {
                 .filter(|last| {
                     last.row.skill_level == row.skill_level && last.row.category == row.category
                 })
-                .map(|last| reply.roles[last.role as usize].maximum_skill)
+                .map(|last| role_list[last.role as usize].maximum_skill)
                 .unwrap_or_else(|| {
                     *skill_ceilings
                         .entry((row.skill_level, row.category))
@@ -4149,53 +4147,38 @@ impl Scan {
                             })
                         })
                 });
-            let key = serde_json::to_string(&(owner_slot, row.category, row.kind, maximum_skill))?;
+            let key: RoleKey = (owner_slot, row.category, row.kind, maximum_skill);
             let cached_role = state
                 .last_read
                 .as_ref()
                 .filter(|last| {
                     last.row.category == row.category
                         && last.row.kind == row.kind
-                        && reply.roles[last.role as usize].maximum_skill == maximum_skill
+                        && role_list[last.role as usize].maximum_skill == maximum_skill
                         && (owner_unchanged
-                            || reply.roles[last.role as usize].owner.as_deref() == owner)
+                            || role_list[last.role as usize].owner.as_deref() == owner)
                 })
                 .map(|last| last.role)
                 .or_else(|| roles.get(&key).copied())
-                .filter(|&i| reply.roles[i as usize].owner.as_deref() == owner);
+                .filter(|&i| role_list[i as usize].owner.as_deref() == owner);
             let role = if let Some(role) = cached_role {
                 role
             } else {
-                let owner = owner.map(str::to_owned);
-                let rank = rank_names
-                    .entry(row.category)
-                    .or_insert_with(|| {
-                        content.and_then(|c| {
-                            rank_key(row.category)
-                                .and_then(|key| c.catalogue.localised(key, View::Plain))
-                        })
-                    })
-                    .clone();
                 if row.skill_status != 0 && maximum_skill.is_none() {
                     refusals.note("Maximum skill is unavailable from recorded content or its skill definitions", row.category.to_string());
                 }
                 if rank_key(row.category).is_none() {
                     refusals.note("Unsupported leader rank category", row.category.to_string());
                 }
-                let index = reply.roles.len() as u32;
-                reply.roles.push(LeaderRole {
-                    owner,
+                let index = role_list.len() as u32;
+                role_list.push(Role {
+                    owner: owner.map(str::to_owned),
                     category: row.category,
-                    rank,
                     kind: row.kind,
                     maximum_skill,
-                    attribute_names: attribute_names(
-                        row.kind,
-                        content.map(|content| content.catalogue.as_ref()),
-                    ),
                 });
                 if let Some(work) = projection {
-                    work.role_keys.push(key.clone());
+                    work.role_keys.push(key);
                 }
                 roles.insert(key, index);
                 index
@@ -4239,7 +4222,7 @@ impl Scan {
                 let last = state.last_run.expect("the progress's last run");
                 stored_runs[last].run.value.progress.clone()
             });
-            let value = LeaderValues {
+            let value = Values {
                 person: person_id,
                 role,
                 skill: (row.skill_status != 0).then_some(row.skill_level),
@@ -4256,7 +4239,7 @@ impl Scan {
                 work.begin(state, stored_runs, known)?;
             }
             if admission_changed {
-                admit(reference, &reply.roles[role as usize], holder);
+                admit(reference, &role_list[role as usize], holder);
             }
         }
         if let Some(work) = projection.as_mut() {
@@ -4486,10 +4469,28 @@ impl Scan {
         *walked = true;
         Ok(true)
     }
+    /// [`Self::finish`], its requirements and text read from the recorded `content` itself.
+    fn finish_reading(
+        mut self,
+        params: &UnitLeadersParams,
+        content: Option<&Content>,
+    ) -> io::Result<UnitLeadersReply> {
+        self.requirements.note(
+            self.stored_runs.iter().map(|stored| &stored.run),
+            &self.role_list,
+            &self.persons,
+            content,
+        );
+        let shown = content.map(Content::shown);
+        self.finish(params, content, shown.as_ref())
+    }
+
+    /// The careers `params` asks for, their text derived through `shown`.
     fn finish(
         mut self,
         params: &UnitLeadersParams,
         content: Option<&Content>,
+        shown: Option<&Shown>,
     ) -> io::Result<UnitLeadersReply> {
         self.seal();
         let requested: Option<BTreeSet<&str>> = match &params.selection {
@@ -4505,8 +4506,12 @@ impl Scan {
             results_recorded,
             mut token_list,
             mut refusals,
+            persons,
+            role_list,
+            requirements,
             ..
         } = self;
+        let mut present = Present::new(shown, &requirements)?;
         reply.leaders = leaders
             .into_iter()
             .filter_map(|state| {
@@ -4516,9 +4521,27 @@ impl Scan {
                 let mut leader = state.career;
                 let mut index = state.last_run;
                 while let Some(i) = index {
-                    let stored = &stored_runs[i];
-                    leader.runs.push(stored.run.clone());
-                    index = stored.previous;
+                    let stored = &stored_runs[i].run;
+                    let value = &stored.value;
+                    leader.runs.push(UnitLeaderRun {
+                        first_hour: stored.first_hour,
+                        last_hour: stored.last_hour,
+                        value: LeaderValues {
+                            person: value.person,
+                            role: value.role,
+                            skill: value.skill,
+                            components: value.components,
+                            progress: value.progress.as_ref().map(|progress| {
+                                present.progress(
+                                    progress,
+                                    value.skill,
+                                    role_list[value.role as usize].category,
+                                )
+                            }),
+                            traits: value.traits.clone(),
+                        },
+                    });
+                    index = stored_runs[i].previous;
                 }
                 leader.runs.reverse();
                 let mut hours = battle_hours.remove(&state.reference).unwrap_or_default();
@@ -4575,7 +4598,7 @@ impl Scan {
                 .collect();
             reply.people = used
                 .into_iter()
-                .map(|index| reply.people[index as usize].clone())
+                .map(|index| present.person(&persons[index as usize]))
                 .collect();
             let used_roles: BTreeSet<_> = reply
                 .leaders
@@ -4589,7 +4612,7 @@ impl Scan {
                 .collect();
             reply.roles = used_roles
                 .into_iter()
-                .map(|index| reply.roles[index as usize].clone())
+                .map(|index| present.role(&role_list[index as usize]))
                 .collect();
             for leader in &mut reply.leaders {
                 for run in &mut leader.runs {
@@ -4647,13 +4670,16 @@ impl Scan {
             .map(|info| (info.token.clone(), info))
             .collect();
         for token in token_list {
-            let info = prepared
-                .get(&token)
-                .cloned()
-                .unwrap_or_else(|| trait_info(&token, content));
-            if let Some(reason) = &info.missing {
-                refusals.note(reason.clone(), token);
-            }
+            let info = match prepared.get(&token) {
+                Some(info) => info.clone(),
+                None => {
+                    let (info, missing) = trait_info(&token, content);
+                    if let Some(reason) = missing {
+                        refusals.note(reason, token);
+                    }
+                    info
+                }
+            };
             reply.traits.push(info);
         }
         reply
@@ -4747,7 +4773,7 @@ fn scan(
             Ok(())
         },
     )?;
-    scan.finish(params, content)
+    scan.finish_reading(params, content)
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -4898,7 +4924,6 @@ pub fn present_traits(
             |catalogue| trait_icon(catalogue, registry, &token),
         );
         info.icon = shown.as_ref().ok().cloned();
-        info.missing = shown.as_ref().err().cloned();
     }
     Ok(())
 }
@@ -4921,7 +4946,8 @@ fn trait_icon(
         .map_err(|e| e.to_string())
 }
 
-fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
+/// A trait's name and icon, with why its icon could not be drawn.
+fn trait_info(token: &str, content: Option<&Content>) -> (LeaderTraitInfo, Option<String>) {
     let (name, icon, missing) = content
         .map(|content| {
             let catalogue = &content.catalogue;
@@ -4940,12 +4966,14 @@ fn trait_info(token: &str, content: Option<&Content>) -> LeaderTraitInfo {
             }
         })
         .unwrap_or((None, None, Some("Recorded content unavailable".into())));
-    LeaderTraitInfo {
-        token: token.into(),
-        name,
-        icon,
+    (
+        LeaderTraitInfo {
+            token: token.into(),
+            name,
+            icon,
+        },
         missing,
-    }
+    )
 }
 
 // Army and navy trait-window localisation keys.

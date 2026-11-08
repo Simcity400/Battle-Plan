@@ -58,7 +58,6 @@ use std::sync::atomic::Ordering;
 pub mod emit;
 pub mod facts;
 pub mod grants;
-mod lens;
 mod modifiers;
 pub mod query;
 pub mod served;
@@ -132,10 +131,6 @@ struct Country {
     /// shown in the slot's state, never joined into an assignment.
     unjoined_reads: usize,
     unjoined_starts: BTreeMap<u32, i32>,
-    /// While a lens folds it, each slot read's step of the slot's state ([`lens::Chain`]).
-    #[serde(skip)]
-    #[spool(skip)]
-    chains: Option<Vec<lens::Chain>>,
 }
 
 /// A slot's technology read without its recorded occurrence: named, but
@@ -773,16 +768,6 @@ impl Country {
                 .filter(|last| continuous && follows(read_after, last.last_hour, hour));
             let gate = last.is_some_and(|last| read.others(last));
             let kept = gate && last.is_some_and(|last| read.countdown(last, hour));
-            if let Some(chains) = &mut self.chains {
-                chains.push(lens::Chain {
-                    slot: row.index,
-                    gate,
-                    kept,
-                    remaining: read.details.and_then(|details| details.remaining_days),
-                    held: read.token.is_some(),
-                    entry: read.entry_first_observed_hour,
-                });
-            }
             if kept && let Some(last) = slot.states.last_mut() {
                 last.last_hour = hour;
                 continue;
@@ -1435,10 +1420,6 @@ pub(crate) struct Scan {
     ready: bool,
     #[serde(skip)]
     observed: BTreeSet<String>,
-    /// The countries a lens folds ([`lens`]): this scan steps them not, keeping each as the
-    /// lens took it, and their carries' deadlines are the lens's.
-    #[serde(skip)]
-    lensed: BTreeSet<String>,
 }
 impl Scan {
     #[cfg(test)]
@@ -1578,70 +1559,15 @@ impl Scan {
         )
     }
 
-    /// Begins `tag`, held by `identity`, from its read at `read`, the first it observes, as the
-    /// country step of that hour takes a fresh read ([`Self::apply`]).
-    fn begin(&mut self, tag: &str, identity: (u32, u32), read: i32, rows: &FreshRead<'_>) {
-        let state = self.countries.entry(tag.to_owned()).or_default();
-        if let Joins::Attributed(attributions) = &rows.joins
-            && valid_inputs(&rows.inputs)
-            && attributions.len() == rows.inputs.len()
-        {
-            state.observe_attributed(
-                identity,
-                read,
-                &rows.inputs,
-                rows.inventory.as_ref(),
-                attributions,
-            );
-        }
-        state.last_read = Some(read);
-        state.carry_until = state
-            .history
-            .coverage
-            .last()
-            .filter(|span| span.last_hour == read)
-            .and_then(|_| read.checked_add(replay_data::cadence::STAGGER_PERIOD - 1));
-    }
-
-    /// Hands `tag` to a lens: its state stays as it is now, the scan no longer steps it, and its
-    /// carry's deadline and `canonical`'s next observation are the lens's.
-    fn lens(&mut self, tag: &str, canonical: u32) {
-        if let Some(due) = self
-            .countries
-            .get(tag)
-            .and_then(|country| country.carry_until)
-            .and_then(|until| until.checked_add(1))
-        {
-            self.deadlines.remove(&(due, tag.to_owned()));
-        }
-        self.recheck.remove(&canonical);
-        self.lensed.insert(tag.to_owned());
-    }
-
-    /// Takes `tag` back from its lens as `country`, whose `canonical` slot is observed again at
-    /// the next hour where `recheck`.
-    fn unlens(&mut self, tag: &str, country: Country, canonical: u32, recheck: bool) {
-        self.lensed.remove(tag);
-        if let Some(due) = country.carry_until.and_then(|until| until.checked_add(1)) {
-            self.deadlines.insert((due, tag.to_owned()));
-        }
-        if recheck {
-            self.recheck.insert(canonical);
-        }
-        self.countries.insert(tag.to_owned(), country);
-    }
-
     /// An hour's first step, before its tables are read: carries end at the
     /// deadlines it reaches, a gap ends every carry, and the hour becomes the
     /// last observed. The hour before it observed, if any.
     fn begin_hour(&mut self, hour: i32) -> Option<i32> {
         self.observed.clear();
         if !self.ready {
-            let lensed = &self.lensed;
             self.deadlines = self
                 .countries
                 .iter()
-                .filter(|(tag, _)| !lensed.contains(*tag))
                 .filter_map(|(tag, country)| {
                     country
                         .carry_until
@@ -1946,11 +1872,6 @@ impl Scan {
         selected.sort_by_key(|(_, (index, _, _))| *index);
         for (canonical, (_, country_id, tag_bytes)) in selected {
             if selected_tag.is_some_and(|selected| selected.as_bytes() != tag_bytes) {
-                continue;
-            }
-            if !self.lensed.is_empty()
-                && std::str::from_utf8(tag_bytes).is_ok_and(|tag| self.lensed.contains(tag))
-            {
                 continue;
             }
             // Ascending ids, as CountryLinks orders them: each table keyed

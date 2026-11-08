@@ -2,8 +2,7 @@
 //! branch's: the census, links and captures, the tag each capture identity names, the settled
 //! frontier, the categories. Each raw country's rows (held, recorded, waiting for a tag, matched
 //! to their day's application) are its own ([`Raw`]), and each tag's accounting of them is the
-//! tag's ([`Country`]). The emit runs it for the countries the walk's lens does not fold
-//! ([`super::emit`]); the lens runs it for every country of its segment ([`super::lens`]).
+//! tag's ([`Country`]). The emit runs it for every country ([`super::emit`]).
 
 use super::emit::{
     BALANCE, CATEGORY_PARTS, COSTS, COST_KIND, COVERED, COVER_KIND, COVER_REASONS, CREDIT,
@@ -45,10 +44,8 @@ pub(super) enum Field<'a> {
     Item(u32),
 }
 
-/// Where the accounting is written: the emit's series, or a lens's ops.
+/// Where the accounting is written.
 pub(super) trait Out {
-    /// Whether what `tag` writes is kept: where it is not, nothing of it is encoded.
-    fn keeps(&self, tag: u32) -> bool;
     /// Tag `tag`, spelled `spelling`, is first numbered at `hour`.
     fn tagged(&mut self, tag: u32, spelling: &str, hour: i32) -> io::Result<()>;
     /// An event of `tag`'s `measure`: its sequence, which orders the tag's payments.
@@ -72,42 +69,22 @@ pub(super) trait Out {
     ) -> io::Result<()>;
     /// Category dimension `dimension` of currency `currency` is first named.
     fn named(&mut self, dimension: u64, currency: usize, category: &str) -> io::Result<()>;
-    /// A payment of `tag` names item `ordinal` of `key`; `shown` is its record where the
-    /// payment is its first, written with `hours` and `kind`.
-    #[allow(clippy::too_many_arguments)]
+    /// A payment of `tag` names item `ordinal`, with its record `shown` where it is the first.
     fn item(
         &mut self,
         tag: u32,
         ordinal: u32,
-        key: &[u8; 32],
         new: bool,
         shown: Option<&[u8]>,
         hours: (i32, Option<i32>),
         kind: u64,
     ) -> io::Result<()>;
-    /// A payment of `tag` is spent in category `dimension`.
-    fn category(&mut self, tag: u32, dimension: u64) -> io::Result<()>;
-    /// `tag`'s category `dimension` was first paid at `hour`.
-    fn first(&mut self, tag: u32, dimension: u64, hour: i32) -> io::Result<()>;
-    /// What a category of currency `currency` that `tag` paid nothing in today holds from
-    /// `hour` on.
-    fn unpaid(
-        &mut self,
-        tag: u32,
-        currency: usize,
-        hour: i32,
-        value: Option<i128>,
-        starts: bool,
-    ) -> io::Result<()>;
-    /// `tag`'s periods the settled frontier `settled` closed at `at`, and the days it took out
-    /// apart ([`Country::split`]).
+    /// `tag`'s periods the settled frontier closed at `at`.
     fn settled(
         &mut self,
         tag: u32,
         at: i32,
-        settled: i32,
         closed: Vec<(usize, i32, tally::Totals)>,
-        split: tally::Split,
     ) -> io::Result<()>;
 }
 
@@ -173,16 +150,6 @@ impl Coverage {
                 .is_some_and(|(last, first)| first <= last.saturating_add(1))
     }
 
-    /// Whether `other` goes on as `self` does: its first hour is never read again.
-    pub(super) fn alike(&self, other: &Self) -> bool {
-        Self {
-            since_hour: None,
-            ..*self
-        } == Self {
-            since_hour: None,
-            ..*other
-        }
-    }
 }
 
 /// A row waiting for its identity's tag.
@@ -348,27 +315,6 @@ pub(super) struct DayParts {
 }
 
 impl DayParts {
-    /// Whether `other`, folded from later, goes on as `self` does from day hour `day` on: a
-    /// first hour at or before it reads as any other.
-    pub(super) fn alike(
-        &self,
-        other: &Self,
-        day: i32,
-        values: impl Fn(u64) -> Option<u64>,
-    ) -> bool {
-        let early = |first: Option<i32>| first.map(|first| first.max(day));
-        let mapped: Option<BTreeMap<u64, Option<i128>>> = other
-            .values
-            .iter()
-            .map(|(&dimension, &value)| Some((values(dimension)?, value)))
-            .collect();
-        self.epoch == other.epoch
-            && self.day == other.day
-            && mapped.as_ref() == Some(&self.values)
-            && self.last == other.last
-            && early(self.first) == early(other.first)
-            && self.since.map(early) == other.since.map(early)
-    }
 }
 
 /// One tag's accounting.
@@ -406,11 +352,6 @@ pub(super) struct Country {
     #[serde(skip)]
     #[spool(skip)]
     pub(super) due: Option<i32>,
-    /// While a lens folds it, the day hour it began folding it: its days through that one are
-    /// handed apart to be settled, as another part of them was recorded before.
-    #[serde(skip)]
-    #[spool(skip)]
-    pub(super) split: Option<i32>,
 }
 
 impl Country {
@@ -571,18 +512,6 @@ impl Tags {
         self.0[word] |= 1 << (tag % 64);
     }
 
-    pub(super) fn remove(&mut self, tag: u32) {
-        if let Some(word) = self.0.get_mut((tag / 64) as usize) {
-            *word &= !(1 << (tag % 64));
-        }
-    }
-
-    pub(super) fn contains(&self, tag: u32) -> bool {
-        self.0
-            .get((tag / 64) as usize)
-            .is_some_and(|word| word & (1 << (tag % 64)) != 0)
-    }
-
     pub(super) fn iter(&self) -> Ascending {
         Ascending {
             words: self.0.clone(),
@@ -712,10 +641,6 @@ pub(super) struct Ledger {
     pub(super) categories: [FastMap<Box<str>, u64>; 2],
     pub(super) category_currency: FastMap<u64, usize>,
     pub(super) tomorrow: BTreeMap<i32, BTreeSet<u32>>,
-    /// The raw countries a lens folds, by the tag holding them: the emit leaves their rows.
-    pub(super) lensed: FastMap<u32, u32>,
-    /// The first hour of a lens's fold: its rows dated before it are taken as recorded before.
-    pub(super) begun: Option<i32>,
     scratch: Scratch,
 }
 
@@ -754,8 +679,6 @@ impl Ledger {
             categories: [FastMap::default(), FastMap::default()],
             category_currency: FastMap::default(),
             tomorrow: BTreeMap::new(),
-            lensed: FastMap::default(),
-            begun: None,
             scratch: Scratch::default(),
         }
     }
@@ -819,20 +742,6 @@ impl Ledger {
             .get(&raw)
             .and_then(|slot| self.slot_tags.get(slot))
             .copied()
-    }
-
-    /// The raw countries linked to `tag`'s slots, ascending.
-    pub(super) fn raws_of(&self, tag: u32) -> Vec<u32> {
-        let mut raws: Vec<u32> = self.countries[tag as usize]
-            .slots
-            .iter()
-            .filter_map(|slot| self.raw_slots.get(slot))
-            .flatten()
-            .copied()
-            .collect();
-        raws.sort_unstable();
-        raws.dedup();
-        raws
     }
 
     /// `tag`'s item of `key`: its ordinal, and whether this payment is its first.
@@ -1136,13 +1045,7 @@ impl Ledger {
         tagged
     }
 
-    /// Whether raw country `raw`'s rows are a lens's.
-    fn is_lensed(&self, raw: u32) -> bool {
-        !self.lensed.is_empty() && self.lensed.contains_key(&raw)
-    }
-
-    /// The hour's native rows: each table's held rows changed, and the rows recorded. Those of
-    /// the raw countries a lens folds are left to it, but for the settled frontier.
+    /// The hour's native rows: each table's held rows changed, and the rows recorded.
     pub(super) fn rows(
         &mut self,
         out: &mut impl Out,
@@ -1153,9 +1056,6 @@ impl Ledger {
         let [power_deleted, government_deleted, daily_deleted, cost_deleted] = &hour.deleted;
         let mut newest = None::<i32>;
         if hour.whole {
-            if !self.lensed.is_empty() {
-                return Err(invalid("a whole hour while a lens folds countries"));
-            }
             // A table handed whole replaces what was held: rows it no longer holds are gone.
             let mut current: FastMap<u32, FastSet<(u64, u64)>> = FastMap::default();
             for power in &hour.power {
@@ -1198,9 +1098,6 @@ impl Ledger {
         // whether or not the row is recorded again.
         for &key in power_deleted {
             let raw = (key >> 64) as u32;
-            if self.is_lensed(raw) {
-                continue;
-            }
             let tag = self.raw_tag(raw);
             if let Some(held) = self.raws.get_mut(&raw) {
                 if let Some(row) = held.power.remove(&key) {
@@ -1214,9 +1111,6 @@ impl Ledger {
         for power in &hour.power {
             let row = &power.row;
             newest = newest.max(power_day(row));
-            if self.is_lensed(row.country) {
-                continue;
-            }
             let key = row.key();
             let held = HeldPower::of(row);
             let tag = self.raw_tag(row.country);
@@ -1229,9 +1123,6 @@ impl Ledger {
         }
         for &key in government_deleted {
             let raw = (key >> 64) as u32;
-            if self.is_lensed(raw) {
-                continue;
-            }
             if let Some(held) = self.raws.get_mut(&raw) {
                 if let Some(identity) = held.governments.remove(&key) {
                     held.recorded.remove(&identity);
@@ -1242,9 +1133,6 @@ impl Ledger {
         for government in &hour.governments {
             let row = &government.row;
             newest = newest.max(Some(row.hour.div_euclid(24) * 24));
-            if self.is_lensed(row.country) {
-                continue;
-            }
             self.raws
                 .entry(row.country)
                 .or_default()
@@ -1255,9 +1143,6 @@ impl Ledger {
         // days it holds under any tag count as that tag's income.
         for &key in daily_deleted {
             let raw = key as u32;
-            if self.is_lensed(raw) {
-                continue;
-            }
             if let Some(held) = self.raws.get_mut(&raw) {
                 held.daily = None;
             }
@@ -1265,17 +1150,11 @@ impl Ledger {
         }
         for row in &hour.daily {
             newest = newest.max(Some(row.day_hour));
-            if self.is_lensed(row.country) {
-                continue;
-            }
             self.raws.entry(row.country).or_default().daily = Some(row.clone());
             self.dirty_days(row.country, joined);
         }
         for &key in cost_deleted {
             let raw = (key >> 32) as u32;
-            if self.is_lensed(raw) {
-                continue;
-            }
             let tag = self.raw_tag(raw);
             if let Some(held) = self.raws.get_mut(&raw) {
                 if let Some(row) = held.costs.remove(&key) {
@@ -1288,9 +1167,6 @@ impl Ledger {
         }
         let mut costed = Vec::new();
         for cost in &hour.costs {
-            if self.is_lensed(cost.row.country) {
-                continue;
-            }
             joined.dirty.extend(self.raw_tag(cost.row.country));
             let held = HeldCost::of(&cost.row);
             let raw = self.raws.entry(cost.row.country).or_default();
@@ -1354,9 +1230,6 @@ impl Ledger {
             raws.dedup();
             let mut released: Vec<((u8, u128), Waiting)> = Vec::new();
             for raw in raws {
-                if self.is_lensed(raw) {
-                    continue;
-                }
                 let Some(held) = self.raws.get_mut(&raw) else {
                     continue;
                 };
@@ -1392,30 +1265,22 @@ impl Ledger {
             }
         }
         for power in &hour.power {
-            if !self.is_lensed(power.row.country) {
-                self.record_power(out, power, at, joined)?;
-            }
+            self.record_power(out, power, at, joined)?;
         }
         for government in &hour.governments {
-            if !self.is_lensed(government.row.country) {
-                self.record_government(out, government, at, joined)?;
-            }
+            self.record_government(out, government, at, joined)?;
         }
         drop(_cpu);
         let _cpu = ::replay_frame::cpu::scope("politics_ledger.rows.daily", None);
         for row in &hour.daily {
-            if !self.is_lensed(row.country) {
-                self.record_daily(out, row, at, joined)?;
-            }
+            self.record_daily(out, row, at, joined)?;
         }
         drop(_cpu);
         // The hour's rows are all in place: a country's costs of one day read alike.
         let _cpu = ::replay_frame::cpu::scope("politics_ledger.rows.costs", None);
         let mut run = None;
         for cost in &hour.costs {
-            if !self.is_lensed(cost.row.country) {
-                self.record_cost(out, cost, at, &mut run, joined)?;
-            }
+            self.record_cost(out, cost, at, &mut run, joined)?;
         }
         Ok(())
     }
@@ -1433,11 +1298,6 @@ impl Ledger {
     fn late(&self, hour: i32) -> bool {
         self.settled
             .is_some_and(|settled| hour.div_euclid(24) * 24 < settled)
-    }
-
-    /// Whether a lens's first hour takes a row dated `hour` as recorded before it.
-    fn before_lens(&self, at: i32, hour: i32) -> bool {
-        self.begun == Some(at) && hour < at
     }
 
     /// `tag`'s settle frontier is due at `due` too.
@@ -1464,13 +1324,6 @@ impl Ledger {
         }
     }
 
-    /// `tag` settles at no frontier: its rollups are held apart.
-    pub(super) fn unschedule(&mut self, tag: u32) {
-        if let Some(held) = self.countries[tag as usize].due.take() {
-            self.due.remove(&(held, tag));
-        }
-    }
-
     /// The frontier a payment dated `hour` in its period, recurring or not, settles at.
     fn payment_due(recurring: bool, hour: i32) -> i32 {
         let day = hour.div_euclid(24);
@@ -1483,14 +1336,10 @@ impl Ledger {
             .saturating_mul(24)
     }
 
-    /// `value` as `tag`'s record, encoded where `tag`'s writes are kept.
-    fn encoded<T: Serialize>(&mut self, out: &impl Out, tag: u32, value: &T) -> io::Result<bool> {
+    /// `value` as a record.
+    fn encoded<T: Serialize>(&mut self, value: &T) -> io::Result<()> {
         self.scratch.record.clear();
-        if !out.keeps(tag) {
-            return Ok(false);
-        }
-        codec::encode_into(&mut self.scratch.record, value)?;
-        Ok(true)
+        codec::encode_into(&mut self.scratch.record, value)
     }
 
     fn record_power(
@@ -1507,14 +1356,6 @@ impl Ledger {
             .get(&row.country)
             .is_some_and(|held| held.recorded.contains(&identity))
         {
-            return Ok(());
-        }
-        if self.before_lens(at, row.hour) {
-            self.raws
-                .entry(row.country)
-                .or_default()
-                .recorded
-                .insert(identity);
             return Ok(());
         }
         if row.cause == PowerCause::DailyGain
@@ -1566,7 +1407,7 @@ impl Ledger {
             None => power.resolve(),
         };
         let (ordinal, new) = self.item(tag, resolved.item);
-        let shown = if new && out.keeps(tag) {
+        let shown = if new {
             let first = rows::mutation_id(row.country, row.epoch, row.sequence);
             Some(self.show(
                 first,
@@ -1580,7 +1421,6 @@ impl Ledger {
         out.item(
             tag,
             ordinal,
-            &resolved.item,
             new,
             shown.as_deref(),
             (row.hour, Some(at)),
@@ -1601,12 +1441,11 @@ impl Ledger {
             upkeep,
             charge: charge.flatten(),
         };
-        let kept = self.encoded(&*out, tag, &record)?;
+        self.encoded(&record)?;
         let fields = [Field::Record(&self.scratch.record), Field::Item(ordinal)];
-        let fields = if kept { &fields[..] } else { &[] };
-        let sequence = out.event(tag, measure, (row.hour, Some(at)), POWER_KIND, fields)?;
+        let sequence = out.event(tag, measure, (row.hour, Some(at)), POWER_KIND, &fields)?;
         if late && class != SKIPPED {
-            out.event(tag, LATE, (row.hour, Some(at)), POWER_KIND, fields)?;
+            out.event(tag, LATE, (row.hour, Some(at)), POWER_KIND, &fields)?;
         } else if class == BALANCE {
             self.countries[tag as usize].rollups.count(
                 Some((ordinal, row.country, row.epoch)),
@@ -1691,14 +1530,6 @@ impl Ledger {
         {
             return Ok(());
         }
-        if self.before_lens(at, row.hour) {
-            self.raws
-                .entry(row.country)
-                .or_default()
-                .recorded
-                .insert(identity);
-            return Ok(());
-        }
         let Some(tag) = self.tag_at(row.country, row.epoch, row.hour) else {
             self.raws
                 .entry(row.country)
@@ -1720,10 +1551,9 @@ impl Ledger {
             at,
         );
         let shown = rows::government(row, at, government.tokens.clone(), covered);
-        let kept = self.encoded(&*out, tag, &shown)?;
+        self.encoded(&shown)?;
         let fields = [Field::Record(&self.scratch.record)];
-        let fields = if kept { &fields[..] } else { &[] };
-        out.event(tag, GOVERNMENTS, (row.hour, Some(at)), GOVERNMENT_KIND, fields)?;
+        out.event(tag, GOVERNMENTS, (row.hour, Some(at)), GOVERNMENT_KIND, &fields)?;
         joined.dirty.insert(tag);
         Ok(())
     }
@@ -1735,9 +1565,6 @@ impl Ledger {
         at: i32,
         joined: &mut Joined,
     ) -> io::Result<()> {
-        if self.before_lens(at, row.day_hour) {
-            return Ok(());
-        }
         let Some(tag) = self.tag_at(row.country, row.epoch, row.day_hour) else {
             return Ok(());
         };
@@ -1762,15 +1589,14 @@ impl Ledger {
             daily: rows::daily(row, at, reads),
         };
         let late = self.late(row.day_hour);
-        let kept = self.encoded(&*out, tag, &record)?;
+        self.encoded(&record)?;
         {
             let fields = [Field::Record(&self.scratch.record)];
-            let fields = if kept { &fields[..] } else { &[] };
             // A revision of a settled day is also kept apart: no rollup counts it.
             if late {
-                out.event(tag, LATE, (row.day_hour, Some(at)), DAILY_KIND, fields)?;
+                out.event(tag, LATE, (row.day_hour, Some(at)), DAILY_KIND, &fields)?;
             }
-            out.event(tag, DAILY, (row.day_hour, Some(at)), DAILY_KIND, fields)?;
+            out.event(tag, DAILY, (row.day_hour, Some(at)), DAILY_KIND, &fields)?;
         }
         if !late {
             let gains = [
@@ -1854,9 +1680,6 @@ impl Ledger {
         joined: &mut Joined,
     ) -> io::Result<()> {
         let row = &cost.row;
-        if self.before_lens(at, row.day_hour) {
-            return Ok(());
-        }
         let key = (row.epoch, row.day_hour, row.ordinal);
         let of = (row.country, row.epoch, row.day_hour, row.pp_sequence);
         let day = match run.filter(|day| day.of == of) {
@@ -1903,7 +1726,7 @@ impl Ledger {
             None => {
                 let item = cost.item.unwrap_or_else(|| cost.resolve());
                 let (ordinal, new) = self.item(tag, item);
-                let shown = if new && out.keeps(tag) {
+                let shown = if new {
                     let first = rows::cost_id(row.country, row.epoch, row.day_hour, row.ordinal);
                     Some(self.show(
                         first,
@@ -1917,7 +1740,6 @@ impl Ledger {
                 out.item(
                     tag,
                     ordinal,
-                    &item,
                     new,
                     shown.as_deref(),
                     (row.day_hour, Some(at)),
@@ -1942,13 +1764,12 @@ impl Ledger {
                 recurring,
                 upkeep,
             };
-            let kept = self.encoded(&*out, tag, &record)?;
+            self.encoded(&record)?;
             let fields = [Field::Record(&self.scratch.record), Field::Item(ordinal)];
-            let fields = if kept { &fields[..] } else { &[] };
-            let sequence = out.event(tag, COSTS, (row.day_hour, Some(at)), COST_KIND, fields)?;
+            let sequence = out.event(tag, COSTS, (row.day_hour, Some(at)), COST_KIND, &fields)?;
             let field = (ordinal, row.country, row.epoch);
             if late {
-                out.event(tag, LATE, (row.day_hour, Some(at)), COST_KIND, fields)?;
+                out.event(tag, LATE, (row.day_hour, Some(at)), COST_KIND, &fields)?;
             } else if class == UNMATCHED || class == CREDIT {
                 let field = (class == CREDIT).then_some(field);
                 self.countries[tag as usize]
@@ -2260,10 +2081,9 @@ impl Ledger {
             });
         if !held {
             let cover = (merged.political, merged.command, merged.reason.clone());
-            let kept = self.encoded(&*out, tag, &merged)?;
+            self.encoded(&merged)?;
             let fields = [Field::Record(&self.scratch.record)];
-            let fields = if kept { &fields[..] } else { &[] };
-            out.event(tag, COVER_REASONS, (hour, None), COVER_KIND, fields)?;
+            out.event(tag, COVER_REASONS, (hour, None), COVER_KIND, &fields)?;
             self.countries[tag as usize].cover = Some(cover);
         }
         self.countries[tag as usize].spending = Some(merged);
@@ -2350,22 +2170,16 @@ impl Ledger {
         }
         let snapshot = Snapshot::of(&holds.active, total, missing);
         holds.snapshot = Some(snapshot.clone());
-        let kept = if out.keeps(tag) {
-            let shown = present::hold(
-                hour,
-                snapshot.total,
-                &snapshot.holders,
-                snapshot.missing.as_deref(),
-                self.content.as_deref(),
-            );
-            self.encoded(&*out, tag, &shown)?
-        } else {
-            self.scratch.record.clear();
-            false
-        };
+        let shown = present::hold(
+            hour,
+            snapshot.total,
+            &snapshot.holders,
+            snapshot.missing.as_deref(),
+            self.content.as_deref(),
+        );
+        self.encoded(&shown)?;
         let fields = [Field::Record(&self.scratch.record)];
-        let fields = if kept { &fields[..] } else { &[] };
-        out.event(tag, HOLDS, (hour, None), HOLD_KIND, fields)?;
+        out.event(tag, HOLDS, (hour, None), HOLD_KIND, &fields)?;
         Ok(())
     }
 
@@ -2412,7 +2226,6 @@ impl Ledger {
             }
             let currency = usize::from(payment.currency == PowerCurrency::Command);
             let dimension = self.category(out, currency, &payment.category)?;
-            out.category(tag, dimension)?;
             paid.push((dimension, payment.charge));
         }
         let mut income: [Option<i128>; 6] = [None; 6];
@@ -2517,7 +2330,6 @@ impl Ledger {
                 {
                     entry.insert(hour);
                     country.categories_changed = true;
-                    out.first(tag, dimension, hour)?;
                 }
             }
             categories.extend(country.categories.keys().map(|&dimension| {
@@ -2548,7 +2360,6 @@ impl Ledger {
                 let value = shown.then(|| value(dimension)).flatten();
                 out.value(tag, PARTS, Some(dimension), hour, value, starts)?;
             }
-            out.unpaid(tag, index, hour, shown.then_some(0), starts)?;
             out.value(tag, PARTS, Some(TOTAL[index]), hour, total, starts)?;
         }
         self.scratch.values = values;
@@ -2570,13 +2381,9 @@ impl Ledger {
             self.due.pop_first();
             let country = &mut self.countries[tag as usize];
             country.due = None;
-            let split = match country.split {
-                Some(day) => country.rollups.split_off(settled, day),
-                None => tally::Split::default(),
-            };
             let closed = country.rollups.settle(settled)?;
             self.reschedule(tag);
-            out.settled(tag, at, settled, closed, split)?;
+            out.settled(tag, at, closed)?;
         }
         Ok(())
     }
@@ -2668,7 +2475,7 @@ impl Snapshot {
     }
 }
 
-/// The category name a dimension of `categories` spells, for a lens naming its own.
+/// The category name a dimension of `categories` spells.
 pub(super) fn spelling(currency: usize, category: &str) -> String {
     format!("{}:{category}", CURRENCIES[currency])
 }

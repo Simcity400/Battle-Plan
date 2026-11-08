@@ -4,19 +4,11 @@
 //! ([`super::records`]), and each item once, named at its first payment; its spending coverage,
 //! holds and spending parts as runs and events that change only when they do; the census as the
 //! branch's, and each tag's presence in it where that changes. An hour that changes nothing of a
-//! country appends nothing.
-//!
-//! The walk's lens folds most countries of a segment itself ([`super::lens`]): the emit folds
-//! each until the lens binds it, two days into the segment, where the two hold it alike; from
-//! there it only replays what the lens hands it, writing the country's rows, items and parts,
-//! and adds the rollups the lens settles to those it held before. It folds the country itself
-//! again from where the lens hands it back. A reply reads everything back from the publication
+//! country appends nothing. A reply reads everything back from the publication
 //! ([`super::query`]).
 
 use super::facts::{self, Hour};
 use super::ledger::{self, Country, Field, Ledger, Out, Raw};
-use super::lens::{self, Bind, Op, Piece, Taken};
-use super::packed;
 use super::tally;
 use super::*;
 use dashboard_base::prepared::codec;
@@ -117,25 +109,8 @@ pub(super) const CURRENCIES: [&str; 2] = ["Political", "Command"];
 /// The measures a tag's keys are cached for: every one below [`CENSUS`].
 const MEASURES: usize = CENSUS as usize;
 
-/// An item the lens names that the emit has not.
-const UNNAMED: u32 = u32::MAX;
-
 fn invalid(what: &str) -> io::Error {
     dashboard_core::invalid(format!("Politics ledger emit: {what}"))
-}
-
-/// `what`, met while a lens folds countries the emit cannot publish without: the fold is wrong,
-/// never the recorded data, so it ends the family rather than refuse its hour.
-fn unrefused(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::InvalidData {
-        io::Error::other(format!("Politics ledger lens: {error}"))
-    } else {
-        error
-    }
-}
-
-fn lens_failure(what: &str) -> io::Error {
-    io::Error::other(format!("Politics ledger lens: {what}"))
 }
 
 fn text(writer: &mut Writer, bytes: &[u8]) -> io::Result<Cell> {
@@ -273,10 +248,6 @@ impl Direct<'_> {
 }
 
 impl Out for Direct<'_> {
-    fn keeps(&self, _: u32) -> bool {
-        true
-    }
-
     fn tagged(&mut self, tag: u32, spelling: &str, hour: i32) -> io::Result<()> {
         let actor = self.actors.actor(self.writer, spelling.as_bytes(), hour)?;
         if self.keys.len() != tag as usize {
@@ -330,12 +301,10 @@ impl Out for Direct<'_> {
         self.writer.catalogue(CATEGORY_NAMES + dimension, cell)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn item(
         &mut self,
         tag: u32,
         ordinal: u32,
-        _: &[u8; 32],
         new: bool,
         shown: Option<&[u8]>,
         hours: (i32, Option<i32>),
@@ -355,45 +324,14 @@ impl Out for Direct<'_> {
         Ok(())
     }
 
-    fn category(&mut self, _: u32, _: u64) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn first(&mut self, _: u32, _: u64, _: i32) -> io::Result<()> {
-        Ok(())
-    }
-
-    fn unpaid(&mut self, _: u32, _: usize, _: i32, _: Option<i128>, _: bool) -> io::Result<()> {
-        Ok(())
-    }
-
     fn settled(
         &mut self,
         tag: u32,
         at: i32,
-        _: i32,
         closed: Vec<(usize, i32, tally::Totals)>,
-        split: tally::Split,
     ) -> io::Result<()> {
-        if !split.is_empty() {
-            return Err(invalid("days split apart where no lens folds them"));
-        }
         self.closed(tag, at, closed)
     }
-}
-
-/// A country the lens folds, as the emit bound it.
-struct Bound {
-    number: u32,
-    slots: Vec<u32>,
-    raws: Vec<u32>,
-    /// The emit's ordinal of each of the lens's items; [`UNNAMED`] for one not yet named.
-    items: Vec<u32>,
-    /// Its categories the lens never paid in since its segment began, by currency.
-    extra: [Vec<u64>; 2],
-    /// Where its own rollups settle next, and what the lens settled of the hour.
-    due: Option<i32>,
-    settled: Vec<(Vec<(usize, i32, tally::Totals)>, tally::Split)>,
 }
 
 /// The family's emit on one branch.
@@ -413,18 +351,6 @@ pub struct Emit {
     settled_written: Option<i32>,
     /// The branch's accepted and census keys as interned.
     branch_keys: [Option<u64>; 2],
-    /// The countries the walk's lens bound, by the number it names them by: the emit's tag where
-    /// the emit bound it too, None where the emit folds it itself.
-    numbers: FastMap<u32, Option<u32>>,
-    bound: FastMap<u32, Bound>,
-    /// The lens's category dimensions: their currency and name, and the emit's dimension.
-    lens_names: FastMap<u64, (usize, Box<str>)>,
-    lens_dims: FastMap<u64, u64>,
-    /// The record shapes the lens named.
-    packed: packed::Named,
-    /// The bound tags whose own rollups, those of the hours before the lens bound them, settle
-    /// at each frontier.
-    prior: BTreeSet<(i32, u32)>,
 }
 
 impl Emit {
@@ -442,12 +368,6 @@ impl Emit {
             presence: None,
             settled_written: None,
             branch_keys: [None; 2],
-            numbers: FastMap::default(),
-            bound: FastMap::default(),
-            lens_names: FastMap::default(),
-            lens_dims: FastMap::default(),
-            packed: packed::Named::default(),
-            prior: BTreeSet::new(),
         }
     }
 
@@ -494,61 +414,13 @@ impl Emit {
         Ok(())
     }
 
-    /// Keeps one projected hour, or what the lens hands back after the hour kept last.
-    pub fn hour(&mut self, writer: &mut Writer, mut hour: Hour) -> io::Result<()> {
+    /// Keeps one projected hour.
+    pub fn hour(&mut self, writer: &mut Writer, hour: Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit", None);
-        let part = hour.lens.take();
-        if hour.handover {
-            if self.ledger.last != Some(hour.hour) {
-                return Err(lens_failure("it hands back an hour the emit did not keep"));
-            }
-            if let Some(part) = part {
-                self.packed.extend(part.shapes).map_err(unrefused)?;
-                self.returned(part.returned).map_err(unrefused)?;
-            }
-            return Ok(());
-        }
-        // Only the walk's read of an hour refuses it while the lens folds countries: the lens
-        // hands them back through the hour before. An hour the emit itself would refuse then
-        // could not publish them, so it ends the family instead.
-        match self.keep(writer, hour, part) {
-            Err(error) if !self.bound.is_empty() => Err(unrefused(error)),
-            kept => kept,
-        }
-    }
-
-    fn keep(
-        &mut self,
-        writer: &mut Writer,
-        hour: Hour,
-        part: Option<Box<lens::Part>>,
-    ) -> io::Result<()> {
         let at = hour.hour;
-        let mut part = part.map(|part| *part).unwrap_or_default();
-        if part.begins {
-            if !self.bound.is_empty() {
-                return Err(lens_failure("it began again holding countries"));
-            }
-            self.numbers.clear();
-            self.lens_names.clear();
-            self.lens_dims.clear();
-            self.packed.clear();
-        }
-        self.packed
-            .extend(std::mem::take(&mut part.shapes))
-            .map_err(unrefused)?;
-        self.returned(std::mem::take(&mut part.returned))
-            .map_err(unrefused)?;
-        for (dimension, currency, name) in std::mem::take(&mut part.named) {
-            self.lens_names
-                .insert(dimension, (usize::from(currency), name));
-        }
         let mut joined = self.ledger.open(&hour);
         let adjacent = joined.adjacent;
         if let Some(last) = joined.previous.filter(|_| !adjacent) {
-            if !self.bound.is_empty() {
-                return Err(lens_failure("it did not hand its countries back before a gap"));
-            }
             self.ledger.gap(last);
             self.evidence(writer, last)?;
             self.carry.close(writer, last)?;
@@ -579,9 +451,6 @@ impl Emit {
             let mut direct = direct!(self, &mut *writer);
             self.ledger.join(&mut direct, &hour, &mut joined)?
         };
-        if census_changed || hour.links.is_some() {
-            self.verify_bound().map_err(unrefused)?;
-        }
         if census_changed {
             self.presence(writer, at)?;
         }
@@ -593,65 +462,15 @@ impl Emit {
         }
         drop(rows);
         let accounts = ::replay_frame::cpu::scope("politics_ledger.emit.accounts", None);
-        let payload = std::mem::take(&mut part.payload);
-        let mut replays: Vec<(u32, Vec<Op>)> = std::mem::take(&mut part.ops)
-            .into_iter()
-            .filter_map(|(number, ops)| match self.numbers.get(&number) {
-                Some(&Some(tag)) => Some((tag, ops)),
-                // A country the emit folds itself: its ops are of no further use.
-                _ => None,
-            })
-            .collect();
-        replays.sort_unstable_by_key(|(tag, _)| *tag);
-        let mut replays = replays.into_iter().peekable();
         // Tags in ascending order, as the accounts write them: categories are numbered so.
         for tag in std::mem::take(&mut joined.dirty) {
-            while let Some(&(next, _)) = replays.peek()
-                && next < tag
-            {
-                if let Some((next, ops)) = replays.next() {
-                    self.replay(writer, next, ops, &payload).map_err(unrefused)?;
-                }
-            }
-            if self.bound.contains_key(&tag) {
-                continue;
-            }
             let mut direct = direct!(self, &mut *writer);
             self.ledger.account(&mut direct, tag, at, &joined)?;
         }
-        for (tag, ops) in replays {
-            self.replay(writer, tag, ops, &payload).map_err(unrefused)?;
-        }
         drop(accounts);
         let _cpu = ::replay_frame::cpu::scope("politics_ledger.emit.settle", None);
-        let moved = self.ledger.settled.is_some() && self.ledger.settled != self.ledger.rolled;
-        {
-            let mut direct = direct!(self, &mut *writer);
-            self.ledger.settle(&mut direct, at)?;
-        }
-        if moved {
-            self.settle_bound(writer, at).map_err(unrefused)?;
-        }
-        let binds = std::mem::take(&mut part.bound);
-        if !binds.is_empty() {
-            self.bind(binds, at);
-        }
-        Ok(())
-    }
-
-    /// The bound countries hold the slots and raw countries they held when bound: the lens
-    /// hands one back before an hour that changes them.
-    fn verify_bound(&self) -> io::Result<()> {
-        for (&tag, bound) in &self.bound {
-            let country = &self.ledger.countries[tag as usize];
-            if !country.active
-                || country.slots != bound.slots
-                || self.ledger.raws_of(tag) != bound.raws
-            {
-                return Err(lens_failure("it kept a country whose census or links changed"));
-            }
-        }
-        Ok(())
+        let mut direct = direct!(self, &mut *writer);
+        self.ledger.settle(&mut direct, at)
     }
 
     /// The branch's present and refused tags, at each change: each tag's where it changed, every
@@ -704,605 +523,9 @@ impl Emit {
         Ok(())
     }
 
-    /// The emit's dimension of lens category dimension `dimension`, named when new, which bound
-    /// country `tag` pays in.
-    fn dimension(&mut self, writer: &mut Writer, tag: u32, dimension: u64) -> io::Result<u64> {
-        if dimension < CATEGORY_PARTS {
-            return Ok(dimension);
-        }
-        let held = match self.lens_dims.get(&dimension) {
-            Some(&held) => held,
-            None => {
-                let (currency, name) = self
-                    .lens_names
-                    .get(&dimension)
-                    .cloned()
-                    .ok_or_else(|| lens_failure("it names a category it never named"))?;
-                let mut direct = direct!(self, &mut *writer);
-                let held = self.ledger.category(&mut direct, currency, &name)?;
-                self.lens_dims.insert(dimension, held);
-                held
-            }
-        };
-        if let Some(bound) = self.bound.get_mut(&tag)
-            && let Some(&currency) = self.ledger.category_currency.get(&held)
-        {
-            bound.extra[currency].retain(|&extra| extra != held);
-        }
-        Ok(held)
-    }
-
-    /// Writes what bound country `tag` wrote in the lens at the hour.
-    fn replay(
-        &mut self,
-        writer: &mut Writer,
-        tag: u32,
-        ops: Vec<Op>,
-        payload: &[u8],
-    ) -> io::Result<()> {
-        for op in ops {
-            match op {
-                Op::Event {
-                    measure,
-                    hours,
-                    kind,
-                    fields,
-                } => {
-                    let bound = self
-                        .bound
-                        .get(&tag)
-                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?;
-                    let mut records: [Vec<u8>; 2] = Default::default();
-                    if fields.len() > records.len() {
-                        return Err(lens_failure("an event of too many fields"));
-                    }
-                    for (record, piece) in records.iter_mut().zip(&fields) {
-                        if let Piece::Record(at, len) = *piece {
-                            self.packed.unpack(slice(payload, (at, len))?, record)?;
-                        }
-                    }
-                    let mut held = [Field::Item(0); 2];
-                    for ((field, piece), record) in held.iter_mut().zip(&fields).zip(&records) {
-                        *field = match *piece {
-                            Piece::Record(..) => Field::Record(record),
-                            Piece::Item(ordinal) => Field::Item(
-                                bound
-                                    .items
-                                    .get(ordinal as usize)
-                                    .copied()
-                                    .filter(|&held| held != UNNAMED)
-                                    .ok_or_else(|| lens_failure("an item it never named"))?,
-                            ),
-                        };
-                    }
-                    let mut direct = direct!(self, &mut *writer);
-                    direct.event(tag, measure, hours, kind, &held[..fields.len()])?;
-                }
-                Op::Value {
-                    measure,
-                    dimension,
-                    hour,
-                    value,
-                    starts,
-                } => {
-                    let dimension = match dimension {
-                        Some(dimension) if measure == PARTS => {
-                            Some(self.dimension(writer, tag, dimension)?)
-                        }
-                        dimension => dimension,
-                    };
-                    let mut direct = direct!(self, &mut *writer);
-                    direct.value(tag, measure, dimension, hour, value, starts)?;
-                }
-                Op::Item {
-                    ordinal,
-                    key,
-                    shown,
-                    hours,
-                    kind,
-                } => {
-                    let country = &mut self.ledger.countries[tag as usize];
-                    let (held, new) = match country.item_index.get(&key) {
-                        Some(&held) => (held, false),
-                        None => {
-                            let held = country.items.len() as u32;
-                            country.items.push(key);
-                            country.item_index.insert(key, held);
-                            (held, true)
-                        }
-                    };
-                    let bound = self
-                        .bound
-                        .get_mut(&tag)
-                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?;
-                    let at = ordinal as usize;
-                    if bound.items.len() <= at {
-                        bound.items.resize(at + 1, UNNAMED);
-                    }
-                    bound.items[at] = held;
-                    if new {
-                        let shown = shown
-                            .ok_or_else(|| lens_failure("an item the emit never read, unshown"))?;
-                        let mut record = Vec::new();
-                        self.packed.unpack(slice(payload, shown)?, &mut record)?;
-                        let mut direct = direct!(self, &mut *writer);
-                        direct.event(
-                            tag,
-                            ITEMS,
-                            hours,
-                            kind,
-                            &[Field::Item(held), Field::Record(&record)],
-                        )?;
-                    }
-                }
-                Op::Category(dimension) => {
-                    self.dimension(writer, tag, dimension)?;
-                }
-                Op::First { dimension, hour } => {
-                    let dimension = self.dimension(writer, tag, dimension)?;
-                    let country = &mut self.ledger.countries[tag as usize];
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        country.categories.entry(dimension)
-                    {
-                        entry.insert(hour);
-                        country.categories_changed = true;
-                    }
-                }
-                Op::Unpaid {
-                    currency,
-                    hour,
-                    value,
-                    starts,
-                } => {
-                    let extra = self
-                        .bound
-                        .get(&tag)
-                        .and_then(|bound| bound.extra.get(usize::from(currency)))
-                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?
-                        .clone();
-                    let mut direct = direct!(self, &mut *writer);
-                    for dimension in extra {
-                        direct.value(tag, PARTS, Some(dimension), hour, value, starts)?;
-                    }
-                }
-                Op::Settled {
-                    settled,
-                    closed,
-                    split,
-                } => {
-                    if Some(settled) != self.ledger.settled {
-                        return Err(lens_failure("it settled at another frontier"));
-                    }
-                    self.bound
-                        .get_mut(&tag)
-                        .ok_or_else(|| lens_failure("ops of a country it did not bind"))?
-                        .settled
-                        .push((closed, split));
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Settles, at `at`, the rollups of the bound countries the frontier reached: those each
-    /// held before the lens bound it, with what the lens settled of the hours since.
-    fn settle_bound(&mut self, writer: &mut Writer, at: i32) -> io::Result<()> {
-        let Some(settled) = self.ledger.settled else {
-            return Ok(());
-        };
-        let mut tags = BTreeSet::new();
-        while let Some(&(due, tag)) = self.prior.first() {
-            if due > settled {
-                break;
-            }
-            self.prior.pop_first();
-            if let Some(bound) = self.bound.get_mut(&tag) {
-                bound.due = None;
-            }
-            tags.insert(tag);
-        }
-        tags.extend(
-            self.bound
-                .iter()
-                .filter(|(_, bound)| !bound.settled.is_empty())
-                .map(|(&tag, _)| tag),
-        );
-        for tag in tags {
-            let bound = self
-                .bound
-                .get_mut(&tag)
-                .ok_or_else(|| lens_failure("it settled a country it did not bind"))?;
-            let lensed = std::mem::take(&mut bound.settled);
-            let items = &bound.items;
-            let item = |ordinal: u32| -> io::Result<u32> {
-                items
-                    .get(ordinal as usize)
-                    .copied()
-                    .filter(|&held| held != UNNAMED)
-                    .ok_or_else(|| lens_failure("it settled an item it never named"))
-            };
-            let rollups = &mut self.ledger.countries[tag as usize].rollups;
-            let mut closed: BTreeMap<(usize, i32), tally::Totals> = BTreeMap::new();
-            let mut later = Vec::with_capacity(lensed.len());
-            for (held, split) in lensed {
-                rollups.join(remap_split(split, &item)?)?;
-                later.push(held);
-            }
-            for (level, index, totals) in rollups.settle(settled)? {
-                closed.insert((level, index), totals);
-            }
-            for (level, index, totals) in later.into_iter().flatten() {
-                let totals = totals.remap(&item)?;
-                match closed.entry((level, index)) {
-                    std::collections::btree_map::Entry::Occupied(held) => {
-                        held.into_mut().merge(&totals)?
-                    }
-                    std::collections::btree_map::Entry::Vacant(held) => {
-                        held.insert(totals);
-                    }
-                }
-            }
-            let due = rollups.due();
-            bound.due = due;
-            if let Some(due) = due {
-                self.prior.insert((due, tag));
-            }
-            let closed = closed
-                .into_iter()
-                .map(|((level, index), totals)| (level, index, totals))
-                .collect();
-            let mut direct = direct!(self, &mut *writer);
-            direct.closed(tag, at, closed)?;
-        }
-        Ok(())
-    }
-
-    /// Binds, at the end of hour `at`, each country the lens binds whose state is the emit's.
-    fn bind(&mut self, binds: Vec<Bind>, at: i32) {
-        let mut named: FastMap<u32, Vec<u32>> = FastMap::default();
-        for (&(raw, _), tags) in &self.ledger.identities {
-            for &(_, tag) in tags {
-                named.entry(tag).or_default().push(raw);
-            }
-        }
-        for bind in binds {
-            let bound = self.bound_of(&bind, &named, at);
-            self.numbers
-                .insert(bind.number, bound.as_ref().map(|(tag, _)| *tag));
-            let Some((tag, mut bound)) = bound else {
-                continue;
-            };
-            let ledger = &mut self.ledger;
-            ledger.countries[tag as usize].materialize(at);
-            for &raw in &bound.raws {
-                ledger.lensed.insert(raw, tag);
-            }
-            ledger.volatile.remove(tag);
-            for tags in ledger.tomorrow.values_mut() {
-                tags.remove(&tag);
-            }
-            ledger.tomorrow.retain(|_, tags| !tags.is_empty());
-            ledger.unschedule(tag);
-            bound.due = ledger.countries[tag as usize].rollups.due();
-            if let Some(due) = bound.due {
-                self.prior.insert((due, tag));
-            }
-            self.bound.insert(tag, bound);
-        }
-    }
-
-    /// The country `bind` names, bound as the lens binds it, where the emit holds it alike at
-    /// the end of hour `at`: its slots, raw countries, their rows and capture identities, its
-    /// accounting and what its keys hold. `named` holds the raw countries each tag's capture
-    /// identities name.
-    fn bound_of(
-        &self,
-        bind: &Bind,
-        named: &FastMap<u32, Vec<u32>>,
-        at: i32,
-    ) -> Option<(u32, Bound)> {
-        let ledger = &self.ledger;
-        if (ledger.settled, ledger.rolled) != bind.settled {
-            return None;
-        }
-        let &tag = ledger.numbers.get(&*bind.tag)?;
-        if self.bound.contains_key(&tag) {
-            return None;
-        }
-        let real = &ledger.countries[tag as usize];
-        let lens = &bind.country;
-        if !real.active || real.slots.is_empty() || real.slots != lens.slots {
-            return None;
-        }
-        let raws = ledger.raws_of(tag);
-        if raws.len() != bind.raws.len() || raws.iter().zip(&bind.raws).any(|(a, (b, _))| a != b) {
-            return None;
-        }
-        if ledger
-            .refused
-            .keys()
-            .any(|slot| ledger.known.get(slot) == Some(&tag))
-            || named
-                .get(&tag)
-                .is_some_and(|named| named.iter().any(|raw| raws.binary_search(raw).is_err()))
-        {
-            return None;
-        }
-        let mut identities = Vec::new();
-        for &raw in &raws {
-            for (&key, tags) in ledger.identities.range((raw, 0)..=(raw, u64::MAX)) {
-                if tags.iter().any(|&(_, held)| held != tag) {
-                    return None;
-                }
-                identities.push(key);
-            }
-        }
-        if identities != bind.identities
-            || lens::stale(ledger, &raws) != bind.stale
-            || bind
-                .witnesses
-                .iter()
-                .any(|(raw, witness)| ledger.witnesses.get(raw) != witness.as_ref())
-            || bind
-                .command
-                .iter()
-                .any(|&(slot, value)| ledger.command.get(&slot).copied() != value)
-        {
-            return None;
-        }
-        let empty = Raw::default();
-        let mut days = 0;
-        for (raw, theirs) in &bind.raws {
-            let ours = ledger.raws.get(raw).unwrap_or(&empty);
-            if !same_rows(
-                ours,
-                theirs,
-                (tag, bind.number),
-                (real.items.as_slice(), lens.items.as_slice()),
-            ) {
-                return None;
-            }
-            days += ours.days.len();
-        }
-        if ledger.day_counts.get(tag as usize).copied() != Some(days as u32) {
-            return None;
-        }
-        // The lens's categories as the emit numbers them; the emit's others the lens never paid.
-        let dimension = |held: u64| -> Option<u64> {
-            if held < CATEGORY_PARTS {
-                return Some(held);
-            }
-            let (currency, name) = self.lens_names.get(&held)?;
-            ledger.categories.get(*currency)?.get(&**name).copied()
-        };
-        let mut known = BTreeSet::new();
-        for &held in lens.categories.keys() {
-            let held = dimension(held)?;
-            if !real.categories.contains_key(&held) {
-                return None;
-            }
-            known.insert(held);
-        }
-        let mut extra: [Vec<u64>; 2] = Default::default();
-        for &held in real.categories.keys() {
-            if !known.contains(&held) {
-                extra[*ledger.category_currency.get(&held)?].push(held);
-            }
-        }
-        let day = at.div_euclid(24) * 24;
-        let alike = match (&real.coverage, &lens.coverage) {
-            (Some(ours), Some(theirs)) => ours.alike(theirs),
-            (None, None) => true,
-            _ => false,
-        } && match (&real.spending, &lens.spending) {
-            (Some(ours), Some(theirs)) => {
-                ours.political == theirs.political
-                    && ours.command == theirs.command
-                    && ours.reason == theirs.reason
-            }
-            (None, None) => true,
-            _ => false,
-        } && real.cover == lens.cover
-            && real.identity == lens.identity
-            && real.holds == lens.holds
-            && real.rates == lens.rates
-            && real.rated.map(|rated| rated.max(at)) == lens.rated
-            && raws.iter().all(|raw| match (real.parts.get(raw), lens.parts.get(raw)) {
-                (Some(ours), Some(theirs)) => ours.alike(theirs, day, &dimension),
-                (None, None) => true,
-                _ => false,
-            })
-            && ledger.volatile.contains(tag) == bind.volatile
-            && lens::tomorrow(ledger, tag) == bind.tomorrow;
-        if !alike {
-            return None;
-        }
-        // What the carry holds of its keys is what the lens's does.
-        let keys = self.keys.get(tag as usize)?;
-        let carried = |measure: u64, dimension: Option<u64>| {
-            self.actors
-                .held(Place {
-                    actor: keys.actor,
-                    measure,
-                    dimension,
-                })
-                .and_then(|key| self.carry.held(key))
-        };
-        for &((measure, held), value) in &bind.held {
-            let held = match held {
-                Some(held) if measure == PARTS => Some(dimension(held)?),
-                held => held,
-            };
-            if carried(measure, held) != value {
-                return None;
-            }
-        }
-        for (currency, extra) in extra.iter().enumerate() {
-            if extra
-                .iter()
-                .any(|&held| carried(PARTS, Some(held)) != bind.unpaid[currency])
-            {
-                return None;
-            }
-        }
-        let items = lens
-            .items
-            .iter()
-            .map(|key| real.item_index.get(key).copied().unwrap_or(UNNAMED))
-            .collect();
-        Some((
-            tag,
-            Bound {
-                number: bind.number,
-                slots: real.slots.clone(),
-                raws,
-                items,
-                extra,
-                due: None,
-                settled: Vec::new(),
-            },
-        ))
-    }
-
-    /// Takes back the countries the lens returns, as the hours it folded leave them.
-    fn returned(&mut self, returned: Vec<Taken>) -> io::Result<()> {
-        for taken in returned {
-            let entry = self
-                .numbers
-                .remove(&taken.number)
-                .ok_or_else(|| lens_failure("it returns a country it never bound"))?;
-            let Some(tag) = entry else {
-                continue;
-            };
-            let bound = self
-                .bound
-                .remove(&tag)
-                .ok_or_else(|| lens_failure("it returns a country the emit did not bind"))?;
-            if bound.number != taken.number || !bound.settled.is_empty() {
-                return Err(lens_failure("it returns a country out of turn"));
-            }
-            self.install(tag, bound, taken)?;
-        }
-        Ok(())
-    }
-
-    /// Bound country `tag`'s accounting, its raw countries' rows and its rollups, as the lens
-    /// hands them back in `taken`, with what the emit held of them before.
-    fn install(&mut self, tag: u32, bound: Bound, taken: Taken) -> io::Result<()> {
-        let Taken {
-            country: lens,
-            raws,
-            stale,
-            volatile,
-            tomorrow,
-            ..
-        } = taken;
-        let Bound {
-            raws: held_raws,
-            mut items,
-            due,
-            ..
-        } = bound;
-        let lens = *lens;
-        let ledger = &mut self.ledger;
-        // A lens item its ops never named was named before it bound: the emit holds its key.
-        if items.len() < lens.items.len() {
-            items.resize(lens.items.len(), UNNAMED);
-        }
-        for (ordinal, key) in lens.items.iter().enumerate() {
-            if items[ordinal] == UNNAMED
-                && let Some(&held) = ledger.countries[tag as usize].item_index.get(key)
-            {
-                items[ordinal] = held;
-            }
-        }
-        let item = |ordinal: u32| -> io::Result<u32> {
-            items
-                .get(ordinal as usize)
-                .copied()
-                .filter(|&held| held != UNNAMED)
-                .ok_or_else(|| lens_failure("it hands back an item it never named"))
-        };
-        for raw in &held_raws {
-            ledger.lensed.remove(raw);
-            ledger.stale_costs.remove(raw);
-        }
-        ledger.stale_costs.extend(stale);
-        for (raw, mut held) in raws {
-            for recorded in held.recorded_costs.values_mut() {
-                recorded.item = item(recorded.item)?;
-            }
-            for day in held.days.values_mut() {
-                day.tag = tag;
-            }
-            let count = held.days.len() as u32;
-            if let Some(old) = ledger.raws.insert(raw, held) {
-                for day in old.days.values() {
-                    if let Some(count) = ledger.day_counts.get_mut(day.tag as usize) {
-                        *count = count.saturating_sub(1);
-                    }
-                }
-            }
-            ledger.day_counts[tag as usize] += count;
-        }
-        let dimensions = &self.lens_dims;
-        let dimension = |held: u64| -> io::Result<u64> {
-            if held < CATEGORY_PARTS {
-                return Ok(held);
-            }
-            dimensions
-                .get(&held)
-                .copied()
-                .ok_or_else(|| lens_failure("it hands back a category it never named"))
-        };
-        let real = &mut ledger.countries[tag as usize];
-        real.coverage = lens.coverage;
-        real.spending = lens.spending;
-        real.cover = lens.cover;
-        real.identity = lens.identity;
-        real.holds = lens.holds;
-        for raw in &held_raws {
-            match lens.parts.get(raw) {
-                Some(parts) => {
-                    let mut parts = parts.clone();
-                    let mut values = BTreeMap::new();
-                    for (held, value) in std::mem::take(&mut parts.values) {
-                        values.insert(dimension(held)?, value);
-                    }
-                    parts.values = values;
-                    real.parts.insert(*raw, parts);
-                }
-                None => {
-                    real.parts.remove(raw);
-                }
-            }
-        }
-        real.rates = lens.rates;
-        real.rated = lens.rated;
-        for (reason, count) in lens.warnings {
-            *real.warnings.entry(reason).or_default() += count;
-        }
-        real.warnings_changed |= lens.warnings_changed;
-        real.rollups.merge(lens.rollups.remap(&item)?)?;
-        if volatile {
-            ledger.volatile.insert(tag);
-        }
-        for at in tomorrow {
-            ledger.tomorrow.entry(at).or_default().insert(tag);
-        }
-        ledger.reschedule(tag);
-        if let Some(due) = due {
-            self.prior.remove(&(due, tag));
-        }
-        Ok(())
-    }
-
     /// Appends what is open through `last`, the last hour of the segment the publisher cuts next,
     /// with its evidence and every scalar that changed since the last cut.
     pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
-        if !self.bound.is_empty() {
-            return Err(lens_failure("it did not hand its countries back before a cut"));
-        }
         // A blob of the segment cut is not referred to again.
         self.record = (Vec::new(), Blob::EMPTY);
         self.carry.cut(writer, last)?;
@@ -1363,9 +586,6 @@ impl Emit {
     /// What the emit goes on with after a cut. A restart goes on at a segment's first hour, whose
     /// projection hands every table whole.
     pub fn save(&self, out: &mut Vec<u8>) -> io::Result<()> {
-        if !self.bound.is_empty() {
-            return Err(lens_failure("it did not hand its countries back before a save"));
-        }
         let ledger = &self.ledger;
         let state = Saved {
             last: ledger.last,
@@ -1668,63 +888,6 @@ impl Emit {
         }
         Ok(emit)
     }
-}
-
-/// Whether the emit's rows of a raw country, `ours`, are the lens's, `theirs`: the lens's days
-/// recorded under its own number for the tag, its records naming its own items.
-fn same_rows(
-    ours: &Raw,
-    theirs: &Raw,
-    (tag, number): (u32, u32),
-    (our_items, their_items): (&[[u8; 32]], &[[u8; 32]]),
-) -> bool {
-    ours.power == theirs.power
-        && ours.governments == theirs.governments
-        && ours.recorded == theirs.recorded
-        && ours.waiting.is_empty()
-        && theirs.waiting.is_empty()
-        && ours.daily == theirs.daily
-        && ours.costs == theirs.costs
-        && ours.sums == theirs.sums
-        && ours.days.len() == theirs.days.len()
-        && ours.days.iter().zip(&theirs.days).all(|((key, day), (held, other))| {
-            key == held
-                && day.row == other.row
-                && day.reads == other.reads
-                && day.tag == tag
-                && other.tag == number
-        })
-        && ours.recorded_costs.len() == theirs.recorded_costs.len()
-        && ours.recorded_costs.iter().all(|(key, cost)| {
-            theirs.recorded_costs.get(key).is_some_and(|other| {
-                cost.row == other.row
-                    && cost.covered == other.covered
-                    && our_items.get(cost.item as usize).is_some()
-                    && our_items.get(cost.item as usize) == their_items.get(other.item as usize)
-            })
-        })
-}
-
-/// The packed record at `at..at + len` of a lens part's `payload`.
-fn slice(payload: &[u8], (at, len): (u32, u32)) -> io::Result<&[u8]> {
-    payload
-        .get(at as usize..(at as usize).saturating_add(len as usize))
-        .ok_or_else(|| lens_failure("a record outside its payload"))
-}
-
-/// `split`, its fields' items named by `item`.
-fn remap_split(
-    split: tally::Split,
-    item: &impl Fn(u32) -> io::Result<u32>,
-) -> io::Result<tally::Split> {
-    let mut days = Vec::with_capacity(split.days.len());
-    for ((at, field), day) in split.days {
-        days.push(((at, (item(field.0)?, field.1, field.2)), day));
-    }
-    Ok(tally::Split {
-        days,
-        daily: split.daily,
-    })
 }
 
 /// `reasons` as a catalogue list of (reason, count) pairs.

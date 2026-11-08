@@ -2,9 +2,7 @@
 //! country step ([`super::Scan`]) reads of each hour, as the hourly walk's index step found it
 //! in the hour's frame (the holders, owners and read hours by slot where they changed, the slots
 //! to observe again, and each fresh read's rows), and each tag's grant facts where they changed.
-//! Every segment starts cold. Its lens ([`super::lens`]) folds every country from its last read
-//! before the segment's first hour, and hands the ordered emit ([`super::emit`]) what each
-//! country publishes from its first read a day into the segment; the emit folds the rest.
+//! Every segment starts cold; the ordered emit ([`super::emit`]) folds every country.
 //!
 //! A fresh read sends its slots' rows, what its bonus and modifier rows attribute to each slot,
 //! and the inventory rows its assignments can ask for. Attributions are derived here from the
@@ -18,9 +16,9 @@
 //! keeps its owner's whole inventory, shared by its reads while no row of it changes.
 
 use super::{
-    Attribution, CountryRows, IndexChanges, Indexes, Technology, attributed_bonuses,
+    Attribution, CountryRows, IndexChanges, Technology, attributed_bonuses,
     grants::{self, GrantInventory},
-    lens, modifiers, valid_inputs,
+    modifiers, valid_inputs,
 };
 use crate::{ResearchBonus, ResearchModifiers};
 use dashboard_world::{Needs, Roster, Tag, Tagged, World};
@@ -250,31 +248,13 @@ pub struct Grants {
     pub facts: Vec<(String, Grant)>,
 }
 
-/// One hour of a segment, or what the segment's lens hands back after the hour it folded last.
+/// One hour of a segment.
 #[derive(replay_spool::Spooled)]
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
     pub index: Index,
     pub grants: Option<Box<Grants>>,
-    /// What the lens hands the emit with the hour.
-    pub(super) lens: Option<Box<lens::Part>>,
-    /// Whether it only hands the lens's countries back, after hour `hour`.
-    pub(super) handover: bool,
-}
-
-impl Hour {
-    /// What the lens hands back after `hour`.
-    fn handed(branch: u64, hour: i32, part: Box<lens::Part>) -> Self {
-        Self {
-            branch,
-            hour,
-            index: Index::Quiet,
-            grants: None,
-            lens: Some(part),
-            handover: true,
-        }
-    }
 }
 
 fn bonuses_heap(bonuses: &[ResearchBonus]) -> usize {
@@ -776,9 +756,6 @@ pub struct Projector {
     found: Vec<u32>,
     shared_rows: Vec<ResearchModifierRow>,
     slot_rows: Vec<ResearchModifierRow>,
-    /// The segment's fold of every country, and the branch it walks.
-    lens: Option<lens::Lens>,
-    branch: u64,
 }
 
 /// What [`Projector::save`] writes: nothing but that it restarts, since everything it holds is
@@ -833,8 +810,6 @@ impl Projector {
             found: Vec::new(),
             shared_rows: Vec::new(),
             slot_rows: Vec::new(),
-            lens: None,
-            branch: 0,
         })
     }
 
@@ -1037,96 +1012,6 @@ impl Projector {
             };
             (Index::Changed(Box::new(changed)), fresh)
         })
-    }
-
-    /// Each country's read before hour `at`, the lens's first, that its rows still hold: as the
-    /// country step took it fresh at its own hour ([`Self::fresh`]), with the owner's whole
-    /// inventory. A slot more tags hold is folded by the emit alone, and so is one whose rows
-    /// the walk cannot read, which the hourly walk never read here: no read of them refuses.
-    fn virgins(&mut self, state: &State, at: i32) -> io::Result<Vec<lens::Virgin>> {
-        let mut virgins = Vec::new();
-        let slots: Vec<(u32, u32, Vec<u8>)> = self
-            .country_rows
-            .iter()
-            .filter_map(|(&slot, rows)| match rows.as_slice() {
-                [(_, id, tag)] => Some((slot, *id, tag.clone())),
-                _ => None,
-            })
-            .collect();
-        for (slot, id, tag) in slots {
-            let Ok(tag) = String::from_utf8(tag) else {
-                continue;
-            };
-            if tag.is_empty() || tag.len() > 512 {
-                continue;
-            }
-            match self.virgin(state, at, slot) {
-                Ok(Some((read, fresh))) => virgins.push(lens::Virgin {
-                    tag,
-                    identity: (id, slot),
-                    read,
-                    fresh,
-                }),
-                Ok(None) => {}
-                Err(error) if error.kind() == io::ErrorKind::InvalidData => {}
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(virgins)
-    }
-
-    /// `slot`'s read before hour `at` that its rows still hold, as [`Self::virgins`] takes it.
-    fn virgin(&mut self, state: &State, at: i32, slot: u32) -> io::Result<Option<(i32, Fresh)>> {
-        let owners = self.owners.get(&slot).cloned().unwrap_or_default();
-        let inputs = self.input_rows(state, &owners)?;
-        let stamp = |owner: u32| self.stamps.read(INPUTS, owner);
-        let read = match inputs.first() {
-            Some(input) => stamp(input.country)
-                .filter(|&read| inputs.iter().all(|input| stamp(input.country) == Some(read))),
-            None => owners.iter().filter_map(|&owner| stamp(owner)).max(),
-        };
-        let Some(read) = read.filter(|&read| read < at) else {
-            return Ok(None);
-        };
-        let owner = inputs
-            .first()
-            .map(|input| input.country)
-            .or_else(|| owners.iter().copied().find(|&owner| stamp(owner) == Some(read)));
-        let mut derived = Vec::new();
-        let refs: Vec<&ResearchInputRow> = inputs.iter().collect();
-        if valid_inputs(&refs) {
-            let bonuses = self.joined(state, &self.bonuses, BONUSES, &owners, read);
-            let modifiers = self.joined(state, &self.modifiers, MODIFIERS, &owners, read);
-            derived.reserve_exact(inputs.len());
-            for input in &inputs {
-                derived.push(self.derive(state, input, bonuses, modifiers)?);
-            }
-        }
-        let inventory = match owner
-            .filter(|_| columns::complete(state, TableId::ResearchTechnologies))
-        {
-            Some(owner) => Some(self.inventory(state, at, slot, owner, &inputs)?),
-            None => None,
-        };
-        Ok(Some((
-            read,
-            Fresh {
-                inputs,
-                read: Some(read),
-                derived,
-                inventory,
-            },
-        )))
-    }
-
-    /// Hands the lens's countries back after the hour it folded last, `last`.
-    fn hand_over(&mut self, last: i32, out: &mut dyn Sink<Hour>) -> io::Result<()> {
-        if let Some(mut lens) = self.lens.take()
-            && let Some(part) = lens.hand_over()?
-        {
-            out.push(Hour::handed(self.branch, last, part))?;
-        }
-        Ok(())
     }
 
     /// Whether `keyed`'s table is complete and every one of `owners` holding rows of it was read
@@ -1758,79 +1643,29 @@ impl Operator<World> for Projector {
         out: &mut dyn Sink<Hour>,
     ) -> io::Result<()> {
         let _cpu = replay_frame::cpu::scope("research.columnar", Some("research"));
-        let state = hour.state;
         let at = hour.hour;
         let cold = hour.starts
             || hour.opens
             || self.last.and_then(|last| last.checked_add(1)) != Some(at);
         if cold {
-            if let Some(last) = self.last {
-                self.hand_over(last, out)
-                    .map_err(segments::family_failure)?;
-            }
             self.cold(at)?;
         }
-        self.branch = hour.branch;
-        // Only the hour's own read refuses, before the lens folds any of it: the lens hands back
-        // exactly the hours before, as the emit holds the countries it folds itself.
-        let (index, fresh, grants) = match self.project(hour, cold) {
-            Ok(projected) => projected,
-            Err(error) => {
-                if let Some(last) = self.last {
-                    self.hand_over(last, out)
-                        .map_err(segments::family_failure)?;
-                }
-                return Err(error);
-            }
-        };
+        let (index, fresh, grants) = self.project(hour, cold)?;
         self.last = Some(at);
-        // What the lens adds, and handing the hour on, fail only where the fold itself is
-        // wrong: never a refusal, so no country keeps a part of the hour another lacks.
-        (|| -> io::Result<()> {
-            if cold {
-                let virgins = self.virgins(state, at)?;
-                self.lens = Some(lens::Lens::start(at, virgins));
+        let index = match index {
+            Index::Changed(mut changed) => {
+                changed.fresh = fresh;
+                Index::Changed(changed)
             }
-            let part = match &mut self.lens {
-                Some(lens) => {
-                    // The lens reads the indexes this step left, as the emit's adopt of it would.
-                    let indexes = Indexes {
-                        slots: self.held.then_some(&*self.slots),
-                        rows: &self.country_rows,
-                        owners: &self.owners,
-                        dates: &self.input_dates,
-                    };
-                    lens.hour(at, &index, indexes, &fresh)?;
-                    lens.part()
-                }
-                None => None,
-            };
-            let index = match index {
-                Index::Changed(mut changed) => {
-                    changed.fresh = fresh;
-                    Index::Changed(changed)
-                }
-                index => index,
-            };
-            out.push(Hour {
-                branch: hour.branch,
-                hour: at,
-                index,
-                grants,
-                lens: part,
-                handover: false,
-            })
-        })()
+            index => index,
+        };
+        out.push(Hour {
+            branch: hour.branch,
+            hour: at,
+            index,
+            grants,
+        })
         .map_err(segments::family_failure)
-    }
-
-    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
-        match self.last {
-            Some(last) => self
-                .hand_over(last, out)
-                .map_err(segments::family_failure),
-            None => Ok(()),
-        }
     }
 
     fn carried(&self) -> Option<usize> {

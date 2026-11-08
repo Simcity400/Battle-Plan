@@ -4,22 +4,16 @@
 //! its first hour) and progress (each read an event) as runs; its closed history as events; its
 //! open history at each cut; and its grant inventory while a supplying read admits it.
 //!
-//! Each segment's lens ([`super::lens`]) folds every country on the walk; from a country's first
-//! read a day into the segment the emit binds it ([`Lensed`]) and appends what the lens published
-//! of it, stepping itself only the slot states the two hold apart, until the lens hands it back.
-//!
 //! A tag's grants are admitted from a read of its holder's ResearchModifiers at the read's hour
 //! while every owner of its slot holding grant rows shares that read, through every hour after
 //! it of an unbroken walk with the same holder, short of a read period.
 
 use super::{
-    Country, CountryRows, FreshRead, Indexes, Reads, Scan, counts_down,
+    Country, CountryRows, FreshRead, Indexes, Reads, Scan,
     facts::{self, Fresh, Grant, Index},
-    lens::{self, Bind, Items, Key, Op, Payload, Prior, Publish, Taken},
 };
 use crate::{
-    ResearchCoverage, ResearchDetails, ResearchEntry, ResearchHistory, ResearchProgress,
-    ResearchSlotHistory, ResearchSlotState,
+    ResearchCoverage, ResearchEntry, ResearchHistory, ResearchProgress, ResearchSlotState,
 };
 use dashboard_series::{
     Cell, Event, Evidence, KeyHandle, Knownness, RunMode, Span, Writer,
@@ -65,6 +59,33 @@ pub mod kind {
     pub const GRANT: u64 = 4;
 }
 
+/// A key of a country's series.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, replay_spool::Spooled)]
+pub(super) enum Key {
+    Coverage,
+    History,
+    Available(u32),
+    State(u32),
+    Progress(u32),
+}
+
+/// An event's text, as a country's publish hands it.
+pub(super) enum Payload<'a> {
+    State(&'a ResearchSlotState),
+    Read(Option<&'a ResearchProgress>),
+    Closed(&'a Closed),
+}
+
+/// Where a country's publish goes.
+pub(super) trait Publish {
+    /// Slot `slot` is published.
+    fn slot(&mut self, slot: u32) -> io::Result<()>;
+    fn value(&mut self, key: Key, at: i32, value: Option<i128>, starts: bool) -> io::Result<()>;
+    fn event(&mut self, key: Key, at: i32, payload: Payload<'_>) -> io::Result<()>;
+    /// The country's read was observed at the hour.
+    fn read(&mut self) -> io::Result<()>;
+}
+
 /// A history item no later hour changes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, replay_spool::Spooled)]
 #[serde(tag = "kind")]
@@ -107,16 +128,6 @@ fn invalid() -> io::Error {
 /// `error`, met by the country step: the family's refusal at its hour.
 fn refused(error: io::Error) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
-}
-
-/// `error`, met while a lens holds countries the emit cannot publish without: the fold is
-/// wrong, never the recorded data, so it ends the family rather than refuse its hour.
-fn unrefused(error: io::Error) -> io::Error {
-    if error.kind() == io::ErrorKind::InvalidData {
-        io::Error::other(format!("Research lens: {error}"))
-    } else {
-        error
-    }
 }
 
 /// `text`, an event's JSON, as one event of `key` at `hour`.
@@ -190,16 +201,6 @@ impl Keys {
         })
     }
 
-    /// The handle of `key` where it was catalogued.
-    fn held(&self, key: Key) -> Option<KeyHandle> {
-        match key {
-            Key::Coverage => Some(self.coverage),
-            Key::History => Some(self.history),
-            Key::Available(slot) => self.slots.get(&slot).map(|keys| keys[0]),
-            Key::State(slot) => self.slots.get(&slot).map(|keys| keys[1]),
-            Key::Progress(slot) => self.slots.get(&slot).map(|keys| keys[2]),
-        }
-    }
 }
 
 fn key(
@@ -287,16 +288,6 @@ impl Reads for KeptReads<'_> {
             .get(&slot)
             .ok_or_else(|| io::Error::other("A fresh research read was not kept"))?;
         Ok(FreshRead::kept(kept))
-    }
-}
-
-/// What an index step hands the country step: the slots to observe and whether the holders
-/// changed, or None for an incomplete hour.
-pub(super) fn refreshed(index: &Index) -> Option<(BTreeSet<u32>, bool)> {
-    match index {
-        Index::Incomplete => None,
-        Index::Quiet => Some((BTreeSet::new(), false)),
-        Index::Changed(changed) => Some((changed.dirty.clone(), changed.countries_changed)),
     }
 }
 
@@ -490,509 +481,6 @@ struct Granted {
     deadlines: BTreeSet<(i32, String)>,
 }
 
-/// What a lens's values of its first read's hour stand for in the emit's state, by where they
-/// stand ([`Prior`]).
-#[derive(Default)]
-struct Sigma {
-    coverage: Option<i32>,
-    available: BTreeMap<u32, i32>,
-    progress: BTreeMap<u32, i32>,
-    /// Each slot's assignment the lens began from, as an assignment's first observed hour.
-    refs: BTreeMap<u32, i32>,
-    /// Each slot's assignment the lens began from: its first observed hour, the observation it
-    /// started after and its continuity.
-    entries: BTreeMap<u32, (i32, Option<i32>, i32)>,
-    continuity: Option<i32>,
-    starts: BTreeMap<u32, i32>,
-}
-
-/// An item the emit holds that the lens never did, closed where the lens first holds one of
-/// its kind in its slot.
-enum Residue {
-    Available(ResearchCoverage),
-    Entry(ResearchEntry),
-    Progress(ResearchProgress),
-}
-
-/// A country a lens folds, as the emit bound it.
-struct Lensed {
-    tag: String,
-    canonical: u32,
-    virgin: Option<i32>,
-    sigma: Sigma,
-    /// Each slot state the emit steps itself, where the lens holds its slot's apart.
-    chains: BTreeMap<u32, ResearchSlotState>,
-    /// The slots the lens never held, and the single items.
-    slots: Vec<ResearchSlotHistory>,
-    items: BTreeMap<(u32, Items), Residue>,
-    /// Its slot reads not joined, at the bind: the emit's, and the lens's.
-    unjoined: (usize, usize),
-}
-
-/// Where `a` and `b`, a lens's value of `virgin`'s hour standing for one of the emit's, agree:
-/// `held` records what it stands for, once.
-fn bind_hour(
-    held: &mut Option<i32>,
-    virgin: Option<i32>,
-    first: i32,
-    real: i32,
-    lens: i32,
-) -> Option<()> {
-    if virgin == Some(lens) {
-        if real >= first || held.is_some_and(|held| held != real) {
-            return None;
-        }
-        *held = Some(real);
-        Some(())
-    } else {
-        (real == lens).then_some(())
-    }
-}
-
-/// As [`bind_hour`], an hour kept by slot.
-fn bind_slot(
-    held: &mut BTreeMap<u32, i32>,
-    slot: u32,
-    virgin: Option<i32>,
-    first: i32,
-    real: i32,
-    lens: i32,
-) -> Option<()> {
-    let mut one = held.get(&slot).copied();
-    bind_hour(&mut one, virgin, first, real, lens)?;
-    if let Some(one) = one {
-        held.insert(slot, one);
-    }
-    Some(())
-}
-
-/// As [`bind_slot`], for an optional hour.
-fn bind_option(
-    held: &mut BTreeMap<u32, i32>,
-    slot: u32,
-    virgin: Option<i32>,
-    first: i32,
-    real: Option<i32>,
-    lens: Option<i32>,
-) -> Option<()> {
-    match (real, lens) {
-        (Some(real), Some(lens)) => bind_slot(held, slot, virgin, first, real, lens),
-        (None, None) => Some(()),
-        _ => None,
-    }
-}
-
-/// Whether two states continue alike in all but their countdown.
-fn alike(real: &ResearchSlotState, lens: &ResearchSlotState) -> bool {
-    real.last_hour == lens.last_hour
-        && real.token == lens.token
-        && real.speed_multiplier_raw == lens.speed_multiplier_raw
-        && real.banked_days_raw == lens.banked_days_raw
-        && real.applied_days_raw == lens.applied_days_raw
-        && real.ahead_reduction_years_raw == lens.ahead_reduction_years_raw
-        && match (&real.details, &lens.details) {
-            (None, None) => true,
-            (Some(real), Some(lens)) => {
-                real.bonuses == lens.bonuses && real.modifiers == lens.modifiers
-            }
-            _ => false,
-        }
-}
-
-/// Whether `entry`, the emit's, matches the lens's `lens` in all its in-segment fields.
-fn same_entry(real: &ResearchEntry, lens: &ResearchEntry) -> bool {
-    real.token == lens.token
-        && real.technology_handle == lens.technology_handle
-        && real.database_index == lens.database_index
-        && real.level == lens.level
-        && real.last_observed_hour == lens.last_observed_hour
-        && real.ended_by_hour == lens.ended_by_hour
-        && real.outcome_observed_hour == lens.outcome_observed_hour
-        && real.outcome == lens.outcome
-}
-
-/// How the emit's `real` state of a country binds a lens's `lens` one, where the two fold alike
-/// from here on; None where they would not. The lens began at `first`, from the country's read
-/// at `virgin`.
-fn bound(real: &Country, lens: &Country, first: i32, virgin: Option<i32>) -> Option<Lensed> {
-    if real.carry_until != lens.carry_until
-        || real.identity != lens.identity
-        || real.last_read != lens.last_read
-        || real.read_after != lens.read_after
-        || real.observed_read != lens.observed_read
-        || real.active != lens.active
-        || real.entry_occurrences != lens.entry_occurrences
-        || real.pending != lens.pending
-        || real.samples.len() != lens.samples.len()
-    {
-        return None;
-    }
-    // Later reads look a day back alone, past the segment's first hour.
-    for (slot, real) in &real.samples {
-        let lens = lens.samples.get(slot)?;
-        if !real
-            .iter()
-            .filter(|(hour, _)| *hour >= first)
-            .eq(lens.iter().filter(|(hour, _)| *hour >= first))
-        {
-            return None;
-        }
-    }
-    let mut sigma = Sigma::default();
-    bind_hour(
-        &mut sigma.continuity,
-        virgin,
-        first,
-        real.continuity_start_hour,
-        lens.continuity_start_hour,
-    )?;
-    if real.unjoined_starts.len() != lens.unjoined_starts.len() {
-        return None;
-    }
-    for (slot, &held) in &lens.unjoined_starts {
-        let &real = real.unjoined_starts.get(slot)?;
-        bind_slot(&mut sigma.starts, *slot, virgin, first, real, held)?;
-    }
-    match (
-        real.history.coverage.as_slice(),
-        lens.history.coverage.as_slice(),
-    ) {
-        ([], []) => {}
-        ([real], [lens]) if real.last_hour == lens.last_hour => {
-            bind_hour(&mut sigma.coverage, virgin, first, real.first_hour, lens.first_hour)?;
-        }
-        _ => return None,
-    }
-    let mut chains = BTreeMap::new();
-    let mut items = BTreeMap::new();
-    let mut slots = Vec::new();
-    for real_slot in &real.history.slots {
-        let index = real_slot.index;
-        let Some(lens_slot) = lens.history.slots.iter().find(|slot| slot.index == index) else {
-            // A slot the lens never held: nothing of it is read again unless the slot is.
-            if real_slot
-                .entries
-                .iter()
-                .any(|entry| entry.ended_by_hour.is_none())
-                || real_slot.availability.iter().any(|span| span.last_hour >= first)
-                || real_slot.progress.iter().any(|progress| progress.last_hour >= first)
-                || real_slot.states.iter().any(|state| state.last_hour >= first)
-            {
-                return None;
-            }
-            slots.push(real_slot.clone());
-            continue;
-        };
-        match (
-            real_slot.availability.as_slice(),
-            lens_slot.availability.as_slice(),
-        ) {
-            ([], []) => {}
-            ([real], [lens]) if real.last_hour == lens.last_hour => {
-                bind_slot(
-                    &mut sigma.available,
-                    index,
-                    virgin,
-                    first,
-                    real.first_hour,
-                    lens.first_hour,
-                )?;
-            }
-            _ => return None,
-        }
-        match (real_slot.states.as_slice(), lens_slot.states.as_slice()) {
-            ([], []) => {}
-            ([real], [lens]) if alike(real, lens) => {
-                bind_option(
-                    &mut sigma.refs,
-                    index,
-                    virgin,
-                    first,
-                    real.entry_first_observed_hour,
-                    lens.entry_first_observed_hour,
-                )?;
-                let rd = |state: &ResearchSlotState| {
-                    state.details.as_ref().map(|details| details.remaining_days)
-                };
-                if real.first_hour != lens.first_hour || rd(real) != rd(lens) {
-                    chains.insert(index, real.clone());
-                }
-            }
-            _ => return None,
-        }
-        match (real_slot.progress.as_slice(), lens_slot.progress.as_slice()) {
-            ([], []) => {}
-            ([real], [lens])
-                if real.last_hour == lens.last_hour
-                    && real.base_days_raw == lens.base_days_raw
-                    && real.progress_raw == lens.progress_raw =>
-            {
-                bind_slot(
-                    &mut sigma.progress,
-                    index,
-                    virgin,
-                    first,
-                    real.first_hour,
-                    lens.first_hour,
-                )?;
-                bind_option(
-                    &mut sigma.refs,
-                    index,
-                    virgin,
-                    first,
-                    real.entry_first_observed_hour,
-                    lens.entry_first_observed_hour,
-                )?;
-            }
-            ([real], []) if real.last_hour < first => {
-                items.insert((index, Items::Progress), Residue::Progress(real.clone()));
-            }
-            _ => return None,
-        }
-        match (real_slot.entries.as_slice(), lens_slot.entries.as_slice()) {
-            ([real], []) if real.ended_by_hour.is_some() => {
-                items.insert((index, Items::Entries), Residue::Entry(real.clone()));
-            }
-            (reals, lenses) if reals.len() == lenses.len() => {
-                for (real, held) in reals.iter().zip(lenses) {
-                    if !same_entry(real, held) {
-                        return None;
-                    }
-                    if virgin == Some(held.first_observed_hour) {
-                        if real.first_observed_hour >= first || sigma.entries.contains_key(&index)
-                        {
-                            return None;
-                        }
-                        sigma.entries.insert(
-                            index,
-                            (
-                                real.first_observed_hour,
-                                real.started_after_hour,
-                                real.continuity_start_hour,
-                            ),
-                        );
-                        bind_slot(
-                            &mut sigma.refs,
-                            index,
-                            virgin,
-                            first,
-                            real.first_observed_hour,
-                            held.first_observed_hour,
-                        )?;
-                    } else {
-                        if real.first_observed_hour != held.first_observed_hour
-                            || real.started_after_hour != held.started_after_hour
-                        {
-                            return None;
-                        }
-                        bind_hour(
-                            &mut sigma.continuity,
-                            virgin,
-                            first,
-                            real.continuity_start_hour,
-                            held.continuity_start_hour,
-                        )?;
-                    }
-                }
-            }
-            _ => return None,
-        }
-    }
-    if lens
-        .history
-        .slots
-        .iter()
-        .any(|lens| !real.history.slots.iter().any(|real| real.index == lens.index))
-    {
-        return None;
-    }
-    // A progress the emit holds alone is never shown again: no assignment of its slot is its.
-    for ((index, _), item) in &items {
-        let Residue::Progress(progress) = item else {
-            continue;
-        };
-        let Some(slot) = real.history.slots.iter().find(|slot| slot.index == *index) else {
-            continue;
-        };
-        if progress.entry_first_observed_hour.is_some_and(|hour| {
-            slot.entries.iter().any(|entry| entry.first_observed_hour == hour)
-                || slot
-                    .states
-                    .iter()
-                    .any(|state| state.entry_first_observed_hour == Some(hour))
-        }) {
-            return None;
-        }
-    }
-    Some(Lensed {
-        tag: String::new(),
-        canonical: 0,
-        virgin,
-        sigma,
-        chains,
-        slots,
-        items,
-        unjoined: (real.unjoined_reads, lens.unjoined_reads),
-    })
-}
-
-/// An hour field an event's text names by its key, wherever it stands in the text.
-#[derive(Clone, Copy)]
-enum PriorHour {
-    /// `firstHour`.
-    First,
-    /// `entryFirstObservedHour`.
-    Entry,
-    /// `continuityStartHour`.
-    Continuity,
-}
-
-/// Sets every `field` of `event` holding `virgin`'s hour to `value`.
-fn map_prior(
-    event: &mut lens::Event,
-    field: PriorHour,
-    virgin: i32,
-    value: Option<i32>,
-) -> io::Result<()> {
-    let set = |hour: &mut i32| -> io::Result<()> {
-        if *hour == virgin {
-            *hour =
-                value.ok_or_else(|| io::Error::other("A research lens names a prior hour unbound"))?;
-        }
-        Ok(())
-    };
-    let set_some = |hour: &mut Option<i32>| match hour {
-        Some(hour) => set(hour),
-        None => Ok(()),
-    };
-    let progress = |progress: &mut ResearchProgress| match field {
-        PriorHour::First => set(&mut progress.first_hour),
-        PriorHour::Entry => set_some(&mut progress.entry_first_observed_hour),
-        PriorHour::Continuity => Ok(()),
-    };
-    match event {
-        lens::Event::State(state) => match field {
-            PriorHour::First => set(&mut state.first_hour),
-            PriorHour::Entry => set_some(&mut state.entry_first_observed_hour),
-            PriorHour::Continuity => Ok(()),
-        },
-        lens::Event::Read(read) => read.as_mut().map_or(Ok(()), progress),
-        lens::Event::Closed(closed) => match (&mut **closed, field) {
-            (Closed::Coverage { span } | Closed::Available { span, .. }, PriorHour::First) => {
-                set(&mut span.first_hour)
-            }
-            (Closed::Progress { progress: held, .. }, _) => progress(held),
-            (Closed::Entry { entry, .. }, PriorHour::Continuity) => {
-                set(&mut entry.continuity_start_hour)
-            }
-            _ => Ok(()),
-        },
-    }
-}
-
-/// The fresh reads `index` kept.
-fn fresh_of(index: &Index) -> &BTreeMap<u32, Fresh> {
-    static NONE: BTreeMap<u32, Fresh> = BTreeMap::new();
-    match index {
-        Index::Changed(changed) => &changed.fresh,
-        _ => &NONE,
-    }
-}
-
-impl Lensed {
-    /// The lens's `entry` of slot `slot`, as the emit holds it.
-    fn entry(&self, slot: u32, mut entry: ResearchEntry) -> ResearchEntry {
-        let Some(virgin) = self.virgin else {
-            return entry;
-        };
-        if entry.first_observed_hour == virgin
-            && let Some(&(first, after, continuity)) = self.sigma.entries.get(&slot)
-        {
-            entry.first_observed_hour = first;
-            entry.started_after_hour = after;
-            entry.continuity_start_hour = continuity;
-        } else if entry.continuity_start_hour == virgin
-            && let Some(continuity) = self.sigma.continuity
-        {
-            entry.continuity_start_hour = continuity;
-        }
-        entry
-    }
-
-    /// The lens's `country` as the emit holds it, its first read's hour mapped back and what
-    /// the emit held alone put back.
-    fn taken(&mut self, mut country: Country) -> Country {
-        country.chains = None;
-        country.unjoined_reads = self.unjoined.0 + country.unjoined_reads.saturating_sub(self.unjoined.1);
-        if let Some(virgin) = self.virgin {
-            let sigma = &self.sigma;
-            let map = |hour: &mut i32, real: Option<i32>| {
-                if *hour == virgin
-                    && let Some(real) = real
-                {
-                    *hour = real;
-                }
-            };
-            for span in &mut country.history.coverage {
-                map(&mut span.first_hour, sigma.coverage);
-            }
-            map(&mut country.continuity_start_hour, sigma.continuity);
-            for (slot, start) in &mut country.unjoined_starts {
-                map(start, sigma.starts.get(slot).copied());
-            }
-            for slot in &mut country.history.slots {
-                let index = slot.index;
-                let refs = sigma.refs.get(&index).copied();
-                for span in &mut slot.availability {
-                    map(&mut span.first_hour, sigma.available.get(&index).copied());
-                }
-                for progress in &mut slot.progress {
-                    map(&mut progress.first_hour, sigma.progress.get(&index).copied());
-                    if let Some(hour) = &mut progress.entry_first_observed_hour {
-                        map(hour, refs);
-                    }
-                }
-                for state in &mut slot.states {
-                    if let Some(hour) = &mut state.entry_first_observed_hour {
-                        map(hour, refs);
-                    }
-                }
-            }
-            for slot in &mut country.history.slots {
-                let index = slot.index;
-                let entries = std::mem::take(&mut slot.entries);
-                slot.entries = entries
-                    .into_iter()
-                    .map(|entry| self.entry(index, entry))
-                    .collect();
-            }
-        }
-        for (index, chain) in std::mem::take(&mut self.chains) {
-            if let Some(slot) = country.history.slots.iter_mut().find(|slot| slot.index == index)
-                && let Some(last) = slot.states.last_mut()
-            {
-                let last_hour = last.last_hour;
-                *last = chain;
-                last.last_hour = last_hour;
-            }
-        }
-        for ((index, kind), item) in std::mem::take(&mut self.items) {
-            let Some(slot) = country.history.slots.iter_mut().find(|slot| slot.index == index)
-            else {
-                continue;
-            };
-            match (kind, item) {
-                (Items::Availability, Residue::Available(span)) => slot.availability.insert(0, span),
-                (Items::Entries, Residue::Entry(entry)) => slot.entries.insert(0, entry),
-                (Items::Progress, Residue::Progress(progress)) => slot.progress.insert(0, progress),
-                _ => {}
-            }
-        }
-        country.history.slots.append(&mut self.slots);
-        country
-    }
-}
-
 /// The family's emit on one branch.
 pub struct Emit {
     actors: Actors,
@@ -1003,9 +491,6 @@ pub struct Emit {
     granted: Granted,
     /// The tags whose open history may have changed since the last cut.
     stale: BTreeSet<String>,
-    /// The countries the walk's lens folds, by the number it names them by; None for one it
-    /// bound that the emit does not.
-    lensed: HashMap<u32, Option<Lensed>>,
     last: Option<i32>,
     /// The first hour since the last cut.
     first: Option<i32>,
@@ -1027,27 +512,15 @@ impl Emit {
             indexed: Indexed::default(),
             granted: Granted::default(),
             stale: BTreeSet::new(),
-            lensed: HashMap::new(),
             last: None,
             first: None,
         }
     }
 
-    /// Keeps one projected hour, or what the lens hands back with the hour kept last.
+    /// Keeps one projected hour.
     pub fn hour(&mut self, writer: &mut Writer, hour: facts::Hour) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope("research.emit", None);
         let at = hour.hour;
-        if hour.handover {
-            if Some(at) != self.last {
-                return Err(io::Error::other(
-                    "A research lens hands back an hour the emit did not keep",
-                ));
-            }
-            if let Some(part) = hour.lens {
-                self.returned(part.returned).map_err(unrefused)?;
-            }
-            return Ok(());
-        }
         match self.last {
             Some(last) if last.checked_add(1) == Some(at) => {}
             Some(last) if at <= last => {
@@ -1057,11 +530,6 @@ impl Emit {
             }
             // An hour not walked ends every run, every admitted read and the known hours.
             Some(last) => {
-                if !self.lensed.is_empty() {
-                    return Err(io::Error::other(
-                        "A research lens did not hand its countries back",
-                    ));
-                }
                 self.carry.close(writer, last)?;
                 if let Some(first) = self.first.take() {
                     known(writer, first, last)?;
@@ -1074,44 +542,16 @@ impl Emit {
         }
         self.last = Some(at);
         self.first.get_or_insert(at);
-        // Only the walk's read of an hour refuses it while a lens holds countries: the lens
-        // hands them back through the hour before. An hour the emit itself would refuse then
-        // could not publish them, so it ends the family instead.
-        match self.keep(writer, at, hour) {
-            Err(error) if !self.lensed.is_empty() => Err(unrefused(error)),
-            kept => kept,
-        }
+        self.keep(writer, at, hour)
     }
 
-    /// Keeps hour `at`: its country step, what it publishes, and what the lens hands on with it.
+    /// Keeps hour `at`: its country step, and what it publishes.
     fn keep(&mut self, writer: &mut Writer, at: i32, hour: facts::Hour) -> io::Result<()> {
         let facts::Hour {
-            mut index,
-            grants,
-            lens,
-            ..
+            mut index, grants, ..
         } = hour;
         self.step(at, &mut index)?;
         self.publish(writer, at)?;
-        if let Some(part) = lens {
-            let lens::Part {
-                ops,
-                returned,
-                bound,
-            } = *part;
-            let fresh = fresh_of(&index);
-            (|| -> io::Result<()> {
-                for ops in ops {
-                    self.replay(writer, at, ops, fresh)?;
-                }
-                self.returned(returned)?;
-                for bind in bound {
-                    self.bind(bind);
-                }
-                Ok(())
-            })()
-            .map_err(unrefused)?;
-        }
         self.grants(writer, at, grants)
     }
 
@@ -1144,232 +584,6 @@ impl Emit {
             }
             if !self.stale.contains(tag) {
                 self.stale.insert(tag.clone());
-            }
-        }
-        Ok(())
-    }
-
-    /// Binds the country `bind` names where the lens's state of it folds as the emit's does.
-    fn bind(&mut self, bind: Bind) {
-        let Bind {
-            number,
-            tag,
-            canonical,
-            first,
-            virgin,
-            country,
-            recheck,
-            held,
-        } = bind;
-        let lensed = self.scan.countries.get(&tag).and_then(|real| {
-            let mut lensed = bound(real, &country, first, virgin)?;
-            if recheck != self.scan.recheck.contains(&canonical) {
-                return None;
-            }
-            // What the carry holds of its keys is what the lens's does.
-            let held: HashMap<Key, i128> = held.into_iter().collect();
-            let keys = self.tags.get(&tag);
-            let carried = |key: Key| keys.and_then(|keys| keys.held(key)).and_then(|key| self.carry.held(key));
-            if carried(Key::Coverage) != held.get(&Key::Coverage).copied() {
-                return None;
-            }
-            for slot in &real.history.slots {
-                let index = slot.index;
-                for key in [Key::Available(index), Key::Progress(index)] {
-                    if carried(key) != held.get(&key).copied() {
-                        return None;
-                    }
-                }
-                let state = carried(Key::State(index));
-                let lens = held.get(&Key::State(index)).copied();
-                match lensed.chains.get(&index) {
-                    Some(chain) => {
-                        let shown = lens.map(|_| i128::from(chain.first_hour));
-                        if state != shown {
-                            return None;
-                        }
-                    }
-                    None if state != lens => return None,
-                    None => {}
-                }
-            }
-            lensed.tag.clone_from(&tag);
-            lensed.canonical = canonical;
-            Some(lensed)
-        });
-        if lensed.is_some() {
-            self.scan.lens(&tag, canonical);
-        }
-        self.lensed.insert(number, lensed);
-    }
-
-    /// Takes back the countries the lens returns.
-    fn returned(&mut self, returned: Vec<Taken>) -> io::Result<()> {
-        for Taken {
-            number,
-            country,
-            recheck,
-        } in returned
-        {
-            let lensed = self
-                .lensed
-                .remove(&number)
-                .ok_or_else(|| io::Error::other("A research lens returns a country it never bound"))?;
-            if let Some(mut lensed) = lensed {
-                let country = lensed.taken(*country);
-                let tag = std::mem::take(&mut lensed.tag);
-                self.scan.unlens(&tag, country, lensed.canonical, recheck);
-                if !self.stale.contains(&tag) {
-                    self.stale.insert(tag);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// Appends what a bound country published at `at`.
-    fn replay(
-        &mut self,
-        writer: &mut Writer,
-        at: i32,
-        ops: lens::Ops,
-        fresh: &BTreeMap<u32, Fresh>,
-    ) -> io::Result<()> {
-        let Some(Some(lensed)) = self.lensed.get_mut(&ops.country) else {
-            return Ok(());
-        };
-        let keys = tag_keys(&mut self.actors, &mut self.tags, writer, &lensed.tag, at)?;
-        for op in ops.ops {
-            match op {
-                Op::Chain(chain) => {
-                    let Some(state) = lensed.chains.get_mut(&chain.slot) else {
-                        continue;
-                    };
-                    let kept = chain.gate
-                        && match &state.details {
-                            Some(details) => counts_down(
-                                details.remaining_days,
-                                state.first_hour,
-                                at,
-                                chain.remaining,
-                            ),
-                            None => true,
-                        };
-                    match (kept, chain.kept) {
-                        (true, _) => state.last_hour = at,
-                        // Both start the read's state: they hold it alike from here.
-                        (false, false) => {
-                            lensed.chains.remove(&chain.slot);
-                        }
-                        (false, true) => {
-                            let mut read = started(fresh, lensed.canonical, &chain, at)?;
-                            if let (Some(virgin), Some(hour)) =
-                                (lensed.virgin, read.entry_first_observed_hour)
-                                && hour == virgin
-                            {
-                                read.entry_first_observed_hour =
-                                    Some(*lensed.sigma.refs.get(&chain.slot).ok_or_else(|| {
-                                        io::Error::other("A research lens names a prior assignment unbound")
-                                    })?);
-                            }
-                            let [_, key, _] = slot_keys(&mut self.actors, keys, writer, chain.slot)?;
-                            self.carry.value(writer, key, at, Some(i128::from(at)), true)?;
-                            event(writer, key, at, kind::STATE, &read)?;
-                            *state = read;
-                        }
-                    }
-                }
-                Op::Slot(slot) => {
-                    slot_keys(&mut self.actors, keys, writer, slot)?;
-                    if let Some(at_slot) = lensed.slots.iter().position(|held| held.index == slot) {
-                        let held = lensed.slots.remove(at_slot);
-                        if let Some(span) = held.availability.into_iter().last() {
-                            lensed.items.insert((slot, Items::Availability), Residue::Available(span));
-                        }
-                        if let Some(entry) = held.entries.into_iter().last() {
-                            lensed.items.insert((slot, Items::Entries), Residue::Entry(entry));
-                        }
-                        if let Some(progress) = held.progress.into_iter().last() {
-                            lensed.items.insert((slot, Items::Progress), Residue::Progress(progress));
-                        }
-                    }
-                }
-                Op::Filled(slot, items) => {
-                    let Some(item) = lensed.items.remove(&(slot, items)) else {
-                        continue;
-                    };
-                    let closed = match item {
-                        Residue::Available(span) => Closed::Available { slot, span },
-                        Residue::Entry(entry) => Closed::Entry { slot, entry },
-                        Residue::Progress(progress) => Closed::Progress { slot, progress },
-                    };
-                    event(writer, keys.history, at, kind::CLOSED, &closed)?;
-                }
-                Op::Read => {
-                    for slot in &lensed.slots {
-                        let [_, _, key] = slot_keys(&mut self.actors, keys, writer, slot.index)?;
-                        event(writer, key, at, kind::READ, &None::<&ResearchProgress>)?;
-                    }
-                }
-                Op::Value {
-                    key,
-                    mut value,
-                    mut starts,
-                } => {
-                    if let Key::State(slot) = key
-                        && let Some(state) = lensed.chains.get(&slot)
-                    {
-                        value = value.map(|_| i128::from(state.first_hour));
-                        starts = false;
-                    }
-                    let handle = keys.handle(&mut self.actors, writer, key)?;
-                    self.carry.value(writer, handle, at, value, starts)?;
-                }
-                Op::Event {
-                    key,
-                    event: mut published,
-                    prior,
-                } => {
-                    if let Key::State(slot) = key
-                        && lensed.chains.contains_key(&slot)
-                    {
-                        continue;
-                    }
-                    let handle = keys.handle(&mut self.actors, writer, key)?;
-                    if let (Some(prior), Some(virgin)) = (prior, lensed.virgin) {
-                        let sigma = &lensed.sigma;
-                        let pairs: Vec<(PriorHour, Option<i32>)> = match prior {
-                            Prior::Coverage => vec![(PriorHour::First, sigma.coverage)],
-                            Prior::Available(slot) => {
-                                vec![(PriorHour::First, sigma.available.get(&slot).copied())]
-                            }
-                            Prior::Progress(slot) => vec![
-                                (PriorHour::First, sigma.progress.get(&slot).copied()),
-                                (PriorHour::Entry, sigma.refs.get(&slot).copied()),
-                            ],
-                            Prior::Assignment(slot) => {
-                                vec![(PriorHour::Entry, sigma.refs.get(&slot).copied())]
-                            }
-                            Prior::Continuity => vec![(PriorHour::Continuity, sigma.continuity)],
-                        };
-                        for (field, value) in pairs {
-                            map_prior(&mut published, field, virgin, value)?;
-                        }
-                    }
-                    match &published {
-                        lens::Event::State(state) => {
-                            event(writer, handle, at, kind::STATE, &**state)?
-                        }
-                        lens::Event::Read(read) => event(writer, handle, at, kind::READ, read)?,
-                        lens::Event::Closed(closed) => {
-                            event(writer, handle, at, kind::CLOSED, &**closed)?
-                        }
-                    }
-                }
-                Op::Entry { slot, entry } => {
-                    let entry = lensed.entry(slot, *entry);
-                    event(writer, keys.history, at, kind::CLOSED, &Closed::Entry { slot, entry })?;
-                }
             }
         }
         Ok(())
@@ -1471,11 +685,6 @@ impl Emit {
     /// next: each tag's open history that may have changed, and the hours since the last cut as
     /// known.
     pub fn cut(&mut self, writer: &mut Writer, last: i32) -> io::Result<()> {
-        if !self.lensed.is_empty() {
-            return Err(io::Error::other(
-                "A research lens did not hand its countries back",
-            ));
-        }
         // A carried read holds its coverage through the last hour walked.
         self.scan.seal();
         for (_, tag) in &self.scan.deadlines {
@@ -1559,41 +768,6 @@ impl Emit {
         emit.last = saved.last;
         Ok(emit)
     }
-}
-
-/// The state slot `chain.slot` of `canonical`'s read starts at `at`, which the lens's read went on
-/// past: as the read's rows give it.
-fn started(
-    fresh: &BTreeMap<u32, Fresh>,
-    canonical: u32,
-    chain: &lens::Chain,
-    at: i32,
-) -> io::Result<ResearchSlotState> {
-    let missing = || io::Error::other("A research lens's read was not kept");
-    let kept = fresh.get(&canonical).ok_or_else(missing)?;
-    let position = chain.slot as usize;
-    let input = kept.inputs.get(position).ok_or_else(missing)?;
-    let derived = kept.derived.get(position).ok_or_else(missing)?;
-    let token = chain
-        .held
-        .then(|| std::str::from_utf8(&input.token).map(str::to_owned))
-        .transpose()
-        .map_err(|_| io::Error::other("A research technology token is not text"))?;
-    Ok(ResearchSlotState {
-        first_hour: at,
-        last_hour: at,
-        token,
-        entry_first_observed_hour: chain.entry,
-        speed_multiplier_raw: input.research_speed_raw.to_string(),
-        banked_days_raw: input.banked_days_raw.to_string(),
-        applied_days_raw: input.applied_days_raw.to_string(),
-        ahead_reduction_years_raw: chain.held.then(|| input.ahead_reduction_raw.to_string()),
-        details: Some(ResearchDetails {
-            remaining_days: chain.remaining,
-            bonuses: derived.bonuses.as_deref().cloned(),
-            modifiers: derived.modifiers.as_deref().cloned(),
-        }),
-    })
 }
 
 #[derive(Serialize)]

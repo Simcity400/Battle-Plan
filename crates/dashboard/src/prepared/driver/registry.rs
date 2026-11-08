@@ -680,7 +680,8 @@ pub(crate) static FAMILIES: &[Descriptor] = &[
         // 2: replies and saved scans hold per-leader withheld refusals.
         // 3: unit leader visibility: is_country_leader is now evaluated.
         // 4: a leader of raw owner 0 (a retired character's) is in no roster, not withheld.
-        version: 4,
+        // 5: runs keep recorded facts; names and progress text derive when a reply is built.
+        version: 5,
         ..family("leaders")
     },
     Descriptor {
@@ -886,7 +887,8 @@ pub(crate) static JOBS: &[Job] = &[
         name: "production-lines",
         // 3: its chunks follow segments, each country's lines past a segment's first census
         // folded by the walk into lenses its histories bind to.
-        version: 3,
+        // 4: no lenses: the emit folds every country, and chunks hold no bindings.
+        version: 4,
         gates: &[
             "production-lines",
             "production-line-detail",

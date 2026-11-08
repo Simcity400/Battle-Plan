@@ -23,7 +23,7 @@ test('leaderboard settles mounted artwork demand for every sort and preserves ro
     }
   };
   const data = (count: number): UnitLeadersData => ({ branchId: '1', firstHour: 100,
-    people: Array.from({ length: count }, (_, index) => ({ characterId: index + 5, token: null, name: `Leader ${index}`,
+    people: Array.from({ length: count }, (_, index) => ({ name: `Leader ${index}`,
       portraitHour: 100, portraitReference: String(index + 5) })),
     roles: [{ owner: 'synthetic', category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] }],
     traits: [], leaders: Array.from({ length: count }, (_, index) => ({ reference: String(index + 5),

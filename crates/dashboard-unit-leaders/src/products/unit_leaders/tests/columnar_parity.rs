@@ -85,7 +85,11 @@ fn flush(state: &mut Prepared, files: &Fixture, content: Option<&Content>) {
     writer.commit().unwrap();
 }
 
-fn assert_publications_and_resume(files: &[Fixture; 2], label: &str) -> Prepared {
+fn assert_publications_and_resume(
+    files: &[Fixture; 2],
+    content: Option<&Content>,
+    label: &str,
+) -> Prepared {
     let mut payloads = files.each_ref().map(Fixture::payloads);
     let continuation = ("unit-leaders-1".to_owned(), 0);
     let saved = payloads[1].remove(&continuation).unwrap();
@@ -93,8 +97,8 @@ fn assert_publications_and_resume(files: &[Fixture; 2], label: &str) -> Prepared
     // Native continuations keep projection state; compare replies and resume the saved continuation.
     assert_payloads_equal(&payloads[1], &payloads[0], label);
     assert_eq!(
-        serde_json::to_value(reply(&files[1])).unwrap(),
-        serde_json::to_value(reply(&files[0])).unwrap(),
+        serde_json::to_value(reply(&files[1], content)).unwrap(),
+        serde_json::to_value(reply(&files[0], content)).unwrap(),
         "{label}",
     );
     let (keys, metadata) = dashboard_base::prepared::series::read_catalogue::<prepared::Metadata>(
@@ -226,6 +230,7 @@ fn restarted(
         flush(&mut projected, &files[1], content.as_deref());
         projected = assert_publications_and_resume(
             &files,
+            content.as_deref(),
             &format!("leaders restarting at {restarts:?}, block {at}"),
         );
     }
@@ -450,6 +455,7 @@ fn parity_with_content(runs: &[Vec<DecodedFrame>], content: Option<Arc<Content>>
             flush(&mut projected, &files[1], content.as_deref());
             projected = assert_publications_and_resume(
                 &files,
+                content.as_deref(),
                 &format!("leaders split {split}, block {at}"),
             );
         }
@@ -644,7 +650,7 @@ fn naval_sources_late_results_conflicts_and_repeated_commands_match_at_restarts(
     }
     parity(&[frames.clone()]);
     let (_, files) = projected(&[frames[..2].to_vec(), frames[2..].to_vec()]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     let late = result
         .leaders
         .iter()
@@ -761,8 +767,8 @@ fn content_visibility_training_and_context_changes_match_at_restarts() {
     dashboard_text::triggers::inputs::reusing(|| {
         parity_with_content(&[frames.clone()], Some(content.clone()));
         let (_, files) =
-            projected_with_content(&[frames[..4].to_vec(), frames[4..].to_vec()], Some(content));
-        let result = reply(&files);
+            projected_with_content(&[frames[..4].to_vec(), frames[4..].to_vec()], Some(content.clone()));
+        let result = reply(&files, Some(&*content));
         let leader = result
             .leaders
             .iter()
@@ -852,12 +858,14 @@ fn projected_with_content(
     (prepared, files)
 }
 
-fn reply(files: &Fixture) -> UnitLeadersReply {
+fn reply(files: &Fixture, content: Option<&Content>) -> UnitLeadersReply {
+    let shown = content.map(Content::shown);
     prepared::query(
         &files.store,
         &files.key,
         &prepared::full_params("1"),
         None,
+        shown.as_ref(),
         &AtomicBool::new(false),
     )
     .unwrap()
@@ -976,7 +984,7 @@ fn individual_refusals_keep_recorded_coverage_and_match_scan_projection_and_rest
             &[frames[..3].to_vec(), frames[3..].to_vec()],
             Some(content.clone()),
         );
-        let projected = reply(&files);
+        let projected = reply(&files, Some(&*content));
         assert_eq!(projected.withheld, scanned.withheld);
         assert_eq!(projected.observed, scanned.observed);
         assert_eq!(
@@ -1067,7 +1075,7 @@ fn deleted_refusals_end_before_quiet_or_battle_hours_and_reappear_with_the_recor
         )
         .unwrap();
         let (_, files) = projected(&[frames.clone()]);
-        let projected = reply(&files);
+        let projected = reply(&files, None);
         assert_eq!(projected.withheld, scanned.withheld);
         assert_eq!(projected.withheld.len(), 2);
         assert_eq!(projected.withheld[0].kind, 1);
@@ -1230,7 +1238,7 @@ fn assert_withheld_rename_parity(frames: &[DecodedFrame]) {
         let scanned = scan(&replay, &params, Some(&content), &cancelled).unwrap();
         check(&scanned);
         let (_, files) = projected_with_content(&[frames.to_vec()], Some(content.clone()));
-        let projected = reply(&files);
+        let projected = reply(&files, Some(&*content));
         check(&projected);
         assert_eq!(projected.withheld, scanned.withheld);
         restarted_everywhere(&[frames.to_vec()], &[0], Some(content.clone()));
@@ -1259,7 +1267,7 @@ fn assert_withheld_rename_parity(frames: &[DecodedFrame]) {
                         .unwrap();
                     }
                 }
-                let resumed = reply(&files);
+                let resumed = reply(&files, Some(&*content));
                 check(&resumed);
                 assert_eq!(resumed.withheld, scanned.withheld);
             }
@@ -1317,7 +1325,7 @@ fn owner_refusal_steps_and_raw_values_match_scan_projection_and_restarts() {
     )
     .unwrap();
     let (_, files) = projected(&[frames.clone()]);
-    let projected = reply(&files);
+    let projected = reply(&files, None);
     assert_eq!(projected.withheld, scanned.withheld);
     // Raw owner 0 (hour 100) is no country: a retired character's leader, in no roster.
     assert_eq!(projected.withheld.len(), 4);
@@ -1387,8 +1395,8 @@ fn a_1500_country_hour_resolves_only_the_changed_leader_and_extends_other_runs()
                 .progress
                 .as_ref()
                 .unwrap()
-                .experience_raw,
-            "123456"
+                .experience,
+            123456
         );
     }
 }
@@ -1431,7 +1439,7 @@ fn a_skipped_roster_breaks_runs_and_cannot_hide_an_identity_or_trait_change() {
     );
     parity(&[frames.clone()]);
     let (_, files) = projected(&[frames]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     assert_eq!(result.leaders.len(), 1);
     let leader = &result.leaders[0];
     assert_eq!(leader.partial_from, Some(102));
@@ -1516,8 +1524,8 @@ fn unknown_command_names_stitch_before_later_creation_in_captured_order() {
     }
     parity_with_content(&[frames.clone()], Some(content.clone()));
     let (_, files) =
-        projected_with_content(&[frames[..1].to_vec(), frames[1..].to_vec()], Some(content));
-    let result = reply(&files);
+        projected_with_content(&[frames[..1].to_vec(), frames[1..].to_vec()], Some(content.clone()));
+    let result = reply(&files, Some(&*content));
     let commands = &result.leaders[0].commands;
     assert_eq!(commands.len(), 3);
     assert_eq!(
@@ -1559,7 +1567,7 @@ fn a_combat_first_seen_at_a_segment_boundary_uses_the_previous_census() {
         }]),
     );
     let (_, files) = projected(&[vec![first], vec![next]]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     assert_eq!(result.leaders[0].battle_starts.as_deref(), Some(&[101][..]));
     assert_eq!(
         result.leaders[0].battle_start_read_hours.as_deref(),
@@ -1583,7 +1591,7 @@ fn quiet_hours_before_a_restricted_read_keep_coverage_and_untouched_endpoints() 
     frames[4].hour = 104;
     parity(&[frames.clone()]);
     let (_, files) = projected(&[frames]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     assert_eq!(result.observed.len(), 1);
     assert_eq!(
         (result.observed[0].first_hour, result.observed[0].last_hour),
@@ -1648,7 +1656,7 @@ fn a_command_bound_to_a_leader_gone_from_the_roster_ends_with_its_leader() {
     }
     parity(&[frames.clone()]);
     let (_, files) = projected(&[frames]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     let gone = result
         .leaders
         .iter()
@@ -1859,7 +1867,7 @@ fn flag_visibility_and_inputs_changed_in_earlier_segments_match_at_every_restart
             Some(content.clone()),
         );
         let (_, files) = projected_with_content(&[frames.clone()], Some(content.clone()));
-        let result = reply(&files);
+        let result = reply(&files, Some(&*content));
         for index in [0, 1] {
             assert_eq!(
                 spans(career(&result, index))
@@ -1927,7 +1935,7 @@ fn daily_experience_reads_only_its_changed_leader_at_every_restart() {
         None,
     );
     let (_, files) = projected(&[frames.clone()]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     assert_eq!(
         spans(career(&result, 0)),
         vec![(100, 107), (108, 131), (132, 150)]
@@ -1969,7 +1977,7 @@ fn a_leader_deleted_and_added_again_matches_at_every_restart() {
         .collect();
     restarted_everywhere(&[frames[..6].to_vec(), frames[6..].to_vec()], &[0, 0], None);
     let (_, files) = projected(&[frames.clone()]);
-    let result = reply(&files);
+    let result = reply(&files, None);
     let leader = career(&result, 1);
     assert_eq!(spans(leader), vec![(100, 103), (107, 110)]);
     assert_eq!(leader.partial_from, Some(107));

@@ -53,44 +53,6 @@ pub(super) struct HourInput {
 }
 
 impl HourInput {
-    /// This input without its rows, organisations, designs or icons: what a span of hours
-    /// that reads nothing folds by.
-    pub fn quiet_copy(&self) -> Self {
-        Self {
-            rows_complete: self.rows_complete,
-            linked: BTreeSet::new(),
-            identities_changed: false,
-            author_names_due: false,
-            hour: self.hour,
-            last_hour: self.last_hour,
-            countries: None,
-            holders: BTreeMap::new(),
-            lines_complete: self.lines_complete,
-            lines_read: false,
-            output_read: false,
-            output_complete: self.output_complete,
-            organisations_complete: self.organisations_complete,
-            organisations_named: self.organisations_named,
-            modifiers_complete: self.modifiers_complete,
-            modifiers_read: false,
-            modifier_refusal: None,
-            lines: BTreeMap::new(),
-            unlinked_lines: Vec::new(),
-            output: BTreeMap::new(),
-            unlinked_output: Vec::new(),
-            modifier_countries: BTreeMap::new(),
-            modifier_lines: BTreeMap::new(),
-            organisations: BTreeMap::new(),
-            author_names: BTreeMap::new(),
-            organisation_names: BTreeMap::new(),
-            designs: BTreeMap::new(),
-            design_revision: self.design_revision,
-            design_read_hour: self.design_read_hour,
-            organisation_read_hour: self.organisation_read_hour,
-            icons: BTreeMap::new(),
-        }
-    }
-
     /// Holds `icon` as `id`'s from `hour`, noting in `timeline` where it changes.
     fn hold_icon(
         &mut self,
@@ -314,11 +276,6 @@ impl World {
     /// The icons' changes the next chunk holds.
     pub fn take_timeline(&mut self) -> index::Timeline {
         std::mem::take(&mut self.timeline)
-    }
-
-    /// The design revision the latest hour holds.
-    pub fn revision(&self) -> u64 {
-        self.revision
     }
 
     /// Marks a variant whose versions a test edited as the next chunk's and ledger record's.

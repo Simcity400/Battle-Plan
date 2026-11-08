@@ -12,7 +12,6 @@
 //! for the next hour, and copied again only where a following such hour moved it.
 
 use super::items::{self, Dated, FrameTexts, Item, NamedCountry, TextFrame};
-use super::lens;
 use super::*;
 use dashboard_base::products::idea_format;
 use dashboard_base::products::politics_content::PoliticsContent;
@@ -486,10 +485,6 @@ pub struct Hour {
     pub command: Vec<(u32, Option<i64>)>,
     /// `command` holds every live allocation: one held before that it omits left.
     pub command_whole: bool,
-    /// What the segment's lens hands the emit with the hour ([`super::lens`]).
-    pub(super) lens: Option<Box<lens::Part>>,
-    /// Whether it only hands the lens's countries back, after hour `hour`.
-    pub(super) handover: bool,
 }
 
 /// Columns read in place.
@@ -525,10 +520,6 @@ pub struct Projector {
     costs: Recent<([u8; 32], u32, u64), CostShape>,
     /// Every category spelling handed on, shared alike.
     categories: HashSet<Arc<str>>,
-    /// The segment's fold of every country, the branch it walks, and the last hour handed on.
-    lens: Option<lens::Lens>,
-    branch: u64,
-    kept: Option<i32>,
 }
 
 /// The slots `table`'s hour inserted, or wrote any of `mask` at, ascending.
@@ -594,9 +585,6 @@ impl Projector {
             powers: Recent::default(),
             costs: Recent::default(),
             categories: HashSet::new(),
-            lens: None,
-            branch: 0,
-            kept: None,
         })
     }
 
@@ -1056,23 +1044,6 @@ fn category(
 }
 
 impl Projector {
-    /// Hands the lens's countries back after the hour it handed on last.
-    fn hand_over(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
-        if let Some(mut lens) = self.lens.take()
-            && let Some(last) = self.kept
-            && let Some(part) = lens.hand_over(last)
-        {
-            out.push(Hour {
-                branch: self.branch,
-                hour: last,
-                lens: Some(part),
-                handover: true,
-                ..Hour::default()
-            })?;
-        }
-        Ok(())
-    }
-
     /// Hour `walked`'s facts; `whole` hands every table.
     fn project(&mut self, walked: &segments::Hour<'_, World>, whole: bool) -> io::Result<Hour> {
         let state = walked.state;
@@ -1313,8 +1284,6 @@ impl Projector {
             ],
             command,
             command_whole,
-            lens: None,
-            handover: false,
         })
     }
 }
@@ -1333,38 +1302,8 @@ impl Operator<World> for Projector {
             || self
                 .last
                 .is_none_or(|last| last.checked_add(1) != Some(hour));
-        // A whole hour starts the lens over: what it folded goes back first.
-        if whole {
-            self.hand_over(out).map_err(segments::family_failure)?;
-        }
-        self.branch = walked.branch;
-        // Only the hour's own read refuses, before the lens folds any of it: the lens hands back
-        // exactly the hours before, as the emit holds the countries it folds itself.
-        let mut projected = match self.project(walked, whole) {
-            Ok(projected) => projected,
-            Err(error) => {
-                self.hand_over(out).map_err(segments::family_failure)?;
-                return Err(error);
-            }
-        };
-        // The lens fails only where its fold is wrong: never a refusal of the hour.
-        (|| -> io::Result<()> {
-            if whole {
-                self.lens = Some(lens::Lens::start(hour, self.content.clone()));
-            }
-            if let Some(lens) = &mut self.lens {
-                lens.hour(&projected)?;
-                projected.lens = lens.part();
-            }
-            out.push(projected)?;
-            self.kept = Some(hour);
-            Ok(())
-        })()
-        .map_err(segments::family_failure)
-    }
-
-    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
-        self.hand_over(out).map_err(segments::family_failure)
+        let projected = self.project(walked, whole)?;
+        out.push(projected).map_err(segments::family_failure)
     }
 
     fn carried(&self) -> Option<usize> {

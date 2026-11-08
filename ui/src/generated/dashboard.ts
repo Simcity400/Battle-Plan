@@ -70,13 +70,7 @@ eventLosses?: Array<RecordingEventLoss>,
  */
 catalogueHour?: number, };
 export type BranchFork = { branchId: string, hour: number, };
-/**
- * Why recorded play joins the history before it.
- */
 export type JoinEvidence = "counters" | "only" | "process" | "unrecorded" | "unconfirmed" | "chosen";
-/**
- * Where a history goes on with another stretch of recorded play.
- */
 export type BranchJoin = {
 /**
  * The first hour of the play joined.
@@ -826,7 +820,7 @@ export type DivisionLogReply = { window: number, interval: BattleWindow, rows: A
 export type DivisionLogTemplate = { id: string, name: string | null, };
 export type DivisionLogManifestReply = { windows: Array<BattleWindow>, available: boolean, lossesAvailable: boolean, templates: Array<DivisionLogTemplate>, contentWarnings: Array<string>, };
 export type DivisionLogTotalsParams = { branchId: string, firstHour: number, lastHour: number, countries: LandBattleCountryFilter, templates: Array<string> | null, };
-export type DivisionLogTotalsReply = { created: number | null, lost: number | null, transferred: number | null, 
+export type DivisionLogTotalsReply = { created: number | null, lost: number | null, transferred: number | null,
 /**
  * The first hour these totals count from when hours the recording lost lie in the range:
  * totals restart after them, so they count from there to its last hour.
@@ -837,7 +831,7 @@ export type LeaderView = "leaderboard" | "career" | "choices";
 export type LeaderKinds = "all" | "land" | "navy";
 export type UnitLeadersParams = { branchId: string, selection: LeaderSelection, view: LeaderView, leaders: LeaderKinds, };
 export type UnitLeadersAtHourParams = { branchId: string, selection: LeaderSelection, view: LeaderView, leaders: LeaderKinds, hour: number, };
-export type LeaderPerson = { characterId: number, token: string | null, name: string | null,
+export type LeaderPerson = { name: string | null,
 /**
  * Stable recorded read used by the lazy artwork request.
  */
@@ -901,7 +895,7 @@ partialFrom: number | null,
  */
 atHour?: LeaderAtHour, };
 export type LeaderAtHour = { hour: number, firstSeenHour: number, fought: number, won: number | null, lost: number | null, };
-export type LeaderTraitInfo = { token: string, name: string | null, icon: string | null, missing: string | null, };
+export type LeaderTraitInfo = { token: string, name: string | null, icon: string | null, };
 export type LeaderObservation = { firstHour: number, lastHour: number, leaders: boolean, landBattles: boolean, navalBattles: boolean, landCommands: boolean, navalCommands: boolean, };
 export type LeaderWithheld = { reference: string, owner: string | null, kind: number, name: string | null, reason: string, detail: string | null, spans: Array<HourSpan>, };
 export type UnitLeadersReply = { branchId: string, firstHour: number, leaders: Array<LeaderCareer>, people: Array<LeaderPerson>,
@@ -5275,7 +5269,7 @@ destructionCountedFrom: number | null,
  * bounds the history a branch's first read can hold.
  */
 retainedMonths: number | null, warnings: Array<string>, };
-export type PreparedLossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, landCoverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null, warnings: Array<string>, 
+export type PreparedLossesReply = { branchId: string, tag: string, landSource: LandSource, landLowerBound: string | null, amountScale: number, causes: Array<LossCause>, designs: Array<LossDesign>, landCoverage: Array<CoverageSpan>, destructionCoverage: Array<DestructionCoverageSpan>, destructionCountedFrom: number | null, retainedMonths: number | null, warnings: Array<string>,
 /**
  * The first hour of each stretch after hours the recording lost: every total restarts
  * there, and a total at a later hour counts from the last of them before it.
@@ -5409,7 +5403,7 @@ export type NavalPeriod = "running" | "month";
 export type NavalLossesParams = { branchId: string, tags: Array<string>, top: number | null, kind: NavalKind, attribution: NavalAttribution, period: NavalPeriod, };
 export type NavalLossRun = { firstHour: number, lastHour: number, startsSegment: boolean, ships: number | null, convoys: number | null, };
 export type NavalLossSeries = { tag: string, runs: Array<NavalLossRun>, segments: Array<HourSpan>, membership: Array<HourSpan> | null, identities?: Array<CountryIdentityRun>, };
-export type NavalLossesReply = { branchId: string, available: boolean, firstRead: number | null, shipFirstRead: number | null, convoyFirstRead: number | null, shipLastRead: number | null, convoyLastRead: number | null, shipReads: Array<number>, convoyReads: Array<number>, series: Array<NavalLossSeries>, warnings: Array<string>, 
+export type NavalLossesReply = { branchId: string, available: boolean, firstRead: number | null, shipFirstRead: number | null, convoyFirstRead: number | null, shipLastRead: number | null, convoyLastRead: number | null, shipReads: Array<number>, convoyReads: Array<number>, series: Array<NavalLossSeries>, warnings: Array<string>,
 /**
  * The first hour of each stretch after hours the recording lost: every tally restarts
  * there, counting only what is read after them. Absent without any.

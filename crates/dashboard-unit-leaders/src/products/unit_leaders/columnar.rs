@@ -15,7 +15,10 @@ use replay_data::{
     },
     scope::CaptureMode,
 };
-use replay_frame::frame::{HourFrame, Orders, Rowset};
+use replay_frame::frame::{
+    HourFrame, Orders, Rowset,
+    kept::{self, Read},
+};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -728,47 +731,54 @@ fn read_command(
     at
 }
 
-/// Where each roster leader's own reads are found: its handle, its character and the tokens
-/// naming it, its template and its training.
-#[derive(Default)]
-#[derive(replay_spool::Spooled)]
+/// A leader's visibility read, as the roster's index keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, replay_spool::Spooled)]
+enum Visible {
+    /// A declared read of its evaluation.
+    Read(TableRead),
+    /// An input of its evaluation that declares no dependence: asked again every hour.
+    Undeclared,
+}
+
+impl kept::Grouped for Visible {
+    fn table(&self) -> Option<TableId> {
+        match self {
+            // A read comparing the hour with row end hours changes with the hour.
+            Self::Read(read) if !read.ends => Some(read.table),
+            _ => None,
+        }
+    }
+}
+
+/// A leader's own reads derive nothing.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, replay_spool::Spooled)]
+struct Own;
+
+impl kept::Grouped for Own {
+    fn table(&self) -> Option<TableId> {
+        None
+    }
+}
+
+/// The roster's leaders, indexed by what their rows and visibility read.
+#[derive(Default, replay_spool::Spooled)]
 struct Roster {
-    /// The roster's leaders by handle, each at its state.
     members: HashMap<u64, usize>,
-    characters: HashMap<u32, BTreeSet<usize>>,
-    tokens: HashMap<u32, BTreeSet<usize>>,
-    /// Each leader's character and tokens as indexed.
-    reads: HashMap<usize, (u32, Vec<u32>)>,
+    own: kept::Dependents<usize, Own>,
+    visible: kept::Dependents<usize, Visible>,
 }
 
 impl Roster {
     fn clear(&mut self) {
-        self.members.clear();
-        self.characters.clear();
-        self.tokens.clear();
-        self.reads.clear();
+        *self = Self::default();
     }
 
     fn forget(&mut self, at: usize) {
-        let Some((character, tokens)) = self.reads.remove(&at) else {
-            return;
-        };
-        if let Some(users) = self.characters.get_mut(&character) {
-            users.remove(&at);
-            if users.is_empty() {
-                self.characters.remove(&character);
-            }
-        }
-        for token in tokens {
-            if let Some(users) = self.tokens.get_mut(&token) {
-                users.remove(&at);
-                if users.is_empty() {
-                    self.tokens.remove(&token);
-                }
-            }
-        }
+        self.own.remove(&at);
+        self.visible.remove(&at);
     }
 
+    /// Indexes the rows leader `at` reads of its own.
     fn index(
         &mut self,
         at: usize,
@@ -776,163 +786,157 @@ impl Roster {
         characters: Rowset<'_, CharacterRow>,
         training: Rowset<'_, UnitLeaderTraitExperienceRow>,
     ) -> io::Result<()> {
-        self.forget(at);
         let reference = handle(row);
         self.members.insert(reference, at);
-        let mut tokens = Vec::new();
-        if let Some(character) = characters.get(u128::from(row.character_id))? {
-            if let Ok(token) = u32::try_from(character.name_token_id) {
-                tokens.push(token);
+        let character = u128::from(row.character_id);
+        let leader = u128::from(reference);
+        let token = |key: u32| Read::Row {
+            table: TableId::LexicalTokens,
+            key: u128::from(key),
+            fields: ALL,
+        };
+        let mut reads: Vec<Read<Own>> = vec![
+            Read::Row {
+                table: TableId::Characters,
+                key: character,
+                fields: ALL,
+            },
+            Read::Row {
+                table: TableId::CharacterPortraits,
+                key: character,
+                fields: ALL,
+            },
+            Read::Range {
+                table: TableId::UnitLeaderTraits,
+                from: leader << 32,
+                to: (leader + 1) << 32,
+                fields: ALL,
+            },
+            Read::Range {
+                table: TableId::UnitLeaderTraitExperience,
+                from: leader << 33,
+                to: (leader + 1) << 33,
+                fields: ALL,
+            },
+        ];
+        if let Some(character) = characters.get(character)? {
+            if let Ok(name) = u32::try_from(character.name_token_id) {
+                reads.push(token(name));
             }
             if character.template_present != 0 {
-                tokens.push(character.template_tag);
+                reads.push(token(character.template_tag));
             }
         }
-        tokens.extend(
+        reads.extend(
             training_rows(training, reference)?
                 .iter()
-                .map(|entry| entry.token_id as u32),
+                .map(|entry| token(entry.token_id as u32)),
         );
-        tokens.sort_unstable();
-        tokens.dedup();
-        self.characters
-            .entry(row.character_id)
-            .or_default()
-            .insert(at);
-        for &token in &tokens {
-            self.tokens.entry(token).or_default().insert(at);
-        }
-        self.reads.insert(at, (row.character_id, tokens));
+        reads.sort_unstable();
+        reads.dedup();
+        self.own.set(at, reads.into());
         Ok(())
     }
 
-    /// Adds to `dirty` the roster leaders whose own reads include `table`'s row `key`.
-    fn readers(&self, table: TableId, key: u128, dirty: &mut BTreeSet<usize>) {
-        let users = match table {
-            TableId::Characters | TableId::CharacterPortraits => self.characters.get(&(key as u32)),
-            TableId::LexicalTokens => self.tokens.get(&(key as u32)),
-            _ => {
-                // Assigned traits and training lead their key with their leader's handle.
-                let shift = if table == TableId::UnitLeaderTraits {
-                    32
-                } else {
-                    33
-                };
-                dirty.extend(self.members.get(&((key >> shift) as u64)));
-                None
-            }
-        };
-        if let Some(users) = users {
-            dirty.extend(users);
-        }
-    }
-}
-
-/// Which leaders' visibility evaluations read what: each distinct declared read with the
-/// leaders whose evaluation reads it, so a change checks again only those evaluations.
-#[derive(Default)]
-#[derive(replay_spool::Spooled)]
-struct Registry {
-    readers: HashMap<TableRead, BTreeSet<usize>>,
-    /// The distinct reads of each table.
-    tables: HashMap<TableId, Vec<TableRead>>,
-    /// The distinct reads comparing the hour with row end hours, which change with the hour.
-    ending: Vec<TableRead>,
-    /// Each registered leader's reads.
-    of: HashMap<usize, Vec<TableRead>>,
-    /// Leaders whose evaluation read an input that declares no dependence.
-    undeclared: BTreeSet<usize>,
-}
-
-impl Registry {
-    fn clear(&mut self) {
-        self.readers.clear();
-        self.tables.clear();
-        self.ending.clear();
-        self.of.clear();
-        self.undeclared.clear();
-    }
-
-    fn remove(&mut self, at: usize) {
-        self.undeclared.remove(&at);
-        let Some(reads) = self.of.remove(&at) else {
-            return;
-        };
-        for read in reads {
-            let Some(users) = self.readers.get_mut(&read) else {
-                continue;
-            };
-            users.remove(&at);
-            if users.is_empty() {
-                self.readers.remove(&read);
-                if let Some(held) = self.tables.get_mut(&read.table) {
-                    held.retain(|other| *other != read);
-                }
-                if read.ends {
-                    self.ending.retain(|other| *other != read);
-                }
-            }
-        }
-    }
-
-    fn insert(&mut self, at: usize, inputs: &Inputs) {
-        self.remove(at);
-        let mut reads: Vec<TableRead> = Vec::new();
+    /// Indexes leader `at`'s visibility evaluation reads: what each input declares it reads.
+    fn register(&mut self, at: usize, inputs: &Inputs) {
+        let mut reads: Vec<Read<Visible>> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for key in inputs.keys() {
             match key.dependence() {
                 Some(declared) => {
                     for read in declared {
                         if seen.insert(read) {
-                            reads.push(read);
+                            reads.push(Read::Derived(Visible::Read(read)));
                         }
                     }
                 }
                 None => {
-                    self.undeclared.insert(at);
+                    if !reads.contains(&Read::Derived(Visible::Undeclared)) {
+                        reads.push(Read::Derived(Visible::Undeclared));
+                    }
                 }
             }
         }
         FLOOR.add(11, reads.len() as u64);
-        for &read in &reads {
-            let users = self.readers.entry(read).or_default();
-            if users.is_empty() {
-                self.tables.entry(read.table).or_default().push(read);
-                if read.ends {
-                    self.ending.push(read);
-                }
-            }
-            users.insert(at);
-        }
-        self.of.insert(at, reads);
+        self.visible.set(at, reads.into());
     }
 
-    /// The registered leaders whose evaluation may read differently than at the hour before:
-    /// a declared read changed, an ongoing relation it compares ended, or an input declares no
-    /// dependence.
-    fn suspects(&self, changes: &dyn TableChanges, since: Option<&Since<'_>>) -> BTreeSet<usize> {
+    /// The roster leaders whose own reads the hour's rows of the leader tables changed.
+    fn readers(&self, changes: &dyn TableChanges) -> Vec<usize> {
+        self.own.reached(&OwnRows::of(changes), |_| false)
+    }
+
+    /// The leaders whose visibility may evaluate differently than at the hour before.
+    fn suspects(&self, changes: &dyn TableChanges, since: Option<&Since<'_>>) -> Vec<usize> {
         let Some(since) = since else {
-            return self.of.keys().copied().collect();
+            return self.visible.keys().copied().collect();
         };
-        let mut suspects = self.undeclared.clone();
-        for (&table, reads) in &self.tables {
-            if matches!(changes.table(table), TableChange::Same) {
-                continue;
-            }
-            FLOOR.add(10, reads.len() as u64);
-            for read in reads {
-                if since.changed(read) {
-                    suspects.extend(&self.readers[read]);
+        self.visible.reached(
+            &Moved(changes),
+            |read| {
+                FLOOR.add(10, 1);
+                match read {
+                    Visible::Read(read) => since.changed(read),
+                    Visible::Undeclared => true,
                 }
-            }
+            },
+        )
+    }
+
+    /// How many leaders' evaluations read an input that declares no dependence.
+    fn undeclared(&self) -> usize {
+        self.visible
+            .keys()
+            .filter(|at| {
+                self.visible
+                    .reads(at)
+                    .is_some_and(|reads| reads.contains(&Read::Derived(Visible::Undeclared)))
+            })
+            .count()
+    }
+}
+
+/// The hour's written and deleted rows of the leaders' own tables, as the kept core reads them.
+struct OwnRows<'a> {
+    rows: Vec<(TableId, Vec<(u128, u64)>, &'a [u128])>,
+}
+
+impl<'a> OwnRows<'a> {
+    fn of(changes: &'a dyn TableChanges) -> Self {
+        let rows = OWN[1..]
+            .iter()
+            .filter_map(|&table| match changes.table(table) {
+                TableChange::Rows(rows, deleted) => Some((
+                    table,
+                    rows.iter().map(|row| (row.key, row.mask)).collect(),
+                    deleted,
+                )),
+                _ => None,
+            })
+            .collect();
+        Self { rows }
+    }
+}
+
+impl kept::Changes for OwnRows<'_> {
+    fn table(&self, table: TableId) -> kept::Change<'_> {
+        match self.rows.iter().find(|(held, ..)| *held == table) {
+            Some((_, rows, deleted)) => kept::Change::Rows(rows, deleted),
+            None => kept::Change::Same,
         }
-        FLOOR.add(12, suspects.len() as u64);
-        for read in &self.ending {
-            if since.changed(read) {
-                suspects.extend(&self.readers[read]);
-            }
+    }
+}
+
+/// Which tables the hour changed at all.
+struct Moved<'a>(&'a dyn TableChanges);
+
+impl kept::Changes for Moved<'_> {
+    fn table(&self, table: TableId) -> kept::Change<'_> {
+        match self.0.table(table) {
+            TableChange::Same => kept::Change::Same,
+            _ => kept::Change::Any,
         }
-        suspects
     }
 }
 
@@ -1245,7 +1249,7 @@ pub(super) struct CommandHour<'a> {
 #[derive(Default)]
 #[derive(replay_spool::Spooled)]
 pub(super) struct Work {
-    pub(super) role_keys: Vec<String>,
+    pub(super) role_keys: Vec<RoleKey>,
     pub(super) person_warnings: HashMap<u32, Vec<String>>,
     pub(super) first_visible: HashMap<u64, (i32, [Option<i32>; 2], u8)>,
     pub(super) owner_read: bool,
@@ -1285,7 +1289,6 @@ pub(super) struct Work {
     reads: Option<([bool; 2], bool)>,
     scoped: BTreeSet<u128>,
     roster: Roster,
-    registry: Registry,
     commands: Commands,
     before: Option<i32>,
     command_reads: Vec<CommandRead>,
@@ -1395,7 +1398,7 @@ impl Work {
             skill: value.skill,
             components: value.components,
             traits: value.traits.clone(),
-            progress: serde_json::to_vec(&value.progress)?.into_boxed_slice(),
+            progress: value.progress.clone(),
             ended: superseded.map(|before| runs[before].run.last_hour),
         });
         for slot in [superseded, known.filter(|&known| Some(known) != superseded)]
@@ -2157,8 +2160,7 @@ pub struct Began {
     skill: Option<i32>,
     components: [i32; 4],
     traits: Option<Arc<[u32]>>,
-    /// Its progress as its event writes it.
-    progress: Box<[u8]>,
+    progress: Option<Progress>,
     /// The last hour of its leader's run before it in the segment.
     ended: Option<i32>,
 }
@@ -2205,7 +2207,7 @@ pub struct Hour {
     scan: Scan,
     work: Work,
     pub(super) refusals: catalogue::OwnRefusals,
-    pub(super) admissions: Vec<(u64, LeaderRole, Option<(u32, u32)>)>,
+    pub(super) admissions: Vec<(u64, Role, Option<(u32, u32)>)>,
 }
 
 /// The floor of leaders' operator hours.
@@ -2220,8 +2222,8 @@ pub static FLOOR: dashboard_world::floor::Floor = dashboard_world::floor::Floor:
     "fallbacks",
     "visibility evaluations",
     "visibility evaluations reused",
-    "registry reads checked",
-    "registry reads registered",
+    "visibility reads checked",
+    "visibility reads registered",
     "suspects",
 ]);
 
@@ -2237,7 +2239,7 @@ pub struct Projector {
     hours: u64,
     fallbacks: u64,
     refusals: catalogue::OwnRefusals,
-    admissions: Vec<(u64, LeaderRole, Option<(u32, u32)>)>,
+    admissions: Vec<(u64, Role, Option<(u32, u32)>)>,
 }
 
 impl Projector {
@@ -2456,7 +2458,7 @@ fn hand(
     first: i32,
     mut counts: Counts,
     refusals: catalogue::OwnRefusals,
-    admissions: Vec<(u64, LeaderRole, Option<(u32, u32)>)>,
+    admissions: Vec<(u64, Role, Option<(u32, u32)>)>,
 ) -> io::Result<Hour> {
     scan.seal();
     let mut work = scan.projection.take().expect("a projected segment");
@@ -2471,7 +2473,7 @@ fn hand(
     counts.walks = work.walks;
     counts.resolved = work.resolved as u64;
     counts.invalidations = work.invalidations.len() as u64;
-    counts.undeclared = work.registry.undeclared.len() as u64;
+    counts.undeclared = work.roster.undeclared() as u64;
     counts.quiet = work.quiet;
     counts.battles = work.battle_hours;
     counts.suspects = work.suspects;
@@ -2596,7 +2598,7 @@ fn plan_with(
         invalidate_leader_reads(&mut scan.leaders, &mut scan.last_people);
         scan.evaluated.clear();
         scan.read_gap = None;
-        work.registry.clear();
+        work.roster.clear();
     }
     work.before = scan.frontier;
     work.validity(hour, valid, invalidated);
@@ -2648,7 +2650,6 @@ fn plan_with(
         for &at in &gone {
             IdentityChanges::forget(&mut scan.leaders[at]);
             work.roster.forget(at);
-            work.registry.remove(at);
             if let Some(index) = scan.withheld_active.remove(&scan.leaders[at].reference) {
                 scan.reply.withheld[index]
                     .spans
@@ -2657,17 +2658,7 @@ fn plan_with(
                     .last_hour = scan.frontier.expect("a consecutive deletion");
             }
         }
-        for &table in &OWN[1..] {
-            if let TableChange::Rows(written, deleted) = changes.table(table) {
-                for key in written
-                    .iter()
-                    .map(|row| row.key)
-                    .chain(deleted.iter().copied())
-                {
-                    work.roster.readers(table, key, &mut dirty);
-                }
-            }
-        }
+        dirty.extend(work.roster.readers(changes));
     }
     let positions = (!every)
         .then(|| {
@@ -2682,7 +2673,7 @@ fn plan_with(
     let Some(mut positions) = positions else {
         // Every leader, or a changed leader the roster index does not hold where it is.
         if continuous && !invalidated {
-            let registered: Vec<usize> = work.registry.of.keys().copied().collect();
+            let registered: Vec<usize> = work.roster.visible.keys().copied().collect();
             carry_all(scan, views, &registered);
         }
         work.walks[0] += 1;
@@ -2692,13 +2683,18 @@ fn plan_with(
             gone: Vec::new(),
         });
     };
-    let suspects = work.registry.suspects(changes, since.as_ref());
+    let suspects: BTreeSet<usize> = work
+        .roster
+        .suspects(changes, since.as_ref())
+        .into_iter()
+        .collect();
+    FLOOR.add(12, suspects.len() as u64);
     work.suspects += suspects.len() as u64;
     let registered: Vec<usize> = dirty
         .iter()
         .chain(&suspects)
         .copied()
-        .filter(|at| work.registry.of.contains_key(at))
+        .filter(|at| work.roster.visible.reads(at).is_some())
         .collect();
     carry_all(scan, views, &registered);
     let confirmed = confirm(
@@ -2830,7 +2826,6 @@ fn index(scan: &mut Scan, frame: HourFrame<'_>, every: bool) -> io::Result<()> {
             }
         }
         work.roster.clear();
-        work.registry.clear();
     }
     let characters = frame
         .complete::<tables::Characters>(ALL)
@@ -2846,9 +2841,9 @@ fn index(scan: &mut Scan, frame: HourFrame<'_>, every: bool) -> io::Result<()> {
         work.roster.index(at, &row, characters, training)?;
         match &state.evaluation {
             Some(evaluation) if evaluation.hour == frame.hour() => {
-                work.registry.insert(at, &evaluation.inputs)
+                work.roster.register(at, &evaluation.inputs)
             }
-            _ => work.registry.remove(at),
+            _ => work.roster.visible.remove(&at),
         }
     }
     Ok(())
@@ -2908,7 +2903,7 @@ fn confirm(
     confirmed
 }
 
-/// What changed in each table over hours at which the registry found none of an
+/// What changed in each table over hours at which the roster found none of an
 /// evaluation's declared reads changed: nothing it reads.
 struct Unchanged;
 
@@ -2921,7 +2916,7 @@ impl TableChanges for Unchanged {
 static UNCHANGED: Unchanged = Unchanged;
 
 /// Carries each of `leaders`' evaluations from the hour it last gave its verdict to the hour
-/// before `frame`'s, as an evaluation reused at each of them would be: the registry found
+/// before `frame`'s, as an evaluation reused at each of them would be: the roster found
 /// none of its declared reads changed since. One with an input declaring no dependence is not
 /// carried, and is read again.
 fn carry_all(scan: &mut Scan, frame: HourFrame<'_>, leaders: &[usize]) {
@@ -2946,9 +2941,9 @@ fn carry_all(scan: &mut Scan, frame: HourFrame<'_>, leaders: &[usize]) {
     }
 }
 
-fn role(scan: &mut Scan, previous: Option<u32>, key: &str, value: &LeaderRole) -> u32 {
+fn role(scan: &mut Scan, previous: Option<u32>, key: &RoleKey, value: &Role) -> u32 {
     let same = |at: u32| {
-        let old = &scan.reply.roles[at as usize];
+        let old = &scan.role_list[at as usize];
         old.category == value.category
             && old.kind == value.kind
             && old.maximum_skill == value.maximum_skill
@@ -2960,9 +2955,9 @@ fn role(scan: &mut Scan, previous: Option<u32>, key: &str, value: &LeaderRole) -
     if let Some(at) = scan.roles.get(key).copied().filter(|&at| same(at)) {
         return at;
     }
-    let at = scan.reply.roles.len() as u32;
-    scan.reply.roles.push(value.clone());
-    scan.roles.insert(key.to_owned(), at);
+    let at = scan.role_list.len() as u32;
+    scan.role_list.push(value.clone());
+    scan.roles.insert(*key, at);
     at
 }
 
@@ -3006,19 +3001,19 @@ impl Hour {
                 });
             leaders.push(index);
         }
-        let mut people = vec![0; self.scan.reply.people.len()];
-        let mut person_keys = vec![String::new(); people.len()];
+        let mut people = vec![0; self.scan.persons.len()];
+        let mut person_keys = vec![Identity(0, 0); people.len()];
         for (key, &index) in &self.scan.people {
-            person_keys[index as usize] = key.clone();
+            person_keys[index as usize] = *key;
         }
-        for (index, person) in self.scan.reply.people.iter().enumerate() {
-            let key = &person_keys[index];
-            people[index] = match scan.people.get(key) {
+        for (index, person) in self.scan.persons.iter().enumerate() {
+            let key = person_keys[index];
+            people[index] = match scan.people.get(&key) {
                 Some(&at) => at,
                 None => {
-                    let at = scan.reply.people.len() as u32;
-                    scan.reply.people.push(person.clone());
-                    scan.people.insert(key.clone(), at);
+                    let at = scan.persons.len() as u32;
+                    scan.persons.push(person.clone());
+                    scan.people.insert(key, at);
                     if let Some(warnings) = self.work.person_warnings.remove(&(index as u32)) {
                         scan.reply.warnings.extend(warnings);
                     }
@@ -3041,19 +3036,19 @@ impl Hour {
         let runs = std::mem::take(&mut begins.runs);
         let latest = std::mem::take(&mut begins.latest);
         begins.clear();
-        // Each leader's open run ends where its walk sealed it, its progress held whole.
+        // Each leader's open run ends where its walk sealed it.
         let mut open = HashMap::with_capacity(latest.len());
         for local in &self.scan.leaders {
             let Some(at) = local.last_run else {
                 continue;
             };
-            let held = &mut self.scan.stored_runs[at].run;
+            let held = &self.scan.stored_runs[at].run;
             let began = latest
                 .get(&local.reference)
                 .copied()
                 .filter(|&began| runs[began].first == held.first_hour)
                 .ok_or_else(|| invalid("A leaders segment ends a run its walk never began"))?;
-            open.insert(began, (held.last_hour, held.value.progress.take()));
+            open.insert(began, held.last_hour);
         }
         let mut prior_roles = HashMap::new();
         for (local, &global) in self.scan.leaders.iter().zip(&leaders) {
@@ -3087,7 +3082,7 @@ impl Hour {
                 .leader_indices
                 .get(&began.leader)
                 .ok_or_else(|| invalid("A leaders run begins for a leader its segment lacks"))?;
-            let (last, progress) = open.remove(&index).unwrap_or((began.last, None));
+            let last = open.remove(&index).unwrap_or(began.last);
             let local_role = began.role as usize;
             let previous = prior_roles
                 .get(&global)
@@ -3104,7 +3099,7 @@ impl Hour {
                 scan,
                 previous,
                 &self.work.role_keys[local_role],
-                &self.scan.reply.roles[local_role],
+                &self.scan.role_list[local_role],
             );
             let traits = began.traits.map(|held| {
                 let mut held: Vec<_> = held.iter().map(|&at| tokens[at as usize]).collect();
@@ -3113,21 +3108,22 @@ impl Hour {
                 Arc::from(held)
             });
             prior_roles.insert(global, (role, Some(last)));
-            let value = LeaderValues {
+            let value = Values {
                 person: people[began.person as usize],
                 role,
                 skill: began.skill,
                 components: began.components,
-                progress,
+                progress: began.progress,
                 traits,
             };
-            append_written_run(
+            let start = scan.reply.first_hour;
+            append_stored_run(
                 &mut scan.leaders[global],
-                (&mut scan.stored_runs, &mut scan.run_progress),
+                &mut scan.stored_runs,
                 value,
-                Arc::from(began.progress),
-                (began.first, scan.reply.first_hour),
-            )?;
+                began.first,
+                start,
+            );
             let at = scan.leaders[global].last_run.expect("a stitched run");
             scan.stored_runs[at].run.last_hour = last;
         }

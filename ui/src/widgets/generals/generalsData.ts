@@ -42,8 +42,8 @@ export function validateLeaderPortraitsReply(input: unknown): UnitLeaderPortrait
   return input as unknown as UnitLeaderPortraitsReply;
 }
 
-const validPerson = (p: unknown) => object(p) && u32(p.characterId) && text(p.token) && text(p.name) && integer(p.portraitHour) && handle(p.portraitReference);
-const validTrait = (t: unknown) => object(t) && typeof t.token === 'string' && text(t.name) && text(t.missing) && (t.icon === null || png(t.icon));
+const validPerson = (p: unknown) => object(p) && text(p.name) && integer(p.portraitHour) && handle(p.portraitReference);
+const validTrait = (t: unknown) => object(t) && typeof t.token === 'string' && text(t.name) && (t.icon === null || png(t.icon));
 const validRole = (r: unknown) => object(r) && (r.owner === null || opaqueTag(r.owner)) && integer(r.category) && text(r.rank)
   && Array.isArray(r.attributeNames) && r.attributeNames.length === 4 && r.attributeNames.every(text)
   && (r.kind === 1 || r.kind === 2) && (r.maximumSkill === null || integer(r.maximumSkill) && r.maximumSkill >= 0);

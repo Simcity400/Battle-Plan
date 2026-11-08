@@ -4,8 +4,9 @@
 //! candidate store and compares the replies
 //! ([`dashboard::prepared::served_check`]).
 //! `served-check record --family F --recording R --store S --work W --out T [--columnar C]`
-//! `served-check check --recording R --store S --work W --reference T|DIR --report P|DIR [--families F,...] [--threads N] [--ignore PATH]...`
-//! A folder of transcripts is checked in one process, every request of them `--threads` at a time.
+//! `served-check check --recording R --store S --work W --reference T|DIR --report P|DIR [--families F,...] [--threads N] [--cold] [--ignore PATH]...`
+//! A folder of transcripts is checked in one process, every request of them `--threads` at a time;
+//! `--cold` serves each from the store opened afresh, timing the reply alone.
 //! Both also take `[--game G --user U]` (else BATTLE_PLAN_GAME_DIR and BATTLE_PLAN_USER_DIR)
 //! and `[--allow-unverified]`. A store is its folder,
 //! `…\HOI4Replay\prepared\<store>`; `--work` keeps the content cache.
@@ -36,7 +37,7 @@ static ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 const USAGE: &str =
     "served-check record --families all|F1,F2,... --recording R --store S --work W --out-dir D [--columnar C] [--threads N]
 served-check record --family F --recording R --store S --work W --out T [--columnar C] [--threads N]
-served-check check --recording R --store S --work W --reference T|DIR --report P|DIR [--families F1,F2,...] [--threads N] [--scopes P] [--ignore PATH]...
+served-check check --recording R --store S --work W --reference T|DIR --report P|DIR [--families F1,F2,...] [--threads N] [--cold] [--scopes P] [--ignore PATH]...
 each also [--game G --user U] [--allow-unverified]";
 
 fn invalid(what: impl Into<String>) -> io::Error {
@@ -63,6 +64,8 @@ struct Options {
     /// Dotted reply paths not compared, `*` for any member or element.
     ignore: Vec<Vec<String>>,
     allow_unverified: bool,
+    /// Each request served by the store opened afresh, nothing kept from the replies before.
+    cold: bool,
 }
 
 impl Options {
@@ -71,6 +74,10 @@ impl Options {
         while let Some(flag) = args.next() {
             if flag == "--allow-unverified" {
                 options.allow_unverified = true;
+                continue;
+            }
+            if flag == "--cold" {
+                options.cold = true;
                 continue;
             }
             let value = args.next().ok_or_else(|| invalid(USAGE))?;
@@ -456,7 +463,7 @@ fn check(
     } else {
         vec![(reference.to_owned(), report.to_owned())]
     };
-    let served = served_check::Served::open_shared(recording, folder, content)?;
+    let served = served_check::Served::open_shared(recording, folder, content.clone())?;
     let shape = |branch: &dashboard_base::prepared::served::Branch| {
         (
             branch.id,
@@ -519,7 +526,16 @@ fn check(
     };
     let reports = served_check::check_parallel(
         readers,
-        &|product: &str, params: &Value| served.serve(product, params),
+        &|product: &str, params: &Value| {
+            let fresh = if options.cold {
+                Some(served_check::Served::open_shared(recording, folder, content.clone())?)
+            } else {
+                None
+            };
+            let started = Instant::now();
+            let reply = fresh.as_ref().unwrap_or(&served).serve(product, params);
+            Ok((reply, started.elapsed().as_secs_f64()))
+        },
         shared,
         &options.ignore,
         threads,

@@ -214,6 +214,7 @@ struct AllCareers(
 /// of the leaders' own family: the identities a selection reads are applied as it is answered.
 fn all_careers(
     source: &Source,
+    content: Option<&ContentOptions>,
     published: &gates::Published,
     store: &store::Store,
     key: &store::SourceKey,
@@ -235,8 +236,13 @@ fn all_careers(
     }
     #[cfg(test)]
     CAREERS_READ.with(|count| count.set(count.get() + 1));
+    let shown = crate::products::unit_leaders::served_content(source, content)?;
     let careers = std::sync::Arc::new(crate::products::unit_leaders::prepared::Careers::read(
-        store, key, branch_id, cancelled,
+        store,
+        key,
+        branch_id,
+        shown.as_deref(),
+        cancelled,
     )?);
     // A cancelled read may have stopped short of a whole one.
     check_cancel(cancelled)?;
@@ -3858,6 +3864,7 @@ fn query_data(
                 let published = pinned(&store, &key)?;
                 let careers = all_careers(
                     source,
+                    content,
                     &published,
                     &store,
                     &key,
@@ -3933,11 +3940,13 @@ fn query_data(
                 &pages,
                 cancelled,
                 || {
+                    let shown = crate::products::unit_leaders::served_content(source, content)?;
                     crate::products::unit_leaders::prepared::choices(
                         &store,
                         &key,
                         &params,
                         history.as_deref(),
+                        shown.as_deref(),
                         cancelled,
                     )
                 },

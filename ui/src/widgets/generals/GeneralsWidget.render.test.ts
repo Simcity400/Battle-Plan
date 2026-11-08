@@ -62,7 +62,7 @@ test('refused leaders have named unavailable states and a partial-table note in 
         }
         data.withheld = withheld;
         if (path.includes('GeneralsWidget')) {
-          data.people.push({ characterId: 5, token: null, name: 'Visible general', portraitHour: 0, portraitReference: '5' });
+          data.people.push({ name: 'Visible general', portraitHour: 0, portraitReference: '5' });
           data.roles.push({ owner: 'GER', category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] });
           data.leaders.push({ reference: '5', runs: [{ firstHour: 0, lastHour: 200,
             value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } }],
@@ -84,7 +84,7 @@ test('refused leaders have named unavailable states and a partial-table note in 
 test('leaders of a group counted at an hour still being prepared are loading, not none', async () => {
   // ENG's leader, in a campaign whose human player is GER.
   const data: UnitLeadersData = { branchId: BRANCH.id, firstHour: 0, selectionTags: [],
-    people: [{ characterId: 5, token: null, name: 'Synthetic general', portraitHour: 0, portraitReference: '5' }],
+    people: [{ name: 'Synthetic general', portraitHour: 0, portraitReference: '5' }],
     roles: [{ owner: 'ENG', category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] }],
     traits: [], leaders: [{ reference: '5', runs: [{ firstHour: 0, lastHour: 200, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } }],
       traitGains: [], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null }],

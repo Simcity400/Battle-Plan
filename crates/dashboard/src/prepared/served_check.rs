@@ -545,10 +545,13 @@ pub fn check_ignoring(
             continue;
         }
         let exchange: Exchange = serde_json::from_str(&line)?;
+        let started = std::time::Instant::now();
         let candidate = serve(&exchange.product, &exchange.params);
+        let seconds = started.elapsed().as_secs_f64();
         let compared = compare(exchange, &candidate, &report.patterns);
-        report.count(index, compared);
+        report.count(index, compared, seconds);
     }
+    report.time();
     Ok(report)
 }
 
@@ -591,23 +594,23 @@ pub fn shared_requests(
 
 /// [`check_ignoring`] of several transcripts at once, each after its header, their requests asked
 /// `threads` at a time, each of the `shared` ones ([`shared_requests`]) once: each transcript's
-/// report, and the seconds its requests were served for.
+/// report, and the seconds its requests were served for, as `serve` timed them.
 pub fn check_parallel(
     transcripts: Vec<Box<dyn BufRead + Send + '_>>,
-    serve: &(dyn Fn(&str, &Value) -> Reply + Sync),
+    serve: &(dyn Fn(&str, &Value) -> io::Result<(Reply, f64)> + Sync),
     shared: HashMap<String, usize>,
     ignored: &[Vec<String>],
     threads: NonZeroUsize,
 ) -> io::Result<Vec<(Report, f64)>> {
     // A shared request's reply, served by its first asker, kept until its last.
-    type Shared = (Arc<std::sync::OnceLock<Arc<Reply>>>, usize);
+    type Shared = (Arc<std::sync::OnceLock<Result<Arc<(Reply, f64)>, String>>>, usize);
     let shared: Mutex<HashMap<String, Shared>> = Mutex::new(
         shared
             .into_iter()
             .map(|(key, count)| (key, (Default::default(), count)))
             .collect(),
     );
-    let serve_once = |product: &str, params: &Value| -> Arc<Reply> {
+    let serve_once = |product: &str, params: &Value| -> io::Result<Arc<(Reply, f64)>> {
         let key = request_key(product, params);
         let cell = shared
             .lock()
@@ -615,9 +618,16 @@ pub fn check_parallel(
             .get(&key)
             .map(|(cell, _)| Arc::clone(cell));
         let Some(cell) = cell else {
-            return Arc::new(serve(product, params));
+            return serve(product, params).map(Arc::new);
         };
-        let reply = Arc::clone(cell.get_or_init(|| Arc::new(serve(product, params))));
+        let reply = cell
+            .get_or_init(|| {
+                serve(product, params)
+                    .map(Arc::new)
+                    .map_err(|error| error.to_string())
+            })
+            .clone()
+            .map_err(io::Error::other)?;
         let mut shared = shared.lock().unwrap();
         if let Some((_, left)) = shared.get_mut(&key) {
             *left -= 1;
@@ -625,7 +635,7 @@ pub fn check_parallel(
                 shared.remove(&key);
             }
         }
-        reply
+        Ok(reply)
     };
     let count = transcripts.len();
     let reports: Vec<Mutex<(Report, f64)>> = (0..count)
@@ -661,14 +671,14 @@ pub fn check_parallel(
                             let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
                                 || -> io::Result<()> {
                                     let exchange: Exchange = serde_json::from_str(&line)?;
-                                    let started = std::time::Instant::now();
-                                    let candidate = serve_once(&exchange.product, &exchange.params);
-                                    let seconds = started.elapsed().as_secs_f64();
-                                    let compared = compare(exchange, &candidate, ignored);
+                                    let served = serve_once(&exchange.product, &exchange.params)?;
+                                    let (candidate, seconds) = &*served;
+                                    let seconds = *seconds;
+                                    let compared = compare(exchange, candidate, ignored);
                                     let mut held = reports[transcript]
                                         .lock()
                                         .unwrap_or_else(|error| error.into_inner());
-                                    held.0.count(index, compared);
+                                    held.0.count(index, compared, seconds);
                                     held.1 += seconds;
                                     Ok(())
                                 },
@@ -715,13 +725,19 @@ pub fn check_parallel(
     }
     Ok(reports
         .into_iter()
-        .map(|report| report.into_inner().unwrap())
+        .map(|report| {
+            let (mut report, seconds) = report.into_inner().unwrap();
+            report.time();
+            (report, seconds)
+        })
         .collect())
 }
 
 /// One request compared: what the report counts of it.
 struct Compared {
     label: String,
+    product: String,
+    params: Value,
     /// The reference's reply's data: none refused, null pending.
     reference: Option<bool>,
     mismatch: Option<Mismatch>,
@@ -739,6 +755,8 @@ fn compare(mut exchange: Exchange, candidate: &Reply, patterns: &[Vec<String>]) 
     let difference = difference_ignoring(&exchange.reply, candidate, &exchange.unordered, patterns);
     Compared {
         label: label(&exchange.product, &exchange.params),
+        product: exchange.product.clone(),
+        params: exchange.params.clone(),
         reference,
         mismatch: difference.map(|difference| Mismatch {
             product: exchange.product,
@@ -783,6 +801,20 @@ pub struct Report {
     patterns: Vec<Vec<String>>,
     /// By product, or by product and the series family kind it routes by.
     pub products: BTreeMap<String, Tally>,
+    /// The slowest requests the candidate served, slowest first.
+    pub slowest: Vec<Slow>,
+}
+
+/// How many of the slowest requests a report names.
+const SLOWEST: usize = 10;
+
+/// A request the candidate served, and how long it took.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Slow {
+    pub product: String,
+    pub params: Value,
+    pub milliseconds: f64,
 }
 
 /// The requests of one product, by the reference's replies.
@@ -800,6 +832,12 @@ pub struct Tally {
     /// The transcript line of `first`.
     #[serde(skip)]
     first_at: usize,
+    /// Serve times in milliseconds: median, 95th percentile and slowest.
+    pub p50_milliseconds: Option<f64>,
+    pub p95_milliseconds: Option<f64>,
+    pub max_milliseconds: Option<f64>,
+    #[serde(skip)]
+    milliseconds: Vec<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -840,11 +878,32 @@ impl Report {
         }
     }
 
-    /// Counts the request at transcript line `index`, in any order.
-    fn count(&mut self, index: usize, compared: Compared) {
+    /// Counts the request at transcript line `index`, in any order, which took `seconds`.
+    fn count(&mut self, index: usize, compared: Compared, seconds: f64) {
+        let milliseconds = seconds * 1e3;
         let tally = self.products.entry(compared.label).or_default();
         self.queries += 1;
         tally.queries += 1;
+        tally.milliseconds.push(milliseconds);
+        if self.slowest.len() < SLOWEST
+            || self
+                .slowest
+                .last()
+                .is_some_and(|slow| slow.milliseconds < milliseconds)
+        {
+            let at = self
+                .slowest
+                .partition_point(|slow| slow.milliseconds >= milliseconds);
+            self.slowest.insert(
+                at,
+                Slow {
+                    product: compared.product,
+                    params: compared.params,
+                    milliseconds,
+                },
+            );
+            self.slowest.truncate(SLOWEST);
+        }
         match compared.reference {
             None => tally.refused += 1,
             Some(false) => tally.pending += 1,
@@ -857,6 +916,22 @@ impl Report {
                 tally.first = Some(mismatch);
                 tally.first_at = index;
             }
+        }
+    }
+
+    /// Each product's serve times, from the requests counted.
+    fn time(&mut self) {
+        for tally in self.products.values_mut() {
+            let times = &mut tally.milliseconds;
+            times.sort_unstable_by(f64::total_cmp);
+            let at = |share: f64| {
+                times
+                    .get(((times.len() as f64 * share).ceil() as usize).saturating_sub(1))
+                    .copied()
+            };
+            tally.p50_milliseconds = at(0.5);
+            tally.p95_milliseconds = at(0.95);
+            tally.max_milliseconds = times.last().copied();
         }
     }
 }

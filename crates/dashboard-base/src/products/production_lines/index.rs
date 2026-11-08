@@ -13,11 +13,6 @@
 //! later chunk its history writes until one closes it; while none has, it ends at its
 //! history's horizon.
 //!
-//! A native recording's chunks follow its segments: one through each segment's first census,
-//! then one or more after it. After that census a country's lines are folded per segment, in
-//! parallel, into a lens: parts of their own, keyed past [`LENS`], shared by every history
-//! that reads that country there. Such a history's chunk holds only its [`Binding`]: the lens
-//! it reads and how the lens's ids, appearances, counts, versions and anchors read as its own.
 //! A history's ids are numbered from its chunk's number up, so later chunks' come after.
 
 use super::*;
@@ -58,8 +53,6 @@ const LEVEL: i32 = 1;
 
 /// The history a chunk's branch-wide parts belong to; histories count from 1.
 pub(super) const GLOBAL: u64 = 0;
-/// A lens's parts lie under its id with this bit set; no history is numbered this far.
-pub(super) const LENS: u64 = 1 << 63;
 /// The bits of an id below its chunk's number.
 pub(super) const ID_BITS: u32 = 32;
 
@@ -86,12 +79,8 @@ pub(super) enum Part {
     Versions = 6,
     Countries = 7,
     Modifiers = 8,
-    /// A history's [`Binding`] to the lens it reads in a chunk.
-    Binding = 9,
-    /// A lens's conditional versions and names ([`Marks`]).
-    Marks = 10,
     /// Each variant's icon as the census inputs held it, where it changed ([`Timeline`]).
-    Timeline = 11,
+    Timeline = 9,
 }
 
 /// A lifetime as the read that began it named it.
@@ -460,47 +449,6 @@ impl Timeline {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty() && self.resets.is_empty()
     }
-}
-
-/// What a lens holds of its own at the census it began from, as one history held it then:
-/// its lines' lifetimes (with the history's appearance), runs (with where the history's run
-/// began), steps and output reads, and the history's counts then.
-#[derive(Clone, Debug, Default)]
-pub(super) struct Start {
-    pub lifetimes: Vec<(u64, u64, u32)>,
-    pub runs: Vec<(u64, u64, i32, bool)>,
-    pub steps: Vec<(u64, u64)>,
-    pub outputs: Vec<(u64, u64)>,
-    pub counters: Counters,
-    /// How many more appearances of each handle the census held than the lens.
-    pub appearances: Vec<(u64, i64)>,
-}
-
-/// How one history reads a lens's parts in a chunk as its own. A lens id it does not name is
-/// the history's `(map << ID_BITS) | id`; a lens's appearance of a handle reads `delta` more.
-#[derive(Clone, Debug, Default)]
-pub(super) struct Binding {
-    /// The lens's id in the chunk.
-    pub lens: u64,
-    /// The chunk whose binding holds [`Start`]: the first the history read the lens in.
-    pub map: u64,
-    pub start: Option<Start>,
-    /// The conditional versions ([`Marks`]) the history pushed, and those it named.
-    pub included: Vec<u32>,
-    pub named: Vec<u32>,
-    /// Where the version holding when the chunk began was pushed, for each the lens names.
-    pub design_anchors: BTreeMap<u64, Option<u64>>,
-    pub organisation_anchors: BTreeMap<u64, Option<u64>>,
-    pub appearances: Vec<(u64, i64)>,
-}
-
-/// A lens's versions and names a history pushes only as its own last versions say: each by
-/// its place in the lens's lists, with its condition's number.
-#[derive(Clone, Debug, Default)]
-pub(super) struct Marks {
-    pub designs: Vec<(u32, u32)>,
-    pub organisations: Vec<(u32, u32)>,
-    pub names: Vec<(u32, u32)>,
 }
 
 pub(super) fn encode_row(rows: TableRows) -> io::Result<Vec<u8>> {
@@ -1172,29 +1120,6 @@ product_codec::product! { impl Versions {
 product_codec::product! { impl Timeline {
     changes: Vec<(i32, u64, IconChoice)>,
     resets: Vec<i32>,
-} default {} }
-product_codec::product! { impl Start {
-    lifetimes: Vec<(u64, u64, u32)>,
-    runs: Vec<(u64, u64, i32, bool)>,
-    steps: Vec<(u64, u64)>,
-    outputs: Vec<(u64, u64)>,
-    counters: Counters,
-    appearances: Vec<(u64, i64)>,
-} default {} }
-product_codec::product! { impl Binding {
-    lens: u64,
-    map: u64,
-    start: Option<Start>,
-    included: Vec<u32>,
-    named: Vec<u32>,
-    design_anchors: BTreeMap<u64, Option<u64>>,
-    organisation_anchors: BTreeMap<u64, Option<u64>>,
-    appearances: Vec<(u64, i64)>,
-} default {} }
-product_codec::product! { impl Marks {
-    designs: Vec<(u32, u32)>,
-    organisations: Vec<(u32, u32)>,
-    names: Vec<(u32, u32)>,
 } default {} }
 product_codec::product! { impl StoredModifiers {
     carried_last: Option<i32>,

@@ -9,7 +9,7 @@ import type { UnitLeadersData } from '../generals/generalsData';
 import { subjectToken } from '../../dashboard/chosen.ts';
 
 const data: UnitLeadersData = { branchId: '1', firstHour: 100,
-  people: [{ characterId: 9, token: 'mod_character', name: 'Commander', portraitHour: 100, portraitReference: '21474841193' }],
+  people: [{ name: 'Commander', portraitHour: 100, portraitReference: '21474841193' }],
   roles: [{ owner: 'mod country', category: 1, rank: 'Rank', kind: 1, maximumSkill: 12, attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'] }],
   traits: [], leaders: [{ reference: '21474841193', runs: [{ firstHour: 100, lastHour: 500,
     value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } }],

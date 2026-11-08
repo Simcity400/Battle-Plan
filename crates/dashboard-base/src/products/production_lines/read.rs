@@ -3,8 +3,7 @@
 //! hours lie in, found by bisection over the chunk table, with where what it holds ends
 //! and the versions it overlays found by bisection or by where its chunks say they lie;
 //! one line's modifier reads from the chunks that hold them. None assembles a whole branch
-//! scan, and none walks the publications before the one it reads. Where a history reads a lens
-//! in a chunk, its parts there are the lens's, read through the history's binding ([`Lens`]).
+//! scan, and none walks the publications before the one it reads.
 
 use super::index::{self, Opened, Part};
 use super::prepared::{Alias, Commit, Directory, HistoryView, Identity, NativeCountry};
@@ -12,7 +11,7 @@ use super::*;
 use crate::prepared::pages::Pages;
 use crate::products::country_groups::HourSpan;
 use replay_data::rows::CountryProductionModifiersRow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 /// The latest commit: its range and record.
 pub(super) fn commit(
@@ -95,24 +94,6 @@ fn walk(segments: &Segments) -> impl Iterator<Item = (u64, u64)> + '_ {
         .flat_map(|&(owner, from, until)| (from..until).map(move |chunk| (chunk, owner)))
 }
 
-/// A lens a history reads in a chunk, with how its parts read as the history's own: its ids,
-/// appearances, counts, conditional versions and anchors.
-pub(super) struct Lens {
-    id: u64,
-    base: u64,
-    lifetimes: HashMap<u64, (u64, u32)>,
-    inverse: HashMap<u64, u64>,
-    runs: HashMap<u64, (u64, i32, bool)>,
-    steps: HashMap<u64, u64>,
-    outputs: HashMap<u64, u64>,
-    appearances: HashMap<u64, i64>,
-    counters: index::Counters,
-    included: HashSet<u32>,
-    named: HashSet<u32>,
-    design_anchors: BTreeMap<u64, Option<u64>>,
-    organisation_anchors: BTreeMap<u64, Option<u64>>,
-}
-
 /// The icons the census inputs held over a branch: each variant's from an hour on, and the
 /// hours an input began anew holding none.
 #[derive(Default)]
@@ -131,211 +112,6 @@ impl Icons {
             .checked_sub(1)
             .is_some_and(|reset| self.resets[reset] > *changed);
         (!cleared).then_some(icon)
-    }
-}
-
-/// Where a history's parts lie in a chunk: under its own id, or a lens's.
-#[derive(Clone)]
-enum Source {
-    Own(u64),
-    Lens(Arc<Lens>),
-}
-
-/// The counts `base` holds and `more` adds.
-fn added(base: &index::Counters, more: index::Counters) -> index::Counters {
-    let mut refusals = base.refusals.clone();
-    for (reason, count) in more.refusals {
-        *refusals.entry(reason).or_default() += count;
-    }
-    index::Counters {
-        unknown_kinds: base.unknown_kinds + more.unknown_kinds,
-        unlisted_output: base.unlisted_output + more.unlisted_output,
-        unread_output_reads: base.unread_output_reads + more.unread_output_reads,
-        unreadable_stretches: base.unreadable_stretches + more.unreadable_stretches,
-        unlinked_rows: base.unlinked_rows + more.unlinked_rows,
-        refusals,
-        modified: base.modified || more.modified,
-    }
-}
-
-impl Lens {
-    fn new(binding: index::Binding, start: &index::Start) -> Self {
-        let lifetimes: HashMap<u64, (u64, u32)> = start
-            .lifetimes
-            .iter()
-            .map(|&(lens, held, appearance)| (lens, (held, appearance)))
-            .collect();
-        Self {
-            id: binding.lens,
-            base: binding.map,
-            inverse: lifetimes
-                .iter()
-                .map(|(&lens, &(held, _))| (held, lens))
-                .collect(),
-            lifetimes,
-            runs: start
-                .runs
-                .iter()
-                .map(|&(lens, held, first, starts)| (lens, (held, first, starts)))
-                .collect(),
-            steps: start.steps.iter().copied().collect(),
-            outputs: start.outputs.iter().copied().collect(),
-            appearances: start
-                .appearances
-                .iter()
-                .chain(&binding.appearances)
-                .copied()
-                .collect(),
-            counters: start.counters.clone(),
-            included: binding.included.iter().copied().collect(),
-            named: binding.named.iter().copied().collect(),
-            design_anchors: binding.design_anchors,
-            organisation_anchors: binding.organisation_anchors,
-        }
-    }
-
-    fn own(&self, id: u64) -> u64 {
-        index::id_floor(self.base) | id
-    }
-
-    fn lifetime(&self, id: u64) -> u64 {
-        self.lifetimes
-            .get(&id)
-            .map_or_else(|| self.own(id), |held| held.0)
-    }
-
-    /// The lens's lifetime the history names `id`, if it names one.
-    fn lens_lifetime(&self, id: u64) -> Option<u64> {
-        self.inverse
-            .get(&id)
-            .copied()
-            .or_else(|| (id >> index::ID_BITS == self.base).then_some(id & 0xffff_ffff))
-    }
-
-    fn appearance(&self, lifetime: u64, handle: u64, appearance: u32) -> io::Result<u32> {
-        match self.lifetimes.get(&lifetime) {
-            Some(&(_, held)) => Ok(held),
-            None => u32::try_from(
-                i64::from(appearance) + self.appearances.get(&handle).copied().unwrap_or(0),
-            )
-            .map_err(|_| crate::invalid("A production lens appearance reads past its history's")),
-        }
-    }
-
-    fn mapped(map: &HashMap<u64, u64>, base: u64, id: u64) -> u64 {
-        map.get(&id)
-            .copied()
-            .unwrap_or_else(|| index::id_floor(base) | id)
-    }
-
-    fn overview(
-        &self,
-        mut part: index::Overview,
-        marks: &index::Marks,
-    ) -> io::Result<index::Overview> {
-        for life in &mut part.lives {
-            life.appearance = self.appearance(life.id, life.handle, life.appearance)?;
-            life.id = self.lifetime(life.id);
-        }
-        for (lifetime, _) in &mut part.ends {
-            *lifetime = self.lifetime(*lifetime);
-        }
-        for (lifetime, _) in &mut part.finals {
-            *lifetime = self.lifetime(*lifetime);
-        }
-        for step in &mut part.steps {
-            step.id = Self::mapped(&self.steps, self.base, step.id);
-            step.lifetime = self.lifetime(step.lifetime);
-        }
-        for (id, _) in &mut part.step_closes {
-            *id = Self::mapped(&self.steps, self.base, *id);
-        }
-        let conditional: HashMap<u32, u32> = marks.names.iter().copied().collect();
-        part.names = std::mem::take(&mut part.names)
-            .into_iter()
-            .enumerate()
-            .filter(|(at, _)| {
-                conditional
-                    .get(&(*at as u32))
-                    .is_none_or(|cond| self.named.contains(cond))
-            })
-            .map(|(_, name)| name)
-            .collect();
-        part.counters = added(&self.counters, part.counters);
-        Ok(part)
-    }
-
-    fn runs(&self, runs: &mut index::Runs) {
-        for at in 0..runs.len() {
-            let id = runs.id[at];
-            match self.runs.get(&id) {
-                Some(&(held, first, starts)) => {
-                    runs.id[at] = held;
-                    runs.first[at] = first;
-                    runs.values.starts_segment[at] = starts;
-                }
-                None => runs.id[at] = self.own(id),
-            }
-            runs.lifetime[at] = self.lifetime(runs.lifetime[at]);
-        }
-    }
-
-    fn detail(&self, mut detail: index::Detail) -> io::Result<index::Detail> {
-        let mut lives = BTreeMap::new();
-        for (lifetime, (handle, appearance)) in std::mem::take(&mut detail.lives) {
-            lives.insert(
-                self.lifetime(lifetime),
-                (handle, self.appearance(lifetime, handle, appearance)?),
-            );
-        }
-        detail.lives = lives;
-        detail.carried_runs.checked()?;
-        detail.runs.checked()?;
-        self.runs(&mut detail.carried_runs);
-        self.runs(&mut detail.runs);
-        for record in detail
-            .carried_outputs
-            .iter_mut()
-            .chain(detail.outputs.iter_mut())
-        {
-            record.id = Self::mapped(&self.outputs, self.base, record.id);
-            record.lifetime = self.lifetime(record.lifetime);
-        }
-        Ok(detail)
-    }
-
-    fn closes(&self, mut closes: index::Closes) -> index::Closes {
-        for (id, _, _) in &mut closes.runs {
-            *id = self.runs.get(id).map_or_else(|| self.own(*id), |held| held.0);
-        }
-        for (id, _, _) in &mut closes.outputs {
-            *id = Self::mapped(&self.outputs, self.base, *id);
-        }
-        closes
-    }
-
-    fn versions(&self, mut versions: index::Versions, marks: &index::Marks) -> index::Versions {
-        let keep = |conditional: &[(u32, u32)], at: usize| {
-            conditional
-                .iter()
-                .find(|(index, _)| *index as usize == at)
-                .is_none_or(|(_, cond)| self.included.contains(cond))
-        };
-        versions.designs = std::mem::take(&mut versions.designs)
-            .into_iter()
-            .enumerate()
-            .filter(|(at, _)| keep(&marks.designs, *at))
-            .map(|(_, read)| read)
-            .collect();
-        versions.organisations = std::mem::take(&mut versions.organisations)
-            .into_iter()
-            .enumerate()
-            .filter(|(at, _)| keep(&marks.organisations, *at))
-            .map(|(_, raw)| raw)
-            .collect();
-        versions.design_anchors = self.design_anchors.clone();
-        versions.organisation_anchors = self.organisation_anchors.clone();
-        versions
     }
 }
 
@@ -488,9 +264,6 @@ pub(super) struct Index<'a> {
     section: String,
     /// Parts decoded since it opened.
     pub decoded: usize,
-    /// Where each history's parts lie in each chunk it read, and the lens starts it read.
-    sources: HashMap<(u64, u64), Source>,
-    starts: HashMap<(u64, u64), Arc<index::Start>>,
 }
 
 impl<'a> Index<'a> {
@@ -517,8 +290,6 @@ impl<'a> Index<'a> {
             table: HashMap::new(),
             opened: HashMap::new(),
             decoded: 0,
-            sources: HashMap::new(),
-            starts: HashMap::new(),
         }
     }
 
@@ -682,91 +453,21 @@ impl<'a> Index<'a> {
         index::read(self.pages.as_mut(), &self.section, opened, slice)
     }
 
-    /// Where `owner`'s parts lie in `chunk`.
-    fn source(&mut self, chunk: u64, owner: u64) -> io::Result<Source> {
-        if let Some(source) = self.sources.get(&(chunk, owner)) {
-            return Ok(source.clone());
-        }
-        let source = match self.part::<index::Binding>(chunk, owner, Part::Binding, 0)? {
-            None => Source::Own(owner),
-            Some(mut binding) => {
-                let key = (binding.map, owner);
-                let start = match binding.start.take() {
-                    Some(start) => Arc::new(start),
-                    None => match self.starts.get(&key) {
-                        Some(start) => Arc::clone(start),
-                        None => {
-                            let first = self
-                                .part::<index::Binding>(binding.map, owner, Part::Binding, 0)?
-                                .and_then(|first| first.start)
-                                .ok_or_else(|| {
-                                    crate::invalid("A production binding names no lens start")
-                                })?;
-                            Arc::new(first)
-                        }
-                    },
-                };
-                self.starts.insert(key, Arc::clone(&start));
-                Source::Lens(Arc::new(Lens::new(binding, &start)))
-            }
-        };
-        self.sources.insert((chunk, owner), source.clone());
-        Ok(source)
-    }
-
-    fn marks(&mut self, chunk: u64, lens: &Lens) -> io::Result<index::Marks> {
-        Ok(self
-            .part::<index::Marks>(chunk, lens.id, Part::Marks, 0)?
-            .unwrap_or_default())
-    }
-
     /// `owner`'s overview in `chunk`, if it holds one.
     fn overview_at(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Overview>> {
-        match self.source(chunk, owner)? {
-            Source::Own(id) => self.part(chunk, id, Part::Overview, 0),
-            Source::Lens(lens) => {
-                let Some(part) = self.part::<index::Overview>(chunk, lens.id, Part::Overview, 0)?
-                else {
-                    return Ok(None);
-                };
-                let marks = self.marks(chunk, &lens)?;
-                lens.overview(part, &marks).map(Some)
-            }
-        }
+        self.part(chunk, owner, Part::Overview, 0)
     }
 
     fn detail_at(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Detail>> {
-        match self.source(chunk, owner)? {
-            Source::Own(id) => self.part(chunk, id, Part::Detail, 0),
-            Source::Lens(lens) => self
-                .part::<index::Detail>(chunk, lens.id, Part::Detail, 0)?
-                .map(|detail| lens.detail(detail))
-                .transpose(),
-        }
+        self.part(chunk, owner, Part::Detail, 0)
     }
 
     fn closes_at(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Closes>> {
-        match self.source(chunk, owner)? {
-            Source::Own(id) => self.part(chunk, id, Part::Closes, 0),
-            Source::Lens(lens) => Ok(self
-                .part::<index::Closes>(chunk, lens.id, Part::Closes, 0)?
-                .map(|closes| lens.closes(closes))),
-        }
+        self.part(chunk, owner, Part::Closes, 0)
     }
 
     fn versions_part(&mut self, chunk: u64, owner: u64) -> io::Result<Option<index::Versions>> {
-        match self.source(chunk, owner)? {
-            Source::Own(id) => self.part(chunk, id, Part::Versions, 0),
-            Source::Lens(lens) => {
-                let Some(versions) =
-                    self.part::<index::Versions>(chunk, lens.id, Part::Versions, 0)?
-                else {
-                    return Ok(None);
-                };
-                let marks = self.marks(chunk, &lens)?;
-                Ok(Some(lens.versions(versions, &marks)))
-            }
-        }
+        self.part(chunk, owner, Part::Versions, 0)
     }
 
     /// The icons the census inputs held, from every chunk, in hour order.
@@ -1403,23 +1104,12 @@ impl<'a> Index<'a> {
         let mut last_country: Option<Arc<CountryProductionModifiersRow>> = None;
         for (chunk, owner) in walk(&segments) {
             crate::metadata::check_cancel(cancelled)?;
-            let lens = match self.source(chunk, owner)? {
-                Source::Own(_) => None,
-                Source::Lens(lens) => Some(lens),
-            };
-            let holder = lens.as_ref().map_or(owner, |lens| lens.id);
-            // Each part with the lifetime the history names it by.
+            let holder = owner;
+            // Each part with its lifetime.
             let parts: Vec<(u64, index::Slice)> = match lifetimes {
                 Some(lifetimes) => {
                     let mut found = Vec::new();
                     for &lifetime in lifetimes {
-                        let key = match &lens {
-                            None => Some(lifetime),
-                            Some(lens) => lens.lens_lifetime(lifetime),
-                        };
-                        let Some(key) = key else {
-                            continue;
-                        };
                         let opened = self.opened(chunk)?;
                         if let Some(slice) = index::find(
                             self.pages.as_mut(),
@@ -1427,7 +1117,7 @@ impl<'a> Index<'a> {
                             opened,
                             holder,
                             Part::Modifiers,
-                            key,
+                            lifetime,
                         )? {
                             found.push((lifetime, slice));
                         }
@@ -1437,12 +1127,7 @@ impl<'a> Index<'a> {
                 None => self
                     .parts(chunk, holder, Part::Modifiers)?
                     .into_iter()
-                    .map(|slice| {
-                        let lifetime = lens
-                            .as_ref()
-                            .map_or(slice.key, |lens| lens.lifetime(slice.key));
-                        (lifetime, slice)
-                    })
+                    .map(|slice| (slice.key, slice))
                     .collect(),
             };
             let rows = match (lifetimes, parts.is_empty()) {

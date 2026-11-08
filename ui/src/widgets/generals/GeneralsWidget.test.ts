@@ -9,9 +9,9 @@ import type { TableProps } from '../../charts/table/Table';
 
 test('a leaderboard read at its hour jumps to the first seen hour and keeps its parity row', async () => {
   const data: UnitLeadersData = { branchId: '1', firstHour: 100,
-    people: [{ characterId: 5, token: null, name: '5', portraitHour: 100, portraitReference: '5' }],
+    people: [{ name: '5', portraitHour: 100, portraitReference: '5' }],
     roles: [{ owner: 'current', category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] }],
-    traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null, missing: null }],
+    traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null }],
     leaders: [{ reference: '5', runs: [{ firstHour: 101, lastHour: 102, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [{ hour: 90, token: 0, date: 'heldBefore' }, { hour: 101, token: 0, date: 'gained' }], commands: [], partialFrom: null,
       atHour: { hour: 102, firstSeenHour: 95, fought: 2, won: 1, lost: 0 } }],
@@ -62,9 +62,9 @@ test('a leaderboard read at its hour jumps to the first seen hour and keeps its 
 test('leaderboard keeps the dated country selection when an alias is reused', async () => {
   const data: UnitLeadersData = { branchId: '1', firstHour: 100,
     selectionTags: ['original', 'alias', 'current'],
-    people: [5, 6].map(characterId => ({ characterId, token: null, name: String(characterId), portraitHour: 100, portraitReference: String(characterId) })),
+    people: [5, 6].map(characterId => ({ name: String(characterId), portraitHour: 100, portraitReference: String(characterId) })),
     roles: ['current', 'alias'].map(owner => ({ owner, category: 1, rank: null, kind: 1, maximumSkill: 10, attributeNames: [null, null, null, null] })),
-    traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null, missing: null }], leaders: [5, 6].map((id, index) => ({ reference: String(id),
+    traits: [{ token: 'synthetic_trait', name: 'Synthetic trait', icon: null }], leaders: [5, 6].map((id, index) => ({ reference: String(id),
       runs: [{ firstHour: 100, lastHour: 102, value: { person: index, role: index, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null })),
     withheld: [], observed: [{ firstHour: 100, lastHour: 102, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],

@@ -75,6 +75,7 @@ fn assert_parity(fixture: &Fixture, replay: &Replay) {
             &fixture.key,
             &params,
             Some(&history),
+            None,
             &cancelled,
         )
         .unwrap()
@@ -109,6 +110,7 @@ fn assert_parity(fixture: &Fixture, replay: &Replay) {
             &fixture.key,
             &params,
             Some(&history),
+            None,
             &cancelled,
         )
         .unwrap()
@@ -261,6 +263,7 @@ fn prepared_leader_outcome_after_commander_changed_keeps_both_careers_and_first_
             ..full_params("1")
         },
         None,
+        None,
         &cancelled,
     )
     .unwrap()
@@ -293,6 +296,7 @@ fn prepared_leader_conflicting_repeated_outcomes_remain_unresolved_after_resume(
             },
             ..full_params("1")
         },
+        None,
         None,
         &cancelled,
     )
@@ -391,7 +395,7 @@ fn prepared_naval_leader_source_links_join_late_results_and_permanent_conflicts_
                 },
                 ..full_params("1")
             };
-            let reply = query(&fixture.store, &fixture.key, &params, None, &cancelled)
+            let reply = query(&fixture.store, &fixture.key, &params, None, None, &cancelled)
                 .unwrap()
                 .unwrap();
             assert_eq!(
@@ -485,7 +489,7 @@ fn prepared_leader_long_career_moves_closed_commands_and_battles_out_of_continua
         },
         ..full_params("1")
     };
-    let reply = query(&fixture.store, &fixture.key, &params, None, &cancelled)
+    let reply = query(&fixture.store, &fixture.key, &params, None, None, &cancelled)
         .unwrap()
         .unwrap();
     assert_eq!(reply.leaders[0].commands.len(), 1024);
@@ -558,6 +562,7 @@ fn prepared_leader_choices_keep_historical_kind_and_country_admission_without_ca
                 &fixture.key,
                 &params,
                 Some(&history),
+                None,
                 &cancelled,
             )
             .unwrap()
@@ -571,7 +576,7 @@ fn prepared_leader_choices_keep_historical_kind_and_country_admission_without_ca
         },
         ..full_params("1")
     };
-    assert!(query(&fixture.store, &fixture.key, &params, None, &cancelled).is_err());
+    assert!(query(&fixture.store, &fixture.key, &params, None, None, &cancelled).is_err());
 }
 
 fn work(state: &Prepared) -> dashboard_base::prepared::observer_tests::Work {
@@ -737,7 +742,9 @@ fn admission_work(
     state = resume(&fixture);
     assert_eq!(state.scan.leaders.len(), countries as usize + closed);
     let oracle = scan(&replay, &full_params("1"), content, &flag)?;
-    let actual = query(&fixture.store, &fixture.key, &full_params("1"), None, &flag)?.unwrap();
+    let shown = content.map(Content::shown);
+    let actual =
+        query(&fixture.store, &fixture.key, &full_params("1"), None, shown.as_ref(), &flag)?.unwrap();
     observer_tests::assert_reply_parity(&actual, &project(&oracle, &full_params("1"), None))?;
     Ok(delta)
 }
@@ -873,7 +880,7 @@ fn prepared_leaders_deferred_carry_matches_hourly_oracle_after_append_gap_alias_
         .unwrap();
     }
     dashboard_base::prepared::observer_tests::assert_reply_parity(
-        &open.finish(&params, None).unwrap(),
+        &open.finish(&params, None, None).unwrap(),
         &scan(&initial, &params, None, &flag).unwrap(),
     )
     .unwrap();
@@ -892,7 +899,7 @@ fn prepared_leaders_deferred_carry_matches_hourly_oracle_after_append_gap_alias_
     observe(&mut state, &grown, &tail);
     publish(&mut state, &fixture, &flag);
     assert_parity(&fixture, &grown);
-    let actual = query(&fixture.store, &fixture.key, &params, None, &flag)
+    let actual = query(&fixture.store, &fixture.key, &params, None, None, &flag)
         .unwrap()
         .unwrap();
     let leader = actual
@@ -979,7 +986,7 @@ fn prepared_leaders_repeated_formation_bindings_keep_hourly_command_episodes() {
         assert!(!scan_state.commands_continuous);
         assert_eq!(scan_state.materialized, Some(frame.hour));
     }
-    let actual = scan_state.finish(&params, None).unwrap();
+    let actual = scan_state.finish(&params, None, None).unwrap();
     assert_eq!(actual.leaders[0].commands.len(), 10);
     dashboard_base::prepared::observer_tests::assert_reply_parity(
         &actual,
@@ -1408,6 +1415,7 @@ fn prepared_leaders_battle_availability_changes_read_coverage_as_the_oracle() {
         &fixture.key,
         &full_params("1"),
         None,
+        None,
         &cancelled,
     )
     .unwrap()
@@ -1512,7 +1520,7 @@ fn a_leaderboard_at_an_hour_is_held_to_the_budget_only_once_projected() {
         view: LeaderView::Leaderboard,
         ..full_params("1")
     };
-    let whole = query(&fixture.store, &fixture.key, &params, None, &cancelled)
+    let whole = query(&fixture.store, &fixture.key, &params, None, None, &cancelled)
         .unwrap()
         .unwrap();
     let mut projected = whole.clone();
@@ -1529,6 +1537,7 @@ fn a_leaderboard_at_an_hour_is_held_to_the_budget_only_once_projected() {
             None,
             None,
             budget,
+            None,
             &cancelled
         )
         .is_err(),
@@ -1541,6 +1550,7 @@ fn a_leaderboard_at_an_hour_is_held_to_the_budget_only_once_projected() {
         None,
         Some(130),
         budget,
+        None,
         &cancelled,
     )
     .unwrap()
@@ -1665,6 +1675,7 @@ fn prepared_leaders_read_anew_after_a_skipped_roster() {
         &fixture.store,
         &fixture.key,
         &full_params("1"),
+        None,
         None,
         &cancelled,
     )

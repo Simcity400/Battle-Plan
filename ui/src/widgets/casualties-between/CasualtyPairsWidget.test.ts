@@ -419,10 +419,10 @@ test('actual casualty breakdown holds Campaign and Pin dates until explicit Foll
 
 function leaderData(): UnitLeadersData {
   return { branchId: '1', firstHour: 100, warnings: [],
-    people: [{ characterId: 9, token: 'mod_character', name: 'Synthetic commander', portraitHour: 100, portraitReference: '21474841193' }],
+    people: [{ name: 'Synthetic commander', portraitHour: 100, portraitReference: '21474841193' }],
     roles: [{ owner: 'mod actor', category: 1, rank: 'Synthetic rank', kind: 1, maximumSkill: 12,
       attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'] }],
-    traits: [{ token: 'mod_trait', name: 'Synthetic trait', icon: null, missing: null }],
+    traits: [{ token: 'mod_trait', name: 'Synthetic trait', icon: null }],
     leaders: [{ reference: '21474841193', runs: [
       { firstHour: 100, lastHour: 131, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [] } },
       { firstHour: 132, lastHour: 160, value: { person: 0, role: 0, skill: 4, components: [1, 2, 3, 4], progress: null, traits: [0] } },

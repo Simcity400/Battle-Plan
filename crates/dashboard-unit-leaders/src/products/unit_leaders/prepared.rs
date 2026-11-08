@@ -154,7 +154,7 @@ fn restore<K: Ord + Copy, V: Copy>(
 
 #[derive(Serialize, Deserialize)]
 enum Event {
-    Run(UnitLeaderRun),
+    Run(Run),
     Trait(LeaderTraitGain),
     Command(LeaderCommand),
     Battle((i32, i32, bool, u8, u64, u8)),
@@ -164,35 +164,10 @@ enum Event {
 /// An [`Event`] borrowing what it publishes, written as the `Event` is.
 #[derive(Serialize)]
 enum EventRef<'a> {
-    Run(&'a UnitLeaderRun),
+    Run(&'a Run),
     Trait(&'a LeaderTraitGain),
     Command(&'a LeaderCommand),
     Battle(&'a (i32, i32, bool, u8, u64, u8)),
-}
-
-/// `Event::Run(run)` as written, its progress already written as `progress`.
-fn run_event(run: &UnitLeaderRun, progress: &[u8]) -> io::Result<Vec<u8>> {
-    let value = &run.value;
-    let mut row = Vec::with_capacity(progress.len() + 96);
-    row.extend_from_slice(b"{\"Run\":");
-    serde_json::to_writer(
-        &mut row,
-        &(
-            run.first_hour,
-            run.last_hour,
-            value.person,
-            value.role,
-            value.skill,
-            value.components,
-            value.traits.as_deref(),
-        ),
-    )?;
-    // The run's tuple goes on with its progress.
-    row.pop();
-    row.push(b',');
-    row.extend_from_slice(progress);
-    row.extend_from_slice(b"]}");
-    Ok(row)
 }
 
 /// The key named `name`, numbered as names are first published.
@@ -557,8 +532,8 @@ impl Prepared {
         self.scan.normalize_withheld();
         // Static presentation uses the existing content loaders once per new token.
         for token in &self.scan.token_list[self.scan.reply.traits.len()..] {
-            let info = trait_info(token, content);
-            if let Some(reason) = &info.missing {
+            let (info, missing) = trait_info(token, content);
+            if let Some(reason) = &missing {
                 self.scan.refusals.note(reason, token);
             }
             self.scan.reply.traits.push(info);
@@ -572,13 +547,18 @@ impl Prepared {
         {
             self.key(reference.to_string())?;
         }
+        self.scan.requirements.note(
+            self.scan.stored_runs.iter().map(|stored| &stored.run),
+            &self.scan.role_list,
+            &self.scan.persons,
+            content,
+        );
         // Each event is written as its leader's turn comes: a key's events keep their order.
         let through = self.through;
         let Self {
             scan, series, keys, ..
         } = self;
         let mut runs = Vec::new();
-        let mut progress = HashMap::new();
         for leader in &mut scan.leaders {
             check_cancel(cancelled)?;
             let reference = leader.reference;
@@ -587,10 +567,7 @@ impl Prepared {
             while let Some(index) = chain {
                 let stored = &mut scan.stored_runs[index];
                 if Some(index) != leader.last_run && !stored.emitted {
-                    let row = match scan.run_progress.get(&index) {
-                        Some(written) => run_event(&stored.run, written)?,
-                        None => serde_json::to_vec(&EventRef::Run(&stored.run))?,
-                    };
+                    let row = serde_json::to_vec(&EventRef::Run(&stored.run))?;
                     series.event_raw(key, through, row)?;
                     stored.emitted = true;
                 }
@@ -643,9 +620,6 @@ impl Prepared {
                 let mut stored = scan.stored_runs[old].clone();
                 stored.previous = None;
                 let index = runs.len();
-                if let Some(written) = scan.run_progress.get(&old) {
-                    progress.insert(index, Arc::clone(written));
-                }
                 if Some(old) == last_known {
                     leader.last_known_run = Some(index);
                 }
@@ -656,7 +630,6 @@ impl Prepared {
             }
         }
         scan.stored_runs = runs;
-        scan.run_progress = progress;
         for (reference, rows) in std::mem::take(&mut scan.battle_hours) {
             let key = key(keys, reference.to_string())?;
             for row in rows {
@@ -790,7 +763,7 @@ pub fn at_hour_reply(
             &mut |_, _, _| {},
         )?;
     }
-    let mut reply = scan.finish(&sampled, content.as_ref())?;
+    let mut reply = scan.finish_reading(&sampled, content.as_ref())?;
     if matches!(params.selection, LeaderSelection::Countries { .. }) {
         reply = project(&reply, params, history);
     }
@@ -820,9 +793,10 @@ pub fn query(
     key: &store::SourceKey,
     params: &UnitLeadersParams,
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    content: Option<&Shown>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
-    query_at(store, key, params, history, None, cancelled)
+    query_at(store, key, params, history, None, content, cancelled)
 }
 
 /// A leaderboard asked at `hour` is projected to that hour before its size is
@@ -833,6 +807,7 @@ pub fn query_at(
     params: &UnitLeadersParams,
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
     hour: Option<i32>,
+    content: Option<&Shown>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
     query_within(
@@ -842,6 +817,7 @@ pub fn query_at(
         history,
         hour,
         MAX_REPLY_BYTES,
+        content,
         cancelled,
     )
 }
@@ -853,9 +829,10 @@ fn query_within(
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
     hour: Option<i32>,
     budget: usize,
+    content: Option<&Shown>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
-    careers(store, key, params, history, cancelled)?
+    careers(store, key, params, history, content, cancelled)?
         .map(|careers| answer_within(&careers, params, hour, budget))
         .transpose()
 }
@@ -926,9 +903,10 @@ impl Careers {
         store: &store::Store,
         key: &store::SourceKey,
         branch_id: &str,
+        content: Option<&Shown>,
         cancelled: &AtomicBool,
     ) -> io::Result<Option<Self>> {
-        let Some(all) = all_careers(store, key, branch_id, cancelled)? else {
+        let Some(all) = all_careers(store, key, branch_id, content, cancelled)? else {
             return Ok(None);
         };
         let visible: Vec<_> = all.leaders.iter().map(visible_battles).collect();
@@ -1092,9 +1070,10 @@ pub fn all_careers(
     store: &store::Store,
     key: &store::SourceKey,
     branch_id: &str,
+    content: Option<&Shown>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
-    careers(store, key, &full_params(branch_id), None, cancelled)
+    careers(store, key, &full_params(branch_id), None, content, cancelled)
 }
 
 /// The branch's prepared state as its family last published it.
@@ -1121,6 +1100,7 @@ pub fn choices(
     key: &store::SourceKey,
     params: &UnitLeadersParams,
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    content: Option<&Shown>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<Vec<LeaderChoice>>> {
     let branch = params.branch_id.parse().expect("validated leader branch");
@@ -1165,6 +1145,7 @@ pub fn choices(
     };
     state.scan.seal();
     let scan = &state.scan;
+    let present = Present::new(content, &scan.requirements)?;
     let mut choices = Vec::new();
     for leader in &scan.leaders {
         check_cancel(cancelled)?;
@@ -1182,13 +1163,13 @@ pub fn choices(
             continue;
         }
         let run = &scan.stored_runs[index].run;
-        let role = &scan.reply.roles[run.value.role as usize];
+        let role = &scan.role_list[run.value.role as usize];
         if !LeaderKinds::All.includes(role.kind) {
             continue;
         }
         choices.push(LeaderChoice {
             reference: leader.reference,
-            name: scan.reply.people[run.value.person as usize].name.clone(),
+            name: present.person(&scan.persons[run.value.person as usize]).name,
             owner: role.owner.clone(),
             last_hour: run.last_hour,
         });
@@ -1204,11 +1185,12 @@ pub fn careers(
     key: &store::SourceKey,
     params: &UnitLeadersParams,
     history: Option<&dashboard_base::products::country_history::RecordedHistories>,
+    content: Option<&Shown>,
     cancelled: &AtomicBool,
 ) -> io::Result<Option<UnitLeadersReply>> {
     // Every leader's career is the same whatever is selected; a selection only projects it.
     if *params != full_params(&params.branch_id) {
-        return Ok(all_careers(store, key, &params.branch_id, cancelled)?
+        return Ok(all_careers(store, key, &params.branch_id, content, cancelled)?
             .map(|all| project(&all, params, history)));
     }
     let branch = params.branch_id.parse().expect("validated leader branch");
@@ -1232,7 +1214,7 @@ pub fn careers(
     let mut materialized = Vec::new();
     for leader in &mut scan.leaders {
         check_cancel(cancelled)?;
-        let mut runs = BTreeMap::<i32, UnitLeaderRun>::new();
+        let mut runs = BTreeMap::<i32, Run>::new();
         if let Some(index) = leader.last_run {
             let row = scan.stored_runs[index].run.clone();
             runs.insert(row.first_hour, row);
@@ -1283,7 +1265,7 @@ pub fn careers(
         scan.battle_hours.insert(leader.reference, rows);
     }
     scan.stored_runs = materialized;
-    let full = scan.finish(&full_params(&params.branch_id), None)?;
+    let full = scan.finish(&full_params(&params.branch_id), None, content)?;
     Ok(Some(project(&full, params, history)))
 }
 /// A key's events in order, each parsed from its stored row straight into an [`Event`].

@@ -135,20 +135,20 @@ fn missing_trait_sprite_retries_native_gui_fallback_with_registered_spelling() {
             .unwrap(),
         catalogue,
     };
-    let info = trait_info("mod_trait", Some(&content));
-    assert!(info.missing.is_none(), "{:?}", info.missing);
+    let (info, missing) = trait_info("mod_trait", Some(&content));
+    assert!(missing.is_none(), "{missing:?}");
     assert_eq!(from_url(info.icon.as_ref().unwrap()), image);
-    let canonical = trait_info("canonical_trait", Some(&content));
+    let (canonical, _) = trait_info("canonical_trait", Some(&content));
     assert_eq!(
         from_url(canonical.icon.as_ref().unwrap()).pixels,
         [23, 45, 67, 255]
     );
-    let broken = trait_info("Broken_Trait", Some(&content));
+    let (broken, missing) = trait_info("Broken_Trait", Some(&content));
     assert!(broken.icon.is_none());
-    assert!(broken.missing.unwrap().contains("missing.png"));
+    assert!(missing.unwrap().contains("missing.png"));
     assert!(
         trait_info("unregistered", Some(&content))
-            .missing
+            .1
             .unwrap()
             .contains("not registered")
     );
@@ -185,7 +185,6 @@ fn stored_trait_icons_follow_the_selection_at_query_time() {
         token: "Brave".into(),
         name: Some("Brave".into()),
         icon: Some("stored".into()),
-        missing: None,
     }];
     let shown = |options: &dashboard_core::config::ContentOptions| {
         let mut traits = stored.clone();
@@ -247,7 +246,6 @@ fn a_broken_trait_sprite_a_mod_adds_falls_back_to_the_recordings_choice() {
             token: "Brave".into(),
             name: None,
             icon: Some("stored".into()),
-            missing: None,
         }];
         let ((), line) =
             fallback_line(|| present_traits(&source, Some(&options), &mut traits).unwrap());
@@ -780,7 +778,6 @@ fn missing_trait_reads_kinds_and_choices_stay_honest() {
     assert_eq!(army.trait_gains.len(), 1); // A missing read never re-dates an existing holding.
     assert!(reply.observed.iter().all(|o| o.leaders));
     assert!(reply.traits[0].icon.is_none());
-    assert!(reply.traits[0].missing.is_some());
     assert!(reply.warnings.iter().any(|warning| {
         warning.contains("Recorded content unavailable") && warning.contains("extra_mod_trait")
     }));
@@ -3026,14 +3023,14 @@ fn a_blocked_kept_visibility_pass_leaves_the_whole_frame_its_refusals() {
             )
             .unwrap()
         );
-        let actual = scan.finish(&params, Some(&content)).unwrap();
+        let actual = scan.finish_reading(&params, Some(&content)).unwrap();
         let mut oracle = Scan::new(&replay, 1).unwrap();
         for frame in &frames {
             oracle
                 .observe_read(frame, &replay, &params, Some(&content), &mut |_, _, _| {})
                 .unwrap();
         }
-        let expected = oracle.finish(&params, Some(&content)).unwrap();
+        let expected = oracle.finish_reading(&params, Some(&content)).unwrap();
         assert!(
             expected
                 .warnings

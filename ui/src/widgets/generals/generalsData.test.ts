@@ -21,9 +21,9 @@ function decodedStarts(deltas: readonly number[]) { let hour = 0; return deltas.
 
 function fixture(): UnitLeadersData {
   return { branchId: '1', firstHour: 100,
-    people: [{ characterId: 9, token: 'mod_character', name: 'A modded commander', portraitHour: 100, portraitReference: '21474841193' }],
+    people: [{ name: 'A modded commander', portraitHour: 100, portraitReference: '21474841193' }],
     roles: [{ owner: 'country with spaces', category: 1, rank: 'Mod rank', kind: 1, maximumSkill: 12, attributeNames: ['Attack', 'Defence', 'Planning', 'Logistics'] }],
-    traits: [{ token: 'extra_trait', name: 'Mod trait', icon: null, missing: null }],
+    traits: [{ token: 'extra_trait', name: 'Mod trait', icon: null }],
     leaders: [{ reference: '21474841193', runs: [{ firstHour: 101, lastHour: 106, value: { person: 0, role: 0, skill: 3, components: [1, 2, 3, 4], progress: null, traits: [0] } }],
       traitGains: [{ hour: 101, token: 0, date: 'gained' }], commands: [], battleStarts: [], battleStartReadHours: [], unknownBattleStarts: [], partialFrom: null }],
     withheld: [], observed: [{ firstHour: 100, lastHour: 106, leaders: true, landBattles: true, navalBattles: false, landCommands: true, navalCommands: false }],
@@ -482,8 +482,6 @@ test('a known empty leader name survives leaderboard, career tooltip and picker 
   assert.equal(leaderChoices([['1', '', 'TAG', 101]], 'c0ffee', () => ({ name: 'Country' }))[0].label, ' · Country');
   assert.equal(leaderChoices([['1', null, 'TAG', 101]], 'c0ffee', () => ({ name: 'Country' }))[0].label, 'Character name unavailable · Country');
   person.name = null; assert.equal(leaderName(row), 'Character name unavailable');
-  person.token = ''; assert.equal(leaderName(row), 'Character name unavailable');
-  person.token = null; assert.equal(leaderName(row), 'Character name unavailable');
 });
 
 

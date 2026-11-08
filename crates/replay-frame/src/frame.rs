@@ -21,6 +21,7 @@ mod hour_input;
 pub use hour_input::{ChangeDiscontinuity, HourChanges, HourInput, TableChanges};
 mod encoder;
 pub mod endpoint_step;
+pub mod kept;
 mod log;
 pub use log::{FrameLog, LoggedFrames};
 mod provenance;
@@ -183,6 +184,22 @@ impl SharedView {
     /// Whether two views are the same allocation, not just equal rows.
     pub fn ptr_eq(a: &Self, b: &Self) -> bool {
         Arc::ptr_eq(&a.0, &b.0)
+    }
+
+    /// The fields that may differ in `other` from this view, by their stamps, while both hold
+    /// the same row keys; None when the stamps cannot tell.
+    pub fn changed_fields(&self, other: &Self) -> Option<u64> {
+        if Self::ptr_eq(self, other) {
+            return Some(0);
+        }
+        let (Some(this), Some(other)) = (self.3.as_deref(), other.3.as_deref()) else {
+            return None;
+        };
+        (Arc::ptr_eq(&this.epoch, &other.epoch) && this.membership == other.membership).then(|| {
+            (0..64)
+                .filter(|&bit| this.fields[bit] != other.fields[bit])
+                .fold(0, |fields, bit| fields | (1_u64 << bit))
+        })
     }
 
     /// The view, moved out when this is its only holder and copied otherwise.

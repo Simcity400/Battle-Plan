@@ -1,10 +1,8 @@
 //! Shared all-country loss observations, sparse exact values and native-dated ship events.
 //!
-//! Each segment's lens folds every country on the walk's workers ([`lens`]); the emit binds the
-//! countries whose state the lens began from and splices what the lens made of them once per
-//! segment. Each hour's facts are queued as a step; a drain folds the queued steps over the
-//! countries no lens holds, in contiguous shards, each country keeping its own series at the
-//! branch's hours. A flush publishes every country's series as the one section. A leaf's change
+//! Each hour's facts are queued as a step; a drain folds the queued steps over every country,
+//! in contiguous shards on spare cores, each country keeping its own series at the branch's
+//! hours. A flush publishes every country's series as the one section. A leaf's change
 //! is an empty event at its hour: its total is the key's value there.
 use super::*;
 use super::columnar::{self, Drains, Facts, Input, Metadata, Records, btree_bytes};
@@ -17,8 +15,6 @@ use dashboard_base::prepared::{
 };
 use serde_json::{Value, json};
 use std::{mem::size_of, sync::Arc};
-
-pub(super) mod lens;
 
 type Identity = (u32, u32);
 
@@ -55,15 +51,6 @@ struct Country {
     /// The queued ticks its series took.
     #[serde(skip)]
     ticked: usize,
-    /// Whether the segment's lens folds it: the emit's drains pass it by.
-    #[serde(skip)]
-    lensed: bool,
-    /// In a lens, what it made of the segment's hours.
-    #[serde(skip)]
-    out: Option<Box<lens::Out>>,
-    /// While bound, what the emit made of the lens's hours handed on so far.
-    #[serde(skip)]
-    mending: Option<Box<lens::Mending>>,
 }
 
 /// The existing naming and uncertainty inputs contain changes, not hourly values.
@@ -282,12 +269,6 @@ pub struct Prepared {
     /// The most the queued steps held at once.
     #[serde(skip)]
     queued_peak: usize,
-    /// In a segment's lens, what it begins its countries from; None in the emit.
-    #[serde(skip)]
-    lens: Option<Box<lens::Mode>>,
-    /// The segment a lens folds the bound countries of, until it hands them back.
-    #[serde(skip)]
-    span: Option<Box<lens::Span>>,
     /// Keys made since the catalogue last named them, and how many countries were made.
     #[serde(skip)]
     names: Vec<Name>,
@@ -426,7 +407,7 @@ fn holding(shard: &[(Identity, &mut Country)], slot: u32) -> std::ops::Range<usi
 
 /// The countries of `shard` an hour selects, ascending.
 fn chosen(shard: &[(Identity, &mut Country)], taken: &Taken, index: u64) -> Vec<usize> {
-    let born = |at: usize| shard[at].1.born <= index && !shard[at].1.lensed;
+    let born = |at: usize| shard[at].1.born <= index;
     if taken.every {
         return (0..shard.len()).filter(|&at| born(at)).collect();
     }
@@ -477,10 +458,9 @@ fn fold(shard: &mut [(Identity, &mut Country)], queue: &Queue) -> Result<Folded,
                 last,
                 lend_read,
             } => {
-                // A lens's country meets no gap: its lens stops short of one, but where lost.
                 for (_, country) in shard
                     .iter_mut()
-                    .filter(|(_, country)| country.born <= index && !country.lensed)
+                    .filter(|(_, country)| country.born <= index)
                 {
                     country.scanned.advance(first.saturating_sub(1));
                     exchanges_read(country, *lend_read);
@@ -522,27 +502,10 @@ fn fold(shard: &mut [(Identity, &mut Country)], queue: &Queue) -> Result<Folded,
                         },
                     )?;
                 }
-                // A lens leaves ships to the emit: their counts are kept from the branch's start.
-                for (slot, records) in taken.records.iter() {
-                    let Some(ships) = records.ships.as_deref() else {
-                        continue;
-                    };
-                    for at in holding(shard, *slot) {
-                        let (identity, country) = &mut shard[at];
-                        if country.lensed && country.born <= index && country.current == Some(true)
-                        {
-                            let identity = *identity;
-                            sunk(country, taken.at, ships, &mut folded).map_err(|error| Failed {
-                                at: (index, identity),
-                                error,
-                            })?;
-                        }
-                    }
-                }
             }
         }
     }
-    // Without ticks (a lens's queue) no country's place in them moved from the start.
+    // Without ticks no country's place in them moved from the start.
     let ticked = if queue.ticks.is_empty() { &mut [][..] } else { shard };
     for (identity, country) in ticked.iter_mut() {
         let identity = *identity;
@@ -553,29 +516,6 @@ fn fold(shard: &mut [(Identity, &mut Country)], queue: &Queue) -> Result<Folded,
         country.ticked = 0;
     }
     Ok(folded)
-}
-
-/// A bound country's ships read at `hour`: each count past the last seen sank anew.
-fn sunk(country: &mut Country, hour: i32, ships: &[ShipRead], folded: &mut Folded) -> io::Result<()> {
-    let mut scanned = Scanned::default();
-    ship_counts(&mut scanned, &mut country.state, ships);
-    for ((_, variant), events) in scanned.events {
-        if let Some(variant) = variant {
-            folded.variants.insert(variant);
-        }
-        for (sink_hour, delta) in events {
-            country.values.event(
-                0,
-                hour,
-                &ShipLoss {
-                    sink_hour,
-                    variant,
-                    delta_raw: delta.to_string(),
-                },
-            )?;
-        }
-    }
-    Ok(())
 }
 
 /// One country's hour: its spans, its reads' amounts, and their publication.
@@ -589,15 +529,7 @@ fn take(
 ) -> io::Result<()> {
     catch_up(country, ticks, taken.tick)?;
     let at = taken.at;
-    // A lens's first take of a country it began from the restart leaves the dates it read
-    // lend-lease to the emit, which knows whether that record was read the hour before.
-    let begun = country
-        .out
-        .as_deref_mut()
-        .is_some_and(|out| out.begun && !std::mem::replace(&mut out.taken, true));
-    if !begun {
-        exchanges_read(country, taken.lend_read);
-    }
+    exchanges_read(country, taken.lend_read);
     country.scanned.advance(at.saturating_sub(1));
     let selected = match country.current {
         Some(true) => Selection::Found(identity.0),
@@ -628,19 +560,11 @@ fn take(
             .ok()
             .map(|at| &taken.records[at].1);
         let (scanned, state) = (&mut country.scanned, &mut country.state);
-        let mut lens = country.out.as_deref_mut();
-        if lens.is_none()
-            && let Some(ships) = records.and_then(|records| records.ships.as_deref())
-        {
+        if let Some(ships) = records.and_then(|records| records.ships.as_deref()) {
             ship_counts(scanned, state, ships);
         }
         if let Some(records) = records {
-            match &mut lens {
-                Some(out) => convoy_rows(scanned, state, at, &records.convoys, |key, count| {
-                    out.first_convoy(at, key, count)
-                }),
-                None => convoy_rows(scanned, state, at, &records.convoys, |_, _| {}),
-            }
+            convoy_rows(scanned, state, at, &records.convoys, |_, _| {});
         }
         // A country holding exchanges takes every lend-lease read, to see them end.
         if taken.lend_process
@@ -649,18 +573,10 @@ fn take(
                 || !state.exchanges.is_empty())
         {
             let pools = records.map_or(&[][..], |records| records.lend.as_slice());
-            match &mut lens {
-                Some(out) => out.lend(scanned, state, at, pools),
-                None => lend_lease_rows(scanned, state, at, pools),
-            }
+            lend_lease_rows(scanned, state, at, pools);
         }
         if let Some(records) = records {
-            match &mut lens {
-                Some(out) => combat_rows(scanned, state, at, &records.combat, |key, amount| {
-                    out.first_log(at, key, amount)
-                }),
-                None => combat_rows(scanned, state, at, &records.combat, |_, _| {}),
-            }
+            combat_rows(scanned, state, at, &records.combat, |_, _| {});
         }
         // The sets only grow: one this country took in already adds nothing.
         for (read, unresolved) in taken.unresolved.iter().enumerate() {
@@ -719,21 +635,6 @@ fn publish(
         changed_read = country.last_read.as_ref() != Some(&read);
         country.last_read = Some(read);
         country.read_key = Some((coverage, reason.map(str::to_owned), unread));
-    }
-    if let Some(out) = country.out.as_deref_mut() {
-        if changed_read {
-            out.versions.push(hour);
-            if out.first_read.is_none() {
-                out.first_read = country.last_read.clone().map(|read| (hour, read));
-            }
-        }
-        return out.publish(
-            &mut country.scanned,
-            &mut country.totals,
-            &mut country.leaves,
-            hour,
-            drains,
-        );
     }
     let version = country
         .values
@@ -845,8 +746,6 @@ impl Prepared {
             identities_incomplete: false,
             queue: Queue::default(),
             queued_peak: 0,
-            lens: None,
-            span: None,
             names: Vec::new(),
             made: 0,
         }
@@ -861,33 +760,16 @@ impl Prepared {
         super::columnar::Projector::new(replay)
     }
 
-    /// Takes up what the segment's lens hands on, then queues the hour's facts as a step.
+    /// Queues the hour's facts as a step.
     pub fn observe_projected(&mut self, hour: super::columnar::Hour) -> io::Result<()> {
         let _cpu =
             replay_frame::cpu::scope("equipment_losses.columnar.emit", Some("equipment_losses"));
         let at = hour.hour;
-        let (mut begun, mut moved) = (None, None);
-        match hour.lens.map(|lens| *lens) {
-            Some(lens::Handed::Begun(lens)) => begun = Some(lens),
-            Some(lens::Handed::Moved(lens)) => moved = Some(lens),
-            Some(lens::Handed::Part(part)) => self.splice(part)?,
-            None => {}
-        }
         match hour.input {
             Facts::Read(input) => {
-                if let Some(begun) = &begun {
-                    self.begin(begun, at)?;
-                }
                 if self.observe_input(at, &input)? {
                     self.variants
                         .observe_hour(at, input.names, |_| input.variants);
-                }
-                if let Some(begun) = begun {
-                    self.bind(begun);
-                }
-                // The hour's input makes the countries born in it, which its moves may name.
-                if let Some(moved) = moved {
-                    self.moved(moved)?;
                 }
             }
             Facts::Other => {
@@ -896,7 +778,6 @@ impl Prepared {
                 }
                 return Ok(());
             }
-            Facts::Lens => return Ok(()),
         }
         let held = self.queue.held();
         self.queued_peak = self.queued_peak.max(held);
@@ -916,10 +797,8 @@ impl Prepared {
         if self.next < i64::from(at) {
             self.finish_block(at - 1);
         }
-        if self.lens.is_none() {
-            self.clock.advance(at)?;
-            self.queue.ticks.push(Tick::Advance(at));
-        }
+        self.clock.advance(at)?;
+        self.queue.ticks.push(Tick::Advance(at));
         self.absent.advance(at.saturating_sub(1));
         let index = self.steps;
         self.steps += 1;
@@ -1037,21 +916,7 @@ impl Prepared {
             .memberships
             .as_ref()
             .and_then(|memberships| memberships.get(&identity.0).copied().flatten());
-        let mut scanned = self.absent.clone();
-        let mut out = None;
-        let mut lensed = false;
-        if let Some(mode) = &self.lens {
-            out = Some(Box::new(mode.begin(identity, index, &mut continuation)));
-        } else if let Some(span) = self
-            .span
-            .as_deref()
-            .filter(|span| span.newborns() && index > span.index)
-        {
-            // The lens begins it from its absent country, as the emit's stood before the segment.
-            scanned = span.absent.clone();
-            continuation.destruction_withheld.clone_from(&span.withheld);
-            lensed = true;
-        }
+        let scanned = self.absent.clone();
         self.countries.insert(
             identity,
             Country {
@@ -1068,9 +933,6 @@ impl Prepared {
                 membership,
                 born: index,
                 ticked: self.queue.ticks.len(),
-                lensed,
-                out,
-                mending: None,
             },
         );
         self.queue.made.push((index, identity));
@@ -1091,16 +953,11 @@ impl Prepared {
             .collect();
         let mut folded = Vec::new();
         let mut failed: Option<Failed> = None;
-        // A lens folds on its walk's worker; the emit shares its countries out over spare cores.
-        let shards = if self.lens.is_some() {
-            vec![fold(&mut countries, &queue)]
-        } else {
-            shared(
-                &mut countries,
-                |(_, country)| 1 + country.leaves.len() * usize::from(!country.lensed),
-                |shard| fold(shard, &queue),
-            )
-        };
+        let shards = shared(
+            &mut countries,
+            |(_, country)| 1 + country.leaves.len(),
+            |shard| fold(shard, &queue),
+        );
         for shard in shards {
             match shard {
                 Ok(shard) => folded.push(shard),
@@ -1113,10 +970,6 @@ impl Prepared {
         }
         if let Some(failed) = failed {
             return Err(failed.error);
-        }
-        // A lens names nothing: the emit numbers what it hands on.
-        if self.lens.is_some() {
-            return Ok(());
         }
         // Keys are numbered as they were first met: by step, a step's new countries first.
         for &(index, identity) in &queue.made {
@@ -1132,11 +985,7 @@ impl Prepared {
                     ((index, 1, packed, local), identity, Some(leaf))
                 }));
         }
-        // A bound country's keys are met with the segment's hand-over, which names them all.
-        if !self.span.as_deref().is_some_and(lens::Span::live) {
-            self.name()?;
-        }
-        Ok(())
+        self.name()
     }
 
     /// Names the keys made since, in the order they were first met.
@@ -1170,7 +1019,6 @@ impl Prepared {
     /// they are missing, and every country's totals restart after them.
     pub fn lost(&mut self, last: i32) -> io::Result<()> {
         self.drain()?;
-        self.abandon()?;
         self.finish_block(last);
         self.drain()?;
         for country in self.countries.values_mut() {
@@ -1212,7 +1060,6 @@ impl Prepared {
     ) -> io::Result<()> {
         let _cpu = ::replay_frame::cpu::scope_phase("equipment_losses:series_flush");
         self.drain()?;
-        self.abandon()?;
         if let Ok(last) = i32::try_from(self.next - 1) {
             self.absent.advance(last);
             for country in self.countries.values_mut() {

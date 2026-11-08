@@ -4,7 +4,6 @@ mod columnar_parity;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod keys;
-pub(super) mod lens;
 #[cfg(test)]
 mod parity;
 mod record;
@@ -19,7 +18,6 @@ use crate::prepared::pages::Pages;
 use crate::products::country_groups::HourSpan;
 use keys::{Ctx, Keys, Trees};
 use record::Record;
-pub use lens::Lenses;
 use replay_data::rows::{CountryProductionModifiersRow, ProductionLineModifiersRow, TableRows};
 
 /// A full ledger record after this many deltas, so a resume reads a bounded number. Each
@@ -190,8 +188,6 @@ pub struct CountryState {
     keys: Keys,
     /// Each variant its last census produced, with the first and last census of its run.
     producing: BTreeMap<u64, (i32, i32)>,
-    /// A lens's own conditions on what it lists ([`lens`]); none for a history.
-    marking: Option<Box<lens::Marking>>,
     counters: index::Counters,
     /// The absence's unread spans: what it adds to a country waking from it.
     stream: Option<keys::Stream>,
@@ -547,19 +543,11 @@ impl CountryState {
         };
         self.anchor_design(variant, ctx)?;
         let root = self.keys.root;
-        let listed = self.events.listed().0;
-        // A lens lists its first read of a variant a history may hold the same of, as it is.
-        let conditional = self
-            .marking
-            .as_mut()
-            .and_then(|marking| marking.design(variant, listed))
-            .is_some();
-        if conditional
-            || self
-                .keys
-                .designs
-                .get(variant, root, ctx)?
-                .is_none_or(|(last, _)| !same_design(last, &read))
+        if self
+            .keys
+            .designs
+            .get(variant, root, ctx)?
+            .is_none_or(|(last, _)| !same_design(last, &read))
         {
             self.keys
                 .designs
@@ -572,11 +560,7 @@ impl CountryState {
             && at.author_names_due
             && let Some(raw) = input.author_names.get(&author)
         {
-            let conditional = self
-                .marking
-                .as_ref()
-                .is_some_and(|marking| marking.unsynced(author));
-            if conditional || self.keys.organisations.get(author, root, ctx)?.is_none() {
+            if self.keys.organisations.get(author, root, ctx)?.is_none() {
                 self.organisation_push(
                     author,
                     RawOrganisation {
@@ -612,27 +596,15 @@ impl CountryState {
     ) -> io::Result<()> {
         self.anchor_organisation(id, ctx)?;
         let root = self.keys.root;
-        let (_, organisations, names) = self.events.listed();
-        let listed = (organisations, names);
-        let conditional = self
-            .marking
-            .as_mut()
-            .and_then(|marking| marking.organisation(id, author, listed.0, listed.1))
-            .is_some();
         let previous = self
             .keys
             .organisations
             .get(id, root, ctx)?
             .map(|(last, _)| (same_organisation(last, &raw), same_naming(last, &raw)));
-        // A lens lists a version a history may push, and names it, as it is.
-        let named = if conditional {
-            true
-        } else {
-            if previous.is_some_and(|(same, _)| same) {
-                return Ok(());
-            }
-            previous.is_none_or(|(_, naming)| !naming)
-        };
+        if previous.is_some_and(|(same, _)| same) {
+            return Ok(());
+        }
+        let named = previous.is_none_or(|(_, naming)| !naming);
         let bytes = organisation_bytes(&raw);
         self.events.organisation(id, raw.clone(), named);
         if !(author && previous.is_some()) {
@@ -976,9 +948,6 @@ impl CountryState {
                 let appearance = last.unwrap_or(0) + 1;
                 let lifetime = self.ids.lifetime;
                 self.ids.lifetime += 1;
-                if let Some(marking) = &mut self.marking {
-                    marking.began(row.handle);
-                }
                 self.events.life(index::Life {
                     id: lifetime,
                     handle: row.handle,
@@ -1182,9 +1151,6 @@ impl CountryState {
                         };
                         let lifetime = self.ids.lifetime;
                         self.ids.lifetime += 1;
-                        if let Some(marking) = &mut self.marking {
-                            marking.began(handle);
-                        }
                         let variants: Vec<u64> = rows.iter().map(|(row, _)| row.variant).collect();
                         produced_between.extend(variants.iter().copied());
                         self.events.life(index::Life {
@@ -1658,15 +1624,6 @@ pub struct Prepared {
     ledger_ranges: Vec<u64>,
     /// Something was observed since the last flush.
     pending: bool,
-    /// The histories reading a lens this segment, by id: while any does, its chunks end only
-    /// where the walk's [`lens::Flush`]es say, so the lens's parts lie in its own.
-    bound: BTreeMap<u64, lens::Bound>,
-    /// Histories the next hour forks from, as their lenses left them.
-    fork_sources: BTreeMap<NativeCountry, History>,
-    /// Each of the segment's lenses' chunk, made again from what its walk journaled, and the
-    /// pieces made of those it ended, until the flush ending them.
-    rebuilt: BTreeMap<u32, record::Rebuilt>,
-    pieces: Vec<lens::Piece>,
 }
 
 /// Every live history, with what folds it: a native country's, or a tag's own projection.
@@ -1822,10 +1779,6 @@ impl Prepared {
             flushed_through: None,
             ledger_ranges: Vec::new(),
             pending: false,
-            bound: BTreeMap::new(),
-            rebuilt: BTreeMap::new(),
-            pieces: Vec::new(),
-            fork_sources: BTreeMap::new(),
         }
     }
 
@@ -1880,40 +1833,6 @@ impl Prepared {
         )
     }
 
-    /// Makes again each lens's changes its walk journaled ([`record`]), encoded.
-    pub(super) fn lens_ops(&mut self, ops: &[u8]) -> io::Result<()> {
-        let ops: Vec<(u32, Vec<record::Op>)> = index::unpack(ops)?;
-        for (lens, ops) in ops {
-            let rebuilt = self.rebuilt.entry(lens).or_default();
-            for op in ops {
-                if let Some(piece) = rebuilt.apply(lens, op)? {
-                    self.pieces.push(piece);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// [`Self::lens_flush`] of a native walk's flush as it handed it on, written through `writer`.
-    pub(super) fn lens_flush_into<W: Pages + ?Sized>(
-        &mut self,
-        writer: &mut W,
-        flush: &[u8],
-    ) -> io::Result<()> {
-        let mut flush = lens::Flush::decode(flush)?;
-        flush.pieces = std::mem::take(&mut self.pieces);
-        let (last, stops) = (flush.last, flush.stops.clone());
-        self.lens_flush(&mut Through(writer), flush)?;
-        if last {
-            self.rebuilt.clear();
-        } else {
-            for lens in stops {
-                self.rebuilt.remove(&lens);
-            }
-        }
-        Ok(())
-    }
-
     /// Folds one hour, whatever it is read from; whether it was more than a quiet hour.
     fn observe_hour(
         &mut self,
@@ -1954,8 +1873,7 @@ impl Prepared {
                         + usize::from(design_changed) * self.evidence_design_bytes
                         + usize::from(evidence.organisation_changed)
                             * self.evidence_organisation_bytes;
-                    if self.bound.is_empty()
-                        && crate::prepared::pages::publication_due(true, false, false, || {
+                    if crate::prepared::pages::publication_due(true, false, false, || {
                             (
                                 self.evidence_base_bytes
                                     .saturating_add(self.evidence_bytes)
@@ -2212,11 +2130,7 @@ impl Prepared {
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
         let folded = self.observe_hour(pages, observed, icons)?;
-        self.fork_sources.clear();
-        // A chunk ends by size wherever no history reads a lens, as a row preparation's does.
-        if !self.bound.is_empty() {
-            return Ok(());
-        }
+        // A chunk ends by size, as a row preparation's does.
         if !folded {
             if crate::prepared::pages::publication_due(true, false, false, || {
                 (self.world.pending_bytes + self.evidence_bytes, 0)
@@ -2275,9 +2189,6 @@ impl Prepared {
                 let reads = evidence.iter().any(|read| read.lines_read);
                 let mut work = Vec::with_capacity(self.native.len() + self.aliases.len() + 1);
                 for (key, country) in &mut self.native {
-                    if self.bound.contains_key(&country.id) {
-                        continue;
-                    }
                     let selected = if input.linked.contains(&(key.slot, key.id)) {
                         Country::Found(key.slot, key.id)
                     } else {
@@ -2289,9 +2200,7 @@ impl Prepared {
                 let mut listed = input.countries.iter().flatten().peekable();
                 for (tag, alias) in &mut self.aliases {
                     let selected = listed_at(&mut listed, tag);
-                    if let Some(country) = alias.projection_mut()
-                        && !self.bound.contains_key(&country.id)
-                    {
+                    if let Some(country) = alias.projection_mut() {
                         let weight = weigh(country, reads);
                         work.push((country, selected, weight));
                     }
@@ -2350,22 +2259,19 @@ impl Prepared {
         self.deferred_breaks |= !input.lines_complete || through.checked_add(1) != Some(input.hour);
         if input.design_revision != revision && !self.deferred_breaks {
             let (natives, tags) = self.designing.get_or_insert_with(|| {
-                let bound = &self.bound;
                 let natives = self
                     .native
                     .iter()
-                    .filter(|(_, country)| {
-                        !bound.contains_key(&country.id) && country.state.designs_carried()
-                    })
+                    .filter(|(_, country)| country.state.designs_carried())
                     .map(|(key, _)| key.clone())
                     .collect();
                 let tags = self
                     .aliases
                     .iter()
                     .filter(|(_, alias)| {
-                        alias.projection().is_some_and(|country| {
-                            !bound.contains_key(&country.id) && country.state.designs_carried()
-                        })
+                        alias
+                            .projection()
+                            .is_some_and(|country| country.state.designs_carried())
                     })
                     .map(|(tag, _)| tag.clone())
                     .collect();
@@ -2425,9 +2331,7 @@ impl Prepared {
             self.put_dormant(countries, hours.last);
         }
         for country in live_mut(&mut self.native, &mut self.aliases) {
-            if !self.bound.contains_key(&country.id) {
-                country.state.follow(&runs);
-            }
+            country.state.follow(&runs);
         }
         self.absent.state.follow(&runs);
     }
@@ -2580,13 +2484,6 @@ impl Prepared {
             let mut country = match &*alias {
                 TagCountry::Absent => fork(&mut self.next_history, self.chunks, &self.absent),
                 TagCountry::Native(key) => match self.native.get(key) {
-                    // A native reading a lens is forked as its lens left it, the hour before.
-                    Some(from) if self.bound.contains_key(&from.id) => {
-                        let from = self.fork_sources.get(key).ok_or_else(|| {
-                            crate::invalid("A production lens's history forks without its state")
-                        })?;
-                        fork(&mut self.next_history, self.chunks, from)
-                    }
                     Some(from) => fork(&mut self.next_history, self.chunks, from),
                     None => {
                         let mut from = self
@@ -2604,19 +2501,6 @@ impl Prepared {
             *alias = TagCountry::Projected(Box::new(country));
         }
         let mut work = Vec::with_capacity(self.native.len() + self.aliases.len() + 1);
-        // A history reading a lens reads one country throughout: its walk cut it otherwise.
-        let lensed = |bound: &BTreeMap<u64, lens::Bound>, id: u64, selected: Option<Country>| {
-            let Some(held) = bound.get(&id) else {
-                return Ok(false);
-            };
-            match selected {
-                None => Ok(true),
-                Some(Country::Found(slot, id)) if (slot, id) == held.identity => Ok(true),
-                Some(_) => Err(crate::invalid(
-                    "A production lens's country changed where its walk did not cut it",
-                )),
-            }
-        };
         for (key, country) in &mut self.native {
             let selected = input.countries.as_ref().map(|_| {
                 if self.active.get(&(key.slot, key.id)) == Some(key) {
@@ -2629,9 +2513,6 @@ impl Prepared {
                     Country::Absent
                 }
             });
-            if lensed(&self.bound, country.id, selected)? {
-                continue;
-            }
             let weight = weigh(country, input.lines_read);
             work.push((country, selected, weight));
         }
@@ -2644,9 +2525,6 @@ impl Prepared {
             let Some(country) = alias.projection_mut() else {
                 continue;
             };
-            if lensed(&self.bound, country.id, selected)? {
-                continue;
-            }
             let weight = weigh(country, input.lines_read);
             work.push((country, selected, weight));
         }
@@ -2667,11 +2545,6 @@ impl Prepared {
             .collect();
         for key in retired {
             let mut country = self.native.remove(&key).unwrap();
-            if self.bound.contains_key(&country.id) {
-                return Err(crate::invalid(
-                    "A production lens's country retired where its walk did not cut it",
-                ));
-            }
             country.state.materialize();
             country.sleep = Some(self.absent.dormant(input.last_hour));
             country.state.changed = true;
@@ -2754,9 +2627,7 @@ impl Prepared {
         self.pending = true;
         self.absent.state.lost(first, last)?;
         for country in live_mut(&mut self.native, &mut self.aliases) {
-            if !self.bound.contains_key(&country.id) {
-                country.state.lost(first, last)?;
-            }
+            country.state.lost(first, last)?;
         }
         Ok(())
     }
@@ -2773,28 +2644,14 @@ impl Prepared {
     }
 
     fn flush_into(&mut self, pages: &mut dyn Pages, cancelled: &AtomicBool) -> io::Result<()> {
-        self.flush_with(pages, cancelled, Vec::new(), &BTreeSet::new())
-    }
-
-    /// [`Self::flush_into`], the chunk holding `extra` too: a native walk's lenses and their
-    /// histories' bindings. A history reading a lens holds no events of its own there; one
-    /// that took up its lens's state, `applied`, carries what is open into the next chunk.
-    fn flush_with(
-        &mut self,
-        pages: &mut dyn Pages,
-        cancelled: &AtomicBool,
-        extra: Vec<index::Encoded>,
-        applied: &BTreeSet<u64>,
-    ) -> io::Result<()> {
         crate::metadata::check_cancel(cancelled)?;
         self.drain_quiet(pages)?;
         self.initialize_tags();
-        if !std::mem::take(&mut self.pending) && extra.is_empty() {
+        if !std::mem::take(&mut self.pending) {
             return Ok(());
         }
         let _cpu = replay_frame::cpu::scope("fold flush", None);
         let ordinal = self.chunks;
-        let bound: BTreeSet<u64> = self.bound.keys().copied().collect();
         let taken: Vec<(u64, Events)> = {
             let _phase = replay_frame::cpu::scope_phase("production-lines:events");
             let mut work = Vec::new();
@@ -2825,15 +2682,6 @@ impl Prepared {
                 ordinal + 1,
                 work,
                 |history, live, ctx| {
-                    if bound.contains(&history.id) {
-                        history.state.overview = Some(ordinal);
-                        return Ok(None);
-                    }
-                    if applied.contains(&history.id) {
-                        history.state.take_events(live, ctx)?;
-                        history.state.ids.floor(ordinal + 1);
-                        return Ok(None);
-                    }
                     if live {
                         history.state.materialize();
                     }
@@ -2899,12 +2747,10 @@ impl Prepared {
                 &self.aliases_spans,
             )?);
         }
-        if !taken.is_empty() || !globals.is_empty() || !extra.is_empty() {
+        if !taken.is_empty() || !globals.is_empty() {
             let parts = {
                 let _phase = replay_frame::cpu::scope_phase("production-lines:encode");
-                let mut parts = encode_histories(taken, globals)?;
-                parts.extend(extra);
-                parts
+                encode_histories(taken, globals)?
             };
             let _phase = replay_frame::cpu::scope_phase("production-lines:append");
             let bytes = index::chunk(parts)?;
@@ -2947,155 +2793,6 @@ impl Prepared {
         self.put_away(pages, false)?;
         self.world.pending_bytes = 0;
         self.evidence_base_bytes = self.pending_total();
-        Ok(())
-    }
-
-    /// Ends a native walk's chunk where its [`lens::Flush`] says, before the hour after it: the
-    /// lenses' parts and each history's binding to its lens go into it, the histories a lens
-    /// was cut for take up its state, those forked from at the next hour are copied as their
-    /// lenses leave them, and after the segment's first census its lenses' histories are bound.
-    pub(super) fn lens_flush(
-        &mut self,
-        pages: &mut dyn Pages,
-        flush: lens::Flush,
-    ) -> io::Result<()> {
-        self.drain_quiet(pages)?;
-        let chunk = self.chunks;
-        let pieces: BTreeMap<u32, &lens::Piece> = flush
-            .pieces
-            .iter()
-            .map(|piece| (piece.lens, piece))
-            .collect();
-        let snapshots: BTreeMap<u32, &lens::Snapshot> = flush
-            .snapshots
-            .iter()
-            .map(|snapshot| (snapshot.lens, snapshot))
-            .collect();
-        let mut extra = Vec::new();
-        for piece in &flush.pieces {
-            extra.extend(piece.encoded()?);
-        }
-        let stops: BTreeSet<u32> = flush.stops.iter().copied().collect();
-        let mut cut: BTreeSet<u64> = self
-            .bound
-            .iter()
-            .filter(|(_, bound)| flush.last || stops.contains(&bound.lens))
-            .map(|(id, _)| *id)
-            .collect();
-        let mut forks = Vec::new();
-        for (tag, lens) in &flush.tags {
-            let reads = |id: u64| self.bound.get(&id).is_some_and(|bound| bound.lens == *lens);
-            match self.aliases.get(tag) {
-                Some(TagCountry::Projected(history)) if reads(history.id) => {
-                    cut.insert(history.id);
-                }
-                Some(TagCountry::Native(key)) => {
-                    if let Some(history) = self.native.get(key)
-                        && reads(history.id)
-                        && !cut.contains(&history.id)
-                    {
-                        forks.push((key.clone(), history.clone()));
-                    }
-                }
-                _ => {}
-            }
-        }
-        let revision = self.world.revision();
-        let missing = || crate::invalid("A production lens is cut without its state");
-        let mut sources = Vec::with_capacity(forks.len());
-        {
-            let mut ctx = Ctx::new(&mut *pages, &mut self.trees, chunk);
-            for history in live_mut(&mut self.native, &mut self.aliases) {
-                let Some(bound) = self.bound.get_mut(&history.id) else {
-                    continue;
-                };
-                let piece = pieces.get(&bound.lens).ok_or_else(|| {
-                    crate::invalid("A production history reads a lens that left no piece")
-                })?;
-                let binding = bound.bind(history, piece, chunk, &mut ctx)?;
-                extra.push(index::encode_part(
-                    history.id,
-                    index::Part::Binding,
-                    0,
-                    &binding,
-                )?);
-            }
-            for (key, mut source) in forks {
-                let bound = self.bound.get_mut(&source.id).ok_or_else(missing)?;
-                let snapshot = snapshots.get(&bound.lens).ok_or_else(missing)?;
-                bound.apply(&mut source, snapshot, chunk, revision, &mut ctx)?;
-                sources.push((key, source));
-            }
-            for history in live_mut(&mut self.native, &mut self.aliases) {
-                if !cut.contains(&history.id) {
-                    continue;
-                }
-                let bound = self.bound.get_mut(&history.id).ok_or_else(missing)?;
-                let snapshot = snapshots.get(&bound.lens).ok_or_else(missing)?;
-                bound.apply(history, snapshot, chunk, revision, &mut ctx)?;
-            }
-        }
-        for id in &cut {
-            self.bound.remove(id);
-        }
-        self.flush_with(pages, &AtomicBool::new(false), extra, &cut)?;
-        let next = self.chunks;
-        let mut ctx = Ctx::new(&mut *pages, &mut self.trees, next);
-        for (key, mut source) in sources {
-            source.state.take_events(true, &mut ctx)?;
-            source.state.ids.floor(next);
-            self.fork_sources.insert(key, source);
-        }
-        drop(ctx);
-        if !flush.began.is_empty() {
-            self.bind_lenses(pages, &flush)?;
-        }
-        if flush.last && !self.bound.is_empty() {
-            return Err(crate::invalid(
-                "A production segment ended with histories still reading its lenses",
-            ));
-        }
-        Ok(())
-    }
-
-    /// Binds each live history that folded the segment's first census as one of `flush`'s
-    /// lenses began from, and lets go of the rows those lenses' countries no longer need.
-    fn bind_lenses(&mut self, pages: &mut dyn Pages, flush: &lens::Flush) -> io::Result<()> {
-        if let Some(input) = &mut self.last_input {
-            for slot in &flush.drops.slots {
-                input.lines.remove(slot);
-                input.output.remove(slot);
-            }
-            for country in &flush.drops.countries {
-                input.modifier_countries.remove(country);
-            }
-            for line in &flush.drops.lines {
-                input.modifier_lines.remove(line);
-            }
-        }
-        let base = self.chunks;
-        let began: BTreeMap<(u32, u32), &lens::Began> = flush
-            .began
-            .iter()
-            .map(|began| (began.identity, began))
-            .collect();
-        let mut ctx = Ctx::new(pages, &mut self.trees, base);
-        for history in live_mut(&mut self.native, &mut self.aliases) {
-            let Some((identity, hour)) = history.state.last else {
-                continue;
-            };
-            let Some(lens) = began.get(&identity) else {
-                continue;
-            };
-            if hour != lens.hour
-                || !history.state.carried
-                || history.state.last_census != Some(lens.hour)
-            {
-                continue;
-            }
-            let bound = lens::Bound::new(history, lens, base, &mut ctx)?;
-            self.bound.insert(history.id, bound);
-        }
         Ok(())
     }
 
@@ -3514,10 +3211,6 @@ impl Prepared {
             flushed_through: record.flushed_through,
             ledger_ranges: commit.ledger,
             pending: false,
-            bound: BTreeMap::new(),
-            rebuilt: BTreeMap::new(),
-            pieces: Vec::new(),
-            fork_sources: BTreeMap::new(),
             directory,
         })
     }
@@ -3933,8 +3626,7 @@ impl History {
     }
 }
 
-/// A history's state without its events or keyed values, as a ledger record or a lens's
-/// snapshot holds it.
+/// A history's state without its events or keyed values, as a ledger record holds it.
 fn core_ledger(state: &CountryState) -> io::Result<CoreLedger> {
     Ok(CoreLedger {
         last: state.last,
@@ -4059,7 +3751,6 @@ impl RestoredHistory {
             last_design_revision: core.last_design_revision,
             keys: held,
             producing: BTreeMap::new(),
-            marking: None,
             counters: core.counters,
             stream: core
                 .stream

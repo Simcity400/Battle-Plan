@@ -12,7 +12,6 @@ use replay::{
 };
 use replay_data::{format::FormatVersion, rows::*};
 use replay_frame::frame::TableView;
-use super::prepared::lens::{Handed, Lens, Restored};
 use std::{collections::HashSet, mem::size_of, sync::Arc};
 
 /// What a projection reads of its walk's world: the countries and their cosmetic tags.
@@ -50,8 +49,6 @@ pub const TABLES: &[TableId] = &[
 pub struct Hour {
     pub branch: u64,
     pub hour: i32,
-    /// What the segment's lens hands the emit, before the hour's facts.
-    pub(super) lens: Option<Box<Handed>>,
     pub(super) input: Facts,
 }
 
@@ -61,8 +58,6 @@ pub(super) enum Facts {
     Read(Input),
     /// An hour of another campaign: nothing of it is the branch's.
     Other,
-    /// Nothing: the item hands on its lens's work alone, at the last hour the lens folded.
-    Lens,
 }
 
 #[derive(replay_spool::Spooled)]
@@ -343,9 +338,6 @@ pub struct Projector {
     /// The bytes of the shared inputs made since an item last carried them.
     charged: usize,
     cold: bool,
-    /// The segment's fold of every country, from its restart, until it stops short.
-    lens: Option<Box<Lens>>,
-    branch: u64,
     #[cfg(test)]
     log_reads: usize,
 }
@@ -374,8 +366,6 @@ impl Projector {
             unresolved: Default::default(),
             charged: 0,
             cold: true,
-            lens: None,
-            branch: 0,
             #[cfg(test)]
             log_reads: 0,
         })
@@ -878,118 +868,8 @@ impl Projector {
     }
 }
 
-impl Projector {
-    /// The rows a restart holds of the records whose amounts the countries keep.
-    fn restored(&self, state: &segments::State) -> io::Result<Restored> {
-        let version = self.format.version();
-        let mut restored = Restored::default();
-        let table = TableId::CombatLogEquipment;
-        if columns::complete(state, table) {
-            let held = columns::table(state, table)?;
-            let amounts = columns::plain::<i64>(held, self.fields.log_amount)?;
-            for slot in held.live().ones() {
-                let key = held.key(slot).expect("restored combat key");
-                let read = if held.recorded(self.fields.log_amount, slot) {
-                    (
-                        (
-                            (key >> 56) as u32,
-                            (key >> 48) as u8,
-                            (key >> 32) as u16,
-                            key as u32,
-                        ),
-                        amounts[slot as usize],
-                    )
-                } else {
-                    let row: CombatLogEquipmentRow = columns::row(state, table, slot, version)?;
-                    ((row.group, row.kind, row.month, row.variant), row.amount_raw)
-                };
-                restored.log.push(((key >> 88) as u32, key, read.0, read.1));
-            }
-        }
-        let table = TableId::SunkConvoys;
-        if columns::complete(state, table) {
-            for slot in columns::table(state, table)?.live().ones() {
-                let row: SunkConvoyRow = columns::row(state, table, slot, version)?;
-                restored.convoys.push((
-                    row.owner_country,
-                    (row.owner_country, row.month, row.killer_country),
-                    row.convoys,
-                ));
-            }
-        }
-        let table = TableId::LendLeaseEquipment;
-        if columns::complete(state, table) {
-            for slot in columns::table(state, table)?.live().ones() {
-                let row: LendLeaseEquipmentRow = columns::row(state, table, slot, version)?;
-                restored.lend.push((
-                    row.giver,
-                    RowCodec::key(&row),
-                    (row.exchange, row.kind, row.variant),
-                    row.amount_raw,
-                ));
-            }
-        }
-        Ok(restored)
-    }
-
-    /// Folds hour `at`'s facts into the segment's lens: what the lens hands on with them. A
-    /// refusal the lens meets hands on what it folded before the hour, then refuses.
-    fn lens(
-        &mut self,
-        at: i32,
-        roster: &Roster,
-        facts: &Facts,
-        out: &mut dyn Sink<Hour>,
-    ) -> io::Result<Option<Box<Handed>>> {
-        let Some(lens) = &mut self.lens else {
-            return Ok(None);
-        };
-        let input = match facts {
-            Facts::Read(input) => Some(input),
-            Facts::Other | Facts::Lens => None,
-        };
-        match lens.hour(at, roster, input) {
-            Ok(handed) => Ok(handed),
-            Err(failed) => {
-                self.lens = None;
-                if let Some((last, part)) = failed.part {
-                    out.push(Hour {
-                        branch: self.branch,
-                        hour: last,
-                        lens: Some(part),
-                        input: Facts::Lens,
-                    })?;
-                }
-                Err(failed.error)
-            }
-        }
-    }
-}
-
 impl Operator<World> for Projector {
     type Output = Hour;
-
-    fn start(&mut self, start: segments::Start<'_>, branch: u64, first: i32) -> io::Result<()> {
-        let restored = match start {
-            segments::Start::Restart(state) => self.restored(state)?,
-            segments::Start::Run { .. } => Restored::default(),
-        };
-        self.branch = branch;
-        self.lens = Some(Box::new(Lens::new(self.format, first, restored)));
-        Ok(())
-    }
-
-    fn end(&mut self, out: &mut dyn Sink<Hour>) -> io::Result<()> {
-        if let Some((last, part)) = self.lens.take().and_then(|mut lens| lens.end()) {
-            out.push(Hour {
-                branch: self.branch,
-                hour: last,
-                lens: Some(part),
-                input: Facts::Lens,
-            })?;
-        }
-        Ok(())
-    }
 
     fn hour(
         &mut self,
@@ -1040,11 +920,9 @@ impl Operator<World> for Projector {
                 };
                 if !valid {
                     self.cold = true;
-                    let lens = self.lens(hour.hour, roster, &Facts::Other, out)?;
                     return out.push(Hour {
                         branch: hour.branch,
                         hour: hour.hour,
-                        lens,
                         input: Facts::Other,
                     });
                 }
@@ -1227,11 +1105,9 @@ impl Operator<World> for Projector {
                     shared: std::mem::take(&mut self.charged),
                 });
             self.cold = false;
-            let lens = self.lens(hour.hour, roster, &facts, out)?;
             out.push(Hour {
                 branch: hour.branch,
                 hour: hour.hour,
-                lens,
                 input: facts,
             })?;
         }
