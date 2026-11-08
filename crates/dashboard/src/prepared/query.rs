@@ -1111,6 +1111,8 @@ fn tension_series(
                     Some(read) => read,
                     None => {
                         let read = Arc::new(query::published(snapshot, directory)?);
+                        // The whole publication's read is no part of how long this reply holds.
+                        snapshot.forget_definitions();
                         state
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)

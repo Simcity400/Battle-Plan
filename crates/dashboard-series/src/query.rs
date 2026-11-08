@@ -289,6 +289,11 @@ impl<'a, P: PageRead> Snapshot<'a, P> {
         self.event_walk = None;
         Ok(Some(self))
     }
+    /// Forgets the definitions read so far: [`Self::held_through`] then holds only later reads.
+    pub fn forget_definitions(&mut self) {
+        self.defs.clear();
+    }
+
     pub fn batch_through(&mut self, hour: i32) -> io::Result<Option<i32>> {
         self.check()?;
         if !self.accepted().contains(hour) {
