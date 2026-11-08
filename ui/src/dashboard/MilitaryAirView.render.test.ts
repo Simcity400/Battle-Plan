@@ -17,7 +17,7 @@ test('a group counted at an hour still being prepared is loading, not a moment n
   const data: MilitaryAirReply = { family: 'bombing', ...span, available: true, observed: [span], incomplete: [],
     countries: [{ tag: 'ENG', identity: '1:102', present: [span], membership: null }],
     leaves: [{ tag: 'ENG', identity: '1:102', dealt: false, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 1, cause: 0,
-      points: [{ hour: 10, readHour: 11, totalRaw: '50000000' }] }], regions: [], buildings: [], warnings: [] };
+      points: [[10, 11, '50000000']] }], regions: [], buildings: [], warnings: [] };
   validateMilitaryAirReply(data);
   const track = { id: 'track', axisOffset: 0, source: { id: 'source', revision: 1, metadata: { countries: [], campaignKey: 'campaign' } }, branch: { ...BRANCH, gaps: [] } };
   const state = { data, track, groups: pendingGroups() as CountryGroupReply };

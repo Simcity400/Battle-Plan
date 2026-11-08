@@ -27,11 +27,11 @@ const data = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, last
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: ['A', 'B', 'C'].map((tag, id) => ({ tag, identity: `${id}:9`,
     present: [span(10, 16), span(18, 20)], membership: tag === 'A' ? [span(10, 16), span(18, 20)] : tag === 'B' ? [span(10, 12)] : [span(13, 16), span(18, 20)] })), leaves: [
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 1, buildingToken: null, buildingId: null, state: null,
-      points: [{ hour: 11, readHour: 16, totalRaw: '900719925474099300000' }, { hour: 12, readHour: 18, totalRaw: '900719925474099200000' }] },
+      points: [[11, 16, '900719925474099300000'], [12, 18, '900719925474099200000']] },
     { tag: 'B', identity: '1:9', dealt: false, opponent: null, region: 40001, cause: 3, buildingToken: null, buildingId: null, state: null,
-      points: [{ hour: 11, readHour: 16, totalRaw: '-100000' }] },
+      points: [[11, 16, '-100000']] },
     ...(['A', 'C'] as const).map(tag => ({ tag, identity: tag === 'A' ? '0:9' : '2:9', dealt: true, opponent: null, region: 40001, cause: 1,
-      buildingToken: null, buildingId: null, state: null, points: [{ hour: 11, readHour: tag === 'A' ? 11 : 13, totalRaw: tag === 'A' ? '200000' : '100000' }] })),
+      buildingToken: null, buildingId: null, state: null, points: [[11, tag === 'A' ? 11 : 13, tag === 'A' ? '200000' : '100000'] as [number, number, string]] })),
   ], regions: [], buildings: [], warnings: [] });
 
 // Only these components' hooks retain state between SSR draws. The real reducer,

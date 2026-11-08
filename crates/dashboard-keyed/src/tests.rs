@@ -427,3 +427,17 @@ fn pending_includes_catalogue_changes_across_quiet_refused_and_restored_hours() 
         assert_eq!(scan.buffered_bytes(), 0);
     }
 }
+
+#[test]
+fn hours_read_at_their_own_hour_are_sent_as_one_stretch() {
+    let window = query::KeyedWindow {
+        first_hour: 1,
+        last_hour: 9,
+        reads: vec![(1, 1, 1), (2, 2, 2), (3, 5, 3), (6, 6, 6), (8, 8, 8), (9, 9, 7)],
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&window).unwrap()["reads"],
+        serde_json::json!([[1, 2, null], [3, 5, 3], [6, 6, null], [8, 8, null], [9, 9, 7]])
+    );
+}

@@ -1,4 +1,4 @@
-import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
 import { Responsive, useContainerWidth } from 'react-grid-layout';
 import type { Layout, ResponsiveLayouts } from 'react-grid-layout';
@@ -74,9 +74,9 @@ const MOUNT_BUDGET = 4;
 const waiting = new Map<() => void, IntersectionObserverEntry>();
 let mountFrame = 0;
 
-/** Queues a widget body to mount, or updates its place in the queue. Bodies near the viewport
- * mount first, then in reading order, as many each frame as the budget allows (at least one),
- * so opening a page never mounts all its widgets in one long frame. */
+/** Queues the body of a widget off screen to mount, or updates its place in the queue. Bodies near
+ * the viewport mount first, then in reading order, as many each frame as the budget allows (at
+ * least one), so the widgets below the fold are ready before a scroll reaches them. */
 function mountInTurn(mount: () => void, entry: IntersectionObserverEntry): () => void {
   waiting.set(mount, entry);
   if (!mountFrame) mountFrame = requestAnimationFrame(mountWaiting);
@@ -94,6 +94,9 @@ function mountWaiting() {
   }
   mountFrame = waiting.size ? requestAnimationFrame(mountWaiting) : 0;
 }
+
+const onScreen = (box: DOMRect, viewport: DOMRect) =>
+  box.width > 0 && box.height > 0 && box.bottom > viewport.top && box.top < viewport.bottom && box.right > viewport.left && box.left < viewport.right;
 
 /** Frame-only changes (editing, layout moves) leave the body alone. */
 const Body = memo(WidgetBody);
@@ -120,17 +123,30 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     return { header: slot('header', setHeaderSlot), country: slot('country', setCountrySlot), actions: slot('actions', setActionsSlot),
       show() { shown = true; setHeaderSlot(noted.header); setCountrySlot(noted.country); setActionsSlot(noted.actions); } };
   });
-  useEffect(() => {
+  useLayoutEffect(() => {
     const target = element.current;
     if (!target) return;
+    const root = target.closest('.dash-grid-scroll');
     let mounted = false, visible = false, cancel = () => {};
     const mount = () => { mounted = true; slots.show(); setActive(visible); };
-    const observer = new IntersectionObserver(([entry]) => {
+    // On screen when its page is laid out: the body mounts before that layout is first drawn, so
+    // nothing stands in its place. Widgets below the fold mount in turn, ahead of a scroll.
+    if (root && onScreen(target.getBoundingClientRect(), root.getBoundingClientRect())) { visible = true; mount(); }
+    const near = new IntersectionObserver(([entry]) => {
       visible = entry.isIntersecting;
       if (mounted) setActive(visible); else cancel = mountInTurn(mount, entry);
-    }, { root: target.closest('.dash-grid-scroll'), rootMargin: '240px 0px' });
-    observer.observe(target);
-    return () => { observer.disconnect(); cancel(); };
+    }, { root, rootMargin: '240px 0px' });
+    // A widget the settled layout brings on screen later (the measured width picks another
+    // breakpoint, a layout moves) mounts at once, never behind the queue.
+    const seen = new IntersectionObserver(([entry]) => {
+      if (mounted || !entry.isIntersecting) return;
+      cancel();
+      visible = true;
+      flushSync(mount);
+    }, { root });
+    near.observe(target);
+    seen.observe(target);
+    return () => { near.disconnect(); seen.disconnect(); cancel(); };
   }, [slots]);
   useEffect(() => { perfLog?.widget(widget.id, widget.kind, widget.title); }, [widget.id, widget.kind, widget.title]);
   const [mapOptions, setMapOptions] = useState<MapOptions>(DEFAULT_MAP_OPTIONS);
@@ -162,6 +178,19 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
   const live = widget.time.mode === 'follow';
   const campaignTrack = runtime.tracks.find(track => track.id === effective.trackIds[0]);
   const source = campaignTrack && definition?.data !== false && campaignTrack.roleId !== runtime.defaultRoleId ? campaignTrack.source : undefined;
+  // A native picker toggle of this widget's map that failed to save, by setting, until it saves or the map
+  // shows another recording.
+  const mapRecording = campaignTrack ? `${campaignTrack.source.id}:${campaignTrack.source.revision}` : null;
+  useEffect(() => {
+    if (!mapRecording) return;
+    const owners = new Map<string, object>();
+    const stop = runtime.maps.onToggleFailure(widget.id, mapRecording, (setting, failure) => {
+      let owner = owners.get(setting);
+      if (!owner) owners.set(setting, owner = {});
+      failures.put(owner, failure ? [{ error: failure }] : []);
+    });
+    return () => { stop(); for (const owner of owners.values()) failures.put(owner, []); };
+  }, [runtime.maps, widget.id, failures, mapRecording]);
   return <article ref={element} className={`dash-widget kind-${widget.kind}`} aria-label={widget.title}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}

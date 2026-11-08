@@ -12,14 +12,14 @@ const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour
 const noFilters = { regions: new Set<number>(), causes: new Set<number>() };
 const leaf = (extra: Partial<MilitaryAirLeaf>): MilitaryAirLeaf => ({ tag: 'renamed', identity: '7:91', dealt: false, opponent: null,
   region: 40001, buildingId: null, buildingToken: null, state: null, cause: 1,
-  points: [{ hour: 11, readHour: 16, totalRaw: '300000' }, { hour: 12, readHour: 18, totalRaw: '200000' }], ...extra });
+  points: [[11, 16, '300000'], [12, 18, '200000']], ...extra });
 const reply = (): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 20, available: true,
   observed: [span(10, 16), span(18, 20)], incomplete: [], countries: [
     { tag: 'old tag', identity: '7:91', present: [span(10, 14)], membership: [span(10, 14)] },
     { tag: 'renamed', identity: '7:91', present: [span(15, 16), span(18, 20)], membership: [] },
     { tag: 'old tag', identity: '8:99', present: [span(15, 16), span(18, 20)], membership: [] },
-  ], leaves: [leaf({}), leaf({ cause: 3, points: [{ hour: 11, readHour: 16, totalRaw: '-100000' }] }),
-    leaf({ dealt: true, opponent: 'opponent', points: [{ hour: 11, readHour: 16, totalRaw: '700000' }] })], regions: [], buildings: [], warnings: [] });
+  ], leaves: [leaf({}), leaf({ cause: 3, points: [[11, 16, '-100000']] }),
+    leaf({ dealt: true, opponent: 'opponent', points: [[11, 16, '700000']] })], regions: [], buildings: [], warnings: [] });
 
 test('full cause histories wait for supplying reads, retain signed corrections, aliases and gaps outside top N', () => {
   const index = militaryAirIndex(validateMilitaryAirReply(reply()), noFilters);

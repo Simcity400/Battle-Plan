@@ -5,14 +5,15 @@ import type { HourSpan } from '../generated/dashboard';
 export type KeyedRun = readonly [number, number, string, boolean];
 
 /** A window of a keyed family (`dashboard-keyed`'s `KeyedWindow`): the hours
- * whose inputs were read, each stretch's supplying read hour, and the
- * selected names' runs. A name without a run at a known hour holds no value
- * then; an hour outside `known` is not recorded. */
+ * whose inputs were read, each stretch's supplying read hour (null where every
+ * hour of the stretch was read at that hour), and the selected names' runs. A
+ * name without a run at a known hour holds no value then; an hour outside
+ * `known` is not recorded. */
 export interface KeyedWindow {
   firstHour: number;
   lastHour: number;
   known: readonly HourSpan[];
-  reads: readonly (readonly [number, number, number])[];
+  reads: readonly (readonly [number, number, number | null])[];
   series: readonly { name: string; runs: readonly KeyedRun[] }[];
 }
 
@@ -28,7 +29,8 @@ export function validateKeyedWindow(value: unknown): KeyedWindow {
   const window = value as KeyedWindow;
   if (!window || typeof window !== 'object' || !Number.isSafeInteger(window.firstHour) || !Number.isSafeInteger(window.lastHour)
     || !Array.isArray(window.known) || !ordered(window.known, span => span.firstHour, span => span.lastHour)
-    || !Array.isArray(window.reads) || !window.reads.every(read => Array.isArray(read) && read.length === 3 && read.every(Number.isSafeInteger))
+    || !Array.isArray(window.reads) || !window.reads.every(read => Array.isArray(read) && read.length === 3 && Number.isSafeInteger(read[0]) && Number.isSafeInteger(read[1]) && read[0] <= read[1]
+      && (read[2] === null || Number.isSafeInteger(read[2])))
     || !ordered(window.reads, read => read[0], read => read[1])
     || !Array.isArray(window.series) || !window.series.every(series => series && typeof series.name === 'string'
       && Array.isArray(series.runs) && (series.runs as readonly unknown[]).every(isRun) && ordered(series.runs as readonly KeyedRun[], run => run[0], run => run[1])))
@@ -52,8 +54,10 @@ export const keyedKnown = (window: KeyedWindow, hour: number) =>
   !!find(window.known, hour, span => span.firstHour, span => span.lastHour);
 
 /** The supplying read hour of the values at `hour`, if known. */
-export const keyedRead = (window: KeyedWindow, hour: number) =>
-  find(window.reads, hour, read => read[0], read => read[1])?.[2];
+export function keyedRead(window: KeyedWindow, hour: number): number | undefined {
+  const read = find(window.reads, hour, read => read[0], read => read[1]);
+  return read && (read[2] ?? hour);
+}
 
 /** The run of `runs` holding `hour`. */
 export const runAtHour = (runs: readonly KeyedRun[], hour: number) => find(runs, hour, run => run[0], run => run[1]);

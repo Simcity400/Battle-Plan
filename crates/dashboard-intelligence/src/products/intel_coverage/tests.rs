@@ -121,7 +121,6 @@ fn intel_coverage_six_independent_signed_caches_are_lossless() {
     for (measure, value) in [
         ("coveredCore", "-3".to_owned()),
         ("coveredControlled", "7".into()),
-        ("coveredWorth", i32::MAX.to_string()),
         ("controlledStrength", i64::MAX.to_string()),
         ("coreStrength", i64::MIN.to_string()),
         ("maxStrength", "-99".into()),
@@ -134,7 +133,9 @@ fn intel_coverage_six_independent_signed_caches_are_lossless() {
             value
         );
     }
-    assert_eq!(pair_series_count(&reply), 6);
+    // Prepared, never drawn, so never sent.
+    assert!(run(&reply, "Mod 1@1|Mod 2@2|coveredWorth").is_none());
+    assert_eq!(pair_series_count(&reply), 5);
     assert!(!reply.window.known.is_empty());
 }
 #[test]
@@ -203,7 +204,7 @@ fn intel_coverage_ranking_is_dated_stable_and_counts_empty_networks() {
         run(&early, "rank|Mod 1@1").unwrap().runs,
         [(100, 100, "3".into(), true)]
     );
-    assert_eq!(pair_series_count(&early), 12);
+    assert_eq!(pair_series_count(&early), 10);
     let later = load(&fixture, &p, 100, 101, None);
     assert_eq!(
         run(&later, "rank|Mod 1@1").unwrap().runs,
@@ -213,7 +214,7 @@ fn intel_coverage_ranking_is_dated_stable_and_counts_empty_networks() {
         run(&later, "rank|Mod 3@3").unwrap().runs,
         [(100, 101, "1".into(), true)]
     );
-    assert_eq!(pair_series_count(&later), 24);
+    assert_eq!(pair_series_count(&later), 20);
     assert_eq!(later.window.reads.last().unwrap().2, 101);
 }
 #[test]
@@ -226,7 +227,7 @@ fn intel_coverage_unresolved_inventory_keeps_independent_numbers_but_not_absence
     );
     publish(&mut scan, &fixture);
     let reply = load(&fixture, &pair(), 100, 100, None);
-    assert_eq!(pair_series_count(&reply), 6);
+    assert_eq!(pair_series_count(&reply), 5);
     assert!(reply.window.known.is_empty());
     assert!(
         reply
@@ -338,7 +339,7 @@ fn intel_coverage_join_is_frozen_until_read_and_tag_reuse_is_separate() {
     observe(&mut scan, &changed);
     publish(&mut scan, &fixture);
     let old = load(&fixture, &pair(), 100, 102, None);
-    assert_eq!(pair_series_count(&old), 6);
+    assert_eq!(pair_series_count(&old), 5);
     assert!(
         old.window
             .series
@@ -362,7 +363,7 @@ fn intel_coverage_join_is_frozen_until_read_and_tag_reuse_is_separate() {
             .collect::<Vec<_>>(),
         [(102, 102)]
     );
-    assert_eq!(pair_series_count(&now), 6);
+    assert_eq!(pair_series_count(&now), 5);
 }
 #[test]
 fn intel_coverage_equal_forced_reads_and_cold_shapes() {
@@ -466,7 +467,7 @@ fn intel_coverage_unrepresentable_mod_tag_is_counted_without_losing_other_number
     observe(&mut scan, &frame);
     publish(&mut scan, &fixture);
     let reply = load(&fixture, &pair(), 100, 100, None);
-    assert_eq!(pair_series_count(&reply), 6);
+    assert_eq!(pair_series_count(&reply), 5);
     assert!(
         reply
             .warnings
@@ -577,12 +578,12 @@ fn intel_coverage_r1_top_changes_mid_window_and_departed_members_keep_history() 
             last_hour: 104
         }]
     );
-    assert_eq!(pair_series_count(&reply), 30);
+    assert_eq!(pair_series_count(&reply), 25);
     assert!(run(&reply, "Mod 1@1|Mod 2@2|coveredControlled").is_some());
     assert!(run(&reply, "Mod 2@2|Mod 3@3|coveredControlled").is_some());
     assert!(run(&reply, "Mod 4@4|Mod 5@5|coveredControlled").is_none());
     let prefix = load(&fixture, &p, 100, 104, Some(101));
-    assert_eq!(pair_series_count(&prefix), 12);
+    assert_eq!(pair_series_count(&prefix), 10);
     assert!(run(&prefix, "Mod 3@3|Mod 1@1|coveredControlled").is_none());
     assert!(
         prefix
@@ -592,7 +593,7 @@ fn intel_coverage_r1_top_changes_mid_window_and_departed_members_keep_history() 
             .all(|series| series.runs.iter().all(|run| run.1 <= 101))
     );
     let later = load(&fixture, &p, 102, 104, None);
-    assert_eq!(pair_series_count(&later), 12);
+    assert_eq!(pair_series_count(&later), 10);
     assert!(run(&later, "Mod 1@1|Mod 2@2|coveredControlled").is_none());
 }
 
@@ -658,7 +659,7 @@ fn intel_coverage_r1_explicit_tags_keep_pairs_without_unknown_ranking_as_zero() 
             .iter()
             .all(|series| !series.name.starts_with("rank|"))
     );
-    assert_eq!(pair_series_count(&unknown), 6);
+    assert_eq!(pair_series_count(&unknown), 5);
     let empty = load(
         &fixture,
         &params(serde_json::json!({"branchId":"1", "tags":[]})),
@@ -689,7 +690,7 @@ fn intel_coverage_touching_adds_every_counterparty_and_the_networks_among_them()
     ] {
         assert!(run(&reply, name).is_some(), "{name}");
     }
-    assert_eq!(pair_series_count(&reply), 24);
+    assert_eq!(pair_series_count(&reply), 20);
     assert!(run(&reply, "Mod 4@4|Mod 5@5|coveredControlled").is_none());
     for id in 1..=4 {
         assert!(run(&reply, &format!("member|Mod {id}@{id}")).is_some());
@@ -703,14 +704,14 @@ fn intel_coverage_touching_adds_every_counterparty_and_the_networks_among_them()
             .all(|series| !series.name.starts_with("rank|"))
     );
     let early = load(&fixture, &p, 100, 100, None);
-    assert_eq!(pair_series_count(&early), 18);
+    assert_eq!(pair_series_count(&early), 15);
     assert!(run(&early, "member|Mod 4@4").is_none());
     assert!(IntelCoverage::validate(&p).is_ok());
     // Top 1: Mod 1 is the most active throughout, so its networks are read as a chosen one's.
     let top = params(serde_json::json!({"branchId":"1", "shown":1, "touching":true}));
     assert!(IntelCoverage::validate(&top).is_ok());
     let ranked = load(&fixture, &top, 100, 101, None);
-    assert_eq!(pair_series_count(&ranked), 24);
+    assert_eq!(pair_series_count(&ranked), 20);
     assert!(run(&ranked, "Mod 1@1|Mod 4@4|coveredControlled").is_some());
     assert!(run(&ranked, "Mod 4@4|Mod 5@5|coveredControlled").is_none());
     assert!(run(&ranked, "member|Mod 5@5").is_none());
@@ -797,7 +798,7 @@ fn intel_coverage_r1_members_and_ranks_follow_gaps_reuse_and_continuation() {
             last_hour: 106
         }]
     );
-    assert_eq!(pair_series_count(&drill), 6);
+    assert_eq!(pair_series_count(&drill), 5);
 }
 
 #[test]

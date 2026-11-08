@@ -1,4 +1,7 @@
-import type { MilitaryAirCountry, MilitaryAirLeaf, MilitaryAirPoint, MilitaryAirReply } from '../generated/dashboard';
+import type { MilitaryAirCountry, MilitaryAirLeaf, MilitaryAirReply } from '../generated/dashboard';
+
+/** A leaf's total as of one change: `[hour, readHour, totalRaw]`, the native application hour, the supplying read hour and the exact total. */
+type LedgerPoint = MilitaryAirLeaf['points'][number];
 import { clipToSpans, isOrderedSpans, runAt } from '../charts/series.ts';
 import type { Run, Span } from '../charts/series';
 import { formatAmount, formatFixed, formatRate } from '../charts/valueAxis.ts';
@@ -57,10 +60,12 @@ function isMilitaryAirReply(value: unknown): value is MilitaryAirReply {
     if (!present) return false;
     let last: number | null = null, read: number | null = null;
     for (const point of leaf.points) {
-      if (!object(point) || !signed32(point.hour) || !signed32(point.readHour) || point.hour > point.readHour || !exact128(point.totalRaw)
-        || read !== null && (point.readHour < read || point.readHour === read && last !== null && point.hour <= last)
-        || !runAt(present, point.readHour)) return false;
-      last = point.hour; read = point.readHour;
+      if (!Array.isArray(point) || point.length !== 3) return false;
+      const [hour, readHour, totalRaw] = point;
+      if (!signed32(hour) || !signed32(readHour) || hour > readHour || !exact128(totalRaw)
+        || read !== null && (readHour < read || readHour === read && last !== null && hour <= last)
+        || !runAt(present, readHour)) return false;
+      last = hour; read = readHour;
     }
   }
   for (const names of [value.regions, value.buildings]) {
@@ -104,15 +109,15 @@ function safeLedgerTotals(leaves: readonly MilitaryAirLeaf[]): LedgerTotal[] | n
   for (const leaf of leaves) {
     const side = leaf.dealt ? 'dealt' : 'taken';
     let before = 0;
-    for (const point of leaf.points) {
-      if (!SAFE_TOTAL.test(point.totalRaw)) return null;
-      const current = Number(point.totalRaw), delta = current - before;
+    for (const [hour, readHour, totalRaw] of leaf.points) {
+      if (!SAFE_TOTAL.test(totalRaw)) return null;
+      const current = Number(totalRaw), delta = current - before;
       before = current;
-      const row = deltas.get(point.readHour) ?? { dealt: 0, taken: 0, nativeHour: point.hour };
+      const row = deltas.get(readHour) ?? { dealt: 0, taken: 0, nativeHour: hour };
       row[side] += delta;
       if (!Number.isSafeInteger(row[side])) return null;
-      row.nativeHour = Math.max(row.nativeHour, point.hour);
-      deltas.set(point.readHour, row);
+      row.nativeHour = Math.max(row.nativeHour, hour);
+      deltas.set(readHour, row);
     }
   }
   let dealt = 0, taken = 0;
@@ -130,13 +135,13 @@ function exactLedgerTotals(leaves: readonly MilitaryAirLeaf[]): LedgerTotal[] {
   const deltas = new Map<number, { dealt: bigint; taken: bigint; nativeHour: number }>();
   for (const leaf of leaves) {
     let before = 0n;
-    for (const point of leaf.points) {
-      const current = BigInt(point.totalRaw), delta = current - before;
+    for (const [hour, readHour, totalRaw] of leaf.points) {
+      const current = BigInt(totalRaw), delta = current - before;
       before = current;
-      const row = deltas.get(point.readHour) ?? { dealt: 0n, taken: 0n, nativeHour: point.hour };
+      const row = deltas.get(readHour) ?? { dealt: 0n, taken: 0n, nativeHour: hour };
       row[leaf.dealt ? 'dealt' : 'taken'] += delta;
-      row.nativeHour = Math.max(row.nativeHour, point.hour);
-      deltas.set(point.readHour, row);
+      row.nativeHour = Math.max(row.nativeHour, hour);
+      deltas.set(readHour, row);
     }
   }
   let dealt = 0n, taken = 0n;
@@ -326,6 +331,6 @@ export function militaryAirLineTooltip(index: LedgerIndex, from: number, hour: n
 
 /** Range replies already select the native lower bound; prefixes gate supplying reads. */
 export function leafAmount(leaf: MilitaryAirLeaf, from: number, hour: number): bigint {
-  const total = (point: MilitaryAirPoint | null) => point ? BigInt(point.totalRaw) : 0n;
-  return total(at(leaf.points, hour, point => point.readHour)) - total(at(leaf.points, from - 1, point => point.readHour));
+  const total = (point: LedgerPoint | null) => point ? BigInt(point[2]) : 0n;
+  return total(at(leaf.points, hour, point => point[1])) - total(at(leaf.points, from - 1, point => point[1]));
 }

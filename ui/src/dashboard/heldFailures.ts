@@ -1,7 +1,8 @@
 import { type Failure, failureKey, failureWire, queryFailure } from './queryError.ts';
 import { createContext, useContext, useEffect, useState } from 'react';
 
-interface HeldFailure { error: Failure; retry: () => void }
+/** A failure a widget frame shows; without `retry` it is not one to try again (a toggle flip, which a repeat could undo). */
+interface HeldFailure { error: Failure; retry?: () => void }
 const NONE: readonly Failure[] = [];
 
 /** Widget frames report later failures without hiding already published replies. */
@@ -20,7 +21,12 @@ export class HeldFailures {
   }
 
   retry(error: Failure): void {
-    for (const list of [...this.entries.values()]) if (list.some(entry => failureKey(entry.error) === failureKey(error))) list[0].retry();
+    for (const list of [...this.entries.values()]) if (list.some(entry => failureKey(entry.error) === failureKey(error))) list[0].retry?.();
+  }
+
+  /** Whether some holder of `error` can try it again. */
+  retryable(error: Failure): boolean {
+    return [...this.entries.values()].some(list => list[0].retry && list.some(entry => failureKey(entry.error) === failureKey(error)));
   }
 
   readonly subscribe = (listener: () => void) => {

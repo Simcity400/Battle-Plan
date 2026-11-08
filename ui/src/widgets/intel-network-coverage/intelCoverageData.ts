@@ -9,8 +9,8 @@ export interface IntelCoverageReply { window: KeyedWindow; warnings: readonly st
 
 export type Measure = 'covered' | 'strength' | 'strongest';
 export type Basis = 'controlled' | 'core';
-/** The recorded summary fields, by the names the backend gives them. */
-export const FIELDS = ['coveredControlled', 'coveredCore', 'coveredWorth', 'controlledStrength', 'coreStrength', 'maxStrength'] as const;
+/** The recorded summary fields the widget draws, by the names the backend gives them. */
+export const FIELDS = ['coveredControlled', 'coveredCore', 'controlledStrength', 'coreStrength', 'maxStrength'] as const;
 export type Field = typeof FIELDS[number];
 
 const FIXED = 100000n;
@@ -101,7 +101,7 @@ export function cellState(at: PairsAt, owner: string, target: string): CellState
 
 /** A field's value for display: strengths are the game's fixed-point values. */
 export function fieldText(field: Field, value: bigint): string {
-  if (field === 'coveredControlled' || field === 'coveredCore' || field === 'coveredWorth') return value.toLocaleString('en-US');
+  if (field === 'coveredControlled' || field === 'coveredCore') return value.toLocaleString('en-US');
   const negative = value < 0n, magnitude = negative ? -value : value;
   const fraction = (magnitude % FIXED).toString().padStart(5, '0').slice(0, 2).replace(/0+$/u, '');
   return `${negative ? '−' : ''}${(magnitude / FIXED).toLocaleString('en-US')}${fraction ? `.${fraction}` : ''}`;
@@ -116,7 +116,7 @@ export function visibleCountries<C extends { id: string }>(countries: readonly C
 }
 
 export const LABELS: Record<Field, string> = {
-  coveredControlled: 'Controlled states covered', coveredCore: 'Core states covered', coveredWorth: 'States worth covering covered',
+  coveredControlled: 'Controlled states covered', coveredCore: 'Core states covered',
   controlledStrength: 'Strength over controlled states', coreStrength: 'Strength over core states', maxStrength: 'Strongest state',
 };
 
@@ -126,7 +126,7 @@ export function pairTooltip(owner: string, target: string, cell: CellState, read
     title: `${owner} → ${target}`,
     rows: cell.kind === 'unknown' ? [{ label: 'Network', value: 'Not recorded' }]
       : !fields ? [{ label: 'Network', value: 'No network' }]
-      : [...FIELDS.filter(field => field !== 'coveredWorth').map(field => ({ label: LABELS[field], value: fields.has(field) ? fieldText(field, fields.get(field)!) : 'Not recorded' })),
+      : [...FIELDS.map(field => ({ label: LABELS[field], value: fields.has(field) ? fieldText(field, fields.get(field)!) : 'Not recorded' })),
         ...readDate ? [{ label: 'As of', value: readDate }] : []],
   };
 }

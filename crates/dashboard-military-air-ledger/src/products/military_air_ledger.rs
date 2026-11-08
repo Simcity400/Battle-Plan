@@ -87,14 +87,20 @@ pub struct MilitaryAirCountry {
     pub membership: Option<Vec<HourSpan>>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "camelCase")]
+/// Sent as `[hour, readHour, totalRaw]`: a leaf holds one per change of its total.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MilitaryAirPoint {
     /// Native application time, not the later publication time.
     pub hour: i32,
     pub read_hour: i32,
     /// Exact sum of observed signed increments through this point, in native units.
     pub total_raw: String,
+}
+
+impl Serialize for MilitaryAirPoint {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        (self.hour, self.read_hour, &self.total_raw).serialize(serializer)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, TS)]
@@ -113,6 +119,8 @@ pub struct MilitaryAirLeaf {
     /// Zero is known absence of a containing state, not an inferred state.
     pub state: Option<u32>,
     pub cause: u32,
+    /// Each point is `[hour, readHour, totalRaw]` ([`MilitaryAirPoint`]).
+    #[ts(type = "Array<[number, number, string]>")]
     pub points: Vec<MilitaryAirPoint>,
 }
 
@@ -945,7 +953,6 @@ impl Product for MilitaryAirLedger {
             MilitaryAirMetric::decl(),
             MilitaryAirTop::decl(),
             MilitaryAirCountry::decl(),
-            MilitaryAirPoint::decl(),
             MilitaryAirLeaf::decl(),
             MilitaryAirName::decl(),
             MilitaryAirReply::decl(),

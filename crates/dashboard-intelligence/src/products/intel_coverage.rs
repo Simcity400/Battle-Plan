@@ -6,7 +6,8 @@
 //! Complete authenticated inventory, dated reads and admitted endpoints are
 //! required for absence; a missing run is never numeric zero. Dated `rank|COUNTRY`
 //! network counts and `member|COUNTRY` presence let playback select its own live
-//! countries. Pair history keeps the same window shape and dated endpoints.
+//! countries. Pair history keeps the same window shape and dated endpoints. Replies
+//! carry every measure but `coveredWorth`, which neither the matrix nor pair history draws.
 
 use dashboard_base::products::{Product, check_reply_budget, country_groups::HourSpan, validate_tag};
 use dashboard_keyed::{
@@ -463,10 +464,14 @@ fn reply(
     let included = |part: &str| chosen.contains(part) || tagged(part);
     reply.window = opened.window(first, last, through, |name| {
         let mut parts = name.split('|');
-        let (Some(owner), Some(target), Some(_)) = (parts.next(), parts.next(), parts.next())
+        let (Some(owner), Some(target), Some(measure)) = (parts.next(), parts.next(), parts.next())
         else {
             return false;
         };
+        // Prepared for other views, never drawn by these: not sent.
+        if measure == "coveredWorth" {
+            return false;
+        }
         if pair {
             selected(owner, params.owner.as_deref().expect("validated owner"))
                 && selected(target, params.target.as_deref().expect("validated target"))

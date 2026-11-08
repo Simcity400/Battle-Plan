@@ -23,6 +23,7 @@ import type { LayoutLibrary } from './storage';
 import { PlaybackController } from './playback';
 import { widgetDefinition } from './definitions';
 import '../widgets';
+import { preloadAllWidgetRenderers, preloadWidgetRenderers } from '../widgets/rendererLoaders';
 import { CAMPAIGN_MAP_VIEW, campaignToggled, MapViewsStore, toggleMapSetting } from './geometry';
 import { DEFAULT_MAP_OPTIONS } from './mapPicker';
 import { useSourceRoles } from './sources';
@@ -63,6 +64,13 @@ export interface BranchChoice { id: string; choose: (branchId: string) => void }
 
 export default function Dashboard({ page, resetToken, path, client, library: replayLibrary, onPrimaryPath, active = true, mapActive = false, mapSwitching = false, mapReady = false, cameraMode = 'map', cameraOverlays = false, onMetadata, onBranch, onMapError, mapRetry = 0, onUnsaved, pages, playbackHost, campaignHost, onOpenReady, flyAircraft = null, sideHost = null }: Props) {
   const [restored] = useState(() => loadLayouts(undefined, page));
+  // Widget code loads with the app, the restored page's first, even while the map is shown: the
+  // first page opened never waits for its widgets' code.
+  useEffect(() => {
+    const shown = restored.library.layouts.find(entry => entry.id === restored.library.activeId);
+    preloadWidgetRenderers(shown?.template.widgets.map(widget => widget.kind) ?? []);
+    preloadAllWidgetRenderers();
+  }, [restored]);
   const [library, setLibrary] = useState(restored.library);
   // The page whose layouts are shown; it trails `page` until the swap below runs.
   const [shownPage, setShownPage] = useState(page);
@@ -95,10 +103,14 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     }).then(keep);
     return () => { live = false; for (const stop of stops) stop(); };
   }, [client]);
-  const template = useMemo(() => {
-    const merged = includeCampaigns(draftTemplate, campaigns);
-    return { ...merged, roles: merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id] ?? null })) };
-  }, [draftTemplate, campaigns, selectedCountries]);
+  const merged = useMemo(() => includeCampaigns(draftTemplate, campaigns), [draftTemplate, campaigns]);
+  // Roles and tracks keep their identity while their content does: a widget's option or a layout move
+  // changes neither, so the tracks bound from them, and the runtime every widget reads, stay the same.
+  const roleList = merged.roles.map((role) => ({ ...role, selectedTag: selectedCountries[role.id] ?? null }));
+  const rolesKey = JSON.stringify(roleList), tracksKey = JSON.stringify(merged.tracks);
+  const templateRoles = useMemo(() => roleList, [rolesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const templateTracks = useMemo(() => merged.tracks, [tracksKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const template = useMemo(() => ({ ...merged, roles: templateRoles, tracks: templateTracks }), [merged, templateRoles, templateTracks]);
   const [warning, setWarning] = useState<string | null>(restored.warning);
   const [savedTemplate, setSavedTemplate] = useState<DashboardTemplate | null>(null);
   const saved = savedTemplate === draftTemplate ? 'Layout saved on this device' : null;
@@ -164,9 +176,13 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
   const maps = useMemo(() => new MapViewsStore(client, clock), [client, clock]);
   useEffect(() => {
     // The native picker's day/night and allied-plan toggles flip the widget's own settings.
-    maps.onToggle = (view, toggle) => { void toggleMapSetting(client, view, toggle).catch(() => undefined); };
+    // A flip that failed is reported where its map is: the campaign map's like its other commands (Retry map
+    // only clears it, as flipping again could undo a later one), a widget map's on that widget.
+    maps.onToggle = (view, toggle) => view.id === CAMPAIGN_MAP_VIEW
+      ? commands.send(`setting:${view.id}:${toggle.setting}`, () => toggleMapSetting(client, view, toggle), false)
+      : maps.saveToggle(view, toggle, () => toggleMapSetting(client, view, toggle));
     return () => { maps.onToggle = null; };
-  }, [maps, client]);
+  }, [maps, client, commands]);
   const sourceMap = useMemo(() => new Map(Object.entries(roles.bindings).flatMap(([roleId, binding]) => binding.source ? [[roleId, binding.source] as [string, DashboardSource]] : [])), [roles.bindings]);
   const tracks = useMemo(() => bindTracks(template, sourceMap, selectedBranches), [template.tracks, template.roles, template.alignment, sourceMap, selectedBranches]);
   const bounds = useMemo(() => clockBounds(tracks), [tracks]);
@@ -365,7 +381,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
     if (campaignId !== undefined && !known) return null;
     if (known && !reconnect) return known.loading ? null : known.id;
     if (known?.loading) return null;
-    const slots = campaignSlots(draftTemplate, campaignsRef.current);
+    const slots = campaignSlots(templateRef.current, campaignsRef.current);
     const slot = slotId === 'new' ? undefined : slotId ? slots.empty.find(role => role.id === slotId) : slots.empty[0];
     if (slotId && slotId !== 'new' && !slot) { setActionError('That campaign slot is now occupied. Choose another slot.'); return null; }
     if (reconnect) clock.stop();
@@ -408,7 +424,7 @@ export default function Dashboard({ page, resetToken, path, client, library: rep
       setDefaultRoleId((current) => defaultAfterOpen(current, id));
     }
     return source ? id : null;
-  }, [roles.open, roles.remove, roles.bindings, draftTemplate, template.tracks, clock]);
+  }, [roles.open, roles.remove, roles.bindings, template.tracks, clock]);
 
   /** Points a widget at the default campaign (null) or a recording. A recording that is not
    * loaded yet is opened once and shared, exactly as from the sidebar. */

@@ -6,7 +6,7 @@ import { militaryAirPreparing, airLossParts, leafAmount, ledgerComplete, ledgerC
 const span = (firstHour: number, lastHour = firstHour) => ({ firstHour, lastHour });
 const leaf = (extra: Partial<MilitaryAirLeaf> = {}): MilitaryAirLeaf => ({ tag: 'mod country', identity: '3:9', dealt: false,
   opponent: null, region: 40001, buildingToken: null, buildingId: null, state: null, cause: 1,
-  points: [{ hour: 9, readHour: 10, totalRaw: '300000' }, { hour: 8, readHour: 11, totalRaw: '200000' }], ...extra });
+  points: [[9, 10, '300000'], [8, 11, '200000']], ...extra });
 const reply = (extra: Partial<MilitaryAirReply> = {}): MilitaryAirReply => ({ family: 'airLosses', firstHour: 10, lastHour: 14,
   available: true, observed: [span(10, 11), span(13, 14)], incomplete: [],
   countries: [{ tag: 'mod country', identity: '3:9', present: [span(10, 11), span(13, 14)], membership: null }],
@@ -19,13 +19,13 @@ test('ledger totals are exact, summed in numbers while safe and in bigints past 
     const deltas = new Map<number, { dealt: bigint; taken: bigint; nativeHour: number }>();
     for (const item of leaves) {
       let before = 0n;
-      for (const point of item.points) {
-        const current = BigInt(point.totalRaw), delta = current - before;
+      for (const [hour, readHour, totalRaw] of item.points) {
+        const current = BigInt(totalRaw), delta = current - before;
         before = current;
-        const row = deltas.get(point.readHour) ?? { dealt: 0n, taken: 0n, nativeHour: point.hour };
+        const row = deltas.get(readHour) ?? { dealt: 0n, taken: 0n, nativeHour: hour };
         row[item.dealt ? 'dealt' : 'taken'] += delta;
-        row.nativeHour = Math.max(row.nativeHour, point.hour);
-        deltas.set(point.readHour, row);
+        row.nativeHour = Math.max(row.nativeHour, hour);
+        deltas.set(readHour, row);
       }
     }
     let dealt = 0n, taken = 0n;
@@ -34,7 +34,7 @@ test('ledger totals are exact, summed in numbers while safe and in bigints past 
       return { readHour, nativeHour: delta.nativeHour, dealt, taken };
     });
   };
-  const points = (...totals: string[]) => totals.map((totalRaw, index) => ({ hour: 20 - index, readHour: 10 + index, totalRaw }));
+  const points = (...totals: string[]) => totals.map((totalRaw, index): [number, number, string] => [20 - index, 10 + index, totalRaw]);
   for (const leaves of [
     // Safe totals, corrections included, over two sides and one shared read.
     [leaf({ points: points('300000', '200000', '-5') }), leaf({ dealt: true, points: points('7', '7', '900') })],
@@ -52,10 +52,10 @@ test('the product validator returns the payload and accepts later publications w
   assert.equal(validateMilitaryAirReply(data), data);
   assert.equal(leafAmount(data.leaves[0], 10, 10), 300000n);
   assert.equal(leafAmount(data.leaves[0], 10, 11), 200000n);
-  const rangeLeaf = leaf({ points: [{ hour: 11, readHour: 12, totalRaw: '-100000' }] });
+  const rangeLeaf = leaf({ points: [[11, 12, '-100000']] });
   assert.equal(leafAmount(rangeLeaf, 11, 11), 0n);
   assert.equal(leafAmount(rangeLeaf, 11, 12), -100000n);
-  assert.throws(() => validateMilitaryAirReply(reply({ leaves: [leaf({ points: [{ hour: 12, readHour: 11, totalRaw: '1' }] })] })), /Invalid/);
+  assert.throws(() => validateMilitaryAirReply(reply({ leaves: [leaf({ points: [[12, 11, '1']] })] })), /Invalid/);
   assert.throws(() => validateMilitaryAirReply(reply({ leaves: [leaf(), leaf()] })), /Invalid/);
 });
 
@@ -72,9 +72,9 @@ test('empty complete reads certify zero, while gaps and unknown bombing callers 
 
 test('shared indices retain wide signed corrections exactly and name operational losses separately from unknown opponents', () => {
   const wide = (1n << 80n).toString();
-  const data = reply({ leaves: [leaf({ points: [{ hour: 10, readHour: 10, totalRaw: wide }] }),
-    leaf({ cause: 3, points: [{ hour: 10, readHour: 10, totalRaw: '-100000' }] }),
-    leaf({ dealt: true, opponent: 'other mod', points: [{ hour: 10, readHour: 10, totalRaw: '700000' }] })] });
+  const data = reply({ leaves: [leaf({ points: [[10, 10, wide]] }),
+    leaf({ cause: 3, points: [[10, 10, '-100000']] }),
+    leaf({ dealt: true, opponent: 'other mod', points: [[10, 10, '700000']] })] });
   const index = militaryAirIndex(validateMilitaryAirReply(data), noFilters);
   assert.equal(militaryAirIndex(data, noFilters), index);
   const row = militaryAirAt(index, 10, 10)[0];
@@ -90,7 +90,7 @@ test('country aliases share their holder total and top memberships clip only the
     { tag: 'mod country', identity: '3:9', present: [span(10)], membership: [span(10)] },
     { tag: 'renamed', identity: '3:9', present: [span(11, 14)], membership: [span(13)] },
     { tag: 'mod country', identity: '8:99', present: [span(13, 14)], membership: [] },
-  ], leaves: [leaf({ points: [{ hour: 9, readHour: 10, totalRaw: '300000' }] })] });
+  ], leaves: [leaf({ points: [[9, 10, '300000']] })] });
   const index = militaryAirIndex(validateMilitaryAirReply(data), noFilters);
   assert.equal(index.series[0].points, index.series[1].points);
   assert.equal(ledgerCountryAt(index, 'mod country', 10, 11)?.taken, 300000n);
@@ -118,9 +118,9 @@ test('manual ledger roots include all their native holders without recursively s
     { tag: 'Y', identity: '8:99', present: [span(10, 11)], membership: null },
     { tag: 'Y', identity: '3:9', present: [span(12), span(14)], membership: null },
     { tag: 'B', identity: '4:10', present: [span(10, 13)], membership: null },
-  ], leaves: [leaf({ tag: 'X', points: [{ hour: 9, readHour: 10, totalRaw: '-300000' }] }),
-    leaf({ tag: 'Y', identity: '8:99', points: [{ hour: 9, readHour: 10, totalRaw: '9900000' }] }),
-    leaf({ tag: 'B', identity: '4:10', points: [{ hour: 9, readHour: 10, totalRaw: '200000' }] })] });
+  ], leaves: [leaf({ tag: 'X', points: [[9, 10, '-300000']] }),
+    leaf({ tag: 'Y', identity: '8:99', points: [[9, 10, '9900000']] }),
+    leaf({ tag: 'B', identity: '4:10', points: [[9, 10, '200000']] })] });
   const index = militaryAirIndex(validateMilitaryAirReply(data), noFilters);
   const select = (hour: number) => ledgerCountries(militaryAirAt(index, 10, hour), { kind: 'tags', tags: ['X'] }, [], undefined,
     hour, 14, 'taken', data.countries);
@@ -139,9 +139,9 @@ test('manual ledger roots include all their native holders without recursively s
 
 test('line hover uses exact wide signed values, native/read dates, dated labels and unknown coverage', () => {
   const wide = 9007199254740993n * 100000n + 12345n;
-  const data = reply({ leaves: [leaf({ points: [{ hour: 9, readHour: 10, totalRaw: wide.toString() }] }),
-    leaf({ cause: 3, points: [{ hour: 8, readHour: 11, totalRaw: '-100000' }] }),
-    leaf({ dealt: true, opponent: 'other', points: [{ hour: 9, readHour: 10, totalRaw: (-wide).toString() }] })] });
+  const data = reply({ leaves: [leaf({ points: [[9, 10, wide.toString()]] }),
+    leaf({ cause: 3, points: [[8, 11, '-100000']] }),
+    leaf({ dealt: true, opponent: 'other', points: [[9, 10, (-wide).toString()]] })] });
   const index = militaryAirIndex(validateMilitaryAirReply(data), noFilters);
   const labelled: number[] = [];
   const labelAt = (hour: number) => { labelled.push(hour); return () => ({ name: `Dated name ${hour}`, flag: `dated-flag-${hour}` }); };

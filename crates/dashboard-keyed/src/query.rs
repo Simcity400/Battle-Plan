@@ -34,9 +34,44 @@ pub struct KeyedWindow {
     pub first_hour: i32,
     pub last_hour: i32,
     pub known: Vec<HourSpan>,
-    #[ts(type = "Array<[number, number, number]>")]
+    /// Sent with each stretch of hours read at their own hour as one `[first, last, null]`.
+    #[serde(serialize_with = "sent_reads")]
+    #[ts(type = "Array<[number, number, number | null]>")]
     pub reads: Vec<(i32, i32, i32)>,
     pub series: Vec<KeyedSeries>,
+}
+
+/// `reads` as replies carry them: consecutive hours each supplied by its own read become one
+/// `[first, last, null]`, so a family read every hour of a long campaign sends one entry rather
+/// than one an hour; every other stretch is sent as it is.
+fn sent_reads<S: serde::Serializer>(
+    reads: &[(i32, i32, i32)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeSeq;
+    let mut sequence = serializer.serialize_seq(None)?;
+    let mut own: Option<(i32, i32)> = None;
+    for &(first, last, read) in reads {
+        if first == last && read == first {
+            match &mut own {
+                Some((_, end)) if end.checked_add(1) == Some(first) => *end = first,
+                _ => {
+                    if let Some((from, to)) = own.replace((first, first)) {
+                        sequence.serialize_element(&(from, to, None::<i32>))?;
+                    }
+                }
+            }
+            continue;
+        }
+        if let Some((from, to)) = own.take() {
+            sequence.serialize_element(&(from, to, None::<i32>))?;
+        }
+        sequence.serialize_element(&(first, last, Some(read)))?;
+    }
+    if let Some((from, to)) = own {
+        sequence.serialize_element(&(from, to, None::<i32>))?;
+    }
+    sequence.end()
 }
 
 /// The window `from..=to` of `keyed` series, read only through `through`.

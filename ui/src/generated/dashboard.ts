@@ -5303,15 +5303,6 @@ identity: string, present: Array<HourSpan>,
  * Null means no ranking filter. Empty means never in the requested top N.
  */
 membership: Array<HourSpan> | null, };
-export type MilitaryAirPoint = {
-/**
- * Native application time, not the later publication time.
- */
-hour: number, readHour: number,
-/**
- * Exact sum of observed signed increments through this point, in native units.
- */
-totalRaw: string, };
 export type MilitaryAirLeaf = {
 /**
  * Null means the recording could not attribute this endpoint.
@@ -5325,7 +5316,11 @@ opponent: string | null, region: number | null, buildingToken: string | null, bu
 /**
  * Zero is known absence of a containing state, not an inferred state.
  */
-state: number | null, cause: number, points: Array<MilitaryAirPoint>, };
+state: number | null, cause: number,
+/**
+ * Each point is `[hour, readHour, totalRaw]` ([`MilitaryAirPoint`]).
+ */
+points: Array<[number, number, string]>, };
 export type MilitaryAirName = { id: string, name: string | null, missing: string | null, };
 export type MilitaryAirReply = { family: MilitaryAirFamily, firstHour: number, lastHour: number, available: boolean, observed: Array<HourSpan>,
 /**
@@ -5831,7 +5826,11 @@ frame: number,
 recorded?: string, };
 export type KeyedChoice = { id: string, name: string, };
 export type AirOperationTheatreChoice = { id: string, name: string, regions: Array<string>, };
-export type KeyedWindow = { firstHour: number, lastHour: number, known: Array<HourSpan>, reads: Array<[number, number, number]>, series: Array<KeyedSeries>, };
+export type KeyedWindow = { firstHour: number, lastHour: number, known: Array<HourSpan>,
+/**
+ * Sent with each stretch of hours read at their own hour as one `[first, last, null]`.
+ */
+reads: Array<[number, number, number | null]>, series: Array<KeyedSeries>, };
 export type KeyedSeries = { name: string, runs: Array<[number, number, string, boolean]>, };
 export type AirStatisticsParams = { branchId: string, tag: string,
 /**

@@ -4,11 +4,16 @@ import type { MapBounds } from '../shell/api';
 import type { MapOptions } from '../shell/api';
 import type { DashboardClient, DashboardMapState, DashboardMapView, MapOptionsEvent, MapToggle } from './client';
 import { PickerOptions } from './mapPicker';
+import { ShownError } from './queryError.ts';
+import type { Failure } from './queryError';
 import { perfLog } from '../shell/perf';
 import type { MapExpectation } from '../shell/perf';
 export { CAMPAIGN_MAP_VIEW, campaignToggled, toggleMapSetting } from './mapPicker';
 import { useTransitionValue } from './playback';
 import type { PlaybackController, PlaybackSnapshot } from './playback';
+
+/** A picker toggle as its failure names it. */
+const TOGGLE_NAMES: Record<MapToggle['setting'], string> = { dayNight: 'Day/night cycle', alliedPlans: 'Allied battle plans', fog: 'Fog of war' };
 
 export type MapTarget = Omit<DashboardMapView, 'id' | 'bounds' | 'clip' | 'visible'>;
 /** Where a surface was last measured; `onScreen` when both its body and visible part have area. */
@@ -81,6 +86,37 @@ export class MapViewsStore {
 
   /** Lets a view's picker set its fog switch. */
   onFog(viewId: string, flip: () => void): () => void { return this.picker.onFog(viewId, flip); }
+
+  /** Where each view's failed picker toggles are told, for the recording it shows; the latest save of each setting. */
+  private toggleFailures = new Map<string, { recording: string; report: (setting: string, failure: Failure | null) => void }>();
+  private toggleSaves = new Map<string, number>();
+  private toggleSaved = 0;
+
+  /** Lets a view showing `recording` (`sourceId:revision`) show its picker toggles that failed to save, by
+   * setting: null once that setting's latest toggle has saved. Toggles made on another recording are never told. */
+  onToggleFailure(viewId: string, recording: string, report: (setting: string, failure: Failure | null) => void): () => void {
+    const entry = { recording, report };
+    this.toggleFailures.set(viewId, entry);
+    return () => { if (this.toggleFailures.get(viewId) === entry) this.toggleFailures.delete(viewId); };
+  }
+
+  /** Saves a view's picker toggle with `save`, telling the view whether the setting's latest toggle saved. A toggle
+   * flips the saved choice, so a failed one is never sent again: toggling again is the user's own new flip. */
+  saveToggle(view: DashboardMapView, toggle: MapToggle, save: () => Promise<void>): void {
+    const recording = `${view.sourceId}:${view.revision}`;
+    const key = JSON.stringify([view.id, recording, toggle.setting]);
+    const sequence = ++this.toggleSaved;
+    this.toggleSaves.set(key, sequence);
+    const tell = (failure: Failure | null) => {
+      if (this.toggleSaves.get(key) !== sequence) return;
+      if (!failure) this.toggleSaves.delete(key);
+      const listener = this.toggleFailures.get(view.id);
+      if (listener?.recording === recording) listener.report(toggle.setting, failure);
+    };
+    // The service can keep a flip and still fail to answer, so the notice never says it was lost.
+    save().then(() => tell(null), (error: unknown) => tell(new ShownError(
+      `${TOGGLE_NAMES[toggle.setting]}: this change may not have been kept. Toggling it again makes a new change.`, errorMessage(error))));
+  }
 
   start(viewport: HTMLElement): () => void {
     this.active = true;

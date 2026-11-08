@@ -20,9 +20,9 @@ const data: MilitaryAirReply = { family: 'bombing', firstHour: 10, lastHour: 12,
     { tag: 'NEW', identity: '3:9', present: [span(11, 12)], membership: null },
   ], leaves: [
     { tag: 'NEW', identity: '3:9', dealt: false, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 40001, cause: 0,
-      points: [{ hour: 10, readHour: 11, totalRaw: '50000000' }, { hour: 11, readHour: 12, totalRaw: '-10000000' }] },
+      points: [[10, 11, '50000000'], [11, 12, '-10000000']] },
     { tag: null, identity: null, dealt: true, opponent: null, region: null, buildingId: 7, buildingToken: 'mod works', state: 40001, cause: 0,
-      points: [{ hour: 10, readHour: 11, totalRaw: '50000000' }] },
+      points: [[10, 11, '50000000']] },
   ], regions: [], buildings: [], warnings: [] };
 
 test('actual bombing adapter forwards dated native flag status without labelling an unknown attacker', async () => {

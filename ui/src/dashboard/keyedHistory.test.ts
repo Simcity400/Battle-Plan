@@ -41,3 +41,11 @@ test('malformed windows are refused', () => {
   assert.throws(() => validateKeyedWindow({ ...window, series: [{ name: 'x', runs: [[1, 3, '1.5', true]] }] }));
   assert.throws(() => validateKeyedWindow({ ...window, known: [{ firstHour: 5, lastHour: 9 }, { firstHour: 0, lastHour: 2 }] }));
 });
+
+test('a stretch read at each of its own hours supplies every hour from itself', () => {
+  const hourly = validateKeyedWindow({ firstHour: 0, lastHour: 9, known: [{ firstHour: 0, lastHour: 9 }], reads: [[0, 3, null], [4, 6, 4], [7, 9, null]], series: [] });
+  assert.equal(keyedRead(hourly, 2), 2);
+  assert.equal(keyedRead(hourly, 5), 4);
+  assert.equal(keyedRead(hourly, 9), 9);
+  assert.throws(() => validateKeyedWindow({ ...hourly, reads: [[3, 2, null]] }));
+});

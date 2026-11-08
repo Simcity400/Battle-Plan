@@ -8,6 +8,6 @@ export default function HeldFailureNotices({ failures }: { failures: HeldFailure
   const errors = useSyncExternalStore(failures.subscribe, failures.read, failures.read);
   if (!errors.length) return null;
   return <div className="dash-held-failures">
-    {errors.map(error => <WidgetState key={failureKey(error)} kind="error" failure={error} onRetry={() => failures.retry(error)} />)}
+    {errors.map(error => <WidgetState key={failureKey(error)} kind="error" failure={error} onRetry={failures.retryable(error) ? () => failures.retry(error) : undefined} />)}
   </div>;
 }

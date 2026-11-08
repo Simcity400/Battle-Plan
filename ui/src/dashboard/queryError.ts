@@ -9,6 +9,16 @@ export class RefusedError extends Error {
   }
 }
 
+/** A failure whose `text` is written for the user; its message is the technical detail. */
+export class ShownError extends Error {
+  readonly text: string;
+  constructor(text: string, detail: string) {
+    super(detail);
+    this.name = 'ShownError';
+    this.text = text;
+  }
+}
+
 export type Failure = Error;
 
 export function queryFailure(error: QueryError): Failure {
@@ -24,11 +34,13 @@ export function asFailure(error: unknown): Failure {
 }
 
 export function failureText(error: Failure | null | undefined, generic: string): string {
-  return error instanceof RefusedError ? error.text : generic;
+  return error instanceof RefusedError || error instanceof ShownError ? error.text : generic;
 }
 
 export function failureWire(error: Failure): QueryError {
-  return error instanceof RefusedError ? { kind: 'refused', text: error.text } : { kind: 'failed', message: error.message };
+  return error instanceof RefusedError ? { kind: 'refused', text: error.text }
+    : { kind: 'failed', message: error instanceof ShownError ? `${error.text}
+${error.message}` : error.message };
 }
 
 export function failureKey(error: Failure): string {

@@ -985,7 +985,7 @@ fn s2_assert_reachable(reply: &Value) {
         reply["window"]["known"],
         json!([{"firstHour":100,"lastHour":100}])
     );
-    assert_eq!(reply["window"]["reads"], json!([[100, 100, 100]]));
+    assert_eq!(reply["window"]["reads"], json!([[100, 100, null]]));
 }
 
 #[test]
