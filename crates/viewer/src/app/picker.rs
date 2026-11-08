@@ -45,6 +45,8 @@ const FOURTH_BUTTON_DLC: u32 = 0x20;
 pub enum ViewEvent {
     Options(dashboard::protocol::MapOptions),
     Toggle(dashboard::protocol::MapToggle),
+    /// The modes the picker offers, once for each content the view loads.
+    Modes(Vec<dashboard::protocol::MapModeChoice>),
 }
 
 /// The picker's state in one view.
@@ -61,6 +63,8 @@ pub struct PickerState {
     /// Hidden in the map-only pop-out; its shortcuts still work.
     pub hidden: bool,
     labels: Option<PickerLabels>,
+    /// The content whose modes the host was last told.
+    modes_for: Option<Weak<Content>>,
 }
 
 impl Default for PickerState {
@@ -74,6 +78,7 @@ impl Default for PickerState {
             events: Vec::new(),
             hidden: false,
             labels: None,
+            modes_for: None,
         }
     }
 }
@@ -266,6 +271,23 @@ pub fn all_modes(document: &Document, four_buttons: bool) -> Vec<MapMode> {
                 .map(|mode| MapMode::Scripted(mode.name.clone())),
         )
         .collect()
+}
+
+/// Every mode a user can choose: the fixed buttons' (the fourth with its feature), then those the
+/// configurable slots offer, each once.
+fn choosable_modes(document: &Document) -> Vec<MapMode> {
+    let four = four_buttons(document);
+    let mut modes: Vec<MapMode> = DEFAULT_SLOTS[..*configurable(document).start()]
+        .iter()
+        .filter(|stock| four || **stock != Stock::Operatives)
+        .map(|stock| MapMode::Stock(*stock))
+        .collect();
+    for mode in all_modes(document, four) {
+        if !modes.contains(&mode) {
+            modes.push(mode);
+        }
+    }
+    modes
 }
 
 /// The modes the slots hold: the defaults with the view's configured slots over them.
@@ -546,8 +568,29 @@ impl Viewer {
         }
     }
 
-    /// What the picker told the host since the last call.
+    /// What the picker told the host since the last call, with its modes when its content changed.
     pub(crate) fn take_view_events(&mut self) -> Vec<ViewEvent> {
+        if let Some(document) = &self.document
+            && !self
+                .picker
+                .modes_for
+                .as_ref()
+                .is_some_and(|known| std::ptr::eq(known.as_ptr(), Arc::as_ptr(&document.content)))
+        {
+            self.picker.modes_for = Some(Arc::downgrade(&document.content));
+            let modes = choosable_modes(document)
+                .iter()
+                .map(|mode| {
+                    let button = mode_button(document, mode);
+                    dashboard::protocol::MapModeChoice {
+                        token: button.token,
+                        label: button.name,
+                        unavailable: button.unavailable,
+                    }
+                })
+                .collect();
+            self.picker.events.push(ViewEvent::Modes(modes));
+        }
         std::mem::take(&mut self.picker.events)
     }
 
@@ -840,7 +883,7 @@ mod tests {
             .into_iter()
             .filter_map(|event| match event {
                 ViewEvent::Toggle(toggle) => Some(toggle),
-                ViewEvent::Options(_) => None,
+                ViewEvent::Options(_) | ViewEvent::Modes(_) => None,
             })
             .collect()
     }

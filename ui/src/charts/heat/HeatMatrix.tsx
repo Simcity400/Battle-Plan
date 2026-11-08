@@ -183,7 +183,7 @@ export default function HeatMatrix(props: HeatMatrixProps) {
       return false;
     } };
     task.current = frameTask;
-    const remove = scheduler.add(frameTask);
+    const remove = scheduler.add(frameTask, element);
     scheduler.setVisible(frameTask, latest.current.props.active);
     const observer = new ResizeObserver(loaded);
     observer.observe(scroller);

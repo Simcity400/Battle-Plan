@@ -1,0 +1,213 @@
+"""Input to the native map, on the suite's own desktop: one JSON command per stdin line, one JSON reply each.
+
+    python tools/e2e/native_input.py --desktop <name> --app-pid <pid> --input <127.0.0.1:port>
+
+Points are the app window's client pixels, as the page measures them times its device pixel ratio.
+Pointer and key input goes through the viewer's suite input channel (crates/viewer/src/suite_input.rs,
+served at `--input`, which the suite set in the app's BATTLE_PLAN_E2E_INPUT): on a desktop of the suite's
+own, where no cursor is, the windowing library would drop real pointer input. Points become client
+pixels of the map's window under them. The user's own input and cursor are never touched. Each reply
+carries the epoch milliseconds each event was sent at, the clock the viewer stamps its frames with.
+    {"op": "move", "points": [[x, y], ...], "interval_ms": 16}
+    {"op": "wheel", "x": x, "y": y, "notches": n, "interval_ms": 16}   (negative notches zoom out)
+    {"op": "keys", "x": x, "y": y, "keys": ["ArrowRight"], "ms": 1500}  (holds keys with the pointer over the map)
+    {"op": "drag", "points": [[x, y], ...], "interval_ms": 16}          (a middle-button drag)
+    {"op": "click", "x": x, "y": y}                                     (a primary click on the map)
+    {"op": "save_dialog", "path": "C:/...png", "seconds": 20}          (fills and confirms the host's save dialog)
+"""
+
+import argparse
+import ctypes as c
+import json
+import socket
+import sys
+import time
+from ctypes import wintypes as w
+
+u = c.WinDLL("user32", use_last_error=True)
+u.SetProcessDpiAwarenessContext.argtypes = [c.c_void_p]
+u.SetProcessDpiAwarenessContext(c.c_void_p(-4))
+ENUM = c.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)
+u.OpenDesktopW.argtypes = [w.LPCWSTR, w.DWORD, w.BOOL, w.DWORD]
+u.OpenDesktopW.restype = w.HANDLE
+u.SetThreadDesktop.argtypes = [w.HANDLE]
+u.EnumDesktopWindows.argtypes = [w.HANDLE, ENUM, w.LPARAM]
+u.EnumChildWindows.argtypes = [w.HWND, ENUM, w.LPARAM]
+u.GetWindowThreadProcessId.argtypes = [w.HWND, c.POINTER(w.DWORD)]
+u.IsWindowVisible.argtypes = [w.HWND]
+u.GetWindowRect.argtypes = [w.HWND, c.POINTER(w.RECT)]
+u.GetWindowTextW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
+u.GetClassNameW.argtypes = [w.HWND, w.LPWSTR, c.c_int]
+u.GetDlgCtrlID.argtypes = [w.HWND]
+u.ClientToScreen.argtypes = [w.HWND, c.POINTER(w.POINT)]
+u.ScreenToClient.argtypes = [w.HWND, c.POINTER(w.POINT)]
+u.SendMessageW.argtypes = [w.HWND, w.UINT, w.WPARAM, w.LPARAM]
+u.SendMessageW.restype = w.LPARAM
+k = c.WinDLL("kernel32", use_last_error=True)
+k.OpenProcess.argtypes = [w.DWORD, w.BOOL, w.DWORD]
+k.OpenProcess.restype = w.HANDLE
+k.QueryFullProcessImageNameW.argtypes = [w.HANDLE, w.DWORD, w.LPWSTR, c.POINTER(w.DWORD)]
+k.CloseHandle.argtypes = [w.HANDLE]
+WM_SETTEXT, BM_CLICK = 0x000C, 0x00F5
+# The native map draws in its own process; its windows are found by that process's program.
+MAP_PROGRAM = "viewer.exe"
+
+
+def program(pid):
+    handle = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
+    try:
+        name, size = c.create_unicode_buffer(1024), w.DWORD(1024)
+        return name.value.rsplit("\\", 1)[-1].lower() if k.QueryFullProcessImageNameW(handle, 0, name, c.byref(size)) else None
+    finally:
+        k.CloseHandle(handle)
+
+
+def checked(value):
+    if not value:
+        raise c.WinError(c.get_last_error())
+    return value
+
+
+def epoch_ms():
+    return time.time() * 1000.0
+
+
+class Desktop:
+    def __init__(self, name, app_pid, address):
+        self.handle = checked(u.OpenDesktopW(name, 0, False, 0x1FF))
+        checked(u.SetThreadDesktop(self.handle))
+        self.app_pid = app_pid
+        self.address = address
+        self.channel = None
+
+    def send(self, *lines):
+        """Sends events to the viewer's suite input channel; the epoch milliseconds the first left at."""
+        if self.channel is None:
+            host, port = self.address.rsplit(":", 1)
+            self.channel = socket.create_connection((host, int(port)), timeout=10)
+            self.channel.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        at = epoch_ms()
+        self.channel.sendall("".join(json.dumps(line) + "\n" for line in lines).encode())
+        return at
+
+    def windows(self):
+        """Every visible window on the desktop, children included: (hwnd, pid, rect, title, class, id)."""
+        found = []
+
+        def collect(hwnd, _):
+            if u.IsWindowVisible(hwnd):
+                pid, rect = w.DWORD(), w.RECT()
+                u.GetWindowThreadProcessId(hwnd, c.byref(pid))
+                u.GetWindowRect(hwnd, c.byref(rect))
+                title, kind = c.create_unicode_buffer(256), c.create_unicode_buffer(128)
+                u.GetWindowTextW(hwnd, title, 256)
+                u.GetClassNameW(hwnd, kind, 128)
+                found.append((hwnd, pid.value, (rect.left, rect.top, rect.right, rect.bottom), title.value, kind.value, u.GetDlgCtrlID(hwnd)))
+            return True
+
+        callback = ENUM(collect)
+        u.EnumDesktopWindows(self.handle, callback, 0)
+        for hwnd, *_ in list(found):
+            u.EnumChildWindows(hwnd, callback, 0)
+        return list({entry[0]: entry for entry in found}.values())
+
+    def point(self, x, y):
+        """The app client point (x, y) in client pixels of the map's window under it."""
+        main = next((hwnd for hwnd, pid, _, title, _, _ in self.windows() if pid == self.app_pid and title == "Battle Plan"), None)
+        if main is None:
+            raise RuntimeError("the app's window is gone")
+        point = w.POINT(round(x), round(y))
+        checked(u.ClientToScreen(main, c.byref(point)))
+        programs = {}
+        under = [(hwnd, (r[2] - r[0]) * (r[3] - r[1])) for hwnd, pid, r, *_ in self.windows()
+                 if r[0] <= point.x < r[2] and r[1] <= point.y < r[3]
+                 and programs.setdefault(pid, program(pid)) == MAP_PROGRAM]
+        if not under:
+            raise RuntimeError(f"no {MAP_PROGRAM} window under screen point {point.x},{point.y}")
+        checked(u.ScreenToClient(min(under, key=lambda item: item[1])[0], c.byref(point)))
+        return [point.x, point.y]
+
+    def move(self, points, interval_ms):
+        posted = []
+        for x, y in points:
+            posted.append(self.send({"move": self.point(x, y)}))
+            time.sleep(interval_ms / 1000)
+        return {"posted": posted}
+
+    def wheel(self, x, y, notches, interval_ms):
+        self.send({"move": self.point(x, y)})
+        posted = []
+        for _ in range(abs(notches)):
+            posted.append(self.send({"wheel": 1 if notches > 0 else -1}))
+            time.sleep(interval_ms / 1000)
+        return {"posted": posted}
+
+    def keys(self, x, y, keys, ms):
+        """Holds `keys` for `ms` with the pointer over the map: pressed together, then released."""
+        self.send({"move": self.point(x, y)})
+        posted = [self.send(*({"key": key, "pressed": True} for key in keys))]
+        time.sleep(ms / 1000)
+        self.send(*({"key": key, "pressed": False} for key in keys))
+        return {"posted": posted}
+
+    def drag(self, points, interval_ms):
+        """A middle-button drag through `points`."""
+        start = self.point(*points[0])
+        posted = [self.send({"move": start}, {"button": "middle", "at": start, "pressed": True})]
+        at = start
+        for x, y in points[1:]:
+            time.sleep(interval_ms / 1000)
+            at = self.point(x, y)
+            posted.append(self.send({"move": at}))
+        self.send({"button": "middle", "at": at, "pressed": False})
+        return {"posted": posted}
+
+    def click(self, x, y):
+        at = self.point(x, y)
+        posted = self.send({"move": at}, {"button": "primary", "at": at, "pressed": True})
+        time.sleep(0.05)
+        self.send({"button": "primary", "at": at, "pressed": False})
+        return {"posted": [posted]}
+
+    def save_dialog(self, path, seconds):
+        """Fills the host's save dialog's file name and confirms it, as a user does."""
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            dialogs = [entry for entry in self.windows() if entry[4] == "#32770"]
+            if dialogs:
+                children = [entry for entry in self.windows() if entry[0] != dialogs[0][0]]
+                field = next((entry for entry in children if entry[4] == "Edit" and entry[5] in (1001, 1148)), None)
+                button = next((entry for entry in children if entry[4] == "Button" and entry[5] == 1), None)
+                if field and button:
+                    buffer = c.create_unicode_buffer(path)
+                    u.SendMessageW(field[0], WM_SETTEXT, 0, c.cast(buffer, c.c_void_p).value)
+                    u.SendMessageW(button[0], BM_CLICK, 0, 0)
+                    return {"saved": path}
+            time.sleep(0.1)
+        raise RuntimeError(f"no save dialog within {seconds} s")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("--desktop", required=True)
+    parser.add_argument("--app-pid", type=int, required=True)
+    parser.add_argument("--input", required=True, help="the viewer's suite input address")
+    args = parser.parse_args()
+    desktop = Desktop(args.desktop, args.app_pid, args.input)
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            command = json.loads(line)
+            op = command.pop("op")
+            reply = {"move": desktop.move, "wheel": desktop.wheel, "keys": desktop.keys, "drag": desktop.drag, "click": desktop.click,
+                     "save_dialog": desktop.save_dialog}[op](**command)
+        except Exception as error:
+            reply = {"error": f"{type(error).__name__}: {error}"}
+        print(json.dumps(reply), flush=True)
+
+
+if __name__ == "__main__":
+    main()

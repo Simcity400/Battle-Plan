@@ -1,16 +1,18 @@
 """Test `main` once a day on this machine (Python 3.11+, Windows).
 
-    python tools/daily_tests.py install --game-dir <the game folder> [--at 03:00]
-    python tools/daily_tests.py run --game-dir <the game folder>
+    python tools/daily_tests.py install --game-dir <the game folder> --fixture <recording folder> [--at 03:00]
+    python tools/daily_tests.py run --game-dir <the game folder> --fixture <recording folder>
 
 `install` makes the runner's own worktree of origin/main and registers the Windows task that runs
 it daily at `--at`, or as soon as it can after a missed start. `run` moves that worktree to the
 newest origin/main and holds TESTS_RUNNING while it runs every Rust test, the UI typecheck and
-tests and the dependency checks. It compiles only with DISK_FLOOR free, without incremental
-compilation, and once the build finishes removes from its Cargo target whatever that build neither
-produced nor used, so the target holds one build. Its report goes to
+tests, the dependency checks and the acceptance suite (tools/e2e/suite.py: the release app, built
+on Boat, on a prepared copy of the `--fixture` recording). It compiles only with DISK_FLOOR free,
+without incremental compilation, and once the build finishes removes from its Cargo target
+whatever that build neither produced nor used, so the target holds one build. Its report goes to
 captures\\ci: latest.md, a folder per run with each step's log, kept 30 days, and
-history.tsv, kept whole.
+history.tsv, kept whole. The acceptance suite's report is e2e/e2e.md in the run's folder; its
+preparation baseline and last work stay in E2E_STATE.
 """
 
 import argparse
@@ -35,6 +37,9 @@ CAPTURES = Path(os.environ.get("BATTLE_PLAN_CAPTURES", os.environ.get("HOI4_CAPT
 REPORTS = CAPTURES / "ci"
 MARKER = REPORTS / "TESTS_RUNNING"
 TASK = "Battle Plan daily tests"
+# The acceptance suite's app build, replaced each night, and its baseline history and last run's work.
+E2E_APP = Path(r"ci\e2e-app")
+E2E_STATE = REPORTS / "e2e"
 # From taking the lock, below the task's 20-hour limit, so a run that overruns still reports and
 # cleans up.
 DEADLINE = datetime.timedelta(hours=18)
@@ -72,7 +77,7 @@ RUST_TESTS = [
 
 def steps():
     """Each step: its name, its log's name, its command or a function of the run's `Build` and the
-    log giving its exit code and result, and the step it needs to have passed."""
+    log giving its exit code and result, and the step or steps it needs to have passed."""
     npm = shutil.which("npm.cmd") or "npm.cmd"
     python = str(Path(sys.executable).with_name("python.exe"))
     check = lambda script: [python, f"tools/{script}.py"]
@@ -86,6 +91,8 @@ def steps():
         ("Build dependencies", "build-dependencies", check("check-build-dependencies"), None),
         ("Content dependencies", "content-dependencies", check("check-content-dependencies"), None),
         ("Feature unification", "feature-unification", check("check-feature-unification"), None),
+        ("Acceptance app build", "e2e-build", [python, "tools/e2e/suite.py", "build", "--out", str(E2E_APP)], None),
+        ("Acceptance suite", "e2e", acceptance, ("e2e-build", "ui-install")),
     ]
 
 
@@ -208,11 +215,38 @@ def gigabytes(size):
 
 
 class Build:
-    """What the Rust steps share: the target, and the `Units` of the build once it finished."""
+    """What the steps share: the Rust target, the `Units` of its build once it finished, and the run's
+    folder, environment, deadline and acceptance fixture."""
 
-    def __init__(self, target):
+    def __init__(self, target, folder=None, environment=None, deadline=None, fixture=None):
         self.target = target
         self.units = None
+        self.folder, self.environment, self.deadline, self.fixture = folder, environment, deadline, fixture
+
+
+def acceptance(build, log):
+    """The acceptance suite on the night's app build; its report goes to the run's folder."""
+    if not build.fixture:
+        log.write_text("No fixture: install the task with --fixture.\n", encoding="utf-8")
+        return 1, "failed: no fixture configured (install with --fixture)"
+    out = build.folder / "e2e"
+    command = [
+        str(Path(sys.executable).with_name("python.exe")), "tools/e2e/suite.py", "run", "--app", str(E2E_APP),
+        "--fixture", build.fixture, "--game-dir", build.environment["BATTLE_PLAN_GAME_DIR"], "--out", str(out),
+        "--state", str(E2E_STATE),
+    ]
+    code = run_step(command, log, build.environment, build.deadline - time.monotonic())
+    try:
+        report = json.loads((out / "e2e.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        report = None
+    if code is None:
+        return 1, "stopped: out of time"
+    if report is None or code not in (0, 1):
+        return 1, f"failed (exit {code}): the suite could not run"
+    if report["passed"] and code == 0:
+        return 0, "passed: e2e/e2e.md"
+    return 1, f"failed: {report['failed']} failing rows, e2e/e2e.md"
 
 
 def check_disk(build, log):
@@ -422,14 +456,15 @@ def run_checked_out(args):
         os.environ, BATTLE_PLAN_GAME_DIR=args.game_dir, CARGO_TERM_COLOR="never", NO_COLOR="1",
         CARGO_INCREMENTAL="0",
     )
-    build = Build(target_dir())
+    build = Build(target_dir(), folder, environment, deadline, args.fixture)
     size_at_start = size_of(build.target)
     plan = steps()
     rows, failures, passed, summary = [], None, set(), None
     for name, slug, command, needs in plan:
         log = folder / f"{slug}.log"
-        if needs is not None and needs not in passed:
-            rows.append(f"| {name} | not run: {needs} failed | | |")
+        missing = [need for need in ((needs,) if isinstance(needs, str) else needs or ()) if need not in passed]
+        if missing:
+            rows.append(f"| {name} | not run: {', '.join(missing)} failed | | |")
             continue
         if time.monotonic() >= deadline:
             rows.append(f"| {name} | not run: out of time | | |")
@@ -505,7 +540,8 @@ def run(args):
             log = folder / "runner.log"
             command = [
                 sys.executable, str(WORKTREE / "tools" / "daily_tests.py"), "run",
-                "--game-dir", args.game_dir, "--continue-run", commit, started.isoformat(),
+                "--game-dir", args.game_dir, *(["--fixture", args.fixture] if args.fixture else []),
+                "--continue-run", commit, started.isoformat(),
                 str(deadline - REPORT_MARGIN), str(folder),
             ]
             remaining = deadline - time.monotonic()
@@ -611,7 +647,8 @@ def install(args):
     start = datetime.datetime.combine(datetime.date.today(), at)
     if start <= datetime.datetime.now():
         start += datetime.timedelta(days=1)
-    arguments = subprocess.list2cmdline([str(script), "run", "--game-dir", args.game_dir])
+    fixture = ["--fixture", args.fixture] if args.fixture else []
+    arguments = subprocess.list2cmdline([str(script), "run", "--game-dir", args.game_dir, *fixture])
     xml = TASK_XML.format(
         start=start.isoformat(timespec="seconds"),
         user=escape(f"{os.environ['USERDOMAIN']}\\{os.environ['USERNAME']}"),
@@ -639,6 +676,8 @@ def parse(argv):
         command.add_argument(
             "--game-dir", type=os.path.abspath, default=game_dir, required=game_dir is None
         )
+        # The acceptance suite's recording folder; without it that step fails and says why.
+        command.add_argument("--fixture", type=os.path.abspath, default=os.environ.get("BATTLE_PLAN_E2E_FIXTURE", os.environ.get("HOI4_E2E_FIXTURE")))
         if name == "install":
             command.add_argument("--at", default="03:00", help="local start time, HH:MM")
         else:

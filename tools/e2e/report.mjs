@@ -1,0 +1,432 @@
+// The suite's report: a table per area with each item's timings and verdict, failures with their
+// screenshots, and the run's duration. Exits 0 when everything passed, 1 otherwise.
+// usage: node tools/e2e/report.mjs --run <run.json> --sweeps <dir> --perf <work dir> --prep <prep.json> --history <prep-history.jsonl> --out <dir> [--record]
+// Each app session's results are <dir>/sweep-<session>.json and its perf logs <work dir>/perf-<session>.jsonl(.map.<pid>.jsonl).
+// --record appends this run's preparation to the history the next runs' baseline comes from.
+import { createReadStream, existsSync } from 'node:fs';
+import { appendFile, readFile, readdir, writeFile } from 'node:fs/promises';
+import readline from 'node:readline';
+import path from 'node:path';
+import { compareCaptures } from '../../ui/e2e/compare.mjs';
+import { MAP_FRAME_MS, MAP_P99_MS, UNPRESENTED, catalogueHour, framesLate, handledAt, freshnessByKind, hoursInstalled, losses, mapFrames, popoutPresented, presentedAt, sessionStart } from './verdicts.mjs';
+import { BUDGET_MS, FRAME_BUDGET_MS, SUSTAINED_DROPS, consoleFailures, droppedFrames, failedReplies, firstContent, frameTimes, freshness, groupBy, item, mapAcks, mapSeek, preparation, quantiles } from './verdicts.mjs';
+
+const flag = name => { const at = process.argv.indexOf(name); return at < 0 ? null : process.argv[at + 1]; };
+const files = Object.fromEntries(['run', 'sweeps', 'perf', 'prep', 'history', 'out', 'baseline'].map(name => [name, flag(`--${name}`)]));
+const readJSON = async file => (file && existsSync(file) ? JSON.parse(await readFile(file, 'utf8')) : null);
+
+const run = await readJSON(files.run) ?? {};
+/** Every session's sweep as one: their results and console output together, the first session's facts of the app. */
+async function sweeps(folder) {
+  const names = folder ? (await readdir(folder).catch(() => [])).filter(name => /^sweep-.+\.json$/.test(name)).sort() : [];
+  if (!names.length) return null;
+  const parts = await Promise.all(names.map(name => readJSON(path.join(folder, name))));
+  const meta = { ...parts[0].meta, catalogue: parts.find(part => part.meta.catalogue)?.meta.catalogue,
+    seconds: parts.reduce((sum, part) => sum + (part.meta.seconds ?? 0), 0), sessions: parts.map(part => part.meta) };
+  return { meta, results: parts.flatMap(part => part.results), console: parts.flatMap(part => part.console) };
+}
+const sweep = await sweeps(files.sweeps);
+const prep = await readJSON(files.prep);
+const history = files.history && existsSync(files.history)
+  ? (await readFile(files.history, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
+
+/** The records this report reads from every session's perf logs, the page's and its viewers'; the rest pass by as they
+ * stream. Sessions never overlap in time, so their records read as one. */
+async function perfRecords(folder) {
+  const names = folder ? await readdir(folder).catch(() => []) : [];
+  const pages = names.filter(name => /^perf-.+\.jsonl$/.test(name)), viewers = names.filter(name => /^perf-.+\.jsonl\.map\.\d+\.jsonl$/.test(name));
+  if (!pages.length) return { records: null, mapRecords: [] };
+  const read = async (name, keep) => {
+    for await (const line of readline.createInterface({ input: createReadStream(path.join(folder, name), 'utf8'), crlfDelay: Infinity })) keep(line);
+  };
+  const records = [], mapRecords = [];
+  const wanted = /^\{"t":"(map_state|tick|shown|widget|q|frame|lost)"/;
+  // The host writes a loss record with its kind last: any line naming a loss is read whatever its field order.
+  const lost = line => line.includes('"t":"lost"') && JSON.parse(line).t === 'lost';
+  for (const name of pages) await read(name, line => {
+    if (!wanted.test(line) && !lost(line)) return;
+    const record = JSON.parse(line);
+    if ((record.t === 'q' && record.outcome !== 'error') || (record.t === 'frame' && !record.playing)) return;
+    records.push(record);
+  });
+  for (const name of viewers) await read(name, line => {
+    if (/^\{"t":"map(_open|_upload)?"/.test(line)) mapRecords.push(JSON.parse(line));
+    else if (lost(line)) records.push(JSON.parse(line));
+  });
+  return { records, mapRecords };
+}
+const { records, mapRecords } = await perfRecords(files.perf);
+
+/** The sessions' pictures as the parity tool's one manifest. */
+async function visualManifest(folder) {
+  const names = (await readdir(folder).catch(() => [])).filter(name => /^manifest-.+\.json$/.test(name)).sort();
+  if (!names.length) return false;
+  const parts = await Promise.all(names.map(name => readJSON(path.join(folder, name))));
+  await writeFile(path.join(folder, 'manifest.json'), JSON.stringify({ complete: parts.every(part => part.complete), items: parts.flatMap(part => part.items) }));
+  return true;
+}
+await visualManifest(path.join(files.out, 'visual'));
+
+const sections = [];
+const fmt = value => (value === null || value === undefined || !Number.isFinite(value) ? '–' : String(Math.round(value)));
+const verdict = pass => (pass ? 'pass' : '**FAIL**');
+const why = reasons => (reasons ?? []).slice(0, 4).join('; ').replace(/\|/g, '\\|').replace(/\n/g, ' ') + ((reasons?.length ?? 0) > 4 ? `; and ${reasons.length - 4} more` : '');
+const section = (title, columns, rows, note = null) => { sections.push({ title, columns, rows, note }); return rows; };
+const quantileCells = q => [q.n, fmt(q.p50), fmt(q.p95), fmt(q.max)];
+
+// Preparation.
+let prepVerdict = null;
+if (prep) {
+  // Only preparations of tonight's fixture are its baseline.
+  const sameFixture = entry => JSON.stringify(entry.fixture ?? null) === JSON.stringify(run.fixture ?? null);
+  prepVerdict = preparation(prep, history.filter(sameFixture));
+  section('Preparation', ['Measure', 'Value', 'Baseline (median of passing runs)', 'Limit', 'Result'], [
+    { cells: ['State', `${prep.state}${prep.error ? `: ${prep.error}` : ''}`, '', '', verdict(prep.state === 'ready' && !prep.error)], pass: prep.state === 'ready' && !prep.error },
+    { cells: ['Sections and exit', `${(prep.failedSections ?? []).length} sections not ready; the app exited ${prep.exitCode ?? 'only when stopped'}`, '', '',
+      verdict((prep.failedSections ?? []).length === 0 && prep.exitCode === 0)], pass: (prep.failedSections ?? []).length === 0 && prep.exitCode === 0 },
+    ...prepVerdict.metrics.map(metric => ({ pass: metric.pass, cells: [metric.metric, metric.value?.toFixed(2) ?? '–',
+      metric.baseline === null ? 'none yet: this run starts it' : `${metric.baseline.toFixed(2)} over ${metric.runs} runs`, metric.limit?.toFixed(2) ?? '–', verdict(metric.pass)] })),
+  ], prepVerdict.reasons.length ? why(prepVerdict.reasons) : null);
+} else section('Preparation', ['Measure', 'Result'], [{ cells: ['Preparation', '**FAIL**: it did not run'], pass: false }]);
+
+const results = sweep?.results ?? [];
+// A step that ends in a map frame ends when the viewer presented it: its frame log times the paint after the frame's
+// interface was built, which is when its map state was stamped.
+for (const result of results.filter(result => result.drawnAt != null)) {
+  if (result.item.startsWith('hover: ') && result.delay) result.deadline = handledAt(mapRecords, result.posted) === null ? null : handledAt(mapRecords, result.posted) + result.delay;
+  else if (result.item.startsWith('hover: ')) result.deadline = result.delay === null ? null : result.posted;
+  const start = result.item.startsWith('mode: ') ? result.sent : result.item.startsWith('hover: ') ? result.deadline : result.input;
+  if (result.item.startsWith('hover: ') && result.delay && result.deadline === null) {
+    Object.assign(result, { ms: null, reasons: [...result.reasons, 'the viewer logged no frame handling the move, so its tooltip delay cannot be placed'], pass: false });
+    continue;
+  }
+  if (start == null) continue;
+  const at = presentedAt(mapRecords, result.drawnAt);
+  const budget = result.budget ?? BUDGET_MS;
+  const reasons = result.reasons.filter(reason => !reason.includes(' ms, over '));
+  if (at === null) Object.assign(result, { ms: null, reasons: [...reasons, UNPRESENTED] });
+  else {
+    const exact = result.item.startsWith('hover: ') || result.label === 'show map';
+    const ms = exact ? at - start : Math.max(result.ms ?? 0, at - start);
+    if (result.check !== false && ms > budget) reasons.push(`${Math.round(ms)} ms, over ${budget} ms${result.delay ? ` after the ${Math.round(result.delay)} ms tooltip delay` : ''}`);
+    Object.assign(result, { ms, reasons, presentedAt: at });
+  }
+  result.pass = result.reasons.length === 0;
+}
+// The pop-out opened when its viewer presented its first frame of the clock's hour; its status report, which the
+// viewer sends at most every quarter second, only confirmed it.
+for (const result of results.filter(result => result.item === 'pop-out' && result.label === 'open pop-out' && result.input != null)) {
+  const at = popoutPresented(mapRecords, result.input, result.hour);
+  const reasons = result.reasons.filter(reason => !reason.includes(' ms, over '));
+  if (at === null) reasons.push(`the pop-out's viewer logged no presented frame of hour ${result.hour}, so its first frame is unobservable`);
+  const ms = at === null ? null : at - result.input;
+  if (ms !== null && ms > (result.budget ?? BUDGET_MS)) reasons.push(`${Math.round(ms)} ms, over ${result.budget ?? BUDGET_MS} ms`);
+  Object.assign(result, { ms, reasons, presentedAt: at, pass: reasons.length === 0 });
+}
+if (!sweep) section('Sweep', ['Area', 'Result'], [{ cells: ['Sweep', `**FAIL**: not run: ${run.sweepNotRun ?? 'it did not run'}`], pass: false }]);
+const area = name => results.filter(result => result.area === name);
+const phaseFailures = results.filter(result => result.item === 'phase');
+if (phaseFailures.length) section('Phases that stopped', ['Phase', 'Reason', 'Screenshot'],
+  phaseFailures.map(result => ({ pass: false, cells: [result.area, why(result.reasons), result.screenshot ?? ''] })));
+
+if (sweep) {
+  const placements = firstContent(results);
+  // Coverage.
+  const kinds = new Set(placements.map(placement => placement.kind));
+  const catalogue = sweep.meta.catalogue ?? [];
+  const catalogueAdds = area('catalogue').filter(result => result.label === 'add');
+  const showedContent = catalogueAdds.filter(result => result.widgets?.some(widget => (widget.end === 'content' || widget.end === 'empty') && !widget.errors?.length));
+  section('Coverage', ['Area', 'Covered', 'Result'], [
+    { cells: ['Pages', `${new Set(area('pages').map(result => result.item.split('/')[1])).size} of ${sweep.meta.pages.length}, cold and warm`], pass: true },
+    { cells: ['Widget kinds on default pages', `${kinds.size} kinds, ${placements.filter(p => p.visit === 'cold').length} placements`], pass: true },
+    { cells: ['Catalogue', `${catalogue.filter(card => card.view).length} views and ${catalogue.filter(card => !card.view).length} widget cards; ${showedContent.length} of ${catalogue.length} added showed content (their timings are judged below)`], pass: showedContent.length === catalogue.length },
+    { cells: ['Control cases', `${new Set(area('controls').map(result => result.item)).size} cases, ${area('controls').length} actions`], pass: true },
+    { cells: ['Seeks', `${area('seeks').length} (${sweep.meta.seeks.map(([label]) => label).join(', ')} on every page)`], pass: true },
+    { cells: ['Playback', `${area('playback').length} runs (${sweep.meta.speeds.join(' and ')} h/s on every page)`], pass: true },
+  ].map(row => ({ ...row, cells: [...row.cells, verdict(row.pass)] })));
+
+  // Every session starts cold.
+  section('Cold sessions (each a fresh app on the prepared profile; everything it times first is timed cold)', ['Session', 'Phases', 'Started with', 'Opened campaign (ms)', 'Took', 'App exit', 'Result'],
+    (run.sessions ?? []).map(entry => {
+      const opened = results.find(result => result.area === 'startup' && result.session === entry.name.replace(/ /g, '-'));
+      const pass = !entry.error && entry.sweepExit === 0 && entry.appExit === 0;
+      const failure = entry.error ? `it could not start: ${entry.error}` : entry.sweepExit !== 0 ? `the sweep exited ${entry.sweepExit}` : `the app exited ${entry.appExit ?? 'only when stopped'}`;
+      return { pass, cells: [entry.name, entry.phases.join(', '), `emptied: ${entry.emptied.join(', ')}; kept only: ${entry.kept.join(', ')}`,
+        fmt(opened?.ms), `${Math.round(entry.seconds)} s`, entry.appExit ?? '–', pass ? 'pass' : `**FAIL**: ${why([failure])}`] };
+    }), 'Before each session the suite deletes the content cache (HOI4Replay\\viewer under the profile\'s local app data), the shader cache, the WebView2 profile with its HTTP and code caches, and the app\'s settings, and checks they are gone. Kept: the prepared store, the recording, and the artwork preparation drew (prepared stores link to it), restored from a copy taken right after preparing. Reply and answer caches live in the app\'s memory and start empty with each session. The user\'s own HOI4Replay folder is never used: the profile has its own local app data.');
+
+  // Opening the campaign from the library.
+  section('Opening the campaign (ms from the click on its library row to the dashboard and its visible widgets showing content, in each cold session)', ['Session', 'Step', 'ms', 'Result', 'Why'],
+    area('startup').map(result => ({ pass: result.pass, cells: [result.session, result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));
+
+  // Pages: the switch is the slowest visible widget's first content; scrolling, each turn's.
+  const pageRows = [];
+  for (const page of sweep.meta.pages) {
+    const cells = [page], reasons = [];
+    let pass = true;
+    for (const passName of ['cold', 'warm']) {
+      const steps = area('pages').filter(result => result.item === `${passName}/${page}`);
+      const switchStep = steps.find(result => result.label === 'switch');
+      const scrolls = steps.filter(result => result.label.startsWith('scroll'));
+      const scroll = item('scroll', scrolls);
+      cells.push(fmt(switchStep?.ms), fmt(scroll.max));
+      for (const result of steps.filter(result => !result.pass)) { pass = false; reasons.push(`${passName} ${result.label}: ${why(result.reasons)}`); }
+      if (!switchStep) { pass = false; reasons.push(`${passName}: never visited`); }
+    }
+    const widgets = placements.filter(placement => placement.page === page && placement.visit === 'cold');
+    pageRows.push({ pass, cells: [...cells, widgets.length, verdict(pass), why(reasons)] });
+  }
+  section('Pages (ms from the click or wheel turn to the slowest visible widget\'s content; cold judged, warm beside it)', ['Page', 'Cold switch', 'Cold scroll max', 'Warm switch', 'Warm scroll max', 'Widgets', 'Result', 'Why'], pageRows);
+
+  // First content by widget kind, cold and warm.
+  const byKind = groupBy(placements, placement => placement.kind);
+  section('First content by widget kind (ms from input; every placement on the default pages; the 100 ms rule judges cold, warm is beside it)', ['Kind', 'Placements', 'Cold p50', 'Cold p95', 'Cold max', 'Warm p50', 'Warm p95', 'Warm max', 'Result', 'Why'],
+    [...byKind].sort(([a], [b]) => a.localeCompare(b)).map(([kind, list]) => {
+      const cold = item(kind, list.filter(p => p.visit === 'cold')), warm = item(kind, list.filter(p => p.visit === 'warm'), { budget: Infinity });
+      const pass = cold.pass && warm.pass;
+      return { pass, cells: [kind, cold.n, fmt(cold.p50), fmt(cold.p95), fmt(cold.max), fmt(warm.p50), fmt(warm.p95), fmt(warm.max), verdict(pass), why([...cold.reasons.map(r => `cold ${r}`), ...warm.reasons.map(r => `warm ${r}`)])] };
+    }));
+
+  // Seeks. A widget that reports the hour it shows has finished a seek only once it shows the sought hour.
+  const shownBy = records ? groupBy(records.filter(record => record.t === 'shown').sort((a, b) => a.at - b.at), record => record.widget) : new Map();
+  const sought = result => {
+    if (!result.widgetIds || result.input == null) return result;
+    const reasons = [...result.reasons];
+    let ms = result.ms;
+    for (const [id, title] of Object.entries(result.widgetIds)) {
+      const list = shownBy.get(id);
+      if (!list) continue;
+      const reached = list.find(record => record.at >= result.input && record.hour === result.hour);
+      if (!reached || reached.at - result.input > 10_000) reasons.push(`${title}: never showed the sought hour ${result.hour}`);
+      else ms = Math.max(ms ?? 0, reached.at - result.input);
+    }
+    if (result.check !== false && ms > BUDGET_MS && !reasons.some(reason => reason.includes(' ms, over'))) reasons.push(`${Math.round(ms)} ms, over ${BUDGET_MS} ms`);
+    return { ...result, ms, reasons, pass: reasons.length === 0 };
+  };
+  section('Seeks (ms from the click on the timeline to every visible widget showing content; each hour cold in a fresh session, then warm)',
+    ['Page', ...sweep.meta.seeks.map(([label]) => `${label} cold`), ...sweep.meta.seeks.map(([label]) => `${label} warm`), 'Cold p50', 'Cold p95', 'Cold max', 'Result', 'Why'],
+    sweep.meta.pages.map(page => {
+      const steps = area('seeks').filter(result => result.item === page).map(result => sought(result));
+      const cold = steps.filter(result => !result.label.endsWith(' warm'));
+      const warm = steps.filter(result => result.label.endsWith(' warm'));
+      const summary = item(page, cold);
+      const warmFailures = warm.filter(result => !result.pass).flatMap(result => result.reasons.map(reason => `${result.label}: ${reason}`));
+      const pass = summary.pass && !warmFailures.length;
+      return { pass, cells: [page, ...sweep.meta.seeks.map(([label]) => fmt(cold.find(result => result.label === label)?.ms)),
+        ...sweep.meta.seeks.map(([label]) => fmt(warm.find(result => result.label === `${label} warm`)?.ms)),
+        fmt(summary.p50), fmt(summary.p95), fmt(summary.max), verdict(pass), why([...summary.reasons, ...warmFailures])] };
+    }));
+
+  // Interactions: each control's first use is cold and judged; the revisit that puts it back is warm, beside it.
+  const controls = groupBy(area('controls'), result => result.item);
+  const warmOf = list => list.filter(result => result.check === false), coldOf = list => list.filter(result => result.check !== false);
+  section('Interactions (ms from trusted input to finished: painted, touched widgets showing content, the control\'s result shown and a setting\'s change shown on its widget or drawn by its map; a drag or a typed field from its last input. Cold: each control\'s first use, judged. Warm: the revisit that puts it back, beside it)',
+    ['Case', 'Actions', 'Cold p50', 'Cold p95', 'Cold max', 'Warm p50', 'Warm p95', 'Warm max', 'Budget', 'Result', 'Why'],
+    [...controls].map(([name, list]) => {
+      const budget = Math.max(BUDGET_MS, ...list.map(result => result.budget ?? BUDGET_MS));
+      const cold = item(name, coldOf(list), { budget }), warm = warmOf(list).length ? item(name, warmOf(list), { budget: Infinity }) : null;
+      const reasons = [...cold.reasons, ...(warm?.reasons ?? []).map(reason => `warm ${reason}`)];
+      return { pass: !reasons.length, cells: [name, list.length, fmt(cold.p50), fmt(cold.p95), fmt(cold.max), fmt(warm?.p50), fmt(warm?.p95), fmt(warm?.max), budget, verdict(!reasons.length), why(reasons)] };
+    }));
+  const longest = list => { const values = list.map(result => result.ms).filter(Number.isFinite); return values.length ? Math.max(...values) : null; };
+  section('Interactions by control (every page, widget and control: its first use and the revisit that puts it back; a drag\'s gesture and its page frames beside)',
+    ['Case', 'Control', 'Cold ms', 'Warm ms', 'Gesture ms', 'Frame gap max', 'Result', 'Why'],
+    [...groupBy(area('controls'), result => `${result.item}\u0000${result.control ?? result.label}`)].map(([key, list]) => {
+      const [name, control] = key.split('\u0000');
+      const reasons = list.filter(result => !result.pass).flatMap(result => result.reasons.map(reason => (result.label === control ? reason : `${result.label}: ${reason}`)));
+      const gesture = list.find(result => result.gestureMs != null || result.frameGapMax != null);
+      return { pass: !reasons.length, cells: [name, control, fmt(longest(coldOf(list))), fmt(longest(warmOf(list))), fmt(gesture?.gestureMs), gesture?.frameGapMax?.toFixed(1) ?? '–',
+        verdict(!reasons.length), why(reasons)] };
+    }));
+
+  // Catalogue.
+  section('Catalogue (ms from Add to the added view showing content; the hour it reports showing against the clock)', ['Entry', 'ms', 'Hour shown', 'Result', 'Why'],
+    area('catalogue').filter(result => result.label === 'add').map(result => {
+      const from = result.shownFrom ?? result.input;
+      const hour = records ? catalogueHour(records, { ...result, input: from }) : { pass: false, reason: 'no perf log' };
+      // A map's time runs from the click that showed it to the present of its first frame of the clock's hour; Add is its own step.
+      const presented = hour.pass && result.shownFrom != null ? presentedAt(mapRecords, hour.drawnAt) : null;
+      const ms = !hour.pass ? result.ms : result.shownFrom != null ? (presented === null ? null : presented - from) : Math.max(result.ms ?? 0, hour.at - from);
+      const reasons = [...result.reasons.filter(reason => !reason.includes(' ms, over ')), ...(hour.pass ? [] : [hour.reason])];
+      if (hour.pass && result.shownFrom != null && presented === null) reasons.push(UNPRESENTED);
+      if (ms !== null && ms > BUDGET_MS) reasons.push(`${Math.round(ms)} ms, over ${BUDGET_MS} ms`);
+      return { pass: !reasons.length, cells: [result.item, fmt(ms), hour.hour ?? '–', verdict(!reasons.length), why(reasons)] };
+    }));
+  const catalogueSetup = item('catalogue setup', area('catalogue').filter(result => result.item === 'setup'));
+  section('Catalogue editing', ['Item', 'Actions', 'p50', 'p95', 'Max', 'Result', 'Why'],
+    [{ pass: catalogueSetup.pass, cells: ['open, delete, cancel', ...quantileCells(catalogueSetup), verdict(catalogueSetup.pass), why(catalogueSetup.reasons)] }]);
+
+  // Map.
+  const mapRows = [];
+  if (records) {
+    const acks = mapAcks(records);
+    for (const result of area('seeks').filter(result => result.maps?.length && result.input !== null)) {
+      for (const [view, list] of [...acks].filter(([view]) => result.maps.includes(view))) {
+        const { ms, reason } = mapSeek(list, result.input, mapRecords);
+        const judged = result.check !== false;
+        const pass = ms !== null && (!judged || ms <= BUDGET_MS);
+        mapRows.push({ pass, judged, cells: [`seek ${result.label} (${result.item})`, view, fmt(ms), verdict(pass), reason ?? (pass ? '' : `${Math.round(ms)} ms, over ${BUDGET_MS} ms`)] });
+      }
+    }
+    if (!mapRows.length) mapRows.push({ pass: false, cells: ['seek', '', '–', verdict(false), 'no map acknowledgements in the perf log'] });
+  } else mapRows.push({ pass: false, cells: ['seek', '', '–', verdict(false), 'no perf log'] });
+  const seekTimes = quantiles(mapRows.filter(row => row.judged).map(row => Number(row.cells[2])).filter(Number.isFinite));
+  section('Map seeks (ms from the timeline click to the present of the frame drawing the sought hour; warm seeks beside the cold ones, not judged)', ['Item', 'View', 'ms', 'Result', 'Why'], mapRows,
+    `Cold seeks: p50 ${fmt(seekTimes.p50)}, p95 ${fmt(seekTimes.p95)}, max ${fmt(seekTimes.max)} ms.`);
+  const modes = area('map').filter(result => result.item.startsWith('mode: '));
+  const modeSummary = item('map modes', modes.filter(result => !result.unavailable));
+  section(`Map modes (ms from the view's options sent with the mode, as the host sends them, to the present of the first frame the viewer drew in it): p50 ${fmt(modeSummary.p50)}, p95 ${fmt(modeSummary.p95)}, max ${fmt(modeSummary.max)}`,
+    ['Mode', 'ms', 'Result', 'Why'], modes.length ? modes.map(result => ({ pass: result.pass, cells: [`${result.item.slice(6)} (${result.label})`, result.unavailable ? 'unavailable' : fmt(result.ms),
+      verdict(result.pass), result.unavailable ? `the recording cannot draw it: ${result.unavailable}` : why(result.reasons)] }))
+      : [{ pass: false, cells: ['–', '–', verdict(false), 'no map mode was chosen'] }]);
+  section(`Map interactions (the viewer's frames at 120 Hz: window-thread work and GPU time per frame within ${MAP_FRAME_MS.toFixed(2)} ms, p99 within ${MAP_P99_MS} ms; a frame over ${MAP_FRAME_MS.toFixed(2)} ms is a dropped frame)`,
+    ['Interaction', 'While', 'Frames', 'Work p50', 'Work p99', 'Work max', 'GPU p99', 'GPU max', 'Dropped', 'Result', 'Why'],
+    area('map').filter(result => result.item.startsWith('interaction: ')).map(result => {
+      const frames = result.from ? mapFrames(mapRecords, result.from, result.to) : null;
+      const reasons = [...result.reasons, ...(frames ? frames.reasons : ['no window measured'])];
+      // Playing, the map must install new hours, or its frames are of one frozen hour.
+      if (result.item.startsWith('interaction: playback') && result.from) {
+        const hours = hoursInstalled(mapRecords, result.view ?? null, result.from, result.to);
+        if (hours < 2) reasons.push(`the map installed ${hours} hours while playing: it did not play`);
+      }
+      const pass = reasons.length === 0;
+      const ms = value => value?.toFixed(1) ?? '–';
+      return { pass, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', ms(frames?.work.p50), ms(frames?.work.p99), ms(frames?.work.max),
+        ms(frames?.gpu.p99), ms(frames?.gpu.max), frames ? `${frames.dropped} of ${frames.frames}` : '–', verdict(pass), why(reasons)] };
+    }), "Pointer and key input to the native map (zoom, pan, Fly and Walk, hover, clicks) enters through the viewer's suite input channel (BATTLE_PLAN_E2E_INPUT, off for users) as egui's own events, where the windowing library's translated input arrives; everything after it runs as for a user. Only the windowing library's translation of real input is untested: the suite runs on a desktop of its own, without a cursor.");
+  const uncapped = area('mapfps');
+  // Reported beside the 120 Hz verdicts above, which judge the same interactions' frame work.
+  section('Map frame rate achieved, presented uncapped (the viewer without vsync, in a session of its own)', ['Interaction', 'While', 'Frames', 'FPS', 'Work p99', 'Note'],
+    uncapped.length ? uncapped.map(result => {
+      const frames = result.from ? mapFrames(mapRecords, result.from, result.to) : null;
+      const ran = result.pass && !!frames?.frames;
+      return { pass: ran, cells: [result.item.slice(13), result.label, frames?.frames ?? '–', frames?.frames ? Math.round(frames.fps) : '–', frames?.work.p99?.toFixed(1) ?? '–',
+        ran ? '' : `**FAIL**: ${why([...result.reasons, ...(frames?.frames ? [] : ['no frames recorded'])])}`] };
+    }) : [{ pass: false, cells: ['–', '–', '–', '–', '–', '**FAIL**: the uncapped session did not run'] }]);
+  section('Map hover (ms from the pointer moving onto it, after the game\'s tooltip delay for a tooltip, to the present of the frame drawing it; it must be the next frame and within 100 ms)', ['Target', 'Highlight', 'ms', 'Frames late', 'Result', 'Why'],
+    area('map').filter(result => result.item.startsWith('hover: ')).map(result => {
+      const late = result.drawnAt != null && result.deadline != null ? framesLate(mapRecords, result.deadline, result.drawnAt) : null;
+      const reasons = [...result.reasons, ...(late ? [`${late} frames drawn before the highlight`] : [])];
+      const pass = result.pass && !late;
+      return { pass, cells: [result.item.slice(7), result.label ?? '–', fmt(result.ms), late ?? '–', verdict(pass), why(reasons)] };
+    }));
+  section('Pop-out map', ['Step', 'ms', 'Result', 'Why'], area('map').filter(result => result.item === 'pop-out' || result.item === 'phase')
+    .map(result => ({ pass: result.pass, cells: [result.label ?? result.item, fmt(result.ms), verdict(result.pass), why(result.reasons)] })));
+
+  // Playback. A widget's reports count only within its own app session.
+  const starts = (sweep.meta.sessions ?? []).map(meta => Date.parse(meta.started)).filter(Number.isFinite);
+  const refresh = run.refreshHz ?? null;
+  section(`Playback (frame time: each playing frame's main-thread time to render, against ${FRAME_BUDGET_MS.toFixed(1)} ms; dropped: an interval over 1.5 refreshes of the ${refresh ?? '?'} Hz display, failing on ${SUSTAINED_DROPS} or more in a row; freshness: hours a widget's values lag the clock)`,
+    ['Page', 'h/s', 'Frames', 'Frame p50', 'Frame p95', 'Frame max', 'Interval p95', 'Dropped', 'Longest drop run', 'Fresh widgets', 'Result', 'Why'],
+    area('playback').map(result => {
+      const frames = frameTimes(result.frames), reasons = [...result.reasons];
+      // The clock must have played at the speed chosen, or the row measures another speed.
+      const ticks = records ? records.filter(record => record.t === 'tick' && record.at >= result.from && record.at <= result.to) : null;
+      if (ticks && !ticks.length) reasons.push('the clock recorded no ticks while playing');
+      else if (ticks) {
+        const other = ticks.find(tick => tick.speed !== result.speed);
+        if (other) reasons.push(`the clock played at ${other.speed} h/s, not the ${result.speed} h/s chosen`);
+        // And its hours must have moved at that rate, until the recording ended: a clock that says 24 h/s and moves 12 is slow.
+        const sorted = [...ticks].sort((a, b) => a.at - b.at), first = sorted[0];
+        const ended = result.lastHour == null ? -1 : sorted.findIndex(tick => tick.hour >= result.lastHour);
+        const last = ended >= 0 ? sorted[ended] : sorted.at(-1);
+        const seconds = (last.at - first.at) / 1000, moved = last.hour - first.hour;
+        const step = Math.max(1, Math.ceil(result.speed * 0.25));
+        const slack = Math.max(2 * step + 1, 0.05 * result.speed * seconds);
+        if (seconds < 1) reasons.push(`the clock ticked over only ${seconds.toFixed(2)} s, too little to tell its pace`);
+        else if (Math.abs(moved - result.speed * seconds) > slack)
+          reasons.push(`the clock moved ${moved} hours in ${seconds.toFixed(1)} s, ${(moved / seconds).toFixed(1)} h/s, not the ${result.speed} h/s chosen`);
+      }
+      if (!result.complete) reasons.push(`the perf log lost records: ${JSON.stringify(result.losses)}`);
+      if (!frames.n) reasons.push('no playing frames recorded');
+      // Every playing frame must carry its own main-thread time: one without it may be the slow one.
+      const untimed = records ? records.filter(record => record.t === 'frame' && record.playing && record.at >= result.from && record.at <= result.to && !Number.isFinite(record.main)).length : 0;
+      if (untimed) reasons.push(`${untimed} playing frames have no main-thread time, so the frame times are incomplete`);
+      else if (frames.p95 > FRAME_BUDGET_MS) reasons.push(`frame p95 ${frames.p95.toFixed(1)} ms, over ${FRAME_BUDGET_MS.toFixed(1)} ms`);
+      const drops = records && refresh ? droppedFrames(records, result.from, result.to, refresh) : null;
+      if (!drops) reasons.push(refresh ? 'no perf log for dropped frames' : 'the display refresh rate was not recorded');
+      else if (!drops.frames) reasons.push('no playing frame intervals in the perf log');
+      else if (!drops.pass) reasons.push(`${drops.longest} dropped frames in a row (intervals over ${drops.limit.toFixed(1)} ms)`);
+      // Only this page's widgets in view are judged here; every kind's coverage is the freshness table's.
+      const inView = new Set((result.widgets ?? []).filter(widget => widget.visible).map(widget => widget.id));
+      const all = records ? freshness(records, result.from, result.to, sessionStart(starts, result.from)) : null;
+      const fresh = all && { ...all, widgets: all.widgets.filter(widget => inView.has(widget.widget)) };
+      if (!fresh) reasons.push('no perf log for freshness');
+      else {
+        for (const widget of fresh.widgets.filter(widget => !widget.pass))
+          reasons.push(`${widget.title}: values ${widget.p95 >= Number.MAX_VALUE ? 'missing' : `${fmt(widget.p95)} h off the clock`} at p95 (${widget.none} frames with none, ${widget.ahead} ahead of it), over one tick (${fmt(widget.step)} h)`);
+      }
+      const pass = reasons.length === 0;
+      return { pass, cells: [result.page, result.speed, frames.n, frames.p50?.toFixed(1) ?? '–', frames.p95?.toFixed(1) ?? '–', frames.max?.toFixed(1) ?? '–',
+        result.frames?.playing?.p95?.toFixed(1) ?? '–', drops?.rate == null ? '–' : `${(drops.rate * 100).toFixed(1)}% (${drops.dropped})`, drops?.longest ?? '–',
+        fresh ? `${fresh.widgets.filter(widget => widget.pass).length} of ${fresh.widgets.length} reporting` : '–', verdict(pass), why(reasons)] };
+    }));
+
+  // Freshness by widget kind: every kind must report the hour it shows.
+  const freshKinds = records ? freshnessByKind(records, area('playback'), area('hours'), starts) : null;
+  section('Freshness by widget kind (paused at the picture hour, every placement reports showing the clock hour; playing, each in view lags it by under one tick)', ['Kind', 'Placements', 'Worst lag p95 (h)', 'Result', 'Why'],
+    freshKinds === null ? [{ pass: false, cells: ['–', '–', '–', verdict(false), 'no perf log'] }]
+      : freshKinds.sort((a, b) => a.kind.localeCompare(b.kind)).map(kind => ({ pass: kind.pass, cells: [kind.kind, kind.placements, kind.worst === null ? '–' : kind.worst >= Number.MAX_VALUE ? 'none' : kind.worst, verdict(kind.pass), why(kind.reasons)] })));
+
+  // The visual check against the accepted baseline.
+  const visualRows = [];
+  let visualNote = null;
+  const head = path.join(files.out, 'visual');
+  const accepted = files.baseline && existsSync(path.join(files.baseline, 'accepted.json')) ? JSON.parse(await readFile(path.join(files.baseline, 'accepted.json'), 'utf8')) : null;
+  if (!existsSync(path.join(head, 'manifest.json'))) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), 'no captures were taken', ''] });
+  else if (accepted && JSON.stringify(accepted.fixture ?? null) !== JSON.stringify(run.fixture ?? null))
+    visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `the accepted baseline is of another fixture (${accepted.fixture?.name ?? 'unknown'}), not ${run.fixture?.name}: review visual/ and accept a new one`, ''] });
+  else if (!accepted) visualRows.push({ pass: false, cells: ['–', '–', verdict(false), `no accepted baseline: review visual/ and accept it with \`python tools/e2e/suite.py accept --run ${files.out} --reason "…"\``, ''] });
+  else {
+    const comparison = await compareCaptures(files.baseline, head, { diffDirectory: path.join(head, 'diff') });
+    visualNote = `Baseline accepted ${accepted.acceptedAt} from main ${String(accepted.commit ?? '?').slice(0, 10)} (${accepted.run}): ${accepted.reason}. ${comparison.counts.PASS} same, ${comparison.counts.DIFF} different, ${comparison.counts.ERROR} errors.`;
+    for (const result of comparison.results.filter(result => result.status !== 'PASS'))
+      visualRows.push({ pass: false, cells: [result.caseId ?? result.kind, result.kind, verdict(false), why([result.reason ?? result.status]), result.diff ? `[diff](visual/diff/${result.diff})` : ''] });
+  }
+  section('Visual check (pages, widgets, catalogue views, open states and the map at fixed hours and cameras, against the accepted baseline)', ['Capture', 'Kind', 'Result', 'Why', 'Diff'], visualRows, visualNote ?? (visualRows.length ? null : 'All the same.'));
+
+  // Measurement losses.
+  const lost = records ? losses(records) : [];
+  section('Measurement losses (records the perf logs dropped: any can hide a failed reply or a slow frame)', ['Source', 'Records', 'From', 'To'],
+    lost.map(loss => ({ pass: false, cells: [loss.source, loss.count, new Date(loss.from).toISOString(), new Date(loss.to).toISOString()] })), lost.length ? null : 'None.');
+
+  // Replies and console.
+  const windows = (sweep.meta.sessions ?? []).filter(meta => meta.finished).map(meta => ({ from: Date.parse(meta.started), to: Date.parse(meta.finished) }));
+  const replies = records ? failedReplies(records, windows) : null;
+  section('Failed or refused replies', ['Product', 'Count', 'First failure', 'Hours'], replies === null
+    ? [{ pass: false, cells: ['–', '–', 'no perf log: replies could not be checked', ''] }]
+    : replies.map(reply => ({ pass: false, cells: [reply.product, reply.count, why([reply.first]), reply.hours.join(', ')] })),
+    `${replies?.length === 0 ? 'None. ' : ''}Replies still unanswered when a session's sweep finished were cut off by the suite closing that app, and are not counted.`);
+  const messages = consoleFailures([...(prep?.console ?? []), ...(sweep.console ?? [])]);
+  const byText = groupBy(messages, message => `${message.type}|${message.text}`);
+  section('Console errors and warnings', ['Type', 'Count', 'First during', 'Message'],
+    [...byText].map(([, list]) => ({ pass: false, cells: [list[0].type, list.length, list[0].during, why([list[0].text])] })), byText.size ? null : 'None.');
+
+  // Every failing step, with its screenshot.
+  const failing = results.filter(result => !result.pass);
+  section(`Failing steps (${failing.length})`, ['Area', 'Item', 'Step', 'ms', 'Why', 'Screenshot'],
+    failing.slice(0, 400).map(result => ({ pass: false, cells: [result.area, result.item, result.label ?? '', fmt(result.ms), why(result.reasons), result.screenshot ? `[png](${result.screenshot})` : ''] })),
+    failing.length > 400 ? `The first 400 of ${failing.length}; sweep.json holds them all.` : null);
+}
+
+const failed = sections.flatMap(entry => entry.rows).filter(row => !row.pass).length;
+const passed = failed === 0;
+const duration = run.seconds ? `${Math.round(run.seconds / 60)} min (${Object.entries(run.phases ?? {}).map(([name, seconds]) => `${name} ${Math.round(seconds)} s`).join(', ')})` : 'unknown';
+const lines = [
+  `# Acceptance suite: ${passed ? 'PASSED' : 'FAILED'}`, '',
+  `${run.commit ? `main ${run.commit.slice(0, 10)}. ` : ''}Duration ${duration}.${sweep ? ` Sweep ${Math.round(sweep.meta.seconds ?? 0)} s, viewport ${sweep.meta.viewport?.width}×${sweep.meta.viewport?.height} at ${sweep.meta.viewport?.dpr}×, display ${run.refreshHz ?? '?'} Hz.` : ''}`,
+  `${failed} failing rows. Budget: ${BUDGET_MS} ms for anything a user waits on.`, '',
+];
+for (const entry of sections) {
+  lines.push(`## ${entry.title}`, '');
+  if (entry.note) lines.push(entry.note, '');
+  if (entry.rows.length) lines.push(`| ${entry.columns.join(' | ')} |`, `|${entry.columns.map(() => '---').join('|')}|`, ...entry.rows.map(row => `| ${row.cells.join(' | ')} |`), '');
+}
+await writeFile(path.join(files.out, 'e2e.md'), lines.join('\n'));
+await writeFile(path.join(files.out, 'e2e.json'), JSON.stringify({ passed, failed, run, sections }, null, 1));
+if (prep && files.history && process.argv.includes('--record')) {
+  await appendFile(files.history, JSON.stringify({ at: new Date().toISOString(), commit: run.commit ?? null, fixture: run.fixture ?? null, wallSeconds: prep.wallSeconds, cpuSeconds: prep.cpuSeconds,
+    peakCommitGb: prep.peakCommitGb, pass: prepVerdict.pass }) + '\n');
+}
+console.log(`${passed ? 'passed' : 'failed'}: ${failed} failing rows; report ${path.join(files.out, 'e2e.md')}`);
+process.exitCode = passed ? 0 : 1;

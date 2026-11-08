@@ -26,32 +26,33 @@ async function isolateImages(locator) {
   });
 }
 
-async function surfaceData(locator) {
-  return locator.evaluate(root => {
-    function shown(node) {
-      if (getComputedStyle(node).visibility === 'hidden' || getComputedStyle(node).display === 'none') return false;
-      const box = node.getBoundingClientRect();
-      let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right);
-      let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
-      for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
-        const style = getComputedStyle(ancestor), clip = ancestor.getBoundingClientRect();
-        if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
-        if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
-      }
-      return right > left && bottom > top;
+/** A widget's visible surface, evaluated in its page: whether it has a header and body, and its shown text. */
+export function surfaceModel(root) {
+  function shown(node) {
+    if (getComputedStyle(node).visibility === 'hidden' || getComputedStyle(node).display === 'none') return false;
+    const box = node.getBoundingClientRect();
+    let left = Math.max(0, box.left), right = Math.min(innerWidth, box.right);
+    let top = Math.max(0, box.top), bottom = Math.min(innerHeight, box.bottom);
+    for (let ancestor = node.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor), clip = ancestor.getBoundingClientRect();
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowX)) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+      if (/(auto|scroll|hidden|clip)/.test(style.overflowY)) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
     }
-    const text = [], walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-    while (walker.nextNode()) {
-      const node = walker.currentNode;
-      if (!node.textContent.trim() || !node.parentElement || !shown(node.parentElement)) continue;
-      const range = document.createRange(); range.selectNodeContents(node);
-      if ([...range.getClientRects()].some(box => box.width > 0 && box.height > 0)) text.push(node.textContent);
-    }
-    return { header: !!root.querySelector('.dash-widget-header h2'),
-      body: !!root.querySelector('.dash-widget-scaled')?.children.length,
-      text: text.join('\n') };
-  });
+    return right > left && bottom > top;
+  }
+  const text = [], walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const node = walker.currentNode;
+    if (!node.textContent.trim() || !node.parentElement || !shown(node.parentElement)) continue;
+    const range = document.createRange(); range.selectNodeContents(node);
+    if ([...range.getClientRects()].some(box => box.width > 0 && box.height > 0)) text.push(node.textContent);
+  }
+  return { header: !!root.querySelector('.dash-widget-header h2'),
+    body: !!root.querySelector('.dash-widget-scaled')?.children.length,
+    text: text.join('\n') };
 }
+
+const surfaceData = locator => locator.evaluate(surfaceModel);
 
 export function modelError(list) {
   if (!list.complete || list.historyComplete === false || !Number.isSafeInteger(list.total) || list.total < 0

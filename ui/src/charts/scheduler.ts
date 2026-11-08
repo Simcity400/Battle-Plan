@@ -26,9 +26,13 @@ const MAX_DT = 64;
 /** What painting may take of a frame, leaving the rest of its 16.7 ms to style, layout and the compositor. */
 export const PAINT_BUDGET_MS = 6;
 
+/** The canvas a task draws into says, as `drawPending`, whether a draw it was asked for has yet to run: a property, not an
+ * attribute, so marking it costs no style work. The acceptance suite reads it to time a chart to its drawing. */
+type Drawn = Element & { drawPending?: boolean };
+
 export class FrameScheduler {
   /** `woken` records a wake that arrives while the task is drawing, so it is not lost. */
-  private readonly tasks = new Map<FrameTask, { visible: boolean; awake: boolean; woken: boolean }>();
+  private readonly tasks = new Map<FrameTask, { visible: boolean; awake: boolean; woken: boolean; element: Drawn | null }>();
   private handle: number | null = null;
   private last: number | null = null;
   /** The first task the last frame's budget left waiting. */
@@ -37,11 +41,13 @@ export class FrameScheduler {
 
   constructor(host: FrameHost) { this.host = host; }
 
-  /** Adds a task, awake and visible; the returned function removes it. */
-  add(task: FrameTask): () => void {
-    this.tasks.set(task, { visible: true, awake: true, woken: false });
+  /** Adds a task, awake and visible, drawing into `element`; the returned function removes it. */
+  add(task: FrameTask, element: Element | null = null): () => void {
+    const state = { visible: true, awake: true, woken: false, element: element as Drawn | null };
+    this.tasks.set(task, state);
+    if (state.element) state.element.drawPending = true;
     this.schedule();
-    return () => { this.tasks.delete(task); };
+    return () => { if (state.element) state.element.drawPending = false; this.tasks.delete(task); };
   }
 
   /** Asks for a frame: data, size, theme or pointer changed. */
@@ -50,6 +56,7 @@ export class FrameScheduler {
     if (!state) return;
     state.awake = true;
     state.woken = true;
+    if (state.element && state.visible) state.element.drawPending = true;
     this.schedule();
   }
 
@@ -58,6 +65,7 @@ export class FrameScheduler {
     const state = this.tasks.get(task);
     if (!state || state.visible === visible) return;
     state.visible = visible;
+    if (state.element) state.element.drawPending = visible;
     if (visible) { state.awake = true; this.schedule(); }
   }
 
@@ -96,6 +104,7 @@ export class FrameScheduler {
       let again = false;
       try { again = task.frame({ now, dt, deadline: started + PAINT_BUDGET_MS }); } catch (error) { console.error(error); }
       state.awake = again || state.woken;
+      if (state.element && !state.woken) state.element.drawPending = false;
     }
     if (this.hasRunnableTask()) this.schedule();
     else this.last = null;

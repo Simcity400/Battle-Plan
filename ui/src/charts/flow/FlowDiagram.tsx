@@ -244,7 +244,7 @@ export default function FlowDiagram(props: FlowDiagramProps) {
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => { scheduler.wake(current); if (keyed.current) queueMicrotask(() => showKeyed.current()); };
-    const remove = scheduler.add(current);
+    const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; labelWidth = 0; wake(); });
     const observer = new ResizeObserver(() => wake());
     observer.observe(element);

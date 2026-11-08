@@ -47,7 +47,8 @@ fn log() -> Option<&'static Log> {
     LOG.get_or_init(open).as_ref()
 }
 
-fn epoch_ms() -> f64 {
+/// Milliseconds since the Unix epoch, the clock the host and the page measure with too.
+pub(crate) fn epoch_ms() -> f64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
@@ -205,8 +206,9 @@ thread_local! {
     static GPU: RefCell<VecDeque<(u64, Result<f64, String>)>> = const { RefCell::new(VecDeque::new()) };
     static STARTED: Cell<Option<Instant>> = const { Cell::new(None) };
     static PREVIOUS: Cell<Option<Instant>> = const { Cell::new(None) };
-    /// The last paint's milliseconds, whole and waiting for a swapchain image.
-    static PAINTED: Cell<Option<(f64, f64)>> = const { Cell::new(None) };
+    /// The last paint's milliseconds, whole and waiting for a swapchain image, and the epoch
+    /// milliseconds it ended.
+    static PAINTED: Cell<Option<(f64, f64, f64)>> = const { Cell::new(None) };
 }
 
 /// eframe painted and presented a frame after its `ui` pass, in `elapsed`, `acquire_secs` of it
@@ -217,6 +219,7 @@ pub(crate) fn frame_painted(elapsed: Duration, acquire_secs: f32) {
             painted.set(Some((
                 elapsed.as_secs_f64() * 1000.0,
                 f64::from(acquire_secs) * 1000.0,
+                epoch_ms(),
             )));
         });
     }
@@ -254,8 +257,9 @@ pub(crate) fn gpu_times(times: Vec<(u64, Result<f64, String>)>) {
     }
 }
 
-/// Egui's paint and the present fall outside `work_ms`, inside the interval only; the record
-/// carries the paint that ended the previous frame (`paint_ms`, `acquire_ms`), null when none did.
+/// Egui's output, tessellation, paint and present fall outside `work_ms`, inside the interval
+/// only; the record carries the paint that ended the previous frame (`paint_ms`, `acquire_ms`,
+/// and `painted_at`, when it was presented), null when none did.
 pub(crate) fn frame_end() {
     let Some(log) = log() else {
         return;
@@ -270,9 +274,15 @@ pub(crate) fn frame_end() {
             || "null".to_owned(),
             |previous| format!("{:.3}", started.duration_since(previous).as_secs_f64() * 1000.0),
         );
-    let (paint, acquire) = PAINTED.with(Cell::take).map_or_else(
-        || ("null".to_owned(), "null".to_owned()),
-        |(paint, acquire)| (format!("{paint:.3}"), format!("{acquire:.3}")),
+    let (paint, acquire, painted) = PAINTED.with(Cell::take).map_or_else(
+        || ("null".to_owned(), "null".to_owned(), "null".to_owned()),
+        |(paint, acquire, painted)| {
+            (
+                format!("{paint:.3}"),
+                format!("{acquire:.3}"),
+                format!("{painted:.3}"),
+            )
+        },
     );
     let frame = FRAME.with(|frame| frame.replace(frame.get() + 1));
     // The GPU time of an earlier frame, read back since; `gpu_frame` names it.
@@ -285,7 +295,7 @@ pub(crate) fn frame_end() {
     let pid = std::process::id();
     log.send(
         format!(
-            r#"{{"t":"map","at":{at:.3},"pid":{pid},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error}}}"#
+            r#"{{"t":"map","at":{at:.3},"pid":{pid},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error},"painted_at":{painted}}}"#
         ),
         at,
     );

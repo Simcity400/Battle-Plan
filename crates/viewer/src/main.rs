@@ -41,6 +41,7 @@ mod playback_cost;
 mod raid_lane;
 mod render;
 mod renderer_host;
+mod suite_input;
 #[cfg(test)]
 mod unit_scale_tests;
 mod visual_fallback;

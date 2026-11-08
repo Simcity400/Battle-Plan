@@ -674,7 +674,7 @@ export default function Timeline(props: TimelineProps) {
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => scheduler.wake(current);
-    const remove = scheduler.add(current);
+    const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; labelsFitted = false; wake(); });
     const measureView = () => {
       const parent = scrollParent(spacerElement);

@@ -1,4 +1,4 @@
-import { queryFailure } from './queryError.ts';
+import { queryFailure, RefusedError } from './queryError.ts';
 import type { QueryError } from '../generated/dashboard';
 import { validatePreparationReply, validatePreparationPreferences } from '../shell/preparation/contract.ts';
 import { preparedReplyData, validateProductReply } from './client.ts';
@@ -97,7 +97,7 @@ async function sent<T>(
   const abort = () => { void invoke('dashboard_cancel', { requestId }).catch(() => {}); };
   signal.addEventListener('abort', abort, { once: true });
   const perf = perfLog, started = perf ? performance.now() : 0, timing: QueryTiming | undefined = perf ? {} : undefined;
-  let outcome: 'ok' | 'cancelled' | 'error' = 'error';
+  let outcome: 'ok' | 'cancelled' | 'error' = 'error', failure: string | undefined;
   try {
     const result = await rawInvoke<T>(command, { ...body, requestId }, timing);
     if (signal.aborted) {
@@ -108,10 +108,11 @@ async function sent<T>(
     return result;
   } catch (error) {
     if (signal.aborted) { outcome = 'cancelled'; throw cancelled(); }
+    if (perf) failure = error instanceof RefusedError ? `refused: ${error.text}` : `failed: ${error instanceof Error ? error.message : String(error)}`;
     throw error;
   } finally {
     signal.removeEventListener('abort', abort);
-    if (perf && timing) perf.query(command, body, requestId, started, timing, outcome);
+    if (perf && timing) perf.query(command, body, requestId, started, timing, outcome, failure);
   }
 }
 

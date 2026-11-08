@@ -107,6 +107,22 @@ export interface DashboardMapState {
   /** Playing, why a newer hour the clock passed is not shown: it failed or waits for memory. */
   behindReason?: string | null;
   error: string | null;
+  /** The map mode token of the hour on screen; null until a frame is drawn. */
+  mapMode?: string | null;
+  /** When the viewer drew the first frame showing this, in milliseconds since the Unix epoch. */
+  drawnAt?: number | null;
+  /** What the pointer highlights in that frame: `button:…`, `division:<id>`, `railway_gun:<id>` or `task_force:<id>`. */
+  hover?: string | null;
+  /** The map tooltip that frame drew, as `province:<id>`. */
+  tooltip?: string | null;
+  /** The game's own delay before a tooltip shows on a still pointer. */
+  tooltipDelayMs?: number | null;
+  /** The camera's eye height in that frame, its zoom. */
+  zoom?: number | null;
+  /** The camera's look-at point in that frame, world (x, z). */
+  center?: [number, number] | null;
+  /** The view's options that frame drew with. */
+  options?: MapOptions | null;
 }
 
 export type MapSettingsTarget = { scope: 'global' } | { scope: 'campaign' } | { scope: 'widget'; id: string };

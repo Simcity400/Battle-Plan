@@ -191,7 +191,7 @@ function WidgetFrame({ widget, template, runtime, editing, onApply, onRemove }: 
     });
     return () => { stop(); for (const owner of owners.values()) failures.put(owner, []); };
   }, [runtime.maps, widget.id, failures, mapRecording]);
-  return <article ref={element} className={`dash-widget kind-${widget.kind}`} aria-label={widget.title}>
+  return <article ref={element} className={`dash-widget kind-${widget.kind}`} data-widget={widget.id} aria-label={widget.title}>
     <header className="dash-widget-header">
       {editing && <span className="dash-drag-grip" data-tooltip="Drag to move" aria-hidden="true"><Icon name="grip" /></span>}
       <span className="dash-widget-icon" aria-hidden="true" data-widget-icon={widget.id} style={icon.colour ? { color: icon.colour } : undefined}

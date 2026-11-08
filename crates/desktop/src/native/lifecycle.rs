@@ -390,6 +390,15 @@ impl NativeHost {
                 );
                 return;
             }
+            NativeEvent::MapModes { view_id, modes } => {
+                // The web interface's own map mode control offers what the view's picker does.
+                drop(inner);
+                let _ = app.emit(
+                    "dashboard-map-modes",
+                    serde_json::json!({ "viewId": view_id, "modes": modes }),
+                );
+                return;
+            }
             NativeEvent::MapToggle { view_id, toggle } => {
                 drop(inner);
                 let _ = app.emit(

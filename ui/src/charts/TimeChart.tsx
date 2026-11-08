@@ -486,7 +486,7 @@ export default function TimeChart(props: TimeChartProps) {
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => scheduler.wake(current);
-    const remove = scheduler.add(current);
+    const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
 
     const local = (event: PointerEvent | WheelEvent | MouseEvent) => {

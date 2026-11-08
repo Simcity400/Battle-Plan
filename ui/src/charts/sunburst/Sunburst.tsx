@@ -328,7 +328,7 @@ export default function Sunburst(props: SunburstProps) {
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => scheduler.wake(current);
-    const remove = scheduler.add(current);
+    const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; cached = null; wake(); });
     const observer = new ResizeObserver(() => wake());
     observer.observe(element);

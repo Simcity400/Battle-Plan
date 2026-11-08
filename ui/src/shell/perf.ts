@@ -6,7 +6,8 @@ import { attributeCommits, takeCommits } from './commitCount.ts';
 export interface QueryTiming { received?: number; parsed?: number; bytes?: number; through?: number }
 
 interface MapStateSample { id: string; hour: number | null; fraction: number | null; sequence: number; requestedSequence: number; loading: boolean;
-  behind?: number | null; behindReason?: string | null; error: string | null }
+  behind?: number | null; behindReason?: string | null; error: string | null; mapMode?: string | null; drawnAt?: number | null; hover?: string | null; zoom?: number | null;
+  tooltip?: string | null; tooltipDelayMs?: number | null; center?: [number, number] | null }
 
 /** Where a dashboard map should be now, in its own recording's hours. */
 export interface MapExpectation { position: number; follow: boolean }
@@ -69,8 +70,8 @@ export class PerfRecorder {
   private frameRequest = 0;
   private timer: ReturnType<typeof setInterval>;
   private lastFrame: number | null = null;
-  /** Milliseconds from the last frame's start until the main thread had rendered it; null until it has. */
-  private main: number | null = null;
+  /** Frame records waiting for their frame's rendering to end, which gives their `main`. */
+  private waiting: { record: PerfRecord; of: number }[] = [];
   /** Each widget's work since the last frame record. */
   private work = new Map<string, Partial<Record<WidgetWork, number>>>();
   /** Commits since the last frame record by the parts of the page that rendered in them. */
@@ -94,9 +95,17 @@ export class PerfRecorder {
           top: top ? `${top.invoker ?? ''} ${top.sourceURL ?? ''}`.trim() : null });
       }
     });
-    // A message posted from a frame's callback runs once the main thread has rendered that frame.
+    // A message posted from a frame's callback runs once the main thread has rendered that frame; it names its frame, so a
+    // frame whose rendering ends after the next frame began still gets its own time.
     const rendered = new MessageChannel();
-    rendered.port1.onmessage = () => { if (this.lastFrame !== null) this.main = round(performance.now() - this.lastFrame); };
+    const mains = new Map<number, number>();
+    rendered.port1.onmessage = ({ data }: MessageEvent<number>) => {
+      const main = round(performance.now() - data);
+      const at = this.waiting.findIndex(entry => entry.of === data);
+      if (at < 0) { mains.set(data, main); return; }
+      const [entry] = this.waiting.splice(at, 1);
+      this.push({ ...entry.record, main });
+    };
     const frame = (now: number) => {
       if (this.stopped) return;
       if (this.lastFrame !== null) {
@@ -104,12 +113,13 @@ export class PerfRecorder {
         const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
         this.work.clear();
         this.zones.clear();
-        this.push({ t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
-          late: round(performance.now() - now), main: this.main, commits: takeCommits(), ...(work && { work }), ...(zones && { zones }) });
+        const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
+          late: round(performance.now() - now), commits: takeCommits(), ...(work && { work }), ...(zones && { zones }) };
+        const main = mains.get(this.lastFrame);
+        if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
       } else { takeCommits(); this.zones.clear(); }
       this.lastFrame = now;
-      this.main = null;
-      rendered.port2.postMessage(null);
+      rendered.port2.postMessage(now);
       this.frameRequest = requestAnimationFrame(frame);
     };
     this.frameRequest = requestAnimationFrame(frame);
@@ -185,20 +195,22 @@ export class PerfRecorder {
       const expected = expect(state.id);
       this.push({ t: 'map_state', at, view: state.id, hour: state.hour, fraction: state.fraction, seq: state.sequence, req: state.requestedSequence,
         loading: state.loading, behind: state.behind ?? null, behind_reason: state.behindReason ?? null,
+        mode: state.mapMode ?? null, drawn_at: state.drawnAt ?? null, hover: state.hover ?? null, zoom: state.zoom ?? null,
+        tooltip: state.tooltip ?? null, tooltip_delay_ms: state.tooltipDelayMs ?? null, center: state.center ?? null,
         blank: state.error != null, playing: this.playing,
         follow: expected?.follow ?? null, expected: expected ? round(expected.position) : null });
     }
   }
 
-  /** One request to the host, from send to its parsed reply or failure. */
-  query(command: string, body: Record<string, unknown>, id: string, started: number, timing: QueryTiming, outcome: 'ok' | 'cancelled' | 'error'): void {
+  /** One request to the host, from send to its parsed reply or failure, with the failure's kind and text. */
+  query(command: string, body: Record<string, unknown>, id: string, started: number, timing: QueryTiming, outcome: 'ok' | 'cancelled' | 'error', failure?: string): void {
     const query = body.query as { product?: unknown; params?: unknown } | undefined;
     const { received, parsed, bytes, through } = timing;
     this.push({ t: 'q', at: epoch(started), id, cmd: command, product: typeof query?.product === 'string' ? query.product : command,
       hour: paramsHour(query?.params), refresh: typeof body.refresh === 'boolean' ? body.refresh : null, outcome,
       ms: round(performance.now() - started), ipc_ms: received === undefined ? null : round(received - started),
       parse_ms: received === undefined || parsed === undefined ? null : round(parsed - received), bytes: bytes ?? null,
-      ...(through !== undefined && { through }) });
+      ...(through !== undefined && { through }), ...(failure !== undefined && { failure }) });
   }
 
   /** A product answered by the page's own cache (`hit`) or by joining a read in flight (`joined`). */
@@ -238,8 +250,16 @@ export class PerfRecorder {
     return this.flush();
   }
 
+  /** Every frame before now gets its main-thread time, or says it has none: the rendered message of a frame comes after
+   * its rendering, so a frame and a task are enough for every one begun. */
+  private async settleFrames(): Promise<void> {
+    await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    for (const { record } of this.waiting.splice(0)) this.push({ ...record, main: null });
+  }
+
   /** Everything up to the stop reaches the host before it waits for the maps and summarizes. */
   async stop(): Promise<unknown> {
+    await this.settleFrames();
     this.push({ t: 'stop', at: epoch(performance.now()) }, true);
     await this.flush();
     return invoke('perf_stop');
@@ -247,6 +267,7 @@ export class PerfRecorder {
 
   /** Stops recording for good and writes what is held; true when nothing was lost doing so. */
   async finish(): Promise<boolean> {
+    await this.settleFrames();
     this.stopped = true;
     clearInterval(this.timer);
     attributeCommits(null);

@@ -294,7 +294,7 @@ export default function RaceChart(props: RaceChartProps) {
     const current: FrameTask = { frame: draw };
     task.current = current;
     const wake = () => scheduler.wake(current);
-    const remove = scheduler.add(current);
+    const remove = scheduler.add(current, element);
     const unsubscribe = subscribeTokens(next => { tokens = next; wake(); });
     const local = (event: PointerEvent | MouseEvent): Pointer => ({
       ...toLocal(event.clientX, event.clientY, element.getBoundingClientRect(), element.clientWidth, element.clientHeight), clientX: event.clientX, clientY: event.clientY });

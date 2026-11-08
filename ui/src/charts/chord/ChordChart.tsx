@@ -184,7 +184,7 @@ export default function ChordChart(props: ChordChartProps) {
       return eased.moving || Boolean(frame.playing);
     } };
     task.current = drawing;
-    const remove = scheduler.add(drawing); scheduler.setVisible(drawing, latest.current.props.active);
+    const remove = scheduler.add(drawing, element); scheduler.setVisible(drawing, latest.current.props.active);
     const resize = (entries: ResizeObserverEntry[]) => {
       const box = entries[0]?.devicePixelContentBoxSize?.[0];
       device = box ? { width: box.inlineSize, height: box.blockSize } : undefined; wake();

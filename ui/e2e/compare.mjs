@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { PNG } from 'pngjs';
 import { readJSON } from './cache.mjs';
@@ -41,7 +41,24 @@ function canonicalLists(lists) {
   });
 }
 
-export async function compareCaptures(baseDirectory, headDirectory) {
+/** The head image with every pixel that differs from the base in red and the rest dimmed, and how many differ. */
+export function diffImage(base, head) {
+  const out = new PNG({ width: head.width, height: head.height });
+  let changed = 0;
+  for (let index = 0; index < head.data.length; index += 4) {
+    const same = base.data[index] === head.data[index] && base.data[index + 1] === head.data[index + 1]
+      && base.data[index + 2] === head.data[index + 2] && base.data[index + 3] === head.data[index + 3];
+    if (!same) changed++;
+    out.data[index] = same ? head.data[index] >> 2 : 255;
+    out.data[index + 1] = same ? head.data[index + 1] >> 2 : 0;
+    out.data[index + 2] = same ? head.data[index + 2] >> 2 : 0;
+    out.data[index + 3] = 255;
+  }
+  return { png: PNG.sync.write(out), changed };
+}
+
+/** `diffDirectory`, when given, receives a diff image for each same-sized capture whose pixels differ. */
+export async function compareCaptures(baseDirectory, headDirectory, { diffDirectory = null } = {}) {
   const base = await readJSON(path.join(baseDirectory, 'manifest.json'));
   const head = await readJSON(path.join(headDirectory, 'manifest.json'));
   const identity = item => item.caseId ?? item.kind;
@@ -50,7 +67,7 @@ export async function compareCaptures(baseDirectory, headDirectory) {
   const kinds = new Set([...base.items.map(identity), ...head.items.map(identity)]);
   const results = [];
   for (const key of kinds) {
-    let status = 'ERROR', reason;
+    let status = 'ERROR', reason, diff;
     const a = base.items.find(item => identity(item) === key), b = head.items.find(item => identity(item) === key);
     const kind = a?.kind ?? b?.kind;
     try {
@@ -68,8 +85,17 @@ export async function compareCaptures(baseDirectory, headDirectory) {
       const sameModel = JSON.stringify(models[0]) === JSON.stringify(models[1]);
       status = samePixels && sameModel ? 'PASS' : 'DIFF';
       if (status === 'DIFF') reason = `view-model=${sameModel ? 'same' : 'different'}, pixels=${samePixels ? 'same' : 'different'}`;
+      const sameSize = pixels[0].width === pixels[1].width && pixels[0].height === pixels[1].height;
+      if (status === 'DIFF' && !samePixels && !sameSize) reason += `, size ${pixels[0].width}x${pixels[0].height} became ${pixels[1].width}x${pixels[1].height}`;
+      if (diffDirectory && !samePixels && sameSize) {
+        const { png, changed } = diffImage(pixels[0], pixels[1]);
+        diff = `${String(key).replace(/[^\w.-]+/g, '_')}.diff.png`;
+        await mkdir(diffDirectory, { recursive: true });
+        await writeFile(path.join(diffDirectory, diff), png);
+        reason += `, ${changed} pixels differ`;
+      }
     } catch (error) { reason = String(error); }
-    results.push({ kind, ...(a?.caseId || b?.caseId ? { caseId: key } : {}), status, ...(reason ? { reason } : {}) });
+    results.push({ kind, ...(a?.caseId || b?.caseId ? { caseId: key } : {}), status, ...(reason ? { reason } : {}), ...(diff ? { diff } : {}) });
   }
   const counts = Object.fromEntries(['PASS', 'DIFF', 'ERROR'].map(status => [status, results.filter(result => result.status === status).length]));
   return { pass: base.complete && head.complete && kinds.size > 0 && counts.PASS === kinds.size, counts, results };

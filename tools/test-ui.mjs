@@ -26,7 +26,7 @@ export const browserTests = [
   'ui/src/widgets/politicsSizes.dom.test.ts',
   tabFullTest,
 ];
-const toolTests = ['tools/canvas-page.test.ts', 'tools/test-ui.test.mjs'];
+const toolTests = ['tools/canvas-page.test.ts', 'tools/test-ui.test.mjs', 'tools/e2e/verdicts.test.mjs'];
 const pureBrowserSupportTests = new Set(['tools/canvas-page.test.ts']);
 
 export async function discoverTests(root = repositoryRoot) {

@@ -75,6 +75,7 @@ mod drop;
 mod embedded;
 mod faction_highlight;
 pub(crate) mod highlight;
+mod hover_report;
 pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
@@ -976,6 +977,16 @@ pub struct Viewer {
     loaded_config: Option<Config>,
     rendered: Option<Playhead>,
     rendered_sequence: u64,
+    /// When the latest frame was drawn, in milliseconds since the Unix epoch.
+    drawn_at: Option<f64>,
+    /// The dashboard view's options the frame being drawn applies, and those the latest frame drew with.
+    applying_options: Option<dashboard::protocol::MapOptions>,
+    drawn_options: Option<dashboard::protocol::MapOptions>,
+    /// What the pointer highlights in the latest frame ([`hover_report::describe`]).
+    hover: Option<String>,
+    /// The map tooltip the latest frame drew, and the game's delay before one shows.
+    tooltip: Option<String>,
+    tooltip_delay_ms: Option<f32>,
     /// Milliseconds from planning a map hour to having it built, smoothed.
     build_latency_ms: Option<f64>,
     /// The newest hour the playing clock passed that could not be shown, and why.
@@ -1578,6 +1589,12 @@ impl Viewer {
             loaded_config: None,
             rendered: None,
             rendered_sequence: 0,
+            drawn_at: None,
+            applying_options: None,
+            drawn_options: None,
+            hover: None,
+            tooltip: None,
+            tooltip_delay_ms: None,
             build_latency_ms: None,
             held_back: None,
             perf_view: None,
@@ -2026,6 +2043,7 @@ impl Viewer {
             .clone()
             .map_or(Country::Recorded, Country::Tag);
         self.perspective.fog = target.options.fog;
+        self.applying_options = Some(target.options.clone());
         if crate::perf_log::enabled() && self.perf_view.as_deref() != Some(target.id.as_str()) {
             self.perf_view = Some(target.id.clone());
         }
@@ -2225,8 +2243,17 @@ impl Viewer {
             behind,
             behind_reason,
             error,
+            map_mode: self.rendered.map(|_| self.shown_mode().token()),
+            drawn_at: self.rendered.and(self.drawn_at),
+            hover: self.rendered.and(self.hover.clone()),
+            tooltip: self.rendered.and(self.tooltip.clone()),
+            tooltip_delay_ms: self.rendered.and(self.tooltip_delay_ms),
+            zoom: self.rendered.and(self.last_view.as_ref().map(|view| view.camera.height)),
+            center: self.rendered.and(self.last_view.as_ref().map(|view| view.camera.center)),
+            options: self.rendered.and(self.drawn_options.clone()),
         }
     }
+
 
     /// Everything the hour on screen could not draw exactly, collected after its overlay and
     /// hover. Current tooltip and combat gaps lead; persistent content notes follow. Each
@@ -5583,6 +5610,18 @@ impl Viewer {
                 _ => None,
             });
             laps.lap("map_tooltip");
+            self.hover = hover_report::describe(
+                point.and_then(|point| picker_drawn.as_ref()?.control_at(point)),
+                self.counter_view.hovered,
+            );
+            self.tooltip = None;
+            self.tooltip_delay_ms = document
+                .icons
+                .combat
+                .tooltip_defines
+                .as_ref()
+                .ok()
+                .map(|defines| defines.timing[0] * 1000.0);
             let mut tooltip_refused = map_hit
                 .as_ref()
                 .map(|(text, _, _)| text.refused.clone())
@@ -5614,6 +5653,18 @@ impl Viewer {
                 tooltip_time,
             ) && self.graphics.tooltips
             {
+                // The map's own tooltip, with or without its delayed body, names its province; any
+                // other drawn tooltip, such as one fading after the pointer left, is only `shown`.
+                self.tooltip = Some(
+                    map_hit
+                        .as_ref()
+                        .filter(|(tip, _, _)| text.starts_with(tip.title.as_str()))
+                        .and_then(|(_, _, province)| *province)
+                        .map_or_else(
+                            || "shown".to_owned(),
+                            |province| format!("province:{province}"),
+                        ),
+                );
                 let refused = self
                     .prepared_overlay
                     .as_ref()
@@ -6174,6 +6225,8 @@ impl Viewer {
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         self.drew_frame = true;
+        self.drawn_at = Some(crate::perf_log::epoch_ms());
+        self.drawn_options.clone_from(&self.applying_options);
         self.rendered = Some(Playhead {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
@@ -6442,7 +6495,7 @@ fn present_audio(
 }
 
 impl eframe::App for Viewer {
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, input: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         if self.options.window_dump {
             // Dumps keep window geometry, but never consume live input.
             input.events.clear();
@@ -6450,7 +6503,9 @@ impl eframe::App for Viewer {
             input.hovered_files.clear();
             input.dropped_files.clear();
             input.focused = false;
+            return;
         }
+        crate::suite_input::apply(ctx, input);
     }
 
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -6547,6 +6602,7 @@ impl Viewer {
                         picker::ViewEvent::Toggle(toggle) => {
                             embedded.report_view_toggle(&view, toggle)
                         }
+                        picker::ViewEvent::Modes(modes) => embedded.report_view_modes(&view, modes),
                     }
                 }
             }
@@ -6562,6 +6618,9 @@ impl Viewer {
                         .report_view_options(dashboard::protocol::CAMPAIGN_MAP_VIEW, options),
                     picker::ViewEvent::Toggle(toggle) => {
                         embedded.report_view_toggle(dashboard::protocol::CAMPAIGN_MAP_VIEW, toggle)
+                    }
+                    picker::ViewEvent::Modes(modes) => {
+                        embedded.report_view_modes(dashboard::protocol::CAMPAIGN_MAP_VIEW, modes)
                     }
                 }
             }

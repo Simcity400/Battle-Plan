@@ -395,7 +395,7 @@ impl Viewer {
                         remaining: 0,
                         pinned: None,
                         exit: false,
-                        time: None,
+                        time: crate::suite_input::capture_clock(),
                         step: 0.0,
                         frames: 1,
                         index: 0,

@@ -425,5 +425,76 @@ class Disk(unittest.TestCase):
             self.assertEqual(dt.gigabytes(None), "absent")
 
 
+class Acceptance(unittest.TestCase):
+    def setUp(self):
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.log = self.root / "e2e.log"
+        self.build = dt.Build(self.root / "target", self.root, {"BATTLE_PLAN_GAME_DIR": "G:/game"}, 1e9, "F:/fixture")
+
+    def reporting(self, code, report):
+        def step(command, log, environment, seconds):
+            self.command = command
+            if report is not None:
+                (self.root / "e2e").mkdir(exist_ok=True)
+                (self.root / "e2e" / "e2e.json").write_text(json.dumps(report), encoding="utf-8")
+            return code
+        return mock.patch.object(dt, "run_step", side_effect=step)
+
+    def test_the_fixture_reaches_the_checked_out_runner_and_the_task(self):
+        with mock.patch.dict(os.environ, {"BATTLE_PLAN_E2E_FIXTURE": ""}):
+            args = dt.parse(["run", "--game-dir", "game", "--fixture", "fixture"])
+        self.assertEqual(args.fixture, os.path.abspath("fixture"))
+        with mock.patch.dict(os.environ, {"BATTLE_PLAN_E2E_FIXTURE": "named"}):
+            self.assertEqual(dt.parse(["install", "--game-dir", "game"]).fixture, os.path.abspath("named"))
+
+    def test_no_fixture_fails_the_step_by_name_without_running_it(self):
+        self.build.fixture = None
+        with self.reporting(0, None) as step:
+            code, outcome = dt.acceptance(self.build, self.log)
+        step.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn("no fixture configured", outcome)
+
+    def test_the_suite_runs_on_the_nights_build_into_the_run_folder(self):
+        with self.reporting(0, {"passed": True, "failed": 0}):
+            self.assertEqual(dt.acceptance(self.build, self.log), (0, "passed: e2e/e2e.md"))
+        self.assertEqual(self.command[1:4], ["tools/e2e/suite.py", "run", "--app"])
+        for flag, value in (("--app", str(dt.E2E_APP)), ("--fixture", "F:/fixture"), ("--game-dir", "G:/game"),
+                            ("--out", str(self.root / "e2e")), ("--state", str(dt.E2E_STATE))):
+            self.assertEqual(self.command[self.command.index(flag) + 1], value)
+
+    def test_failing_rows_a_suite_that_could_not_run_and_a_timeout_each_fail(self):
+        with self.reporting(1, {"passed": False, "failed": 7}):
+            self.assertEqual(dt.acceptance(self.build, self.log), (1, "failed: 7 failing rows, e2e/e2e.md"))
+        with self.reporting(2, None):
+            self.assertEqual(dt.acceptance(self.build, self.log)[1], "failed (exit 2): the suite could not run")
+        with self.reporting(None, None):
+            self.assertEqual(dt.acceptance(self.build, self.log), (1, "stopped: out of time"))
+
+    def test_the_suite_runs_after_the_build_and_ui_install_it_needs(self):
+        slugs = [slug for _, slug, _, _ in dt.steps()]
+        needs = dict((slug, needs) for _, slug, _, needs in dt.steps())
+        self.assertEqual(needs["e2e"], ("e2e-build", "ui-install"))
+        for need in needs["e2e"]:
+            self.assertLess(slugs.index(need), slugs.index("e2e"))
+
+    def test_a_step_needing_several_is_not_run_when_any_failed_and_names_them(self):
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        folder = root / "run"
+        folder.mkdir()
+        ran = []
+        plan = [
+            ("First", "first", lambda build, log: (0, "passed"), None),
+            ("Second", "second", lambda build, log: (1, "failed"), None),
+            ("Both", "both", lambda build, log: ran.append("both") or (0, "passed"), ("first", "second")),
+        ]
+        args = dt.parse(["run", "--game-dir", "game", "--continue-run", "c" * 40, "2026-11-08T03:00:00", "1e12", str(folder)])
+        with mock.patch.multiple(dt, WORKTREE=root), mock.patch.object(dt, "steps", return_value=plan),                 mock.patch.object(dt, "git", return_value="c" * 40), mock.patch.object(dt, "target_dir", return_value=root / "target"):
+            dt.run(args)
+        lines = json.loads((folder / "result.json").read_text(encoding="utf-8"))["lines"]
+        self.assertEqual(ran, [])
+        self.assertIn("| Both | not run: second failed | | |", lines)
+
+
 if __name__ == "__main__":
     unittest.main()

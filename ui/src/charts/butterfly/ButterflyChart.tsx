@@ -267,7 +267,7 @@ export default function ButterflyChart<T extends ButterflyItem>(props: Butterfly
       return moving;
     } };
     task.current = frameTask;
-    const remove = scheduler.add(frameTask);
+    const remove = scheduler.add(frameTask, element);
     scheduler.setVisible(frameTask, latest.current.props.active);
     const observer = new ResizeObserver(() => scheduler.wake(frameTask));
     observer.observe(element);

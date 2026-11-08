@@ -111,6 +111,14 @@ pub enum NativeEvent {
         view_id: String,
         options: MapOptions,
     },
+    /// The modes a view's map mode picker offers, in its order, sent when they change, so the
+    /// host's own map mode control offers the same choices and chooses them through
+    /// [`MapOptions::map_mode`].
+    MapModes {
+        #[serde(rename = "viewId")]
+        view_id: String,
+        modes: Vec<MapModeChoice>,
+    },
     /// The map picker clicked a toggle whose setting the host owns.
     MapToggle {
         #[serde(rename = "viewId")]
@@ -483,6 +491,16 @@ pub struct MapOptions {
 /// The view id the desktop's campaign map reports its picker changes under.
 pub const CAMPAIGN_MAP_VIEW: &str = "campaign-map";
 
+/// One mode a view's picker offers: its [`MapOptions::map_mode`] token, the name the picker
+/// shows, and why the recording cannot draw it, if it cannot.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MapModeChoice {
+    pub token: String,
+    pub label: String,
+    pub unavailable: Option<String>,
+}
+
 /// A picker toggle click on a setting the host owns: the host flips its own current value, each
 /// click in order on its one write path, so quick clicks each count and nothing is pending in the
 /// viewer, which shows the value the host last applied.
@@ -691,6 +709,27 @@ pub struct DashboardMapState {
     /// Playing, why a newer hour the clock passed is not shown: it failed or waits for memory.
     pub behind_reason: Option<String>,
     pub error: Option<String>,
+    /// The map mode token of the hour on screen; none until a frame is drawn.
+    pub map_mode: Option<String>,
+    /// When the viewer drew the latest frame showing this, in milliseconds since the Unix epoch
+    /// (the clock the host's and the page's measurements share). The first state of a new hour or
+    /// mode carries the time of the first frame that drew it.
+    pub drawn_at: Option<f64>,
+    /// What the pointer highlights in that frame: `button:<control>` for the map's own buttons,
+    /// or `division:<id>`, `railway_gun:<id>` or `task_force:<id>` for a counter; none when it
+    /// highlights nothing. A province draws no highlight, as in the game: only its tooltip.
+    pub hover: Option<String>,
+    /// The tooltip that frame drew: `province:<id>` for the map's own over that province, `shown`
+    /// for any other; none when it drew none.
+    pub tooltip: Option<String>,
+    /// How long the map waits on a still pointer before it shows a tooltip, the game's own delay.
+    pub tooltip_delay_ms: Option<f32>,
+    /// The camera's eye height in world units in that frame, its zoom.
+    pub zoom: Option<f32>,
+    /// The camera's look-at point on the water plane in that frame, world `(x, z)`: where it pans.
+    pub center: Option<[f32; 2]>,
+    /// The view's options that frame drew with.
+    pub options: Option<MapOptions>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
@@ -889,6 +928,32 @@ b"
             serde_json::to_string(&event).unwrap(),
             r#"{"event":"map_toggle","viewId":"m","toggle":{"setting":"dayNight"}}"#
         );
+        let modes = super::NativeEvent::MapModes {
+            view_id: "m".into(),
+            modes: vec![super::MapModeChoice {
+                token: "terrain".into(),
+                label: "Terrain".into(),
+                unavailable: None,
+            }],
+        };
+        assert_eq!(
+            serde_json::to_string(&modes).unwrap(),
+            r#"{"event":"map_modes","viewId":"m","modes":[{"token":"terrain","label":"Terrain","unavailable":null}]}"#
+        );
+    }
+
+    #[test]
+    fn a_map_state_names_the_mode_and_time_of_the_frame_drawn() {
+        let state = super::DashboardMapState {
+            id: "m".into(),
+            hour: Some(7),
+            map_mode: Some("terrain".into()),
+            drawn_at: Some(1.5),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["mapMode"], "terrain");
+        assert_eq!(json["drawnAt"], 1.5);
     }
 
     #[test]

@@ -76,7 +76,7 @@ export default function ContentSetPicker({ label, automatic, choices, selected, 
             }}>
             {window.rows.map((row, offset) => {
               const index = window.start + offset;
-              return <div key={row.value} id={optionId(index)} role="option" aria-selected={chosen.has(row.value)} aria-disabled={!!row.unavailable}
+              return <div key={row.value} id={optionId(index)} role="option" data-value={row.value} aria-selected={chosen.has(row.value)} aria-disabled={!!row.unavailable}
                 aria-setsize={filtered.length} aria-posinset={index + 1} className="content-picker-option" data-active={index === active || undefined}
                 style={{ top: index * COUNTRY_ROW_HEIGHT }} data-tooltip={[row.hint, row.unavailable].filter(Boolean).join('\n') || row.label} onClick={() => toggle(index)}>
                 {row.icon && <img src={row.icon} alt="" />}<span>{row.label}</span>{chosen.has(row.value) && <Icon name="check" />}

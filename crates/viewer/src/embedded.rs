@@ -291,6 +291,8 @@ struct Outgoing {
     view_options: BTreeMap<String, dashboard::protocol::MapOptions>,
     /// Picker toggle clicks in order; each is one flip of a host setting.
     view_toggles: VecDeque<(String, dashboard::protocol::MapToggle)>,
+    /// Each view's latest mode list not yet sent; a newer list replaces it.
+    view_modes: BTreeMap<String, Vec<dashboard::protocol::MapModeChoice>>,
 }
 
 impl Outgoing {
@@ -325,6 +327,7 @@ impl Outgoing {
             && self.fly_aircraft.is_none()
             && self.view_options.is_empty()
             && self.view_toggles.is_empty()
+            && self.view_modes.is_empty()
             && self.ready.is_none()
             && self.details.is_none()
             && self.state.is_none()
@@ -406,12 +409,14 @@ impl Shared {
     }
 }
 
-/// Whether two map states acknowledge the same: the frame's fraction and how far it is behind the
-/// clock change with every frame drawn, and the host shows neither.
+/// Whether two map states acknowledge the same: the frame's fraction, how far it is behind the
+/// clock and when it was drawn change with every frame, and the host shows none of them. So the
+/// first state of a new hour or mode keeps the time of the frame that first drew it.
 fn same_ack(old: &DashboardMapState, new: &DashboardMapState) -> bool {
     let bare = |state: &DashboardMapState| DashboardMapState {
         fraction: None,
         behind: None,
+        drawn_at: None,
         ..state.clone()
     };
     bare(old) == bare(new)
@@ -628,6 +633,10 @@ impl Parent {
                             outgoing.view_toggles.pop_front().map(|(view_id, toggle)| {
                                 NativeEvent::MapToggle { view_id, toggle }
                             }),
+                            outgoing
+                                .view_modes
+                                .pop_first()
+                                .map(|(view_id, modes)| NativeEvent::MapModes { view_id, modes }),
                         ];
                     drop(outgoing);
                     output.output_space.notify_all();
@@ -856,6 +865,18 @@ impl Controller {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         outgoing.view_options.insert(view_id.to_owned(), options);
+        drop(outgoing);
+        self.shared.output_ready.notify_one();
+    }
+
+    /// Reports the modes a view's picker offers, for the host's own map mode control.
+    pub fn report_view_modes(&self, view_id: &str, modes: Vec<dashboard::protocol::MapModeChoice>) {
+        let mut outgoing = self
+            .shared
+            .outgoing
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        outgoing.view_modes.insert(view_id.to_owned(), modes);
         drop(outgoing);
         self.shared.output_ready.notify_one();
     }
@@ -1400,6 +1421,36 @@ mod tests {
         ));
         // Sent once: the press is consumed.
         assert!(outgoing.is_empty() && outgoing.take_toggle_diagnostics().is_none());
+    }
+
+    #[test]
+    fn an_acknowledgement_keeps_the_time_of_the_first_frame_that_drew_it() {
+        let drawn = |hour, mode: &str, at| DashboardMapState {
+            id: "m".into(),
+            hour: Some(hour),
+            map_mode: Some(mode.into()),
+            drawn_at: Some(at),
+            ..Default::default()
+        };
+        // Later frames of the same hour and mode acknowledge nothing new.
+        assert!(same_ack(&drawn(5, "default", 10.0), &drawn(5, "default", 20.0)));
+        assert!(!same_ack(&drawn(5, "default", 10.0), &drawn(5, "terrain", 20.0)));
+        assert!(!same_ack(&drawn(5, "default", 10.0), &drawn(6, "default", 20.0)));
+    }
+
+    #[test]
+    fn a_views_latest_mode_list_replaces_an_unsent_one_and_leaves_on_the_event_pipe() {
+        let mut outgoing = Outgoing::default();
+        let choice = |token: &str| dashboard::protocol::MapModeChoice {
+            token: token.into(),
+            label: token.into(),
+            unavailable: None,
+        };
+        outgoing.view_modes.insert("m".into(), vec![choice("default")]);
+        outgoing.view_modes.insert("m".into(), vec![choice("terrain")]);
+        assert!(!outgoing.is_empty());
+        assert_eq!(outgoing.view_modes.pop_first(), Some(("m".into(), vec![choice("terrain")])));
+        assert!(outgoing.is_empty());
     }
 
     #[test]
