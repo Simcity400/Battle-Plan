@@ -39,7 +39,12 @@ export interface Snapshot {
   omitted?: OmittedLoads | null;
   /** The collector's warning that this release does not recognise the game build. */
   buildWarning?: string | null;
+  /** Dashboard preparation of what this recorder saved; absent or null before it saved any. */
+  preparation?: Preparation | null;
 }
+
+/** Dashboard preparation of saved recordings, in a few words, and whether it failed. */
+export interface Preparation { text: string; failed: boolean }
 
 export type NextLoad = 'continue' | 'newFile';
 /** What new recordings hold: everything, or the campaign map with its battle windows. */

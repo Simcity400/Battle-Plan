@@ -114,6 +114,9 @@ pub fn tooltip(snapshot: &Snapshot) -> String {
     if let Some(problem) = &snapshot.problem {
         text = format!("{text}\n{}", problem.text);
     }
+    if let Some(preparation) = &snapshot.preparation {
+        text = format!("{text}\n{}", preparation.text);
+    }
     if text.encode_utf16().count() <= TOOLTIP_UNITS {
         return text;
     }

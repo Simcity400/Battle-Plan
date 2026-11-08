@@ -394,6 +394,11 @@ impl Recorder {
             let mut inner = self.lock();
             let before = inner.snapshot.clone();
             change(&mut inner);
+            inner.snapshot.preparation =
+                recorder::preparation::summary().map(|summary| snapshot::Preparation {
+                    text: summary.text,
+                    failed: summary.failed,
+                });
             if inner.panel_open && (inner.result || inner.sticky.is_some()) {
                 inner.seen = true;
             }

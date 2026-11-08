@@ -8,6 +8,7 @@
 #[global_allocator]
 static TEST_ALLOCATOR: engine_heap::Heap = engine_heap::Heap;
 
+pub mod background;
 pub mod blocks;
 pub mod config;
 pub mod dto;

@@ -94,6 +94,15 @@ pub struct Snapshot {
     pub capture_mode: Option<&'static str>,
     /// The collector's warning that this release does not recognise the game build.
     pub build_warning: Option<String>,
+    /// Dashboard preparation of what this recorder saved.
+    pub preparation: Option<Preparation>,
+}
+
+/// Dashboard preparation of saved recordings, in a few words, and whether it failed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct Preparation {
+    pub text: String,
+    pub failed: bool,
 }
 
 /// The fields of one collector status publication the panel uses.

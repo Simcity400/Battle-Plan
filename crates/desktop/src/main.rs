@@ -189,6 +189,18 @@ fn seek_map(
 
 fn main() {
     engine_heap::return_freed_memory_promptly();
+    let mut args = std::env::args_os().skip(1);
+    // The recorder's headless preparation: no window, tray or library monitor.
+    if args
+        .next()
+        .is_some_and(|role| role == dashboard::prepared::headless::ROLE)
+    {
+        if let Err(error) = dashboard::prepared::headless::run(args) {
+            eprintln!("{} {error}", dashboard::prepared::headless::ROLE);
+            std::process::exit(1);
+        }
+        return;
+    }
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!(
             "battle-plan\n\nreplay-desktop [recording.battleplan] [viewer options]\n\nMap keeps the existing native viewer. Analytics opens in its own side tab.\n--game-dir and --user-dir override the saved content folders for this run.\nViewer options such as --branch, --hour and --camera are forwarded to the\nnative viewer. --diagnostics shows the maps' technical\nstats and data limitations for this run; F3 or Settings > Diagnostics toggles\nand saves them. Run viewer --help for the full list.\n\nDevelopment: npm run dev\nProduction: npm run build:desktop"

@@ -2664,6 +2664,7 @@ dependencies = [
  "map-snow",
  "once_cell",
  "png 0.18.1",
+ "recorder-platform",
  "recording-upgrade",
  "replay",
  "replay-data",
@@ -8388,6 +8389,7 @@ dependencies = [
 name = "recorder"
 version = "0.1.0"
 dependencies = [
+ "dashboard-core",
  "engine-allocation",
  "engine-dlc",
  "engine-executable",
@@ -8400,6 +8402,7 @@ dependencies = [
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-scripted-localisation",
+ "installed-content-settings",
  "installed-content-states",
  "installed-content-weather",
  "job-priority",
@@ -8420,6 +8423,8 @@ dependencies = [
  "serde",
  "serde_json",
  "test-unify",
+ "uuid",
+ "winapi-util",
  "windows-sys 0.61.2",
  "zstd",
 ]
@@ -8430,6 +8435,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "bitflags 1.3.2",
+ "dashboard-core",
  "engine-native",
  "installed-content-core",
  "installed-content-country-names",
@@ -8439,6 +8445,7 @@ dependencies = [
  "installed-content-raids",
  "installed-content-regions",
  "installed-content-scripted-localisation",
+ "installed-content-settings",
  "installed-content-states",
  "installed-content-weather",
  "hashbrown 0.17.1",
@@ -8455,7 +8462,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "test-unify",
- "uuid",
  "windows-sys 0.59.0",
  "windows-sys 0.61.2",
 ]
@@ -8590,7 +8596,6 @@ dependencies = [
  "installed-content-states",
  "recorder-oracle-support",
  "recorder-test-support",
- "replay",
  "replay-data",
  "replay-derive",
  "replay-frame",
@@ -8840,7 +8845,6 @@ dependencies = [
  "installed-content-states",
  "recorder-oracle-support",
  "recorder-test-support",
- "replay",
  "replay-data",
  "replay-frame",
  "replay-identity",
@@ -9411,14 +9415,12 @@ name = "recorder-sizes"
 version = "0.1.0"
 dependencies = [
  "engine-native",
- "recorder-test-support",
  "replay",
+ "replay-columnar",
  "replay-data",
- "replay-frame",
  "replay-identity",
  "serde_json",
  "test-unify",
- "zstd",
 ]
 
 [[package]]

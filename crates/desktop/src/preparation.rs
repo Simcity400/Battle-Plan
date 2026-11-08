@@ -8,20 +8,23 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::{AppHandle, Manager};
 
-/// The preparation revision, whether the prepared-data volume has room for
-/// library preparation, and each library recording with its replay revision
-/// and its native recordings' stamp.
-type Observation = (u64, bool, Vec<(PathBuf, Option<String>)>);
+/// The preparation revision, the whole GiB free on the prepared-data volume,
+/// and each library recording with its replay revision.
+type Observation = (u64, Option<u64>, Vec<(PathBuf, Option<String>)>);
 
-/// One admission attempt per observed input/worker change. A busy or unchanged
-/// reply ends retries until new external inputs or completed work wake them.
+/// Free space crossing a recording's estimate inside one GiB changes no observation.
+const SPACE_RETRY: Duration = Duration::from_secs(60);
+
+/// One admission attempt per observed input/worker change, and one a minute. A busy or
+/// unchanged reply ends retries until new external inputs or completed work wake them.
 #[derive(Default)]
 struct LibraryAdmission {
     observed: Option<Observation>,
+    admitted: Option<Instant>,
     #[cfg(test)]
     requests: usize,
 }
@@ -65,7 +68,7 @@ impl LibraryAdmission {
     ) -> io::Result<bool> {
         let current: Observation = (
             runtime.preparation_revision(),
-            runtime.background_room(),
+            runtime.background_space(),
             paths
                 .iter()
                 .map(|path| {
@@ -76,12 +79,17 @@ impl LibraryAdmission {
                 })
                 .collect(),
         );
-        if self.observed.as_ref() == Some(&current) {
+        if self.observed.as_ref() == Some(&current)
+            && self
+                .admitted
+                .is_some_and(|admitted| admitted.elapsed() < SPACE_RETRY)
+        {
             return Ok(false);
         }
         // Save the observation even if admission returns busy or fails. Repeating
         // that request cannot make progress until an input/worker changes.
         self.observed = Some(current);
+        self.admitted = Some(Instant::now());
         #[cfg(test)]
         {
             self.requests += 1;

@@ -3,11 +3,14 @@
 #[cfg(test)]
 pub(crate) use dashboard_base::prepared::observer_tests;
 pub mod driver;
+pub mod headless;
 pub use dashboard_base::prepared::{coverage, frame_changes, group_sum, prefix, series};
+pub mod owner;
 pub mod pipeline;
 pub mod query;
 pub mod runner;
 pub mod served_check;
+pub mod space;
 
 pub use crate::transport::Action;
 pub use dashboard_base::prepared::{
@@ -344,12 +347,16 @@ pub fn start(
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             worker_source.in_scope(|| {
                 dashboard_base::prepared::priority::JobPriority::run(background, || {
-                    pipeline::run(&worker_source, content.as_ref(), cancelled, |accepted| {
-                        let mut state = progress.lock().unwrap_or_else(|error| error.into_inner());
-                        state.bytes = accepted.bytes;
-                        state.sections = accepted.sections.clone();
-                        state.coverage = accepted.coverage.clone();
-                        state.families = accepted.families.clone();
+                    let folder = dashboard_base::prepared::recording_folder(&worker_source)?;
+                    owner::hold(&folder, worker_source.path(), cancelled, || {
+                        pipeline::run(&worker_source, content.as_ref(), cancelled, |accepted| {
+                            let mut state =
+                                progress.lock().unwrap_or_else(|error| error.into_inner());
+                            state.bytes = accepted.bytes;
+                            state.sections = accepted.sections.clone();
+                            state.coverage = accepted.coverage.clone();
+                            state.families = accepted.families.clone();
+                        })
                     })
                 })
             })
@@ -447,7 +454,12 @@ pub fn clear(
         // The store from the recording's path alone: a damaged manifest that
         // cannot be read or bound is cleared too.
         let _ = content;
-        recording_store(source.path())?.clear()
+        // Before the store: preparation in the background never rebuilds what the user cleared.
+        crate::background::forget_recording(source.path())?;
+        let store = recording_store(source.path())?;
+        owner::hold(store.folder(), source.path(), cancel_request, || {
+            store.clear()
+        })
     })();
     let mut state = progress.lock().unwrap_or_else(|error| error.into_inner());
     state.clearing = false;

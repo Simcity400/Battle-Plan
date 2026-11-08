@@ -1075,7 +1075,7 @@ fn library_preparation_pauses_queued_work_and_resumes_outside_library() {
     let hold = PreparationHold::new(&service);
     service.prepare_library(&fixture.paths).unwrap();
     let source = service.open_map(&fixture.paths[0], None).unwrap();
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(Some(0)));
     service.prepare_library(&fixture.paths).unwrap();
     assert!(
         source
@@ -1100,7 +1100,7 @@ fn library_preparation_pauses_queued_work_and_resumes_outside_library() {
             .unwrap()
             .running
     );
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     // Even after the configured library changes, paused retained paths resume.
     service.prepare_library(&[]).unwrap();
     wait_library_source(&source);
@@ -2347,34 +2347,35 @@ fn newer_library_work_goes_first() {
 }
 
 #[test]
-fn library_work_pauses_below_the_free_space_floor_and_resumes_above_it() {
-    assert!(room_for_background(100, 1_000));
-    assert!(!room_for_background(99, 1_000));
-    assert!(!room_for_background(0, 1));
-    assert!(room_for_background(u64::MAX, u64::MAX));
+fn library_work_waits_for_its_estimate_and_pauses_below_the_margin() {
+    use crate::prepared::space::{MARGIN, TEST_FREE};
     let fixture = LibraryFixture::new(&["floor"]);
     let path = &fixture.paths[0];
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let hold = PreparationHold::new(&service);
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    TEST_FREE.with(|free| free.set(Some(MARGIN)));
     service.prepare_library(&fixture.paths).unwrap();
     assert!(
         library_source(&service, path).is_none(),
-        "nothing starts below the floor"
+        "nothing starts while free space covers only the margin, not the store"
     );
-    TEST_ROOM.with(|room| room.set(Some(true)));
+    let needed = crate::prepared::space::needed(std::fs::metadata(path).unwrap().len(), 0);
+    TEST_FREE.with(|free| free.set(Some(MARGIN + needed)));
     service.prepare_library(&fixture.paths).unwrap();
     let source = library_source(&service, path).unwrap();
     let admitted = admission_of(&source);
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    TEST_FREE.with(|free| free.set(Some(MARGIN - 1)));
     service.prepare_library(&fixture.paths).unwrap();
-    assert!(job(&source).2, "running library work pauses at the floor");
+    assert!(
+        job(&source).2,
+        "running library work pauses below the margin"
+    );
     assert_eq!(
         paused(&source),
         Some(crate::prepared::PauseReason::DiskSpace)
     );
     assert_eq!(admission_of(&source), admitted);
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     drop(hold);
     crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
     let reply = crate::prepared::status(&source, "floor", "status");
@@ -2568,7 +2569,7 @@ fn library_admission_rechecks_the_users_preparation_under_the_admission_lock() {
     // The scan goes on to admit its candidate.
     service
         .inner
-        .prepare_recording(&fixture.paths[1], true)
+        .prepare_recording(&fixture.paths[1], None)
         .unwrap();
     assert!(
         library_source(&service, &fixture.paths[1]).is_none_or(|source| !job(&source).0),
@@ -2593,7 +2594,7 @@ fn library_work_that_slipped_past_an_open_pauses_at_the_next_scan() {
         .start_preparation(
             Arc::clone(&opened),
             jobs::Admission::Opened,
-            service.inner.check_store(&opened, true),
+            service.inner.check_store(&opened, None),
             &AtomicBool::new(false),
         )
         .unwrap();
@@ -2636,9 +2637,9 @@ fn a_stale_scan_never_pauses_preparation_the_user_asked_for() {
         .pause_library(&stale, crate::prepared::PauseReason::DiskSpace);
     assert_eq!(job(&source), (true, false, false));
     assert_eq!(paused(&source), None);
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(Some(0)));
     service.prepare_library(&fixture.paths).unwrap();
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     assert_eq!(
         job(&source),
         (true, false, false),
@@ -2677,9 +2678,9 @@ fn opening_a_recording_whose_library_work_is_pausing_makes_it_the_users() {
     );
     let hold = PreparationHold::new(&service);
     // Below the floor, which bounds only library work, it still resumes.
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(Some(0)));
     service.prepare_library(&fixture.paths).unwrap();
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     assert_eq!(
         job(&source),
         (true, false, false),
@@ -2710,7 +2711,7 @@ fn a_stale_library_admission_never_takes_back_the_users_job() {
     assert!(!service.inner.interactive_preparation());
     // The stale scan's library admission now reaches it.
     let hold = PreparationHold::new(&service);
-    service.inner.prepare_recording(path, true).unwrap();
+    service.inner.prepare_recording(path, None).unwrap();
     assert_eq!(
         job(&source),
         (true, false, false),
@@ -2748,9 +2749,9 @@ fn a_finished_claim_does_not_carry_into_a_later_revision() {
     // Another session appends to the recording.
     fixture.append(path);
     let hold = PreparationHold::new(&service);
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(Some(0)));
     service.prepare_library(&fixture.paths).unwrap();
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     assert!(
         library_source(&service, path).is_none_or(|held| !job(&held).0),
         "below the floor nothing the user does not hold is admitted"
@@ -2777,9 +2778,9 @@ fn a_recording_whose_store_cannot_be_checked_is_prepared_as_library_work() {
     std::fs::write(store.directory().join("manifest"), b"bad").unwrap();
     let service = Service::new(Arc::new(|_| true)).unwrap();
     // It is library work: the floor bounds it.
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(Some(0)));
     service.prepare_library(&fixture.paths).unwrap();
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     assert!(library_source(&service, path).is_none());
     service.prepare_library(&fixture.paths).unwrap();
     let source = library_source(&service, path).expect("an unknown store is admitted");
@@ -2821,7 +2822,7 @@ fn paused_library_work_completed_by_another_writer_ends_ready() {
     let hold = PreparationHold::new(&service);
     service.prepare_library(&fixture.paths).unwrap();
     let source = library_source(&service, path).unwrap();
-    TEST_ROOM.with(|room| room.set(Some(false)));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(Some(0)));
     service.prepare_library(&fixture.paths).unwrap();
     drop(hold);
     crate::prepared::wait_finished(&source, &AtomicBool::new(false)).unwrap();
@@ -2831,7 +2832,7 @@ fn paused_library_work_completed_by_another_writer_ends_ready() {
     );
     // Another writer completes the store while the job is paused.
     prepare_elsewhere(path);
-    TEST_ROOM.with(|room| room.set(None));
+    crate::prepared::space::TEST_FREE.with(|free| free.set(None));
     service.prepare_library(&[]).unwrap();
     let reply = crate::prepared::status(&source, "paused", "status");
     assert_eq!(reply.state, crate::prepared::State::Ready);
@@ -2942,7 +2943,7 @@ fn a_prepare_that_could_not_be_queued_leaves_no_claim() {
         .admit_interactive(
             &opened,
             jobs::Admission::Manual,
-            service.inner.check_store(&opened, true),
+            service.inner.check_store(&opened, None),
             &AtomicBool::new(false),
         )
         .unwrap_err();
@@ -3175,7 +3176,7 @@ fn a_clear_between_prepares_check_and_admission_makes_it_rebuild() {
     let service = Service::new(Arc::new(move |event| sent.send(event).is_ok())).unwrap();
     let source = service.open_map(path, None).unwrap();
     // Prepare checks the complete store outside the admission lock...
-    let checked = service.inner.check_store(&source, true);
+    let checked = service.inner.check_store(&source, None);
     assert!(matches!(checked.restored, Ok(Some(_))));
     // ...and a Clear runs before Prepare is admitted.
     library_action(
@@ -3281,7 +3282,7 @@ fn work_that_loses_its_view_yields_to_newer_work_already_running() {
         .unwrap();
     // The newer recording's library work is already running.
     let hold = PreparationHold::new(&service);
-    service.inner.prepare_recording(&newer, true).unwrap();
+    service.inner.prepare_recording(&newer, None).unwrap();
     let newer_job = library_source(&service, &newer).unwrap();
     assert_eq!(job(&newer_job), (true, true, false));
     // The older one's view closes right after the scan ordered it as held.
@@ -3364,7 +3365,7 @@ fn a_refresh_admitted_after_newer_library_work_yields_to_it() {
     let service = Service::new(Arc::new(|_| true)).unwrap();
     let hold = PreparationHold::new(&service);
     // A scan admitted the newer recording.
-    service.inner.prepare_recording(newer, true).unwrap();
+    service.inner.prepare_recording(newer, None).unwrap();
     let newer_job = library_source(&service, newer).unwrap();
     assert_eq!(job(&newer_job), (true, true, false));
     // Then a refresh admits the older one as library work.

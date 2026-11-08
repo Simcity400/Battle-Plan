@@ -1241,6 +1241,12 @@ fn finalize_cli_session(
             refresh,
         )?;
         if terminal.issues.is_empty() {
+            crate::preparation::ask(&finalized.replays);
+            match crate::preparation::summary() {
+                Some(summary) if summary.failed => eprintln!("{}", summary.text),
+                Some(summary) => println!("{}", summary.text),
+                None => {}
+            }
             Ok(())
         } else {
             Err(format!(
@@ -1384,7 +1390,20 @@ fn record(options: Options) -> Result<(), String> {
     })?;
     println!("Paradox user folder: {}", user.display());
     println!("Waiting for hoi4.exe. Recording is passive; Ctrl+C detaches and finalizes.");
+    let mut preparation = None;
+    let mut show_preparation = || {
+        let summary = crate::preparation::summary();
+        if summary != preparation {
+            match &summary {
+                Some(summary) if summary.failed => eprintln!("{}", summary.text),
+                Some(summary) => println!("{}", summary.text),
+                None => {}
+            }
+            preparation = summary;
+        }
+    };
     loop {
+        show_preparation();
         if CONSOLE.stopping() {
             return Ok(());
         }
@@ -1399,6 +1418,7 @@ fn record(options: Options) -> Result<(), String> {
                 }
             }
         })?;
+        show_preparation();
         if outcome.detach_requested || options.once || CONSOLE.stopping() {
             return Ok(());
         }
@@ -2631,6 +2651,14 @@ fn answer_ending(settling: &Settling, requests: Vec<(String, bool)>) {
 fn report_set_aside(settling: &Settling, stage: &dyn Fn(Stage<'_>)) {
     let waiting = locked(&settling.waiting).take();
     let done = std::mem::take(&mut *locked(&settling.done));
+    let saved: Vec<PathBuf> = done
+        .iter()
+        .filter_map(|done| match done {
+            SetAside::Saved(_, Some(recording)) => Some(recording.clone()),
+            _ => None,
+        })
+        .collect();
+    crate::preparation::ask(&saved);
     if waiting.is_some() || !done.is_empty() {
         stage(Stage::SetAside {
             waiting: waiting.as_deref(),
@@ -3764,6 +3792,9 @@ fn finish_capture(
     }
     let _ = fs::remove_file(directory.join(WAITING_FILE));
     remove_active(active, directory)?;
+    if let Ok(outcome) = &result {
+        crate::preparation::ask(&outcome.replays);
+    }
     stage(Stage::Finished {
         result: result.as_ref().map_err(String::as_str),
     });
@@ -4813,7 +4844,9 @@ pub struct SavedWaiting {
 /// Save a recording an ended session left waiting, with every ended session's hours of it, its
 /// countries named through its own content stack as a capture names them.
 pub fn save_waiting(session: &Path, campaign: &str) -> Result<SavedWaiting, String> {
-    save_waiting_with(session, campaign, &mut WaitingNames::installed())
+    let saved = save_waiting_with(session, campaign, &mut WaitingNames::installed())?;
+    crate::preparation::ask(saved.recording.as_slice());
+    Ok(saved)
 }
 
 fn save_waiting_with(

@@ -61,11 +61,11 @@ impl Sources {
     }
 }
 
-/// The volume's room as the library scan last measured it, and how often it
-/// measures, which bounds how old a refresh lets the measurement get.
+/// The volume's free bytes as the library scan last measured it (None when unmeasured), and
+/// how often it measures, which bounds how old a refresh lets the measurement get.
 #[derive(Default)]
 pub(super) struct Room {
-    pub(super) room: bool,
+    pub(super) free: Option<u64>,
     pub(super) measured: Option<std::time::Instant>,
     pub(super) interval: Option<std::time::Duration>,
 }
@@ -83,7 +83,8 @@ thread_local! {
 
 /// What an admission's caller read before taking the admission lock, so
 /// admission does no store or volume I/O: the store's restore outcome at one
-/// store epoch, and whether the volume has room for library work. The outcome
+/// store epoch, and whether the volume has room for its library work
+/// ([`crate::prepared::space`]). The outcome
 /// is used only under the admission lock while the source's epoch is
 /// unchanged (`publish_prepared`, `prepared::start`); otherwise it is dropped
 /// and the store is prepared.
@@ -116,6 +117,27 @@ impl Checked {
     fn confirmation(&self) -> Option<(u64, StoreIdentity)> {
         matches!(self.restored, Ok(Some(_))).then_some((self.epoch, self.identity))
     }
+}
+
+/// Whether `free` bytes cover what `source`'s store still needs, and the margin.
+fn library_room(source: &Source, free: Option<u64>) -> std::io::Result<bool> {
+    if free.is_none() {
+        return Ok(true);
+    }
+    let folder = dashboard_base::prepared::recording_folder(source)?;
+    let needed = crate::prepared::space::needed_for(source.path(), &folder).map_err(|error| {
+        std::io::Error::other(format!("Its store's size can't be estimated: {error}"))
+    })?;
+    Ok(crate::prepared::space::admits(free, needed))
+}
+
+/// A check whose room is `room`; an estimate that failed fails the preparation it admits.
+fn with_room(mut checked: Checked, room: std::io::Result<bool>) -> Checked {
+    match room {
+        Ok(room) => checked.room = room,
+        Err(error) => checked.restored = Err(error),
+    }
+    checked
 }
 
 fn store_identity(source: &Source) -> StoreIdentity {
@@ -456,21 +478,25 @@ impl Inner {
     /// Restore `source`'s store for the current content, outside the admission
     /// lock; the caller passes the outcome to admission. The epoch is read
     /// before the content, so a rebind in between shows as a changed epoch.
-    pub(super) fn check_store(&self, source: &Source, room: bool) -> Checked {
+    /// `free` is the volume's free bytes, which admit library work while they
+    /// cover what this store still needs.
+    pub(super) fn check_store(&self, source: &Source, free: Option<u64>) -> Checked {
         source.in_scope(|| {
             let epoch = crate::prepared::store_epoch(source);
             let content = self.content_for(source, crate::source::Work::Recorded);
             let identity = store_identity(source);
-            Checked {
+            let room = library_room(source, free);
+            let checked = Checked {
                 epoch,
                 restored: crate::prepared::pipeline::restore(
                     source,
                     content.as_ref(),
                     &self.closed,
                 ),
-                room,
+                room: true,
                 identity,
-            }
+            };
+            with_room(checked, room)
         })
     }
 
@@ -535,10 +561,9 @@ impl Inner {
         self.preparation.notify_change();
     }
 
-    /// Measure the volume's room for library work. Never under the admission
-    /// lock: a slow or network volume must not stall opens or preparation
-    /// actions.
-    fn measure_room(&self) -> bool {
+    /// Measure the volume's free bytes. Never under the admission lock: a slow
+    /// or network volume must not stall opens or preparation actions.
+    fn measure_free(&self) -> Option<u64> {
         #[cfg(test)]
         {
             self.test_measures.fetch_add(1, Ordering::Relaxed);
@@ -546,33 +571,33 @@ impl Inner {
                 self.test_measures_locked.fetch_add(1, Ordering::Relaxed);
             }
         }
-        super::has_room()
+        crate::prepared::space::free()
     }
 
     /// The scan's measurement, once per scan, before it admits anything.
-    pub(super) fn room_for_scan(&self) -> bool {
-        let room = self.measure_room();
+    pub(super) fn space_for_scan(&self) -> Option<u64> {
+        let free = self.measure_free();
         let now = std::time::Instant::now();
         let mut last = self.room.lock().unwrap_or_else(|e| e.into_inner());
         last.interval = last.measured.map(|measured| now.duration_since(measured));
         last.measured = Some(now);
-        last.room = room;
-        room
+        last.free = free;
+        free
     }
 
     /// A refresh's measurement: the scan's last one, measured again outside
     /// the admission lock once it is older than the scans' own interval.
-    pub(super) fn room_for_refresh(&self) -> bool {
+    pub(super) fn space_for_refresh(&self) -> Option<u64> {
         let fresh = {
             let last = self.room.lock().unwrap_or_else(|e| e.into_inner());
             match (last.measured, last.interval) {
                 (Some(measured), Some(interval)) if measured.elapsed() <= interval => {
-                    Some(last.room)
+                    Some(last.free)
                 }
                 _ => None,
             }
         };
-        fresh.unwrap_or_else(|| self.measure_room())
+        fresh.unwrap_or_else(|| self.measure_free())
     }
 
     /// Whether an open view holds a source of the recording at `path`.
@@ -777,8 +802,8 @@ impl Inner {
     }
 
     /// Admit one library recording for the scan, which measured the volume's
-    /// `room` before taking any lock.
-    pub(super) fn prepare_recording(&self, path: &Path, room: bool) -> std::io::Result<()> {
+    /// `free` bytes before taking any lock.
+    pub(super) fn prepare_recording(&self, path: &Path, free: Option<u64>) -> std::io::Result<()> {
         if !self.background_preparation.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -787,7 +812,7 @@ impl Inner {
         let path = path.canonicalize()?;
         self.upgrade(&path);
         let revision = self.recording_revision(&path)?;
-        let result = self.prepare_recording_inner(path.clone(), revision.clone(), room);
+        let result = self.prepare_recording_inner(path.clone(), revision.clone(), free);
         if let Err(error) = &result
             && !matches!(
                 error.kind(),
@@ -809,7 +834,7 @@ impl Inner {
         &self,
         path: PathBuf,
         revision: String,
-        room: bool,
+        free: Option<u64>,
     ) -> std::io::Result<()> {
         use crate::prepared::Progress;
         let previous = {
@@ -850,7 +875,7 @@ impl Inner {
                 }
             })?;
         // Checked and admitted with the recording's own executable tables in scope.
-        Arc::clone(&source).in_scope(|| self.admit_opened(path, revision, room, source))
+        Arc::clone(&source).in_scope(|| self.admit_opened(path, revision, free, source))
     }
 
     /// [`Self::prepare_recording_inner`] of the opened `source`, its tables in scope.
@@ -858,7 +883,7 @@ impl Inner {
         &self,
         path: PathBuf,
         revision: String,
-        room: bool,
+        free: Option<u64>,
         source: Arc<Source>,
     ) -> std::io::Result<()> {
         use crate::prepared::{Progress, State};
@@ -877,9 +902,13 @@ impl Inner {
             !state.running && !finished(&state)
         };
         let checked = if idle {
-            self.check_store(&source, room)
+            self.check_store(&source, free)
         } else {
-            Checked::unread(room)
+            let unread = Checked {
+                epoch: crate::prepared::store_epoch(&source),
+                ..Checked::unread(true)
+            };
+            with_room(unread, library_room(&source, free))
         };
         #[cfg(test)]
         if let Some(hook) = TEST_AFTER_CHECK.with(|hook| hook.borrow_mut().take()) {
@@ -1681,7 +1710,7 @@ impl Inner {
                 // Read the store and the volume outside the admission lock, for
                 // the latest options: several Apply requests may have replaced
                 // the content while work stopped.
-                let checked = self.check_store(&source, self.room_for_refresh());
+                let checked = self.check_store(&source, self.space_for_refresh());
                 #[cfg(test)]
                 if let Some(hook) = self
                     .test_refresh_checked
@@ -1838,7 +1867,7 @@ impl Inner {
                         crate::prepared::Action::Status => {}
                         crate::prepared::Action::Start => {
                             self.preparation.notify_change();
-                            let checked = self.check_store(&source, true);
+                            let checked = self.check_store(&source, None);
                             let confirmation = checked.confirmation();
                             let admission = self
                                 .preparation_actions
@@ -1966,7 +1995,7 @@ impl Inner {
         });
         if let Ok(source) = &result {
             // Read the store before the admission lock.
-            let checked = self.check_store(source, true);
+            let checked = self.check_store(source, None);
             let confirmation = checked.confirmation();
             let admission = self
                 .preparation_actions

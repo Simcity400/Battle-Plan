@@ -21,5 +21,6 @@ serde_json.workspace = true
 [target.'cfg(all())'.dev-dependencies]
 engine-native = { workspace = true, features = ["batch-fallback-test-counts", "test-support"] }
 replay = { workspace = true, features = ["test-support"] }
+replay-data = { workspace = true, features = ["test-support"] }
 replay-identity = { workspace = true, features = ["test-support"] }
 test-unify = { workspace = true }

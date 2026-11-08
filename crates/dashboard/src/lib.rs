@@ -21,8 +21,8 @@ pub use dashboard_base::{
 };
 pub(crate) use dashboard_core::invalid;
 pub use dashboard_core::{
-    QueryError, blocks, config, dto::*, map_display, map_settings, protocol, refusal, refused,
-    transport,
+    QueryError, background, blocks, config, dto::*, map_display, map_settings, protocol, refusal,
+    refused, transport,
 };
 pub(crate) use dashboard_text::party_names;
 pub use dashboard_text::{

@@ -34,47 +34,17 @@ use pump::{Signal, run_pump};
 
 const MAX_PENDING: usize = crate::transport::MAX_PENDING_REQUESTS;
 
-/// Library preparation neither starts nor continues while the volume holding
-/// prepared data has less than one part in this many of its capacity free. It
-/// stops at that floor rather than predicting a store's size, which grows
-/// with the recording; preparation the user asks for is not bounded by it.
-pub const BACKGROUND_FREE_SHARE: u64 = 10;
-
-/// Whether `free` bytes of a volume of `total` bytes leave room for library
-/// preparation.
-pub fn room_for_background(free: u64, total: u64) -> bool {
-    free.saturating_mul(BACKGROUND_FREE_SHARE) >= total
-}
-
 #[cfg(test)]
 type ServiceHook = Box<dyn FnOnce(&Service)>;
 
 #[cfg(test)]
 thread_local! {
-    /// The volume measurement tests choose for the calling thread; unchosen,
-    /// the volume has room, so tests never depend on the machine's free space.
-    static TEST_ROOM: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     /// Run by the library scan right after it orders retained work, so tests
     /// can change what the user holds before the admissions.
     static TEST_AFTER_PARTITION: std::cell::RefCell<Option<ServiceHook>> =
         const { std::cell::RefCell::new(None) };
 }
 
-/// Whether the volume holding prepared data has room for library preparation
-/// ([`BACKGROUND_FREE_SHARE`]). A volume that cannot be measured does not stop it.
-pub(super) fn has_room() -> bool {
-    #[cfg(test)]
-    let space = io::Result::Ok(match TEST_ROOM.with(std::cell::Cell::get) {
-        Some(false) => (0, 1),
-        _ => (1, 1),
-    });
-    #[cfg(not(test))]
-    let space = store::local_space();
-    match space {
-        Ok((free, total)) => room_for_background(free, total),
-        Err(_) => true,
-    }
-}
 const MAX_SERIALIZED_BYTES: usize = MAX_REPLY_BYTES * 2;
 const MAX_CANCELLED: usize = MAX_PENDING * 2;
 /// The fewest whole-recording and sampled-read loaders on any machine.
@@ -417,11 +387,11 @@ impl Service {
         self.inner.preparation.revision()
     }
 
-    /// Whether the volume holding prepared data has room for library
-    /// preparation ([`BACKGROUND_FREE_SHARE`]). A volume that cannot be
-    /// measured does not stop it.
-    pub fn background_room(&self) -> bool {
-        has_room()
+    /// The whole GiB free on the volume holding prepared data, None when it cannot be
+    /// measured: a host asks for library admission again once it changes
+    /// ([`crate::prepared::space`]).
+    pub fn background_space(&self) -> Option<u64> {
+        crate::prepared::space::free().map(|free| free >> 30)
     }
 
     /// Prepare the library ahead of the user through the same runner and store
@@ -431,15 +401,27 @@ impl Service {
     /// into, so the latest sessions come first. A recording further back is
     /// admitted only once every newer one is prepared, and newer work pauses
     /// older library work. Library work waits while preparation the user asked
-    /// for is queued or running, and pauses below the free-space floor
-    /// ([`BACKGROUND_FREE_SHARE`]). Retained recordings the user holds resume
-    /// first, whatever their age. Busy workers leave the path eligible for the
+    /// for is queued or running; a recording is admitted only while free space
+    /// covers what its store is estimated to need, and running work pauses
+    /// below the margin ([`crate::prepared::space`]). Retained recordings the
+    /// user holds resume first, whatever their age. Busy workers leave the path eligible for the
     /// next library scan. Newest-first is enforced after every library
     /// admission and at the end of every pass, however the pass ends.
     pub fn prepare_library(&self, paths: &[PathBuf]) -> io::Result<()> {
         let result = self.library_pass(paths);
         self.inner.enforce_newest_first();
         result
+    }
+
+    /// Library work never admits the recording at canonical `path` again in this service.
+    pub fn leave_library(&self, path: &Path) {
+        let mut sources = self
+            .inner
+            .sources
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        sources.library.remove(path);
+        sources.suppressed.insert(path.to_owned());
     }
 
     fn library_pass(&self, paths: &[PathBuf]) -> io::Result<()> {
@@ -497,7 +479,8 @@ impl Service {
             self.inner.pause_library(&work, reason);
         };
         // Measured once, before any admission takes the lock.
-        let room = self.inner.room_for_scan();
+        let free = self.inner.space_for_scan();
+        let room = crate::prepared::space::keeps(free);
         if !room {
             pause(working(), crate::prepared::PauseReason::DiskSpace);
         }
@@ -507,7 +490,7 @@ impl Service {
         };
         // Each library admission enforces newest-first itself.
         let admit = |path: &Path| {
-            let result = self.inner.prepare_recording(path, room);
+            let result = self.inner.prepare_recording(path, free);
             match result {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => Err(error),
                 Err(error) => {
