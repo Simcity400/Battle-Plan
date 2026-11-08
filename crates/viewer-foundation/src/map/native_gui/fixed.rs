@@ -515,14 +515,34 @@ pub fn fixed_window_layout(
         }
         Ok(drawn.then_some(walk))
     };
-    let Some(mut drawn) = walk(None, Vec::new())? else {
+    let first = bindings.pointer.as_ref().map_or((None, Vec::new()), |pointer| {
+        (pointer.drawn.clone(), pointer.drawn_boxes.clone())
+    });
+    let Some(mut drawn) = walk(first.0.clone(), first.1.clone())? else {
         return Ok(None);
     };
     if let Some(pointer) = &bindings.pointer {
-        let (hovered, boxes) = pointer_targets(&drawn.parts, &drawn.hits, pointer)?;
-        if hovered.is_some() || !boxes.is_empty() || pointer.pressed.is_some() {
+        let (hovered, boxes, target) = match &pointer.over {
+            Some(over) => (
+                Some(over.clone()),
+                Vec::new(),
+                Some(super::Target {
+                    path: over.clone(),
+                    check_box: false,
+                    checked: false,
+                }),
+            ),
+            None => pointer_targets(&drawn.parts, &drawn.hits, &drawn.regions, pointer)?,
+        };
+        // A held button keeps the pointer: no other button takes Over until the release.
+        let hovered = match &pointer.pressed {
+            Some(pressed) => hovered.filter(|hovered| hovered == pressed),
+            None => hovered,
+        };
+        if (&hovered, &boxes) != (&first.0, &first.1) || pointer.pressed.is_some() {
             drawn = walk(hovered, boxes)?.expect("drawn in the first pass");
         }
+        drawn.target = target;
     }
     // A background drawable supplies the list row's content size; without a
     // background use the window size.

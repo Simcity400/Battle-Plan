@@ -107,6 +107,16 @@ impl<'a> GuiResources<'a> {
 }
 
 impl CombatResources for GuiResources<'_> {
+    fn button_sounds(&self, button: &native::Button) -> native::ButtonSounds {
+        let sprite_click = self
+            .assets
+            .gui
+            .registry()
+            .sprite(&button.sprite)
+            .map_or(&[][..], |facts| facts.kind.click_sound());
+        button.sounds(sprite_click, &self.windows.guis.default_sounds())
+    }
+
     fn line_chart(
         &self,
         sprite: &[u8],

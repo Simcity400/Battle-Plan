@@ -30,6 +30,7 @@ pub mod animation;
 pub mod fixed;
 mod hit;
 pub mod lifecycle;
+pub mod pointer;
 pub mod text_sprites;
 pub mod widgets;
 
@@ -680,6 +681,8 @@ pub struct Bound {
     /// Seconds since the drawable's state effect clock restarted: at the first draw after its
     /// state changed, however the state changed.
     effect_since: Option<f32>,
+    /// The state number `effect_since` times.
+    effect_state: Option<u32>,
     /// Each animation record's trigger start, seconds after the first draw, with -1 meaning
     /// not started.
     triggers: Option<Vec<f32>>,
@@ -813,9 +816,21 @@ pub struct Pointer {
     /// The path of the button the primary button went down on and is still held: enters Down
     /// Over it, and leaves Down only on release, wherever the pointer is.
     pub pressed: Option<String>,
-    /// Seconds since the hovered or pressed element entered its state (`Time - AnimationTime`,
-    /// the graphics clock at the change).
-    pub since: f32,
+    /// The control the map's hit test found under the pointer; `at` is then unused.
+    pub over: Option<String>,
+    /// `at` in the clips' space where it differs: an item a scaled holder places.
+    pub clip_at: Option<[f32; 2]>,
+    /// The button and check boxes the last layout drew for the pointer, which the hit test's pass
+    /// draws so: the pointer is tested against the frames on screen.
+    pub drawn: Option<String>,
+    pub drawn_boxes: Vec<String>,
+}
+
+/// The button a pointer layout drew in Over or Down, which its instance ticks next.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Pointed {
+    pub path: String,
+    pub down: bool,
 }
 
 impl Bindings {
@@ -1062,6 +1077,23 @@ pub struct Layout {
     pub holders: Vec<Holder>,
     pub regions: Vec<Region>,
     pub diagnostics: Vec<Diagnostic>,
+    /// The button the pointer holds in Over or Down; `None` without a pointer.
+    pub pointed: Option<Pointed>,
+    /// The topmost button under the pointer, whatever its state.
+    pub hovered: Option<String>,
+    /// The topmost control under the pointer, check boxes included.
+    pub target: Option<Target>,
+    /// Every check box under the pointer, which draws Over unchecked.
+    pub boxes: Vec<String>,
+}
+
+/// The topmost control under the pointer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub path: String,
+    pub check_box: bool,
+    /// A check box checked when the pointer reached it.
+    pub checked: bool,
 }
 
 /// An evaluated element's rectangle and logical clip, including text boxes with no glyphs.
@@ -1665,6 +1697,10 @@ struct Walk<'a> {
     /// The topmost button and every check box under the pointer.
     hovered: Option<String>,
     boxes: Vec<String>,
+    /// The button the second pass drew in Over or Down.
+    pointed: Option<Pointed>,
+    /// The topmost control under the pointer, check boxes included.
+    target: Option<Target>,
     /// The bitmap fonts' effect, read once.
     text_effect: Option<Result<Effect, String>>,
     /// The size supplied to a background drawable: cornered tiles accept it, plain sprites
@@ -1685,6 +1721,7 @@ struct Hittable {
     part: usize,
     hit: Hit,
     check_box: bool,
+    checked: bool,
 }
 
 /// Button state numbers: Up 1, Down 2, Over 3, Disable 4, with seconds since the state began.
@@ -1785,17 +1822,108 @@ fn layout(
         }
         Ok(drawn.then_some(walk))
     };
-    let Some(mut drawn) = walk(None, Vec::new())? else {
+    let first = bindings.pointer.as_ref().map_or((None, Vec::new()), |pointer| {
+        (pointer.drawn.clone(), pointer.drawn_boxes.clone())
+    });
+    let Some(mut drawn) = walk(first.0.clone(), first.1.clone())? else {
         return Ok(None);
     };
     // Resolve pointer hits, then walk again using the resulting control states.
     if let Some(pointer) = &bindings.pointer {
-        let (hovered, boxes) = pointer_targets(&drawn.parts, &drawn.hits, pointer)?;
-        if hovered.is_some() || !boxes.is_empty() || pointer.pressed.is_some() {
+        let (hovered, boxes, target) = match &pointer.over {
+            Some(over) => (
+                Some(over.clone()),
+                Vec::new(),
+                Some(Target {
+                    path: over.clone(),
+                    check_box: false,
+                    checked: false,
+                }),
+            ),
+            None => pointer_targets(&drawn.parts, &drawn.hits, &drawn.regions, pointer)?,
+        };
+        // A held button keeps the pointer: no other button takes Over until the release.
+        let hovered = match &pointer.pressed {
+            Some(pressed) => hovered.filter(|hovered| hovered == pressed),
+            None => hovered,
+        };
+        if (&hovered, &boxes) != (&first.0, &first.1) || pointer.pressed.is_some() {
             drawn = walk(hovered, boxes)?.expect("drawn in the first pass");
         }
+        drawn.target = target;
     }
     Ok(Some(drawn.finish(frame.size)))
+}
+
+/// Lays a button child of `window` out alone in Over (`Some(false)`), Down (`Some(true)`) or the
+/// Up it went back to (`None`), `since` seconds into that state.
+pub fn pointed_button(
+    window: &Element,
+    element: &Element,
+    resources: &dyn Resources,
+    mut bindings: Bindings,
+    down: Option<bool>,
+    since: f32,
+) -> Result<Layout, Refusals> {
+    let refuse = |why: &str| vec![Refusal::new(&element.path, RefusalKind::MissingInput, why)];
+    let button = element.button().ok_or_else(|| refuse("is not a button"))?;
+    let frame = container_frame(window, bindings.viewport).map_err(|why| refuse(&why))?;
+    let bound = bindings.bind(element);
+    bound.effect_state = Some(match down {
+        None => 1,
+        Some(true) => 2,
+        Some(false) => 3,
+    });
+    bound.effect_since = Some(since);
+    bindings.pointer = Some(Pointer {
+        at: [f32::NAN; 2],
+        pressed: (down == Some(true)).then(|| element.path.clone()),
+        over: None,
+        clip_at: None,
+        drawn: None,
+        drawn_boxes: Vec::new(),
+    });
+    let mut walk = Walk {
+        hovered: (down == Some(false)).then(|| element.path.clone()),
+        ..Walk::new(resources, &bindings)
+    };
+    let Fields::Container(container) = &window.fields else {
+        return Err(refuse("is not in a container window"));
+    };
+    if !window.children.iter().any(|child| std::ptr::eq(child, element)) {
+        return Err(refuse("is not a child of its window"));
+    }
+    if container.scale != 1.0 {
+        return Err(refuse("is in a scaled window"));
+    }
+    // As the window's walk places its children: from the content, scrolled, clipped to it.
+    let content = frame.content_at;
+    let scroll = walk.content_scroll(window, container);
+    let offset = walk.scroll_offset(window, &scroll);
+    let moved = [
+        content[0].wrapping_add(offset[0]),
+        content[1].wrapping_add(offset[1]),
+    ];
+    let clips = container
+        .clipping
+        .unwrap_or(!container.backgrounds.is_empty());
+    let clip = clips.then(|| {
+        [
+            content[0],
+            content[1],
+            content[0] + frame.content_size[0],
+            content[1] + frame.content_size[1],
+        ]
+    });
+    if let Err(refusal) = walk.button(element, button, moved, frame.content_size, clip) {
+        walk.refusals.push(refusal);
+    }
+    let refused = walk.refused.take();
+    walk.refusals.extend(refused);
+    if !walk.refusals.is_empty() {
+        return Err(walk.refusals);
+    }
+    Ok(walk.finish(frame.size))
 }
 
 impl Walk<'_> {
@@ -1811,6 +1939,10 @@ impl Walk<'_> {
             holders: self.holders,
             regions: self.regions,
             diagnostics: self.diagnostics,
+            pointed: self.pointed,
+            hovered: self.hovered,
+            target: self.target,
+            boxes: self.boxes,
         }
     }
 }
@@ -1821,49 +1953,72 @@ impl Walk<'_> {
 fn pointer_targets(
     parts: &[Part],
     hits: &[Hittable],
+    regions: &[Region],
     pointer: &Pointer,
-) -> Result<(Option<String>, Vec<String>), Refusals> {
+) -> Result<(Option<String>, Vec<String>, Option<Target>), Refusals> {
     let mut hovered = None;
+    let mut target = None;
     let mut boxes = Vec::new();
+    let clip_at = pointer.clip_at.unwrap_or(pointer.at);
     for hit in hits {
         let part = &parts[hit.part];
         let Some(rect) = part_rect(&part.kind) else {
             continue;
         };
-        let inside = |rect: Rect| {
-            (rect[0]..rect[0] + rect[2]).contains(&pointer.at[0])
-                && (rect[1]..rect[1] + rect[3]).contains(&pointer.at[1])
+        let inside = |rect: Rect, at: [f32; 2]| {
+            (rect[0]..rect[0] + rect[2]).contains(&at[0])
+                && (rect[1]..rect[1] + rect[3]).contains(&at[1])
         };
         let clipped = part.clip.is_some_and(|clip| {
-            !inside([
-                clip[0] as f32,
-                clip[1] as f32,
-                (clip[2] - clip[0]) as f32,
-                (clip[3] - clip[1]) as f32,
-            ])
+            !inside(
+                [
+                    clip[0] as f32,
+                    clip[1] as f32,
+                    (clip[2] - clip[0]) as f32,
+                    (clip[3] - clip[1]) as f32,
+                ],
+                clip_at,
+            )
         });
-        if !inside(rect) || clipped {
+        if !inside(rect, pointer.at) || clipped {
             continue;
         }
         match hit.hit {
             Hit::Through => continue,
             Hit::Alpha => {
-                return Err(vec![Refusal::new(
-                    &hit.path,
-                    RefusalKind::MissingResource,
-                    "is under the pointer and its sprite's transparencecheck tests the frame's \
-                     alpha, whose texels are not given",
-                )]);
+                let geometry = regions
+                    .iter()
+                    .rev()
+                    .find(|region| region.path == hit.path)
+                    .and_then(|region| region.hit.as_ref());
+                match geometry {
+                    Some(geometry) if !geometry.contains_unclipped(pointer.at) => continue,
+                    Some(_) => {}
+                    None => {
+                        return Err(vec![Refusal::new(
+                            &hit.path,
+                            RefusalKind::MissingResource,
+                            "is under the pointer and tests its frame's alpha, which a layout \
+                             without hit geometry does not hold",
+                        )]);
+                    }
+                }
             }
             Hit::Frame => {}
         }
+        // Hits run in draw order: the last is the topmost control.
+        target = Some(Target {
+            path: hit.path.clone(),
+            check_box: hit.check_box,
+            checked: hit.checked,
+        });
         if hit.check_box {
             boxes.push(hit.path.clone());
         } else {
             hovered = Some(hit.path.clone());
         }
     }
-    Ok((hovered, boxes))
+    Ok((hovered, boxes, target))
 }
 
 pub(crate) fn part_rect(kind: &PartKind) -> Option<Rect> {
@@ -1901,11 +2056,24 @@ impl<'a> Walk<'a> {
     /// view time less the bound `effect_since`. The restart occurs at the first draw after a
     /// state change. A drawable never drawn keeps zero.
     fn effect_clock(&self, bound: Option<&Bound>, state: State) -> f32 {
-        let since = bound.and_then(|b| b.effect_since).or(match state {
-            State::Down(since) | State::Over(since) => Some(since),
-            _ => None,
-        });
+        // A state the instance has not ticked yet, Up after Over or Down too, restarts at this draw.
+        let unticked = bound.is_some_and(|b| b.effect_state.is_some_and(|t| t != state.number()));
+        let since = bound
+            .filter(|_| !unticked)
+            .and_then(|b| b.effect_since)
+            .or(match state {
+                State::Down(since) | State::Over(since) => Some(since),
+                _ => unticked.then_some(0.0),
+            });
         since.map_or(0.0, |since| self.bindings.time - since)
+    }
+
+    /// The instance's clock for pointer state `state`, else 0: the restart at this draw.
+    fn pointer_since(&self, bound: Option<&Bound>, state: u32) -> f32 {
+        bound
+            .filter(|bound| bound.effect_state == Some(state))
+            .and_then(|bound| bound.effect_since)
+            .unwrap_or(0.0)
     }
 
     /// Runs `draw` with the objects it builds bound under `via` ([`Site`]).
@@ -3148,12 +3316,18 @@ impl<'a> Walk<'a> {
         let state = if !enabled {
             State::Disable
         } else if pointer.is_some_and(|pointer| pointer.pressed.as_deref() == Some(path)) {
-            State::Down(pointer.map_or(0.0, |pointer| pointer.since))
+            State::Down(self.pointer_since(bound, 2))
         } else if self.hovered.as_deref() == Some(path) {
-            State::Over(pointer.map_or(0.0, |pointer| pointer.since))
+            State::Over(self.pointer_since(bound, 3))
         } else {
             State::Up
         };
+        if let State::Down(_) | State::Over(_) = state {
+            self.pointed = Some(Pointed {
+                path: path.clone(),
+                down: matches!(state, State::Down(_)),
+            });
+        }
         // A text the object cannot decode is still a text: its object draws nothing.
         let text_only = text_only(button, sprite, text.as_deref());
         // The text technique of the state, when the sprite's effect declares it.
@@ -3233,6 +3407,7 @@ impl<'a> Walk<'a> {
                     part,
                     hit: info.hit,
                     check_box: false,
+                    checked: false,
                 });
             }
             return Ok(());
@@ -3301,6 +3476,7 @@ impl<'a> Walk<'a> {
                     part,
                     hit,
                     check_box: false,
+                    checked: false,
                 });
             }
         }
@@ -3366,10 +3542,9 @@ impl<'a> Walk<'a> {
             .map_or(button.sprite.as_slice(), |(sprite, _)| sprite)
             .to_vec();
         let checked = bound.and_then(|bound| bound.checked).unwrap_or(false);
-        let pointer = self.bindings.pointer.as_ref();
         let hovered = self.boxes.iter().any(|hovered| hovered == path);
         let state = if checked && hovered {
-            State::Down(pointer.map_or(0.0, |pointer| pointer.since))
+            State::Down(self.pointer_since(bound, 2))
         } else if checked {
             // A code-written check sets state 2 and restarts the drawable effect at the next
             // draw, retained by its instance.
@@ -3383,7 +3558,7 @@ impl<'a> Walk<'a> {
                 )
             })?)
         } else if hovered {
-            State::Over(pointer.map_or(0.0, |pointer| pointer.since))
+            State::Over(self.pointer_since(bound, 3))
         } else {
             State::Up
         };
@@ -3429,6 +3604,7 @@ impl<'a> Walk<'a> {
                             part,
                             hit: info.hit,
                             check_box: true,
+                            checked,
                         });
                     }
                     return Ok(());
@@ -3452,6 +3628,7 @@ impl<'a> Walk<'a> {
                 part,
                 hit,
                 check_box: true,
+                checked,
             });
         }
         Ok(())

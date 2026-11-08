@@ -1556,6 +1556,13 @@ fn draw_land_action_fixture_with(
                 templates,
                 vision,
                 order: Vec::new(),
+                pointer: None,
+                exits: Vec::new(),
+                exits_running: Default::default(),
+                time: 0.0,
+                pointer_running: Default::default(),
+                pointer_refused: Default::default(),
+                pointer_drawn: Default::default(),
             };
             let mut report = CounterReport::default();
             let batch = land
@@ -1698,6 +1705,8 @@ pub(super) fn with_counter_inputs_fixture<R>(
         selected_air_bases: &[],
         selected_fleets: &[],
         hovered: None,
+        pressed: None,
+        plate_hovered: None,
         schedule: &schedule,
         movement_history: &movement_history,
         visibility: Visibility::POLITICAL,

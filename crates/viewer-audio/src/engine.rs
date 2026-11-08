@@ -21,8 +21,8 @@
 //! compressed when anything mixed into it; then the sum, music included,
 //! goes through the master compressor and is clamped to 16 bits.
 //!
-//! The viewer splits the game's single effects volume into its Units and
-//! Combat groups by the emitter's producer; both default to the game's
+//! The viewer splits the game's single effects volume into its Units, Combat
+//! and Interface groups by the emitter's producer; each defaults to the game's
 //! effects volume.
 
 use crate::{Frame, Group, Listener, Mix};
@@ -775,6 +775,7 @@ impl Engine {
         let mut present = vec![false; self.instances.len()];
         let mut created = Vec::new();
         let mut replaced = Vec::new();
+        let mut stopped = Vec::new();
         for emitter in &frame.emitters {
             let Some(effect) = content.catalog.effect(&emitter.effect) else {
                 if self.missing.insert(Arc::clone(&emitter.effect)) {
@@ -788,7 +789,11 @@ impl Engine {
             let definition = &content.catalog.effects[effect];
             if let Some(&at) = index.get(&emitter.key) {
                 let instance = &mut self.instances[at];
-                if instance.effect == effect {
+                // An interface sound is present for its frame alone: its key again is a new
+                // start, which stops the earlier one (a button's click).
+                if emitter.group == Group::Interface {
+                    stopped.push(at);
+                } else if instance.effect == effect {
                     present[at] = true;
                     // The event's age falling back means it fired again.
                     if emitter.age + 1e-3 < instance.age && !definition.looping {
@@ -799,8 +804,9 @@ impl Engine {
                     instance.group = emitter.group;
                     instance.restart = emitter.restart;
                     continue;
+                } else {
+                    replaced.push(at);
                 }
-                replaced.push(at);
             }
             let fired = !frame.reset && emitter.age <= window;
             let polyphony = usize::try_from(definition.polyphony).unwrap_or(0);
@@ -830,10 +836,35 @@ impl Engine {
         for at in replaced {
             present[at] = false;
         }
-        // Departed instances leave in order; the rest keep theirs.
+        let mut stopping = vec![false; present.len()];
+        for at in stopped {
+            present[at] = false;
+            stopping[at] = true;
+        }
+        // Departed instances leave in order; the rest keep theirs. An interface sound is the
+        // game's unscoped instance: it stays until its voices end.
         let mut kept = Vec::with_capacity(self.instances.len() + created.len());
-        for (instance, present) in std::mem::take(&mut self.instances).into_iter().zip(present) {
-            if present {
+        for ((instance, present), stopping) in std::mem::take(&mut self.instances)
+            .into_iter()
+            .zip(present)
+            .zip(stopping)
+        {
+            if stopping {
+                let fade = content.catalog.effects[instance.effect].fade_out;
+                for slot in &instance.slots {
+                    if let Some(voice) = slot.voice.and_then(|voice| live(&mut self.voices, voice)) {
+                        voice.stop(fade);
+                    }
+                }
+                self.retire(instance, &content);
+                continue;
+            }
+            let sounding = instance.group == Group::Interface
+                && instance.slots.iter().any(|slot| {
+                    slot.voice
+                        .is_some_and(|voice| live(&mut self.voices, voice).is_some())
+                });
+            if present || sounding {
                 kept.push(instance);
             } else {
                 self.retire(instance, &content);
@@ -1233,6 +1264,7 @@ impl Engine {
             let group = match voice.group {
                 Group::Units => self.mix.units,
                 Group::Combat => self.mix.combat,
+                Group::Interface => self.mix.interface,
             };
             let bus = master * group;
             let category = voice.category.map_or(1.0, |category| volumes[category]);

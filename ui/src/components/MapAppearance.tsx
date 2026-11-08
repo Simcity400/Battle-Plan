@@ -57,7 +57,7 @@ const GROUPS: { title: string; items: Item[] }[] = [
 /** Aircraft by mission, under the 3D units and aircraft switches. */
 const AIR_MISSIONS: [Switch, string][] = [['airPatrols', 'Patrol flights'], ['airReconnaissance', 'Reconnaissance flights'], ['airSupport', 'Close air support flights'],
   ['airBombing', 'Bombing flights'], ['airCombat', 'Air combat'], ['airKamikaze', 'Kamikaze strikes'], ['airSupply', 'Air supply flights'], ['airMissiles', 'Missiles']];
-const AUDIO: [keyof MapAudio, string][] = [['master', 'Master volume'], ['ambient', 'Ambient volume'], ['units', 'Unit volume'], ['combat', 'Combat volume'], ['voice', 'Voice volume'], ['music', 'Music volume']];
+const AUDIO: [keyof MapAudio, string][] = [['master', 'Master volume'], ['ambient', 'Ambient volume'], ['units', 'Unit volume'], ['combat', 'Combat volume'], ['interface', 'Interface volume'], ['voice', 'Voice volume'], ['music', 'Music volume']];
 /** Every option row's label, in order; settings search reveals rows by these. */
 export const MAP_OPTION_LABELS = [ANTI_ALIASING, TEXTURE_QUALITY, ...QUALITY.map(([, label]) => label),
   ...GROUPS.flatMap(group => group.items.flatMap(item => [item.label, ...(item.parts ?? []).map(([, label]) => label)])), ...AIR_MISSIONS.map(([, label]) => label),

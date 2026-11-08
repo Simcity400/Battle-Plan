@@ -347,6 +347,7 @@ mod tests {
             ..hover(Control::Normal, &[7])
         };
         let mut hit = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+            plate: None,
             ours: true,
             port: true,
             rect: [0.; 4],

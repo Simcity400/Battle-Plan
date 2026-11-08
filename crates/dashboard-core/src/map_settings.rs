@@ -332,6 +332,7 @@ pub fn game_audio(keys: &installed_content_settings::settings::SettingsKeys) -> 
         ambient: volume("ambient_volume", defaults.ambient),
         units: volume("sound_fx_volume", defaults.units),
         combat: volume("sound_fx_volume", defaults.combat),
+        interface: volume("sound_fx_volume", defaults.interface),
         voice: volume("voice_volume", defaults.voice),
         music: volume("music_volume", defaults.music),
     }

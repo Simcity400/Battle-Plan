@@ -318,7 +318,16 @@ impl Reader<'_> {
                     let block = self.gui_types();
                     blocks.push(block);
                 }
-                Some(word) if DEFAULT_SOUNDS.contains(&word) => {}
+                Some(word) if DEFAULT_SOUNDS.contains(&word) => {
+                    let value = Some(read_string(&self.value.text));
+                    let sounds = &mut self.default_sounds;
+                    match word {
+                        "default_clicksound" => sounds.click = value,
+                        "default_oversound" => sounds.over = value,
+                        "default_downsound" => sounds.down = value,
+                        _ => sounds.up = value,
+                    }
+                }
                 _ => self.unexpected(),
             }
         }

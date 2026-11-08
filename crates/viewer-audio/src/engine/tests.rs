@@ -80,6 +80,7 @@ fn mix() -> Mix {
         ambient: 1.0,
         units: 1.0,
         combat: 1.0,
+        interface: 1.0,
         voice: 1.0,
         music: 1.0,
         muted: false,

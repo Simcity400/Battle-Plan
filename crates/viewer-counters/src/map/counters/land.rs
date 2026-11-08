@@ -165,9 +165,42 @@ pub(super) struct PreparedLand {
     pub(super) vision: Arc<Vision>,
     /// Group indices in draw order, rebuilt by every [`PreparedLand::draw`].
     pub(super) order: Vec<usize>,
+    /// The counter the pointer holds this frame, the ones it left, and the presentation time.
+    pub(super) pointer: Option<CounterPointer>,
+    pub(super) exits: Vec<super::CounterExit>,
+    pub(super) time: f32,
+    /// The left counters whose Up effect still changed on the clock at the last draw.
+    pub(super) exits_running: std::cell::RefCell<Vec<Unit>>,
+    /// The pointed plate's effect still changed on the clock at the last draw.
+    pub(super) pointer_running: std::cell::Cell<bool>,
+    /// Why the pointed plate drew without its pointer state, for the report.
+    pub(super) pointer_refused: std::cell::RefCell<Vec<String>>,
+    /// The pointed plate drew its pointer state.
+    pub(super) pointer_drawn: std::cell::Cell<bool>,
 }
 
 impl PreparedLand {
+    /// `member`'s plate state from the pointer: Over or Down (`Some(down)`) while it holds the
+    /// counter, Up (`None`) after it left; with the seconds in that state and the unit.
+    pub(super) fn pointed(&self, member: usize) -> Option<(Option<bool>, f32, Unit)> {
+        let stack = &self.stacks[member];
+        let kind = if stack.gun.is_some() {
+            viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
+        } else {
+            viewer_foundation::map::counter_hovers::unit_hits::Kind::Division
+        };
+        let ours = |unit: Unit| stack.divisions.iter().any(|&id| kind.unit(id) == unit);
+        self.pointer
+            .filter(|pointer| ours(pointer.unit))
+            .map(|pointer| (Some(pointer.down), pointer.since, pointer.unit))
+            .or_else(|| {
+                self.exits
+                    .iter()
+                    .find(|exit| ours(exit.unit))
+                    .map(|exit| (None, exit.since, exit.unit))
+            })
+    }
+
     pub(super) fn draw(
         &mut self,
         inputs: &CounterInputs<'_>,
@@ -425,6 +458,7 @@ impl PreparedLand {
                 let offset = base - layer(priority, 0, 0);
                 ordinal += 1;
                 if !shown {
+                    self.pointer_drawn.set(false);
                     continue;
                 }
                 batch.quads.extend(sprite.quads.iter().map(|quad| {
@@ -434,6 +468,9 @@ impl PreparedLand {
                     quad.color[3] *= opacity;
                     quad
                 }));
+                if self.pointer_drawn.take() && opacity > 0.0 {
+                    report.pointed = self.pointer.map(|pointer| pointer.unit);
+                }
             }
         }
         Ok(placed_columns)
@@ -540,9 +577,58 @@ impl PreparedLand {
             members: Arc::clone(&stack.divisions),
             timing: Arc::clone(&stack.timing),
         };
+        // The `count_bg` as drawn: its layout child and the sprite the code sets on it.
+        let plate_child = if stack.gun.is_some() {
+            inputs.assets.layouts.gun.as_ref().ok().map(|gun| &gun.plate)
+        } else {
+            inputs.assets.layouts.land.as_ref().ok().map(|land| &land.plate)
+        };
+        // A `count_bg` button that is `alwaystransparent` or disabled takes no pointer state.
+        let plate_window = if stack.gun.is_some() {
+            GUN_WINDOW
+        } else {
+            LAND_WINDOW
+        };
+        let plate_takes_pointer = inputs
+            .windows
+            .guis
+            .template(plate_window)
+            .and_then(|root| root.find(installed_content_core::gui::native::Kind::Button, "count_bg"))
+            .and_then(installed_content_core::gui::native::Element::button)
+            .is_some_and(|button| !button.always_transparent && button.enabled);
+        let plate_rect = plate_child.filter(|_| plate_takes_pointer).and_then(|child| {
+            let hq = stack.hq && stack.gun.is_none() && !stack.coarse;
+            let sprite = if hq {
+                "GFX_onmap_unit_counter_empty"
+            } else {
+                child.sprite.as_str()
+            };
+            // A pass-through plate takes no pointer; an alpha-tested one is refused by name.
+            let plain = inputs
+                .assets
+                .gui
+                .registry()
+                .sprite(sprite.as_bytes())
+                .and_then(|facts| facts.kind.plain());
+            if plain.is_some_and(|plain| plain.always_transparent) {
+                return None;
+            }
+            if plain.is_some_and(|plain| plain.transparence_check) {
+                *report.land_counter_gaps.entry("count_bg tests its sprite's alpha (transparencecheck), which a counter plate's hit does not; its pointer state is not drawn".into()).or_default() += 1;
+                return None;
+            }
+            let size = inputs.assets.sheet(sprite)?.frame_size();
+            Some([
+                origin[0] + child.at[0],
+                origin[1] + child.at[1],
+                size[0] * child.scale,
+                size[1] * child.scale,
+            ])
+        });
         let click = viewer_foundation::map::counter_hovers::unit_hits::Hit {
             ours,
             port: false,
+            plate: plate_rect,
             rect: hover.rect,
             kind: if stack.gun.is_some() {
                 viewer_foundation::map::counter_hovers::unit_hits::Kind::RailwayGun
@@ -560,9 +646,11 @@ impl PreparedLand {
             stack.flag_owner,
             stack.coarse,
         );
-        if self.sprites[member]
-            .as_ref()
-            .is_none_or(|sprite| sprite.origin != origin)
+        // The pointed plate draws its pointer state on the clock each frame.
+        if self.pointed(member).is_some()
+            || self.sprites[member]
+                .as_ref()
+                .is_none_or(|sprite| sprite.origin != origin)
         {
             // A moved counter redraws into its previous batch's storage.
             let mut sprite = self.sprites[member]
@@ -573,10 +661,18 @@ impl PreparedLand {
             let presented =
                 draw_land_counter(inputs, &mut sprite, 0, origin, self, member, priority)?;
             self.sprites[member] = Some(hovers::Sprite {
-                origin,
+                // A pointed draw never stands for the plate without the pointer.
+                origin: if self.pointed(member).is_some() {
+                    [f32::NAN; 2]
+                } else {
+                    origin
+                },
                 batch: sprite,
                 presented,
             });
+        }
+        for why in self.pointer_refused.take() {
+            *report.land_counter_gaps.entry(why.into()).or_default() += 1;
         }
         report.land_hovers.push(hover.clone());
         if let Some(sprite) = &self.sprites[member] {
@@ -591,6 +687,7 @@ impl PreparedLand {
                     .unit_hits
                     .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
                         rect: *rect,
+                        plate: None,
                         ..click.clone()
                     });
                 report.land_hovers.push(CounterHover {
@@ -2098,6 +2195,13 @@ pub(super) fn land_counters<'a>(
         templates: Arc::clone(land.icons),
         vision: Arc::clone(land.vision),
         order: Vec::new(),
+        pointer: None,
+        exits: Vec::new(),
+        exits_running: Default::default(),
+        time: 0.0,
+        pointer_running: Default::default(),
+        pointer_refused: Default::default(),
+        pointer_drawn: Default::default(),
     })
 }
 
@@ -2507,6 +2611,42 @@ pub(super) fn draw_land_counter(
     Ok(controls)
 }
 
+/// Draws `member`'s `count_bg` in the pointer's state when the pointer holds its counter.
+#[allow(clippy::too_many_arguments)]
+fn pointed_plate(
+    inputs: &CounterInputs<'_>,
+    batch: &mut Batch,
+    land: &PreparedLand,
+    member: usize,
+    window: &str,
+    plate: &Child,
+    origin: [f32; 2],
+    binding: PlateBinding<'_>,
+) -> bool {
+    let Some((down, since, unit)) = land.pointed(member) else {
+        return false;
+    };
+    batch.at_layer(u64::from(plate.order));
+    match draw_pointed_plate(inputs, batch, window, origin, binding, down, since, land.time) {
+        Ok(changing) => {
+            if changing {
+                land.pointer_running.set(true);
+                if down.is_none() {
+                    land.exits_running.borrow_mut().push(unit);
+                }
+            }
+            if down.is_some() {
+                land.pointer_drawn.set(true);
+            }
+            true
+        }
+        Err(why) => {
+            land.pointer_refused.borrow_mut().push(why);
+            false
+        }
+    }
+}
+
 /// [`draw_land_counter`]'s children, each at the raw declaration index as its layer.
 fn draw_land_children(
     inputs: &CounterInputs<'_>,
@@ -2535,6 +2675,20 @@ fn draw_land_children(
         .expect("land plate layout was admitted");
     let assets = inputs.assets;
     if stack.coarse {
+        let plate_drawn = pointed_plate(
+            inputs,
+            batch,
+            land,
+            member,
+            LAND_WINDOW,
+            &layout.plate,
+            origin,
+            PlateBinding {
+                sprite: None,
+                frame: Some(COARSE_PLATE_FRAME as i32 + 1),
+                tint: plate,
+            },
+        );
         draw_coarse_counter(
             inputs,
             batch,
@@ -2552,6 +2706,7 @@ fn draw_land_children(
                     layout.large_flag.order,
                     layout.count.order,
                 ),
+                plate_drawn,
             },
         )?;
         // Hide the other children while keeping `low_supply`, so the land supply crate stays.
@@ -2579,12 +2734,25 @@ fn draw_land_children(
     }
     // count_bg binds a Button; the game uses Up's
     // strip frame 0 unless a positive authored frame overrides it.
+    let hq_sprite = stack.hq.then_some("GFX_onmap_unit_counter_empty");
+    let plate_drawn = pointed_plate(
+        inputs,
+        batch,
+        land,
+        member,
+        LAND_WINDOW,
+        &layout.plate,
+        origin,
+        PlateBinding {
+            sprite: hq_sprite,
+            frame: None,
+            tint: plate,
+        },
+    );
     batch.at_layer(u64::from(layout.plate.order));
-    if let Some(sheet) = assets.sheet(if stack.hq {
-        "GFX_onmap_unit_counter_empty"
-    } else {
-        &layout.plate.sprite
-    }) {
+    if !plate_drawn
+        && let Some(sheet) = assets.sheet(hq_sprite.unwrap_or(&layout.plate.sprite))
+    {
         draw_child(
             batch,
             sheet,
@@ -2841,6 +3009,22 @@ fn draw_gun_children(
     let Ok(plate) = stack.plate else {
         return None;
     };
+    let plate_drawn = pointed_plate(
+        inputs,
+        batch,
+        land,
+        member,
+        GUN_WINDOW,
+        &layout.plate,
+        origin,
+        PlateBinding {
+            sprite: None,
+            frame: stack
+                .coarse
+                .then_some(COARSE_PLATE_FRAME as i32 + 1),
+            tint: plate,
+        },
+    );
     let mut draw = |child: &Child, frame: u32, tint: [f32; 4]| {
         batch.at_layer(u64::from(child.order));
         if let Some(sheet) = assets.sheet(&child.sprite) {
@@ -2869,6 +3053,7 @@ fn draw_gun_children(
                     layout.large_flag.order,
                     layout.count.order,
                 ),
+                plate_drawn,
             },
         );
         if stack.selected
@@ -2886,7 +3071,9 @@ fn draw_gun_children(
         }
         return None;
     }
-    draw(&layout.plate, layout.plate.frame_index(0), plate);
+    if !plate_drawn {
+        draw(&layout.plate, layout.plate.frame_index(0), plate);
+    }
     if stack.selected && !stack.members.is_empty() {
         draw(&layout.selected, layout.selected.frame_index(0), [1.0; 4]);
     }

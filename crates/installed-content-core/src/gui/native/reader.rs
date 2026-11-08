@@ -86,6 +86,8 @@ pub(crate) struct Reader<'s> {
     pub dynamic: super::keywords::DynamicTokens,
     /// What the last [`Self::read`] returned (the read step's value), kept apart from the token.
     pub read_ok: bool,
+    /// The file's `default_*sound` keys as it read them.
+    pub default_sounds: super::DefaultSounds,
 }
 
 impl<'s> std::ops::Deref for Reader<'s> {
@@ -117,6 +119,7 @@ impl<'s> Reader<'s> {
             unnamed,
             dynamic: super::keywords::DynamicTokens::default(),
             read_ok: true,
+            default_sounds: Default::default(),
         }
     }
 

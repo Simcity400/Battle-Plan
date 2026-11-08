@@ -353,6 +353,12 @@ pub struct Windows {
     clock: f32,
     /// The windows whose fade and movement are unknown ([`TRANSITION`], [`transition_unknown`]).
     settling: HashMap<Registered, Settling>,
+    /// The at-sea counter whose instance the pointer state was last carried into.
+    pointed: Option<u64>,
+    /// The counter the pointer holds and its state, with the presentation time it entered it.
+    pub(super) pointer_clock: Option<(Option<(Unit, bool)>, f32)>,
+    /// The counters the pointer left, with the time each left, until their Up effects settle.
+    pub(super) pointer_left: Vec<(Unit, f32)>,
 }
 
 impl std::fmt::Debug for Windows {
@@ -379,6 +385,11 @@ impl Windows {
 
     /// Whether a window changed on its own at the last frame, cleared: the view presents another
     /// frame while one does, as the game ticks every window each frame.
+    /// Keeps the view presenting: a land plate's pointer state still changes on the clock.
+    pub(super) fn keep_active(&mut self) {
+        self.active = true;
+    }
+
     pub fn take_active(&mut self) -> bool {
         let air = self.air_missions.take_active();
         std::mem::take(&mut self.active) || air
@@ -664,6 +675,7 @@ pub(super) fn present(
     plates: &[(&naval::Flotilla, &Countries, &land::AtSeaPlate)],
     columns: &[Arc<land::ColumnPlacement>],
     time: f32,
+    pointer: Option<CounterPointer>,
     windows: &mut Windows,
     bases: &mut Batch,
     counters: &mut Batch,
@@ -898,6 +910,46 @@ pub(super) fn present(
             );
         }
     }
+    // The map's hit test found the pointer's task force: its window's `count_bg` takes the state.
+    let held = pointer.and_then(|pointer| {
+        let (flotilla, _) = placed_at_sea.iter().find(|(flotilla, _)| {
+            flotilla.members.iter().any(|&id| {
+                viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce.unit(id)
+                    == pointer.unit
+            })
+        })?;
+        Some((flotilla.source, pointer.down))
+    });
+    let plate = navy.find(native::Kind::Button, "count_bg");
+    if held.is_some() && plate.is_none() {
+        *report
+            .navy_counter_gaps
+            .entry(format!("{NAVY_WINDOW} has no count_bg for the pointer's state").into())
+            .or_default() += 1;
+    }
+    let pointed = held.and_then(|(source, down)| {
+        Some((
+            source,
+            native_gui::Pointed {
+                path: plate?.path.clone(),
+                down,
+            },
+        ))
+    });
+    let pointed_source = pointed.as_ref().map(|(source, _)| *source);
+    if windows.pointed != pointed_source
+        && let Some(counter) = windows
+            .pointed
+            .and_then(|source| windows.counters.get_mut(&source))
+    {
+        counter.instance.point(None, &[]);
+    }
+    if let Some((source, state)) = &pointed
+        && let Some(counter) = windows.counters.get_mut(source)
+    {
+        counter.instance.point(Some(state.clone()), &[]);
+    }
+    windows.pointed = pointed_source;
     update_laps.lap("dc_nu_bookkeeping");
     drop(update_profile);
     let tick_profile = viewer_foundation::profiling::span("dc_naval_tick");
@@ -967,9 +1019,20 @@ pub(super) fn present(
             continue;
         }
         let first = counters.quads.len();
+        let layout_pointer = pointed
+            .as_ref()
+            .filter(|(source, _)| *source == flotilla.source)
+            .map(|(_, state)| native_gui::Pointer {
+                at: [f32::NAN; 2],
+                pressed: state.down.then(|| state.path.clone()),
+                over: (!state.down).then(|| state.path.clone()),
+                clip_at: None,
+                drawn: None,
+                drawn_boxes: Vec::new(),
+            });
         let layout = match counter
             .instance
-            .layout_with_regions(navy, &resources, None, true)
+            .layout_with_regions(navy, &resources, layout_pointer, true)
         {
             Ok(Some(layout)) => layout,
             Ok(None) => continue,
@@ -1030,11 +1093,15 @@ pub(super) fn present(
             counters,
             (plate.column.priority, 0),
         )?;
-        if !inputs.display.naval_plate(flotilla.owner) {
+        let shown = inputs.display.naval_plate(flotilla.owner);
+        if !shown {
             counters.quads.truncate(first);
         }
         match drawn {
             Ok(()) => {
+                if shown && layout.pointed.is_some() {
+                    report.pointed = pointer.map(|pointer| pointer.unit);
+                }
                 composed.commit(report);
                 report.task_force_hovers.extend(naval_hovers::presented(
                     navy,
@@ -1047,11 +1114,50 @@ pub(super) fn present(
                     report.unit_hits.len(),
                     &mut report.icon_gui_notes,
                 ));
+                // The `count_bg` as the window laid it out, where the column placed the window.
+                let scale = plate.column.holder.scale;
+                let window_at = [0, 1].map(|axis| {
+                    plate.column.screen[axis] as f32
+                        + plate.column.holder.origin[axis]
+                        + scale * place[axis] as f32
+                });
+                let count_bg = navy
+                    .find(native::Kind::Button, "count_bg")
+                    .filter(|element| {
+                        element
+                            .button()
+                            .is_some_and(|b| !b.always_transparent && b.enabled)
+                    })
+                    .and_then(|element| {
+                        layout
+                            .regions
+                            .iter()
+                            .rev()
+                            .find(|region| region.path == element.path)
+                    })
+                    .filter(|region| !region.disabled)
+                    .and_then(|region| {
+                        // A pass-through plate takes no pointer; an alpha-tested one is refused.
+                        match region.hit.as_ref().map(|hit| hit.form) {
+                            Some(viewer_foundation::map::native_gui::Hit::Through) => None,
+                            Some(viewer_foundation::map::native_gui::Hit::Alpha) => {
+                                *report.navy_counter_gaps.entry("count_bg tests its sprite's alpha (transparencecheck), which a counter plate's hit does not; its pointer state is not drawn".into()).or_default() += 1;
+                                None
+                            }
+                            _ => Some([
+                                window_at[0] + scale * region.rect[0],
+                                window_at[1] + scale * region.rect[1],
+                                scale * region.rect[2],
+                                scale * region.rect[3],
+                            ]),
+                        }
+                    });
                 report
                     .unit_hits
                     .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
                         ours: matches!(&flotilla.side, Ok(Allegiance::Ours)),
                         port: false,
+                        plate: count_bg,
                         rect: [
                             plate.column.screen[0] as f32
                                 + plate.column.holder.origin[0]
@@ -3337,6 +3443,10 @@ pub(super) fn compose_mission_grids(
                     regions: holder.place_regions(item.place, &item.layout.regions),
                     holders: Vec::new(),
                     diagnostics: Vec::new(),
+                    pointed: None,
+                    hovered: None,
+                    target: None,
+                    boxes: Vec::new(),
                 };
                 for region_hit in &placed.regions {
                     let Some(element) = gui_windows::find_path(template, &region_hit.path) else {
@@ -3403,6 +3513,7 @@ pub(super) fn compose_mission_grids(
                     .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
                         ours,
                         port: true,
+                        plate: None,
                         rect: [
                             bounds[0],
                             bounds[1],
@@ -3673,6 +3784,7 @@ fn draw_ports(
                             .push(viewer_foundation::map::counter_hovers::unit_hits::Hit {
                             ours,
                             port: true,
+                            plate: None,
                             rect: [
                                 bounds[0],
                                 bounds[1],

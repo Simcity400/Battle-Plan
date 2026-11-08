@@ -460,7 +460,30 @@ fn interface(
                 }
             }
         }
+        let defaults = guis.default_sounds();
+        log.value("gui.default_sounds", &defaults);
+        if let (Some(writer), Some(interface)) = (&log.values, &interface) {
+            for (_, gui) in &guis.files {
+                let mut stack: Vec<_> = gui.templates().iter().collect();
+                while let Some(element) = stack.pop() {
+                    if let Some(button) = element.button() {
+                        let sprite_click = interface
+                            .registry
+                            .sprite(&button.sprite)
+                            .map_or(&[][..], |facts| facts.kind.click_sound());
+                        writer.write(
+                            "gui.button_sounds",
+                            &(&element.path, button.sounds(sprite_click, &defaults)),
+                        );
+                    }
+                    stack.extend(element.nested());
+                }
+            }
+        }
     }
+    log.read("viewer.cursor", || {
+        installed_content_image::cursor::decode(&layers.read_uncovered("gfx/cursors/normal.cur")?)
+    });
     if let Some(roster) = log.read("mesh.roster", || layers.descriptor_roster()) {
         log.notes("mesh.roster", Kind::Logged, &roster.logged);
         for unreadable in &roster.unreadable {

@@ -393,6 +393,24 @@ fn settled(settles: &Settling, elapsed: f32, clock: f32) -> bool {
     settles.limit >= LONGEST_CLOCK && settles.reached(elapsed, clock)
 }
 
+impl super::Shading {
+    /// Whether the draw still changes on the clock at its `since`.
+    pub fn changing(&self) -> bool {
+        match self.settles() {
+            Settles::Program(None) => self.clocked,
+            Settles::Program(Some(settles)) => {
+                self.clocked
+                    && !settled(
+                        &settles,
+                        self.since,
+                        self.time.abs().max(self.animation.abs()),
+                    )
+            }
+            Settles::Previous | Settles::Refused => false,
+        }
+    }
+}
+
 /// The related objects reached when an object's visibility changes.
 #[derive(Clone, Debug, PartialEq)]
 enum Drawables {
@@ -618,6 +636,10 @@ pub struct Instance {
     /// last tick resolved it in draw order ([`Self::kept_changes`]).
     kept: bool,
     held: Vec<Held>,
+    /// The button the last pointer layout drew in Over or Down ([`Self::point`]).
+    pointed: Option<super::Pointed>,
+    /// The check boxes the last pointer layout drew under the pointer.
+    boxes: Vec<String>,
 }
 
 /// The authored parts followed by ordinary children, in `Element::nested` order without
@@ -1380,6 +1402,8 @@ impl Instance {
             ticked: false,
             kept: false,
             held: Vec::new(),
+            pointed: None,
+            boxes: Vec::new(),
         };
         // Initialize each fading window and its children to zero opacity as it is built.
         for index in built {
@@ -2895,8 +2919,8 @@ impl Instance {
         own && self.reached(up)
     }
 
-    /// The state a drawable uses without a pointer:
-    /// A disabled button 4, a checked check box 2 else 1.
+    /// The state a drawable uses: a disabled button 4, a checked check box 2, an unchecked one
+    /// under the pointer 3, else the pointed button's Down 2 or Over 3, else 1.
     fn state(&self, element: &Element, index: usize) -> u32 {
         let node = &self.nodes[index];
         let control = &node.control;
@@ -2904,19 +2928,33 @@ impl Instance {
             (Kind::Checkbox, _) if !node.stateful => {
                 if control.checked == Some(true) {
                     2
+                } else if self.boxes.contains(&element.path) {
+                    3
                 } else {
                     1
                 }
             }
             (_, Some(button)) if node.stateful => {
-                if control.enabled.unwrap_or(button.enabled) {
-                    1
-                } else {
+                if !control.enabled.unwrap_or(button.enabled) {
                     4
+                } else {
+                    match &self.pointed {
+                        Some(pointed) if pointed.path == element.path => {
+                            if pointed.down { 2 } else { 3 }
+                        }
+                        _ => 1,
+                    }
                 }
             }
             _ => 1,
         }
+    }
+
+    /// The state the last pointer layout drew, whose change the next tick restarts the clock of.
+    pub fn point(&mut self, pointed: Option<super::Pointed>, boxes: &[String]) {
+        self.pointed = pointed;
+        self.boxes.clear();
+        self.boxes.extend_from_slice(boxes);
     }
 
     /// One presented frame of this instance alone, as the game runs it: [`Self::tick_clocks`],
@@ -3519,6 +3557,7 @@ impl Instance {
                 Some(effect) if effect.state == state => self.time - effect.at,
                 _ => 0.0,
             });
+            bound.effect_state = Some(state);
             if let Some(runtime) = runtime
                 && !runtime.triggers.is_empty()
             {

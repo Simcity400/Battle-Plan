@@ -9,6 +9,7 @@ use super::Viewer;
 use crate::document::{Content, Document};
 use eframe::egui;
 use std::sync::{Arc, Weak};
+use viewer_foundation::map::native_gui::pointer::Input;
 use viewer_combat::picker::{self, Control, ModeButton, Open, Toggles};
 use viewer_world::map::map_mode::{MapMode, Stock};
 
@@ -88,6 +89,7 @@ impl PickerState {
         hovers: bool,
         time: f32,
         advance: bool,
+        input: Option<Input>,
     ) -> Result<picker::PickerDrawn, String> {
         let four = four_buttons(document);
         if !self
@@ -131,6 +133,7 @@ impl PickerState {
                 hovers,
                 time,
                 advance,
+                input,
             )
             .map_err(|error| error.to_string())
     }
@@ -163,6 +166,7 @@ pub(crate) fn dump(
         false,
         options.presentation_time,
         true,
+        None,
     )
 }
 
@@ -596,6 +600,7 @@ impl Viewer {
         hovers: bool,
         time: f32,
         advance: bool,
+        input: Option<Input>,
     ) -> Option<Result<picker::PickerDrawn, String>> {
         if self.picker.hidden {
             return None;
@@ -613,6 +618,7 @@ impl Viewer {
             hovers,
             time,
             advance,
+            input,
         ))
     }
 

@@ -216,6 +216,10 @@ units: number,
  */
 combat: number,
 /**
+ * The interface's button sounds; `sound_fx_volume`.
+ */
+interface: number,
+/**
  * `voice_volume`.
  */
 voice: number,
@@ -355,7 +359,7 @@ tooltips: boolean,
  */
 natoCounters: boolean | null, };
 export type MapGraphicsOverrides = { samples: number | null, textureQuality: number | null, fullResolution: boolean | null, highGfxShaders: boolean | null, waterReflections: boolean | null, shadows: boolean | null, dayNight: boolean | null, water: boolean | null, borders: boolean | null, landBorders: boolean | null, seaBorders: boolean | null, demilitarizedZones: boolean | null, straitCrossings: boolean | null, rivers: boolean | null, trees: boolean | null, railways: boolean | null, rails: boolean | null, railwayBridges: boolean | null, supplyTrains: boolean | null, citySprawl: boolean | null, buildings: boolean | null, mapTable: boolean | null, nuclearStrikes: boolean | null, bombardmentExplosions: boolean | null, missileExplosions: boolean | null, mapText: boolean | null, textFakeDivisions: boolean | null, textRailwayGuns: boolean | null, textBombardments: boolean | null, textGenerals: boolean | null, textParadrops: boolean | null, textResistance: boolean | null, textBuildings: boolean | null, weather: boolean | null, sky: boolean | null, countryNames: boolean | null, units: boolean | null, unitFigures: boolean | null, aircraft: boolean | null, airPatrols: boolean | null, airReconnaissance: boolean | null, airSupport: boolean | null, airBombing: boolean | null, airCombat: boolean | null, airKamikaze: boolean | null, airSupply: boolean | null, airMissiles: boolean | null, battlePlans: boolean | null, frontLines: boolean | null, offensiveLines: boolean | null, plannedMovement: boolean | null, navalInvasions: boolean | null, paradrops: boolean | null, raidPaths: boolean | null, planLabels: boolean | null, showAlliedPlans: boolean | null, movementArrows: boolean | null, counters: boolean | null, landCounters: boolean | null, railwayGunCounters: boolean | null, navalCounters: boolean | null, portCounters: boolean | null, baseIcons: boolean | null, theatrePins: boolean | null, landCombatMarkers: boolean | null, navalMarkers: boolean | null, raidIcons: boolean | null, cityNames: boolean | null, tooltips: boolean | null, natoCounters: boolean | null, };
-export type MapAudioOverrides = { master: number | null, ambient: number | null, units: number | null, combat: number | null, voice: number | null, music: number | null, };
+export type MapAudioOverrides = { master: number | null, ambient: number | null, units: number | null, combat: number | null, interface: number | null, voice: number | null, music: number | null, };
 export type CounterFilter = { "kind": "all" } | { "kind": "players" } | { "kind": "countries", tags: Array<string>, };
 export type CameraMode = "map" | "fly" | "walk";
 export type CampaignMapSettings = { graphics: MapGraphicsOverrides, audio: MapAudioOverrides,

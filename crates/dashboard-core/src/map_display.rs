@@ -346,6 +346,8 @@ inheritable! {
         units: f32 = 100.0,
         /// Combat and strike sounds; `sound_fx_volume`.
         combat: f32 = 100.0,
+        /// The interface's button sounds; `sound_fx_volume`.
+        interface: f32 = 100.0,
         /// `voice_volume`.
         voice: f32 = 100.0,
         /// The music player; `music_volume`.

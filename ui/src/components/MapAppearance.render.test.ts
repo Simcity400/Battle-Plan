@@ -12,7 +12,7 @@ test('each map setting inherits on its own and offers its own reset', async () =
     aircraft: true, airPatrols: true, airReconnaissance: true, airSupport: true, airBombing: true, airCombat: true, airKamikaze: true, airSupply: true, airMissiles: true, battlePlans: true, frontLines: true, offensiveLines: true, plannedMovement: true, navalInvasions: true, paradrops: true, raidPaths: true, planLabels: true,
     showAlliedPlans: false, movementArrows: true, counters: true, landCounters: true, railwayGunCounters: true, navalCounters: true, portCounters: true, baseIcons: true,
     theatrePins: true, landCombatMarkers: true, navalMarkers: true, raidIcons: true, cityNames: true, tooltips: true };
-  const audio = { master: 100, ambient: 50, units: 100, combat: 100, voice: 100 };
+  const audio = { master: 100, ambient: 50, units: 100, combat: 100, interface: 100, voice: 100 };
   const inherits = { graphics: {}, audio: {}, counters: null, visualMods: null };
   const reply = { settings: inherits, inheritedSettings: { graphics, audio, counters: { kind: 'all' }, visualMods: null },
     mods: [], recordedMods: [], appliedMods: [], appliedNotes: [], sampleCounts: [1, 4], gameGraphics: graphics, gameSettingsError: null };

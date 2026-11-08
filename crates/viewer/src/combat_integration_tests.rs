@@ -243,6 +243,7 @@ fn combat_inline_air_and_close_tooltips_use_the_runtime_resources() {
             true,
             native_gui::lifecycle::Tick { time: 0.0, dt: 0.0 },
             false,
+            None,
         )
         .unwrap();
     assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);

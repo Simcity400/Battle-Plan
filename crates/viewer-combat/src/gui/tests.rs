@@ -10,6 +10,13 @@ impl CombatResources for Fixture {
     fn flag_texture(&self, _: &str, _: bool) -> Option<native_gui::Texture> {
         None
     }
+
+    fn button_sounds(
+        &self,
+        _: &installed_content_core::gui::native::Button,
+    ) -> installed_content_core::gui::native::ButtonSounds {
+        Default::default()
+    }
 }
 
 #[test]
@@ -92,6 +99,7 @@ fn naval_boxes_use_authored_grid_geometry_and_runtime_escape_height() {
             true,
             true,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -164,6 +172,7 @@ fn retained_null_tactic_keeps_the_previous_drawable_and_initial_authored_image()
                     false,
                     false,
                     true,
+                    None,
                     &mut refused,
                 )
                 .unwrap();
@@ -320,6 +329,7 @@ fn retained_result_mixed_templates_keep_nested_air_loss_counts_and_tint() {
             true,
             true,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -388,6 +398,7 @@ fn tactics_entry_provider_fills_child_hits_and_preserves_explicit_hovers() {
             true,
             true,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -514,6 +525,7 @@ fn combat_box_hovers_pass_through_counts_and_keep_ship_icons_on_both_sides() {
                 true,
                 true,
                 true,
+                None,
                 &mut refused,
             )
             .unwrap();
@@ -601,6 +613,7 @@ fn combat_mixed_grid_rows_are_counted_without_losing_compatible_entries() {
                     true,
                     true,
                     true,
+                    None,
                     &mut refused,
                 )
                 .unwrap();
@@ -671,6 +684,7 @@ fn naval_loss_grid_uses_authored_slots_and_runtime_bounds() {
             true,
             Tick { time: 0.0, dt: 0.0 },
             false,
+            None,
         )
         .unwrap();
     assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);
@@ -862,6 +876,7 @@ fn unchanged_generation_keeps_runtime_controls_until_refresh() {
                 false,
                 false,
                 true,
+                None,
                 &mut refused,
             )
             .unwrap();
@@ -922,6 +937,7 @@ fn combat_prepare_draws_percentage_grid_slots_natively() {
             true,
             true,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -1019,6 +1035,7 @@ fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templa
             true,
             true,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -1040,6 +1057,7 @@ fn combat_prepare_composes_nested_entries_clips_hovers_and_counts_missing_templa
             false,
             true,
             true,
+            None,
             &mut held_refused,
         )
         .unwrap();
@@ -1144,6 +1162,7 @@ fn combat_prepare_sizes_escape_entries_from_the_native_drawable() {
                 true,
                 true,
                 true,
+                None,
                 &mut refused,
             )
             .unwrap();
@@ -1303,6 +1322,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
             false,
             false,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -1327,6 +1347,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
             false,
             false,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -1352,6 +1373,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
             true,
             false,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -1370,6 +1392,7 @@ fn combat_hit_prepare_does_not_tick_before_native_scroll_input() {
             false,
             false,
             true,
+            None,
             &mut refused,
         )
         .unwrap();
@@ -1437,6 +1460,7 @@ fn combat_prepare_resolves_bound_control_and_holder_names_without_case() {
             true,
             true,
             true,
+            None,
             &mut refused,
         )
         .unwrap();

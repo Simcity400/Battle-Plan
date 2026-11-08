@@ -81,7 +81,7 @@ Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is;
          division's counter stands at its settled route point all hour, as the game draws it
          --allow-unverified-content
          --width <pixels> --height <pixels> --camera <x,z,height> --postfx on|off
-         --profile-pointer <x,y>, framebuffer hover for a profiled window only
+         --profile-pointer <x,y>, framebuffer hover for a profiled or playback-cost window only
          --free-camera <x,y,z,yaw,pitch[,roll[,fov[,near[,far]]]]>, a free eye at world (x, y, z)
            turned by degrees (yaw clockwise from north, pitch up, roll right side down) with a
            vertical field of view in degrees (default 45) and near/far planes (default 1, 20000)
@@ -1440,6 +1440,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     false,
                     options.presentation_time + gui_elapsed as f32,
                     true,
+                    None,
                 )?;
                 document.icons.lazy.settle();
                 if window.settle_air_after(air_generation) {

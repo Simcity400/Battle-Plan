@@ -132,6 +132,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
     }
     let mut translated = Vec::new();
     let mut hours = None;
+    let mut pointer = None;
     let mut schedule = crate::app::playback_cost::Schedule {
         step: 1,
         pan: None,
@@ -193,6 +194,11 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         .ok_or_else(|| invalid("--pan needs map units per frame"))?,
                 );
             }
+            // The harness hovers this point, which a dump's options refuse.
+            Some("--profile-pointer") => {
+                let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
+                pointer = Some(crate::parse_profile_pointer(value)?);
+            }
             Some("--speed") => {
                 if args.next().map(|s| s.as_os_str()) != Some(std::ffi::OsStr::new("max")) {
                     return Err(invalid("--playback-cost only supports --speed max"));
@@ -231,6 +237,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         ));
     }
     let mut options = Options::parse(translated.into_iter())?;
+    options.profile_pointer = pointer;
     if options.hour_fraction != 0.0 {
         return Err(invalid("--from-hour must be a whole game hour"));
     }

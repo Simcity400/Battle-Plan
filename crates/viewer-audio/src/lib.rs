@@ -25,7 +25,7 @@ pub use music::Chances;
 pub use system::{Owner, Source, Status, System};
 
 /// The viewer's volume groups. The game applies its one effects volume to
-/// both; the viewer lets them differ.
+/// all three; the viewer lets them differ.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
     /// Unit movement, idle and every other entity sound.
@@ -33,6 +33,8 @@ pub enum Group {
     Units,
     /// Sounds of entities presented in combat.
     Combat,
+    /// The interface's button sounds, played at the listener.
+    Interface,
 }
 
 /// One entity event that names a sound effect, as presented this frame.
@@ -81,6 +83,7 @@ pub struct Mix {
     pub ambient: f32,
     pub units: f32,
     pub combat: f32,
+    pub interface: f32,
     /// The game's voice volume, applied to the voice category.
     pub voice: f32,
     /// The game's music volume.
@@ -97,6 +100,7 @@ impl Default for Mix {
             ambient: 0.5,
             units: 1.0,
             combat: 1.0,
+            interface: 1.0,
             voice: 1.0,
             music: 0.75,
             muted: false,

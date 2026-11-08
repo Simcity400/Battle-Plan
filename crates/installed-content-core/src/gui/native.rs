@@ -1981,6 +1981,8 @@ impl Drop for Element {
 pub struct Gui {
     /// Every element `guiTypes` registers, in the order the blocks read them.
     templates: Vec<Element>,
+    /// The `default_*sound` keys the file sets.
+    default_sounds: DefaultSounds,
     /// Each lowered name, and the template the file's inserts leave under it.
     registered: BTreeMap<Vec<u8>, usize>,
     refusals: Vec<Refusal>,
@@ -2167,6 +2169,25 @@ pub struct Guis {
 }
 
 impl Guis {
+    /// The default button sounds in force after every file ([`DefaultSounds`]).
+    pub fn default_sounds(&self) -> DefaultSounds {
+        let mut sounds = DefaultSounds::default();
+        for (_, gui) in &self.files {
+            let set = &gui.default_sounds;
+            for (into, from) in [
+                (&mut sounds.click, &set.click),
+                (&mut sounds.over, &set.over),
+                (&mut sounds.down, &set.down),
+                (&mut sounds.up, &set.up),
+            ] {
+                if from.is_some() {
+                    into.clone_from(from);
+                }
+            }
+        }
+        sounds
+    }
+
     /// Builds the shared template registry in file registration order.
     pub fn new(files: Vec<(String, Gui)>) -> Self {
         let mut registered = BTreeMap::new();
@@ -2294,6 +2315,54 @@ fn finish(reader: reader::Reader, blocks: Vec<Vec<Element>>) -> Gui {
         templates,
         registered,
         refusals,
+        default_sounds: reader.default_sounds,
+    }
+}
+
+/// The GUI's default button sounds: each key's last setting in load order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DefaultSounds {
+    pub click: Option<Vec<u8>>,
+    pub over: Option<Vec<u8>>,
+    pub down: Option<Vec<u8>>,
+    pub up: Option<Vec<u8>>,
+}
+
+/// The sound effects a button plays entering Over, Down and Up, and on its click.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ButtonSounds {
+    pub over: Option<Vec<u8>>,
+    pub down: Option<Vec<u8>>,
+    pub up: Option<Vec<u8>>,
+    pub click: Option<Vec<u8>>,
+    /// A check box's on unchecking: its own `upsound`, else its click.
+    pub uncheck: Option<Vec<u8>>,
+}
+
+impl Button {
+    /// As the game resolves them when it builds the button; `no_clicksound` withholds defaults.
+    pub fn sounds(&self, sprite_click: &[u8], defaults: &DefaultSounds) -> ButtonSounds {
+        let own = |sound: &[u8]| (!sound.is_empty()).then(|| sound.to_vec());
+        let fallback = |sound: &Option<Vec<u8>>| {
+            sound
+                .clone()
+                .filter(|sound| !sound.is_empty() && !self.no_click_sound)
+        };
+        let down = own(&self.down_sound).or_else(|| fallback(&defaults.down));
+        let click = (!self.no_click_sound)
+            .then(|| {
+                own(&self.click_sound)
+                    .or_else(|| own(sprite_click))
+                    .or_else(|| fallback(&defaults.click))
+            })
+            .flatten();
+        ButtonSounds {
+            over: own(&self.over_sound).or_else(|| fallback(&defaults.over)),
+            up: own(&self.up_sound).or_else(|| fallback(&defaults.up)),
+            uncheck: own(&self.up_sound).or_else(|| click.clone()),
+            click,
+            down,
+        }
     }
 }
 

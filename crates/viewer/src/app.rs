@@ -11,6 +11,7 @@ use viewer_foundation::map::camera::Pose;
 use viewer_foundation::map::camera::motion::{Input as MotionInput, Motion, Pan};
 use viewer_foundation::map::free_icons;
 use viewer_foundation::map::gpu_contract::SOFTWARE_RENDERER_NOTICE;
+use viewer_foundation::map::native_gui::pointer::Sound;
 use viewer_foundation::map::gpu_contract::device_requirements;
 use viewer_foundation::map::gpu_contract::is_software;
 use viewer_foundation::map::perspective::Choice;
@@ -73,6 +74,7 @@ use {
 mod drop;
 mod embedded;
 mod faction_highlight;
+pub(crate) mod highlight;
 pub(crate) mod fly;
 mod fly_aircraft;
 pub(crate) mod picker;
@@ -1193,6 +1195,22 @@ pub struct Viewer {
     tooltip_refused: BTreeMap<String, usize>,
     // counters
     counter_report: CounterReport,
+    /// What the map's last hover with a tooltip was ([`highlight::TooltipTarget`]).
+    map_tooltip_target: Option<highlight::TooltipTarget>,
+    /// The map tooltip the last drawn frame showed.
+    shown_tooltip: Option<highlight::TooltipTarget>,
+    /// Interface sounds since the last audio frame, and the next key one takes.
+    interface_sounds: Vec<InterfaceSound>,
+    interface_key: u64,
+    /// The counter the last pointer step held in Over (`false`) or Down (`true`).
+    counter_held: Option<(Unit, bool)>,
+    /// What the held primary press went down on (its owner, or the bare map as `None`), where,
+    /// when, and whether the pointer has since strayed too far for a click.
+    pressed_on: Option<(Option<Holder>, egui::Pos2, f64, bool)>,
+    /// The counter the held press went down on, whose release over it selects it.
+    counter_selecting: Option<Unit>,
+    /// The picker control the held secondary press went down on.
+    secondary_on: Option<viewer_combat::picker::Control>,
     /// The last icon layer built, and the frame, camera and viewport it was
     /// built for; the two reports beside it come from the same build.
     ///
@@ -1237,7 +1255,7 @@ pub struct Viewer {
     picker_refused: std::collections::BTreeMap<String, usize>,
     /// The controls the picker last drew and the extent it drew them at, which the next
     /// frame's input hits, as the user saw them.
-    picker_controls: Option<([f32; 2], Vec<([f32; 4], viewer_combat::picker::Control)>)>,
+    picker_controls: Option<([f32; 2], Vec<viewer_combat::picker::Placed>)>,
     // capture
     /// The readback to run once the next frame is drawn; a host export and
     /// `--window-dump` both arm it.
@@ -1691,6 +1709,14 @@ impl Viewer {
             tooltip_refused: Default::default(),
             // counters
             counter_report: CounterReport::default(),
+            map_tooltip_target: None,
+            shown_tooltip: None,
+            interface_sounds: Vec::new(),
+            interface_key: 0,
+            counter_held: None,
+            pressed_on: None,
+            counter_selecting: None,
+            secondary_on: None,
             overlay: None,
             prepared_overlay: None,
             overlay_fraction: None,
@@ -2229,6 +2255,20 @@ impl Viewer {
             warnings.extend(device_requirements(device.features()));
         }
         warnings.extend(document.warnings.iter().cloned());
+        warnings.extend(
+            document
+                .content
+                .cursor
+                .as_ref()
+                .err()
+                .map(|why| format!("Cursor: the game's arrow is not shown: {why}")),
+        );
+        warnings.extend(
+            [Unit::Division(0), Unit::RailwayGun(0), Unit::TaskForce(0)]
+                .into_iter()
+                .filter_map(|unit| document.icons.counters.plate_sounds(unit).err())
+                .map(|why| format!("Counters: their button sounds are not played: {why}")),
+        );
         if self.graphics.day_night
             && let Err(error) = &document.game_speeds
         {
@@ -2314,6 +2354,12 @@ impl Viewer {
         if let Some(shown) = &self.shown {
             for line in shown.stats() {
                 ui.weak(line);
+            }
+            if let Some(target) = self.highlighted() {
+                ui.weak(format!("Highlighted: {target}"));
+            }
+            if let Some(target) = self.shown_tooltip() {
+                ui.weak(format!("Tooltip: {target}"));
             }
         }
         if self.map_warnings.is_empty() {
@@ -2644,6 +2690,7 @@ impl Viewer {
         self.overlay = None;
         self.prepared_overlay = None;
         self.counter_report = CounterReport::default();
+        self.counter_held = None;
         self.unit_selection = Default::default();
         self.air_selection = Default::default();
         self.fleet_selection = Default::default();
@@ -3935,6 +3982,7 @@ impl Viewer {
                 false,
                 animation_time,
                 false,
+                None,
             )
             .map_err(|error| error.to_string())?;
         let point = profile_hover_point(
@@ -3943,40 +3991,184 @@ impl Viewer {
                 .or_else(|| response.interact_pointer_pos())
                 .map(frame_point),
             self.options.profile_pointer,
-            profiling(),
+            // The playback-cost harness hovers its point too, to time hover.
+            profiling() || self.options.playback_cost_end.is_some(),
             pixels,
             ui_scale,
         );
+        // The interface's pointer, with the primary button's changes in order: a press counts
+        // only where it lands on this map; a release, wherever it happens. Held for looking
+        // around, the pointer is away from the interface.
+        let reaches = !free_mode || (interface && !self.input.captured());
+        // The pointer's moves (`None`) and its primary and secondary changes, in order.
+        let (changes, held, input_time) = ui.input(|input| {
+            let changes: Vec<(egui::Pos2, Option<(egui::PointerButton, bool)>)> = input
+                .events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::PointerMoved(pos) => Some((*pos, None)),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: button @ (egui::PointerButton::Primary
+                        | egui::PointerButton::Secondary),
+                        pressed,
+                        ..
+                    } => Some((*pos, Some((*button, *pressed)))),
+                    _ => None,
+                })
+                .collect();
+            (changes, input.pointer.primary_down(), input.time)
+        });
+        let on_map = |pos: egui::Pos2| {
+            response.interact_rect.contains(pos)
+                && ui.ctx().layer_id_at(pos) == Some(response.layer_id)
+        };
+        // A button's changes with their order, the index among the frame's pointer events.
+        let admitted = |button: egui::PointerButton| -> Vec<(usize, egui::Pos2, bool)> {
+            changes
+                .iter()
+                .enumerate()
+                .filter_map(|(order, &(pos, change))| {
+                    let (which, pressed) = change?;
+                    (which == button && (!pressed || on_map(pos))).then_some((order, pos, pressed))
+                })
+                .collect()
+        };
+        let primary = if reaches {
+            admitted(egui::PointerButton::Primary)
+        } else {
+            Vec::new()
+        };
+        let secondary = if reaches {
+            admitted(egui::PointerButton::Secondary)
+        } else {
+            Vec::new()
+        };
+        let interface_at = |pos: egui::Pos2| to_interface(frame_point(pos), ui_scale);
+        let gui_input = Some(reaches.then(|| {
+            use viewer_foundation::map::native_gui::pointer::{Button, Input, Place};
+            Input {
+                place: point.map(Place::new),
+                buttons: primary
+                    .iter()
+                    .map(|&(order, pos, pressed)| Button {
+                        down: pressed,
+                        place: Some(Place::new(interface_at(pos))),
+                        order,
+                    })
+                    .collect(),
+                held,
+            }
+        }).unwrap_or_default());
         if takes_keys {
             self.picker_keys(ui, document, extent);
         }
         // The picker's lists take no scrollbar, so the wheel over them does nothing of theirs.
-        let picker_hit = match &self.picker_controls {
-            Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => point
-                .and_then(|point| {
-                    controls
-                        .iter()
-                        .rev()
-                        .find(|(rect, _)| {
-                            viewer_foundation::map::gui_resources::contains(*rect, point)
-                        })
-                        .map(|(_, control)| control.clone())
-                }),
-            _ => match self.draw_picker(document, extent, false, animation_time, false) {
-                Some(Ok(drawn)) => point.and_then(|point| drawn.control_at(point).cloned()),
-                _ => None,
+        // Primary clicks are the windows' own: a release over the button its press went down on,
+        // acted on after the windows drew it.
+        let picker_controls = match &self.picker_controls {
+            Some((drawn_at, controls)) if !self.picker.hidden && *drawn_at == extent => {
+                controls.clone()
+            }
+            _ => match self.draw_picker(document, extent, false, animation_time, false, None) {
+                Some(Ok(drawn)) => drawn.controls,
+                _ => Vec::new(),
             },
         };
-        if let Some(control) = &picker_hit {
-            if response.clicked() {
-                self.picker_click(document, control, false);
-            } else if response.secondary_clicked() {
-                self.picker_click(document, control, true);
+        let picker_placed_at = |at: [f32; 2]| {
+            picker_controls
+                .iter()
+                .rev()
+                .find(|placed| placed.contains(at))
+                .cloned()
+        };
+        let picker_at = |at: [f32; 2]| picker_placed_at(at).map(|placed| placed.control);
+        let holder = if self.picker.picker.holding() {
+            Some(Holder::Picker)
+        } else if self.combat.holding() {
+            Some(Holder::Combat)
+        } else {
+            self.counter_selecting.map(|_| Holder::Counters)
+        };
+        let owner = |at: [f32; 2]| {
+            if picker_at(at).is_some() {
+                Some(Holder::Picker)
+            } else if combat_geometry.as_ref().is_some_and(|w| w.contains(at)) {
+                Some(Holder::Combat)
+            } else {
+                matches!(self.map_hit(at), Some(MapHit::Unit(_))).then_some(Holder::Counters)
             }
-        } else if response.clicked() && self.picker.open != viewer_combat::picker::Open::None {
-            // A click outside the open list closes it.
-            self.picker.open = viewer_combat::picker::Open::None;
+        };
+        let [picker_input, combat_input, counters_input] =
+            [Holder::Picker, Holder::Combat, Holder::Counters].map(|me| {
+                gui_input
+                    .as_ref()
+                    .map(|input| input.shared(holder, &owner, me))
+            });
+        // Each release ends the press it follows, which went down on its owner or the bare map,
+        // and is a click within egui's distance and time of it: where the last bare-map click
+        // ended, and the first click off the picker, by order.
+        let (click_dist, click_time) = ui
+            .ctx()
+            .options(|options| {
+                (options.input_options.max_click_dist, options.input_options.max_click_duration)
+            });
+        let mut pressed_on = self.pressed_on;
+        let mut bare_clicks = Vec::new();
+        let mut off_picker_clicks = Vec::new();
+        for (this, &(pos, change)) in changes.iter().enumerate().filter(|_| reaches) {
+            let Some((egui::PointerButton::Primary, pressed)) = change else {
+                // A press the pointer strays too far from is a drag.
+                if change.is_none()
+                    && let Some((_, from, _, far)) = &mut pressed_on
+                {
+                    *far |= pos.distance(*from) > click_dist;
+                }
+                continue;
+            };
+            if pressed && !on_map(pos) {
+                continue;
+            }
+            let at = interface_at(pos);
+            if pressed {
+                pressed_on = Some((owner(at), pos, input_time, false));
+                continue;
+            }
+            if let Some((on, from, since, far)) = pressed_on.take()
+                && !far
+                && pos.distance(from) <= click_dist
+                && input_time - since <= click_time
+            {
+                if on != Some(Holder::Picker) {
+                    off_picker_clicks.push(this);
+                }
+                if on.is_none() && owner(at).is_none() {
+                    bare_clicks.push((at, this));
+                }
+            }
         }
+        if !held || !reaches {
+            pressed_on = None;
+        }
+        self.pressed_on = pressed_on;
+        // A right press on a picker slot configures it on its release over that slot, in order.
+        let mut secondary_clicks = Vec::new();
+        for &(order, pos, pressed) in &secondary {
+            let placed = picker_placed_at(interface_at(pos));
+            if pressed {
+                self.secondary_on = placed.map(|placed| placed.control);
+            } else if let Some(pressed_on) = self.secondary_on.take()
+                && let Some(placed) = placed.filter(|placed| placed.control == pressed_on)
+                && matches!(placed.control, viewer_combat::picker::Control::Slot(_))
+                && !placed.disabled
+            {
+                secondary_clicks.push((order, placed));
+            }
+        }
+        if !reaches || !ui.input(|input| input.pointer.secondary_down()) {
+            self.secondary_on = None;
+        }
+        let picker_hit = point.and_then(picker_at);
         let over_picker = picker_hit.is_some();
         if response.drag_started() && !over_picker {
             self.combat.start_drag(combat_geometry.as_ref(), point);
@@ -3993,31 +4185,7 @@ impl Viewer {
             });
         let modifiers = ui.input(|input| input.modifiers);
         self.combat.set_modifiers(modifiers.shift, modifiers.ctrl);
-        let popup_click = response.clicked()
-            && !over_picker
-            && point
-                .zip(combat_geometry.as_ref())
-                .is_some_and(|(point, drawn)| self.combat.handle_click(drawn, point));
-        if response.clicked()
-            && !popup_click
-            && !over_picker
-            && let Some(point) = point
-            && combat_geometry
-                .as_ref()
-                .is_some_and(|window| window.closes(point))
-        {
-            self.combat.close();
-        }
         if over_combat {
-            if response.clicked()
-                && let Some((side, direction)) = point.and_then(|point| {
-                    combat_geometry
-                        .as_ref()
-                        .and_then(|window| window.scroll_action(point))
-                })
-            {
-                self.combat.scroll(side, direction, false);
-            }
             if response.dragged() && self.combat.dragging {
                 let delta = response.drag_delta();
                 self.combat
@@ -4355,6 +4523,15 @@ impl Viewer {
             }
         };
         self.grab_pointer(ui.ctx());
+        // The game shows its own arrow wherever no other cursor is asked for; looking around hides
+        // it, which a cursor image would show again.
+        if let Ok(cursor) = &document.content.cursor
+            && response.hovered()
+            && !self.pointer_grabbed
+        {
+            ui.ctx()
+                .output_mut(|output| output.cursor_image = Some(cursor.clone()));
+        }
         laps.lap("panel_camera");
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.movers", Some("other"));
@@ -4499,12 +4676,119 @@ impl Viewer {
         // A free mode's pointer reaches the map's interface while it is shown and the pointer is
         // not held for looking around.
         let point = point.filter(|_| !free_mode || (interface && !self.input.captured()));
-        self.counter_view.hovered = point.filter(|_| !over_combat).and_then(|point| {
+        let counters_point = point.filter(|_| {
+            counters_input
+                .as_ref()
+                .is_none_or(|input| input.place.is_some())
+        });
+        self.counter_view.hovered = counters_point.filter(|_| !over_combat).and_then(|point| {
             let MapHit::Unit(index) = self.map_hit(point)? else {
                 return None;
             };
             self.counter_report.unit_hits[index].units().next()
         });
+        let frame_sounds = self.interface_sounds.len();
+        // The counter the primary button went down on, where it went down, stays pressed until
+        // the release. Each step changes its plate's state as a button's, with its sounds.
+        let was = (self.counter_view.pressed, self.counter_view.plate_hovered);
+        let mut held = self.counter_held;
+        let mut counter_sounds = Vec::new();
+        let mut counter_clicks: Vec<(Unit, usize)> = Vec::new();
+        let plate = |pressed: Option<Unit>, hovered: Option<Unit>| {
+            pressed
+                .map(|unit| (unit, true))
+                .or(hovered.map(|unit| (unit, false)))
+        };
+        let mut change =
+            |next: Option<(Unit, bool)>, order: usize, sounds: &mut Vec<(Unit, Sound, usize)>| {
+                if held == next {
+                    return;
+                }
+                if let Some((before, _)) = held
+                    && next.is_none_or(|(after, _)| after != before)
+                {
+                    sounds.push((before, Sound::Up, order));
+                }
+                if let Some((after, down)) = next {
+                    let sound = if down { Sound::Down } else { Sound::Over };
+                    sounds.push((after, sound, order));
+                }
+                held = next;
+            };
+        // The counter under a place, and whether its `count_bg` itself is: a counter's other
+        // parts forward its selection but leave its button's state.
+        let counter_at = |at: [f32; 2]| {
+            if picker_at(at).is_some() || combat_geometry.as_ref().is_some_and(|w| w.contains(at))
+            {
+                return None;
+            }
+            let target = self.map_hit(at)?;
+            let MapHit::Unit(index) = target else {
+                return None;
+            };
+            let hit = &self.counter_report.unit_hits[index];
+            let local = self.local_point(self.hit_layer(target), at);
+            Some((hit.units().next()?, hit.on_plate(local)))
+        };
+        let plate_of = |under: Option<(Unit, bool)>| under.filter(|(_, on)| *on).map(|(u, _)| u);
+        let unders: Vec<_> = counters_input
+            .iter()
+            .flat_map(|input| &input.buttons)
+            .map(|button| button.place.and_then(|place| counter_at(place.at)))
+            .collect();
+        let plate_hovered = plate_of(
+            counters_point
+                .filter(|_| !over_combat)
+                .and_then(counter_at),
+        );
+        if let Some(input) = &counters_input {
+            for (button, &under) in input.buttons.iter().zip(&unders) {
+                if !button.down {
+                    if let Some(selecting) = self.counter_selecting
+                        && under.map(|(unit, _)| unit) == Some(selecting)
+                    {
+                        counter_clicks.push((selecting, button.order));
+                    }
+                    if let Some(pressed) = self.counter_view.pressed
+                        && plate_of(under) == Some(pressed)
+                    {
+                        counter_sounds.push((pressed, Sound::Click, button.order));
+                    }
+                }
+                self.counter_selecting = under.filter(|_| button.down).map(|(unit, _)| unit);
+                self.counter_view.pressed = plate_of(under).filter(|_| button.down);
+                change(
+                    plate(self.counter_view.pressed, plate_of(under)),
+                    button.order,
+                    &mut counter_sounds,
+                );
+            }
+            if !input.held {
+                self.counter_selecting = None;
+                self.counter_view.pressed = None;
+            }
+        }
+        self.counter_view.plate_hovered = plate_hovered;
+        change(
+            plate(self.counter_view.pressed, self.counter_view.plate_hovered),
+            viewer_foundation::map::native_gui::pointer::LAST,
+            &mut counter_sounds,
+        );
+        self.counter_held = held;
+        for (unit, sound, order) in counter_sounds {
+            let control = highlight::HoverTarget::Counter(unit).to_string();
+            if let Ok(sounds) = document.icons.counters.plate_sounds(unit)
+                && let Some(played) = sound.played(&control, &sounds, order)
+            {
+                self.interface_sounds
+                    .push(InterfaceSound::new("counter", &played));
+            }
+        }
+        // A plate's state draws the laid-out counters again; it changes nothing they were
+        // prepared with.
+        if (self.counter_view.pressed, self.counter_view.plate_hovered) != was {
+            self.overlay_fraction = None;
+        }
         self.last_view = Some(hours::View {
             camera: overlay_camera,
             viewport: pixels,
@@ -4854,6 +5138,7 @@ impl Viewer {
             }
             if self.overlay_fraction != Some(document.hour_fraction) {
                 let prepared = self.prepared_overlay.as_mut().expect("prepared above");
+                prepared.set_pressed(self.counter_view.pressed, self.counter_view.plate_hovered);
                 prepared
                     .draw_into(
                         &now,
@@ -4945,195 +5230,6 @@ impl Viewer {
                     }
                 });
             }
-            // Resolve clicks against this hour and camera's newly rebuilt hit regions; the click
-            // that chose a free mode's start selects nothing.
-            if response.clicked()
-                && !started
-                && !over_combat
-                && (!free_mode || icon_click)
-                && let Some(point) = point
-            {
-                if matches!(self.shown_mode(), viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Diplomacy))
-                    && self.map_hit(point).is_none()
-                    && let Some(province) = pick(
-                        &camera,
-                        point.map(|value| value * ui_scale),
-                        pixels,
-                        &document.map,
-                        document.assets.heightmap_texels(),
-                    ).map_err(|error| error.to_string())?
-                    && let Some(country) = self.counter_report.perspective.province_controller(province)
-                    && self.diplomatic_selected != Some(country)
-                {
-                    self.diplomatic_selected = Some(country);
-                    ui.ctx().request_repaint();
-                }
-                match self.map_hit(point) {
-                    Some(MapHit::NavalMission(index))
-                        if self.counter_report.naval_mission_hits[index].mission != 0 =>
-                    {
-                        let hit = &self.counter_report.naval_mission_hits[index];
-                        let viewer = now
-                            .vision(&perspective)
-                            .map_err(|error| error.to_string())?
-                            .ours();
-                        let members = viewer_counters::map::naval_selection::mission_members(
-                            now.frame,
-                            viewer,
-                            hit.region,
-                            hit.mission,
-                        )
-                        .map_err(|error| error.to_string())?;
-                        let selection = viewer_foundation::map::counter_hovers::unit_hits::Hit {
-                            ours: true,
-                            port: false,
-                            rect: hit.rect,
-                            layer: hit.layer,
-                            kind:
-                                viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
-                            members: members.into(),
-                        };
-                        self.unit_selection.click(Some(&selection), false);
-                        self.air_selection.clear();
-                        self.fleet_selection.clear();
-                        self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                        self.overlay_at = None;
-                        ui.ctx().request_repaint();
-                    }
-                    Some(MapHit::Base(index))
-                        if self.counter_report.air_grid_hits.contains_key(&index) =>
-                    {
-                        if let Some(members) =
-                            self.counter_report.air_grid_hits[&index].members.clone()
-                        {
-                            let shift = ui.input(|input| input.modifiers.shift);
-                            if self
-                                .air_selection
-                                .grid_click(now.frame, &members, shift)
-                                .map_err(|error| error.to_string())?
-                            {
-                                self.unit_selection.clear();
-                                self.counter_view.selected =
-                                    Arc::clone(self.unit_selection.units());
-                                self.overlay_at = None;
-                                ui.ctx().request_repaint();
-                            }
-                        }
-                    }
-                    Some(MapHit::Base(index))
-                        if self.counter_report.air_base_hits.contains_key(&index) =>
-                    {
-                        let (province, kind) = self.counter_report.air_base_hits[&index];
-                        let viewer = now
-                            .vision(&perspective)
-                            .map_err(|error| error.to_string())?
-                            .ours();
-                        let shift = ui.input(|input| input.modifiers.shift);
-                        let target = viewer_counters::map::air_selection::base_target(
-                            now.frame, viewer, province, kind,
-                        )
-                        .map_err(|error| error.to_string())?;
-                        if let Some(target) = target {
-                            self.choose_map_mode(viewer_world::map::map_mode::MapMode::Stock(
-                                viewer_world::map::map_mode::Stock::StrategicAir,
-                            ));
-                            self.air_selection
-                                .base_click(now.frame, target, shift)
-                                .map_err(|error| error.to_string())?;
-                            self.unit_selection.clear();
-                            self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                            self.overlay_at = None;
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                    Some(MapHit::AirMission(index))
-                        if self.counter_report.air_mission_hits[index]
-                            .mission
-                            .is_some() =>
-                    {
-                        let hit = &self.counter_report.air_mission_hits[index];
-                        let viewer = now
-                            .vision(&perspective)
-                            .map_err(|error| error.to_string())?
-                            .ours();
-                        let members = viewer_counters::map::air_selection::mission_members(
-                            now.frame,
-                            viewer,
-                            hit.region,
-                            hit.mission.unwrap(),
-                        )
-                        .map_err(|error| error.to_string())?;
-                        let shift = ui.input(|input| input.modifiers.shift);
-                        if self
-                            .air_selection
-                            .mission_click(now.frame, &members, shift)
-                            .map_err(|error| error.to_string())?
-                        {
-                            self.unit_selection.clear();
-                            self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                            self.overlay_at = None;
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                    Some(MapHit::AirMission(index)) => {
-                        self.combat
-                            .open(viewer_foundation::combat_selection::Selection::AirRegion(
-                                self.counter_report.air_mission_hits[index].region,
-                            ))
-                    }
-                    Some(MapHit::Combat(index)) => self
-                        .combat
-                        .open(self.counter_report.combat_hits[index].selection),
-                    None if matches!(
-                        self.shown_mode(),
-                        viewer_world::map::map_mode::MapMode::Stock(
-                            viewer_world::map::map_mode::Stock::StrategicAir
-                        )
-                    ) =>
-                    {
-                        if let Some(region) = pick(
-                            &camera,
-                            point.map(|v| v * ui_scale),
-                            pixels,
-                            &document.map,
-                            document.assets.heightmap_texels(),
-                        )
-                        .map_err(|e| e.to_string())?
-                        .and_then(|province| document.content.counters.region(province))
-                        {
-                            self.combat.open(
-                                viewer_foundation::combat_selection::Selection::AirRegion(region),
-                            );
-                        }
-                    }
-                    target @ (Some(MapHit::Unit(_)) | None) => {
-                        let hit = match target {
-                            Some(MapHit::Unit(index)) => {
-                                Some(&self.counter_report.unit_hits[index])
-                            }
-                            _ => None,
-                        };
-                        let shift = ui.input(|input| input.modifiers.shift);
-                        let units_changed = self.unit_selection.click(hit, shift);
-                        let fleets_changed = if !shift {
-                            self.fleet_selection.clear()
-                        } else {
-                            false
-                        };
-                        let air_changed = if !shift || hit.is_some_and(|hit| hit.ours) {
-                            self.air_selection.clear()
-                        } else {
-                            false
-                        };
-                        if units_changed || air_changed || fleets_changed {
-                            self.counter_view.selected = Arc::clone(self.unit_selection.units());
-                            self.overlay_at = None;
-                            ui.ctx().request_repaint();
-                        }
-                    }
-                    _ => {}
-                }
-            }
             let overlay_ms = overlay_timer.elapsed().as_secs_f64() * 1000.0;
             overlay_draw_cpu.finish();
             laps.lap("overlay_draw");
@@ -5168,14 +5264,31 @@ impl Viewer {
                     true,
                     animation_time,
                     true,
+                    combat_input
+                        .as_ref()
+                        .map(|input| input.filter(|at| picker_at(at).is_none())),
                 )
                 .map_err(|error| error.to_string())?;
             if self.combat.gui_active() {
                 ui.ctx().request_repaint();
             }
+            if let Some(drawn) = &drawn {
+                self.interface_sounds.extend(
+                    drawn
+                        .sounds
+                        .iter()
+                        .map(|played| InterfaceSound::new("combat", played)),
+                );
+            }
             laps.lap("combat_draw");
-            let picker_drawn = match self.draw_picker(document, extent, true, animation_time, true)
-            {
+            let picker_drawn = match self.draw_picker(
+                document,
+                extent,
+                true,
+                animation_time,
+                true,
+                picker_input,
+            ) {
                 Some(Ok(drawn)) => Some(drawn),
                 Some(Err(error)) => {
                     self.picker_error = Some(error);
@@ -5183,7 +5296,17 @@ impl Viewer {
                 }
                 None => None,
             };
+            if self.picker.picker.pointing() {
+                ui.ctx().request_repaint();
+            }
             if let Some(picker_drawn) = &picker_drawn {
+                self.interface_sounds.extend(
+                    picker_drawn
+                        .drawn
+                        .sounds
+                        .iter()
+                        .map(|played| InterfaceSound::new("picker", played)),
+                );
                 self.picker_error = None;
                 self.picker_refused.clone_from(&picker_drawn.drawn.refused);
             }
@@ -5200,6 +5323,251 @@ impl Viewer {
                     .as_ref()
                     .is_some_and(|drawn| drawn.control_at(point).is_some())
             });
+            // Clicks act in the order their button changes came, across both windows; a click
+            // off the picker closes its open list there, and later list clicks find it closed.
+            let mut clicks: Vec<(usize, Act)> = picker_drawn
+                .iter()
+                .flat_map(|drawn| drawn.clicked.iter())
+                .map(|(control, order)| (*order, Act::Picker(control.clone(), false)))
+                .collect();
+            for (order, placed) in secondary_clicks {
+                if let Some((path, effect)) = &placed.click {
+                    let played = viewer_foundation::map::native_gui::pointer::Played {
+                        effect: effect.clone(),
+                        click: Some(path.clone()),
+                        order,
+                    };
+                    self.interface_sounds
+                        .push(InterfaceSound::new("picker", &played));
+                }
+                clicks.push((order, Act::Picker(placed.control, true)));
+            }
+            if let Some(window) = &drawn {
+                clicks.extend(
+                    window
+                        .clicks
+                        .iter()
+                        .enumerate()
+                        .map(|(at, (_, _, order))| (*order, Act::Combat(at))),
+                );
+            }
+            clicks.extend(
+                off_picker_clicks
+                    .iter()
+                    .map(|&order| (order, Act::Dismiss)),
+            );
+            // Resolve map clicks against this hour and camera's newly rebuilt hit regions, in order
+            // with the windows'; the click that chose a free mode's start selects nothing. A counter
+            // takes its button's clicks on the counters their presses went down on.
+            if !started {
+                clicks.extend(
+                    counter_clicks
+                        .iter()
+                        .map(|&(unit, order)| (order, Act::Counter(unit))),
+                );
+                if !self.combat.dragging && (!free_mode || icon_click) {
+                    clicks.extend(
+                        bare_clicks
+                            .iter()
+                            .map(|&(point, order)| (order, Act::Map(point))),
+                    );
+                }
+            }
+            clicks.sort_by_key(|(order, _)| *order);
+            let mut closed = false;
+            for (_, click) in clicks {
+                use viewer_combat::picker::Control;
+                match click {
+                    Act::Dismiss => {
+                        if self.picker.open != viewer_combat::picker::Open::None {
+                            self.picker.open = viewer_combat::picker::Open::None;
+                            closed = true;
+                        }
+                    }
+                    Act::Counter(unit) => {
+                        let hit = self
+                            .counter_report
+                            .unit_hits
+                            .iter()
+                            .position(|hit| hit.units().next() == Some(unit));
+                        if hit.is_some() {
+                            self.click_units(hit, ui.ctx());
+                        }
+                    }
+                    Act::Map(point) => {
+                        if matches!(self.shown_mode(), viewer_world::map::map_mode::MapMode::Stock(viewer_world::map::map_mode::Stock::Diplomacy))
+                            && self.map_hit(point).is_none()
+                            && let Some(province) = pick(
+                                &camera,
+                                point.map(|value| value * ui_scale),
+                                pixels,
+                                &document.map,
+                                document.assets.heightmap_texels(),
+                            ).map_err(|error| error.to_string())?
+                            && let Some(country) = self.counter_report.perspective.province_controller(province)
+                            && self.diplomatic_selected != Some(country)
+                        {
+                            self.diplomatic_selected = Some(country);
+                            ui.ctx().request_repaint();
+                        }
+                        match self.map_hit(point) {
+                            Some(MapHit::NavalMission(index))
+                                if self.counter_report.naval_mission_hits[index].mission != 0 =>
+                            {
+                                let hit = &self.counter_report.naval_mission_hits[index];
+                                let viewer = now
+                                    .vision(&perspective)
+                                    .map_err(|error| error.to_string())?
+                                    .ours();
+                                let members = viewer_counters::map::naval_selection::mission_members(
+                                    now.frame,
+                                    viewer,
+                                    hit.region,
+                                    hit.mission,
+                                )
+                                .map_err(|error| error.to_string())?;
+                                let selection = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+                                    plate: None,
+                                    ours: true,
+                                    port: false,
+                                    rect: hit.rect,
+                                    layer: hit.layer,
+                                    kind:
+                                        viewer_foundation::map::counter_hovers::unit_hits::Kind::TaskForce,
+                                    members: members.into(),
+                                };
+                                self.unit_selection.click(Some(&selection), false);
+                                self.air_selection.clear();
+                                self.fleet_selection.clear();
+                                self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                                self.overlay_at = None;
+                                ui.ctx().request_repaint();
+                            }
+                            Some(MapHit::Base(index))
+                                if self.counter_report.air_grid_hits.contains_key(&index) =>
+                            {
+                                if let Some(members) =
+                                    self.counter_report.air_grid_hits[&index].members.clone()
+                                {
+                                    let shift = ui.input(|input| input.modifiers.shift);
+                                    if self
+                                        .air_selection
+                                        .grid_click(now.frame, &members, shift)
+                                        .map_err(|error| error.to_string())?
+                                    {
+                                        self.unit_selection.clear();
+                                        self.counter_view.selected =
+                                            Arc::clone(self.unit_selection.units());
+                                        self.overlay_at = None;
+                                        ui.ctx().request_repaint();
+                                    }
+                                }
+                            }
+                            Some(MapHit::Base(index))
+                                if self.counter_report.air_base_hits.contains_key(&index) =>
+                            {
+                                let (province, kind) = self.counter_report.air_base_hits[&index];
+                                let viewer = now
+                                    .vision(&perspective)
+                                    .map_err(|error| error.to_string())?
+                                    .ours();
+                                let shift = ui.input(|input| input.modifiers.shift);
+                                let target = viewer_counters::map::air_selection::base_target(
+                                    now.frame, viewer, province, kind,
+                                )
+                                .map_err(|error| error.to_string())?;
+                                if let Some(target) = target {
+                                    self.choose_map_mode(viewer_world::map::map_mode::MapMode::Stock(
+                                        viewer_world::map::map_mode::Stock::StrategicAir,
+                                    ));
+                                    self.air_selection
+                                        .base_click(now.frame, target, shift)
+                                        .map_err(|error| error.to_string())?;
+                                    self.unit_selection.clear();
+                                    self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                                    self.overlay_at = None;
+                                    ui.ctx().request_repaint();
+                                }
+                            }
+                            Some(MapHit::AirMission(index))
+                                if self.counter_report.air_mission_hits[index]
+                                    .mission
+                                    .is_some() =>
+                            {
+                                let hit = &self.counter_report.air_mission_hits[index];
+                                let viewer = now
+                                    .vision(&perspective)
+                                    .map_err(|error| error.to_string())?
+                                    .ours();
+                                let members = viewer_counters::map::air_selection::mission_members(
+                                    now.frame,
+                                    viewer,
+                                    hit.region,
+                                    hit.mission.unwrap(),
+                                )
+                                .map_err(|error| error.to_string())?;
+                                let shift = ui.input(|input| input.modifiers.shift);
+                                if self
+                                    .air_selection
+                                    .mission_click(now.frame, &members, shift)
+                                    .map_err(|error| error.to_string())?
+                                {
+                                    self.unit_selection.clear();
+                                    self.counter_view.selected = Arc::clone(self.unit_selection.units());
+                                    self.overlay_at = None;
+                                    ui.ctx().request_repaint();
+                                }
+                            }
+                            Some(MapHit::AirMission(index)) => {
+                                self.combat
+                                    .open(viewer_foundation::combat_selection::Selection::AirRegion(
+                                        self.counter_report.air_mission_hits[index].region,
+                                    ))
+                            }
+                            Some(MapHit::Combat(index)) => self
+                                .combat
+                                .open(self.counter_report.combat_hits[index].selection),
+                            None if matches!(
+                                self.shown_mode(),
+                                viewer_world::map::map_mode::MapMode::Stock(
+                                    viewer_world::map::map_mode::Stock::StrategicAir
+                                )
+                            ) =>
+                            {
+                                if let Some(region) = pick(
+                                    &camera,
+                                    point.map(|v| v * ui_scale),
+                                    pixels,
+                                    &document.map,
+                                    document.assets.heightmap_texels(),
+                                )
+                                .map_err(|e| e.to_string())?
+                                .and_then(|province| document.content.counters.region(province))
+                                {
+                                    self.combat.open(
+                                        viewer_foundation::combat_selection::Selection::AirRegion(region),
+                                    );
+                                }
+                            }
+                            None => self.click_units(None, ui.ctx()),
+                            _ => {}
+                        }
+                    }
+                    Act::Picker(Control::Entry(_) | Control::SlotEntry(_) | Control::Default, _)
+                        if closed => {}
+                    Act::Picker(control, secondary) => {
+                        self.picker_click(document, &control, secondary);
+                    }
+                    Act::Combat(at) => {
+                        if let Some(window) = &drawn {
+                            let (path, rect, _) = &window.clicks[at];
+                            self.combat.click(window, path, *rect);
+                        }
+                    }
+                }
+            }
+            // The frame's interface sounds play as their changes came.
+            self.interface_sounds[frame_sounds..].sort_by_key(|sound| sound.order);
             let mut drawn = drawn;
             if let Some(picker_drawn) = &picker_drawn {
                 drawn
@@ -5207,17 +5575,27 @@ impl Viewer {
                     .add_hovers(&picker_drawn.drawn);
             }
             laps.lap("picker");
-            let map_hit = self.map_tooltip(
-                document,
-                point.filter(|_| !over_combat && !over_picker),
-                extent,
-                ui.ctx(),
-            );
+            let tooltip_point = point.filter(|_| !over_combat && !over_picker);
+            let map_hit = self.map_tooltip(document, tooltip_point, extent, ui.ctx());
+            // The counter whose tooltip that is: the same rebuilt hit test, at the same point.
+            let tooltip_counter = tooltip_point.and_then(|point| match self.map_hit(point)? {
+                MapHit::Unit(index) => self.counter_report.unit_hits[index].units().next(),
+                _ => None,
+            });
             laps.lap("map_tooltip");
             let mut tooltip_refused = map_hit
                 .as_ref()
                 .map(|(text, _, _)| text.refused.clone())
                 .unwrap_or_default();
+            // The target changes with the text shown: an empty tooltip leaves the last one up.
+            if let Some((text, _, province)) = &map_hit
+                && (!text.title.is_empty() || !text.body.is_empty())
+            {
+                self.map_tooltip_target = province
+                    .map(highlight::TooltipTarget::Province)
+                    .or(tooltip_counter.map(highlight::TooltipTarget::Counter));
+            }
+            self.shown_tooltip = None;
             let mut additions = Batch::default();
             let tooltip_time = Instant::now();
             // Hidden tooltips still follow the pointer; only their painting stops.
@@ -5242,6 +5620,12 @@ impl Viewer {
                     .expect("built above")
                     .draw_tooltip(&now, &mut additions, text, anchor, extent, animation_time)
                     .map_err(|error| error.to_string())?;
+                // A refused painting, or a hidden interface, shows no tooltip.
+                self.shown_tooltip = (refused.is_empty()
+                    && interface
+                    && self.combat.tooltip_from_map())
+                    .then(|| self.map_tooltip_target.clone())
+                    .flatten();
                 for (reason, count) in refused {
                     *tooltip_refused.entry(reason).or_default() += count;
                 }
@@ -5579,11 +5963,14 @@ impl Viewer {
                     reset: std::mem::take(&mut self.audio_reset),
                     music: self.music.clone(),
                     battles: self.battles.clone(),
+                    interface: std::mem::take(&mut self.interface_sounds),
+                    interface_key: &mut self.interface_key,
                 },
             );
         } else if !self.audio_focus
             && let Some(audio) = &mut self.audio
         {
+            self.interface_sounds.clear();
             // Another map sounds now: what this one played stops.
             audio.release();
         }
@@ -5833,6 +6220,29 @@ impl Viewer {
         self.grab_pointer(ctx);
     }
 
+    /// A click on the counter `hit` (of [`CounterReport::unit_hits`]) or on no icon: selects its
+    /// units, adding to the selection with shift.
+    fn click_units(&mut self, hit: Option<usize>, ctx: &egui::Context) {
+        let hit = hit.map(|index| &self.counter_report.unit_hits[index]);
+        let shift = ctx.input(|input| input.modifiers.shift);
+        let units_changed = self.unit_selection.click(hit, shift);
+        let fleets_changed = if !shift {
+            self.fleet_selection.clear()
+        } else {
+            false
+        };
+        let air_changed = if !shift || hit.is_some_and(|hit| hit.ours) {
+            self.air_selection.clear()
+        } else {
+            false
+        };
+        if units_changed || air_changed || fleets_changed {
+            self.counter_view.selected = Arc::clone(self.unit_selection.units());
+            self.overlay_at = None;
+            ctx.request_repaint();
+        }
+    }
+
     /// Hides and confines the cursor while the map holds the pointer, and gives it back after.
     fn grab_pointer(&mut self, ctx: &egui::Context) {
         let captured = self.input.captured() && self.camera_mode != CameraMode::Map;
@@ -5850,13 +6260,16 @@ impl Viewer {
 }
 
 /// A view's audio choices and state for one presented frame.
-struct AudioInputs {
+struct AudioInputs<'a> {
     volumes: dashboard::protocol::MapAudio,
     muted: bool,
     /// A presentation discontinuity since the last audio frame.
     reset: bool,
     music: Option<Arc<viewer_audio::Chances>>,
     battles: Option<Arc<viewer_audio::Battles>>,
+    /// The interface's button sounds since the last audio frame, each started once.
+    interface: Vec<InterfaceSound>,
+    interface_key: &'a mut u64,
 }
 
 /// Sends the rendered frame's sound events to the process audio. Callers
@@ -5875,9 +6288,60 @@ fn audio_mix(
         ambient: percent(volumes.ambient),
         units: percent(volumes.units),
         combat: percent(volumes.combat),
+        interface: percent(volumes.interface),
         voice: percent(volumes.voice),
         music: percent(volumes.music),
         muted,
+    }
+}
+
+/// One of a frame's interface actions, dispatched in its changes' order.
+enum Act {
+    /// A picker control clicked, by the secondary button when `true`.
+    Picker(viewer_combat::picker::Control, bool),
+    /// The combat window's click of that index.
+    Combat(usize),
+    /// A click off the picker, which closes its open list.
+    Dismiss,
+    /// A counter's click, which selects it.
+    Counter(Unit),
+    /// A click on the bare map there.
+    Map([f32; 2]),
+}
+
+/// What takes the primary button's press on the map's interface.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Holder {
+    Picker,
+    Combat,
+    Counters,
+}
+
+/// The emitter keys of interface sounds, apart from the map's events; clicks take the upper half.
+const INTERFACE_SOUND_KEYS: u64 = 1 << 63;
+const INTERFACE_CLICK_KEYS: u64 = 3 << 62;
+
+/// An interface sound to start, and for a click the key its control's clicks share.
+struct InterfaceSound {
+    effect: Arc<str>,
+    click: Option<u64>,
+    /// Its change's order in the frame ([`viewer_foundation::map::native_gui::pointer::Step`]).
+    order: usize,
+}
+
+impl InterfaceSound {
+    /// `played` by one of `producer`'s controls.
+    fn new(producer: &str, played: &viewer_foundation::map::native_gui::pointer::Played) -> Self {
+        use std::hash::{Hash, Hasher};
+        Self {
+            effect: Arc::from(String::from_utf8_lossy(&played.effect)),
+            click: played.click.as_ref().map(|control| {
+                let mut hasher = std::hash::DefaultHasher::new();
+                (producer, control).hash(&mut hasher);
+                INTERFACE_CLICK_KEYS | (hasher.finish() >> 2)
+            }),
+            order: played.order,
+        }
     }
 }
 
@@ -5886,7 +6350,7 @@ fn present_audio(
     document: &Document,
     scene: &Scene,
     camera: &Camera,
-    inputs: AudioInputs,
+    inputs: AudioInputs<'_>,
 ) {
     let AudioInputs {
         volumes,
@@ -5894,6 +6358,8 @@ fn present_audio(
         reset,
         music,
         battles,
+        interface,
+        interface_key,
     } = inputs;
     let Some(source) = &document.audio else {
         // A document without audio definitions plays nothing: what a
@@ -5921,6 +6387,29 @@ fn present_audio(
             restart: false,
         })
         .collect::<Vec<_>>();
+    // Interface sounds are present for one frame; their one-shot voices play out. A control's
+    // click replaces its earlier one, so a later click this frame leaves the earlier unstarted.
+    for (at, sound) in interface.iter().enumerate() {
+        if sound.click.is_some()
+            && interface[at + 1..]
+                .iter()
+                .any(|later| later.click == sound.click)
+        {
+            continue;
+        }
+        let key = sound.click.unwrap_or_else(|| {
+            *interface_key = interface_key.wrapping_add(1);
+            INTERFACE_SOUND_KEYS | (*interface_key & ((1 << 62) - 1))
+        });
+        emitters.push(viewer_audio::Emitter {
+            key,
+            effect: Arc::clone(&sound.effect),
+            position: camera.eye(),
+            age: 0.0,
+            group: viewer_audio::Group::Interface,
+            restart: false,
+        });
+    }
     // The hour's battles within hearing of the camera play their ambience.
     if let Some(battles) = &battles {
         viewer_audio::battle::emitters(battles, &source.content, camera.eye(), &mut emitters);
@@ -6846,6 +7335,7 @@ pub(crate) mod tests {
             layer: 8,
             kind: Kind::TaskForce,
             members: Arc::from([19]),
+            plate: None,
         });
         report.regional_naval_unit_hits.insert(0);
         let mut looks = Looks::default();
@@ -6928,6 +7418,7 @@ pub(crate) mod tests {
             kind: Kind::TaskForce,
             members: Arc::from([7]),
             layer: layer(10, 0, 0),
+            plate: None,
         });
         // Native carrier/order children can begin left of an unclipped root.
         report.task_force_hovers.push(Hover {
@@ -7026,6 +7517,7 @@ pub(crate) mod tests {
             kind: Kind::Division,
             members: Arc::from([7]),
             layer: layer(-3, 0, 0),
+            plate: None,
         });
         report.base_hits.push(Blocker {
             rect,
@@ -7225,6 +7717,7 @@ pub(crate) mod tests {
             kind: Kind::Division,
             members: Arc::from([7]),
             layer: layer(10, 0, 0),
+            plate: None,
         });
         report.base_hits.push(Blocker {
             rect: [10.0, 0.0, 20.0, 20.0],
@@ -7300,6 +7793,7 @@ pub(crate) mod tests {
             kind: Kind::TaskForce,
             members: Arc::from([8]),
             layer: 7,
+            plate: None,
         });
         let mut looks = Looks::default();
         looks.show(
@@ -7351,6 +7845,7 @@ pub(crate) mod tests {
             kind: Kind::TaskForce,
             members,
             layer: 0,
+            plate: None,
         };
         assert!(!land_hover_matches_unit(&hover, &unit));
         unit.kind = Kind::Division;

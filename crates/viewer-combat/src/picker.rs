@@ -21,7 +21,7 @@ use super::{
     gui_resources,
 };
 use std::{collections::BTreeMap, io, sync::Arc};
-use viewer_foundation::map::native_gui::{self, lifecycle};
+use viewer_foundation::map::native_gui::{self, lifecycle, pointer::Input};
 
 /// The picker's root window.
 pub const PICKER_WINDOW: &str = "MapmodesInterface_Ingame";
@@ -139,10 +139,73 @@ pub enum Control {
     Window,
 }
 
+/// A drawn control: its rectangle, and the alpha test its sprite asks for within it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placed {
+    pub rect: [f32; 4],
+    pub control: Control,
+    /// `transparencecheck`'s hit and the window origin its points are taken from.
+    alpha: Option<std::sync::Arc<(native_gui::HitGeometry, [f32; 2])>>,
+    /// Its button's path and click sound, which a right-click plays too.
+    pub click: Option<(String, Vec<u8>)>,
+    /// Disabled: it takes the pointer but acts on no click.
+    pub disabled: bool,
+}
+
+impl Placed {
+    fn new(rect: [f32; 4], control: Control) -> Self {
+        Self {
+            rect,
+            control,
+            alpha: None,
+            click: None,
+            disabled: false,
+        }
+    }
+
+    /// `region` of the window at `origin`, testing its sprite's alpha where it asks to; `None`
+    /// when its sprite passes the pointer through.
+    fn region(
+        rect: [f32; 4],
+        control: Control,
+        region: &native_gui::Region,
+        origin: [i32; 2],
+        click: Option<(String, Vec<u8>)>,
+    ) -> Option<Self> {
+        let form = region.hit.as_ref().map(|hit| hit.form);
+        if form == Some(native_gui::Hit::Through) {
+            return None;
+        }
+        let alpha = region
+            .hit
+            .as_ref()
+            .filter(|hit| hit.form == native_gui::Hit::Alpha)
+            .map(|hit| std::sync::Arc::new((hit.clone(), origin.map(|value| value as f32))));
+        Some(Self {
+            rect,
+            control,
+            alpha,
+            click,
+            disabled: region.disabled,
+        })
+    }
+
+    /// Whether the control takes the pointer at `at`, as its native hit test does.
+    pub fn contains(&self, at: [f32; 2]) -> bool {
+        viewer_foundation::map::gui_resources::contains(self.rect, at)
+            && self.alpha.as_ref().is_none_or(|alpha| {
+                let (hit, origin) = alpha.as_ref();
+                hit.contains([at[0] - origin[0], at[1] - origin[1]])
+            })
+    }
+}
+
 /// One frame of the picker: its quads and tooltips, and its controls in paint order.
 pub struct PickerDrawn {
     pub drawn: Drawn,
-    pub controls: Vec<([f32; 4], Control)>,
+    pub controls: Vec<Placed>,
+    /// The controls clicked this frame, with each click's order among the frame's button changes.
+    pub clicked: Vec<(Control, usize)>,
 }
 
 impl PickerDrawn {
@@ -151,8 +214,8 @@ impl PickerDrawn {
         self.controls
             .iter()
             .rev()
-            .find(|(rect, _)| viewer_foundation::map::gui_resources::contains(*rect, point))
-            .map(|(_, control)| control)
+            .find(|placed| placed.contains(point))
+            .map(|placed| &placed.control)
     }
 }
 
@@ -172,6 +235,18 @@ pub struct Picker {
     root_generation: Option<u64>,
     values: Values,
     controls: BTreeMap<String, Control>,
+    /// The open lists' window rectangles as last drawn.
+    above: Vec<[f32; 4]>,
+    /// Each window's controls as last drawn, bottom first.
+    owners: Vec<(Part, Placed)>,
+}
+
+/// One of the picker's windows, which share the primary button.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Root,
+    Slots,
+    List,
 }
 
 fn hover(text: &str) -> Option<HoverText> {
@@ -200,6 +275,30 @@ pub fn button_of_slot(slot: usize, four_buttons: bool) -> Option<usize> {
 const BUTTONS: usize = 12;
 
 impl Picker {
+    /// Whether the primary button holds one of the picker's buttons.
+    pub fn holding(&self) -> bool {
+        [&self.list, &self.slots, &self.root]
+            .into_iter()
+            .flatten()
+            .any(Retained::holding)
+    }
+
+    /// The control the last draw drew for the pointer: an open list's, drawn above, first.
+    pub fn highlighted(&self) -> Option<&str> {
+        [&self.list, &self.slots, &self.root]
+            .into_iter()
+            .flatten()
+            .find_map(Retained::highlighted)
+    }
+
+    /// Whether a button the pointer holds still changes on the clock.
+    pub fn pointing(&self) -> bool {
+        [&self.root, &self.list, &self.slots]
+            .into_iter()
+            .flatten()
+            .any(Retained::pointing)
+    }
+
     fn refresh_values(&mut self, state: &State<'_>, root: &installed_content_core::gui::native::Element) {
         if self.root_generation == Some(self.generation) {
             return;
@@ -226,6 +325,7 @@ impl Picker {
         hovers: bool,
         time: f32,
         advance: bool,
+        input: Option<Input>,
     ) -> io::Result<PickerDrawn> {
         let viewport = extent.map(|value| value as i32);
         let windows = content.window_cache.at(extent.map(|value| value as u32))?;
@@ -257,9 +357,41 @@ impl Picker {
         let mut out = PickerDrawn {
             drawn: Drawn::default(),
             controls: Vec::new(),
+            clicked: Vec::new(),
         };
         let root = gui::template(&windows, PICKER_WINDOW).map_err(super::invalid)?;
         self.refresh_values(state, root);
+        // A press one window holds, or lands on, keeps the pointer from the others until released.
+        let holder = [
+            (Part::Root, &self.root),
+            (Part::Slots, &self.slots),
+            (Part::List, &self.list),
+        ]
+        .into_iter()
+        .find(|(_, window)| window.as_ref().is_some_and(Retained::holding))
+        .map(|(part, _)| part);
+        let owners = std::mem::take(&mut self.owners);
+        let owner = |at: [f32; 2]| {
+            owners
+                .iter()
+                .rev()
+                .find(|(_, placed)| placed.contains(at))
+                .map(|(part, _)| *part)
+        };
+        let shared = |me: Part| {
+            input
+                .as_ref()
+                .map(|input| input.shared(holder, owner, me))
+        };
+        // The lists draw above the picker: the pointer over one last frame is not the root's.
+        let above = std::mem::take(&mut self.above);
+        let root_input = shared(Part::Root).map(|input| {
+            input.filter(|at| {
+                !above
+                    .iter()
+                    .any(|&rect| viewer_foundation::map::gui_resources::contains(rect, at))
+            })
+        });
         let values = &self.values;
         let generation = self.generation;
         let retained = gui::ensure(&mut self.root, PICKER_WINDOW, root, viewport, &resources)
@@ -280,10 +412,21 @@ impl Picker {
             advance,
             hovers,
             true,
+            root_input
+                .as_ref()
+                .map(|input| input.local(frame.at.map(|value| value as f32))),
             &mut out.drawn.refused,
         ) else {
             return Ok(out);
         };
+        out.drawn.sounds.extend(prepared.sounds.iter().cloned());
+        out.clicked.extend(
+            prepared
+                .clicks
+                .iter()
+                .filter(|(key, _, _)| key.is_none())
+                .filter_map(|(_, path, order)| Some((self.controls.get(path)?.clone(), *order))),
+        );
         let origin = frame.at;
         if !gui::draw_prepared(
             &prepared.layout,
@@ -299,12 +442,16 @@ impl Picker {
                 continue;
             };
             if let Some(control) = self.controls.get(&region.path) {
-                out.controls.push((rect, control.clone()));
+                let click = gui::click_sound(root, &region.path, &resources);
+                out.controls
+                    .extend(Placed::region(rect, control.clone(), region, origin, click));
             }
         }
         if hovers {
             gui::append_hovers(&mut out.drawn.tooltips, prepared.hovers, origin);
         }
+        let root_controls = out.controls.len();
+        let mut slot_controls = root_controls;
         // The lists draw above the picker.
         match state.open {
             Open::None => {
@@ -325,6 +472,7 @@ impl Picker {
                     generation,
                     advance,
                     hovers,
+                    shared(Part::List),
                     &mut out,
                 )?;
             }
@@ -340,8 +488,10 @@ impl Picker {
                     generation,
                     advance,
                     hovers,
+                    shared(Part::Slots),
                     &mut out,
                 )?;
+                slot_controls = out.controls.len();
                 draw_list(
                     &mut self.list,
                     ASSIGN_WINDOW,
@@ -354,10 +504,32 @@ impl Picker {
                     generation,
                     advance,
                     hovers,
+                    shared(Part::List),
                     &mut out,
                 )?;
             }
         }
+        self.owners = out
+            .controls
+            .iter()
+            .enumerate()
+            .map(|(at, placed)| {
+                let part = if at < root_controls {
+                    Part::Root
+                } else if at < slot_controls {
+                    Part::Slots
+                } else {
+                    Part::List
+                };
+                (part, placed.clone())
+            })
+            .collect();
+        self.above = out
+            .controls
+            .iter()
+            .filter(|placed| placed.control == Control::Window)
+            .map(|placed| placed.rect)
+            .collect();
         Ok(out)
     }
 }
@@ -619,6 +791,7 @@ fn draw_list(
     generation: u64,
     advance: bool,
     hovers: bool,
+    input: Option<Input>,
     out: &mut PickerDrawn,
 ) -> io::Result<()> {
     // The list grows a row for each scripted mode, upward, as the game grows the window.
@@ -686,6 +859,7 @@ fn draw_list(
         generation,
         advance,
         hovers,
+        input,
         out,
         |key| Some(Control::Entry(key.to_owned())),
     )
@@ -703,6 +877,7 @@ fn draw_slots(
     generation: u64,
     advance: bool,
     hovers: bool,
+    input: Option<Input>,
     out: &mut PickerDrawn,
 ) -> io::Result<()> {
     let root = gui::template(windows, SLOTS_WINDOW).map_err(super::invalid)?;
@@ -771,6 +946,7 @@ fn draw_slots(
         generation,
         advance,
         hovers,
+        input,
         out,
         |key| key.parse().ok().map(Control::SlotEntry),
     )
@@ -831,6 +1007,7 @@ fn draw_window(
     generation: u64,
     advance: bool,
     hovers: bool,
+    input: Option<Input>,
     out: &mut PickerDrawn,
     entry: impl Fn(&str) -> Option<Control>,
 ) -> io::Result<()> {
@@ -850,10 +1027,14 @@ fn draw_window(
         advance,
         hovers,
         true,
+        input
+            .as_ref()
+            .map(|input| input.local(frame.at.map(|value| value as f32))),
         &mut out.drawn.refused,
     ) else {
         return Ok(());
     };
+    out.drawn.sounds.extend(prepared.sounds.iter().cloned());
     let origin = frame.at;
     if !gui::draw_prepared(
         &prepared.layout,
@@ -864,7 +1045,7 @@ fn draw_window(
     ) {
         return Ok(());
     }
-    out.controls.push((
+    out.controls.push(Placed::new(
         [
             origin[0] as f32,
             origin[1] as f32,
@@ -881,16 +1062,28 @@ fn draw_window(
         if named.get(&region.path).map(String::as_str) == Some("default")
             && let Some(rect) = gui::region_rect(region, origin)
         {
-            out.controls.push((rect, Control::Default));
+            let click = gui::click_sound(root, &region.path, resources);
+            out.controls
+                .extend(Placed::region(rect, Control::Default, region, origin, click));
         }
     }
     for (_, key, region) in &prepared.entries {
         if let Some(rect) = gui::region_rect(region, origin)
             && let Some(control) = entry(key)
         {
-            out.controls.push((rect, control));
+            out.controls
+                .extend(Placed::region(rect, control, region, origin, None));
         }
     }
+    out.clicked
+        .extend(prepared.clicks.iter().filter_map(|(key, path, order)| {
+            let control = match key {
+                Some(key) => entry(key),
+                None => (named.get(path).map(String::as_str) == Some("default"))
+                    .then_some(Control::Default),
+            };
+            Some((control?, *order))
+        }));
     if hovers {
         gui::append_hovers(&mut out.drawn.tooltips, prepared.hovers, origin);
     }
@@ -917,9 +1110,10 @@ mod tests {
             drawn: Drawn::default(),
             // Paint order: the window, then a button over it.
             controls: vec![
-                ([0.0, 0.0, 100.0, 50.0], Control::Window),
-                ([10.0, 10.0, 20.0, 20.0], Control::Slot(1)),
+                Placed::new([0.0, 0.0, 100.0, 50.0], Control::Window),
+                Placed::new([10.0, 10.0, 20.0, 20.0], Control::Slot(1)),
             ],
+            clicked: Vec::new(),
         };
         assert_eq!(drawn.control_at([15.0, 15.0]), Some(&Control::Slot(1)));
         assert_eq!(drawn.control_at([60.0, 15.0]), Some(&Control::Window));

@@ -247,6 +247,10 @@ pub(super) fn draw_held(
             ..holder.clone()
         }],
         diagnostics: Vec::new(),
+        pointed: None,
+        hovered: None,
+        target: None,
+        boxes: Vec::new(),
         regions: Vec::new(),
     };
     draw_window(&held, &[parts], origin, resources, batch, key)

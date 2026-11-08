@@ -30,6 +30,10 @@ pub(super) fn presented(
         regions: holder.place_regions(place, &layout.regions),
         holders: Vec::new(),
         diagnostics: Vec::new(),
+        pointed: None,
+        hovered: None,
+        target: None,
+        boxes: Vec::new(),
     };
     // The layout retains only presented controls. Every hit forwards this window's
     // inherited handler; only the exact control bound by the game selects a special arm.
@@ -213,6 +217,10 @@ mod tests {
             regions: holder.place_regions([0; 2], &layout.regions),
             holders: Vec::new(),
             diagnostics: Vec::new(),
+            pointed: None,
+            hovered: None,
+            target: None,
+            boxes: Vec::new(),
         };
         let hit =
             gui_windows::native_hit_rectangle(container, &placed, [0; 2], &fixture, &mut notes)

@@ -141,6 +141,7 @@ fn combat_raster_initiative_border_rasterises_before_display_stretch() {
             false,
             Tick { time: 0., dt: 0. },
             false,
+            None,
         )
         .unwrap();
     assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);
@@ -244,6 +245,7 @@ fn combat_raster_active_row_ellipsis_and_thin_glyphs() {
                 false,
                 Tick { time: 0., dt: 0. },
                 false,
+                None,
             )
             .unwrap();
         assert!(drawn.refused.is_empty(), "{:?}", drawn.refused);

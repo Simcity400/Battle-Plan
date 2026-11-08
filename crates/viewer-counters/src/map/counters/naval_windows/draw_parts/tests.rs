@@ -448,6 +448,10 @@ fn borrowed_naval_parts_keep_empty_and_same_position_holder_attach_order() {
         holders: vec![holder.clone(), holder.clone()],
         regions: Vec::new(),
         diagnostics: Vec::new(),
+        pointed: None,
+        hovered: None,
+        target: None,
+        boxes: Vec::new(),
     };
     for (items, expected) in [
         (Vec::new(), vec!["first", "last"]),

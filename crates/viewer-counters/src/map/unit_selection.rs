@@ -136,6 +136,7 @@ mod tests {
             kind,
             members: ids.into(),
             layer: 0,
+            plate: None,
         }
     }
 

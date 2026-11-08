@@ -972,7 +972,10 @@ fn a_missing_technique_keeps_the_previous_program() {
         bindings.pointer = Some(Pointer {
             at: [5.0, 5.0],
             pressed: Some("w.b".into()),
-            since: 1.0,
+            over: None,
+            clip_at: None,
+            drawn: None,
+            drawn_boxes: Vec::new(),
         });
         let _ = window;
     };
@@ -1144,9 +1147,10 @@ fn a_check_box_draws_its_state() {
     assert!(faded.parts.is_empty());
 }
 
-/// The pointer: the topmost button under it draws Over (frame 3, the time since for its
-/// shade); a pressed one Down wherever the pointer is; a sprite that passes the pointer
-/// through is never hit, and one that tests alpha needs its texels.
+/// The pointer: the topmost button under it draws Over (frame 3), restarting its effect clock
+/// unless its instance ticked it in that state; a pressed one Down wherever the pointer is; a
+/// control the map's hit test names takes Over without a hit list; a sprite that passes the
+/// pointer through is never hit, and one that tests alpha needs its texels.
 #[test]
 fn the_pointer_hovers_and_presses_buttons() {
     engine_executable::executable_tables::initialize_for_tests()
@@ -1156,13 +1160,18 @@ fn the_pointer_hovers_and_presses_buttons() {
                 buttonType = { name = \"high\" spriteType = \"GFX_four\" } \
                 buttonType = { name = \"clear\" spriteType = \"GFX_through\" } \
                 buttonType = { name = \"away\" spriteType = \"GFX_four\" position = { x = 30 y = 30 } }";
-    let states = |pointer: Pointer| {
+    let states = |pointer: Pointer, ticked: Option<(&str, u32)>| {
         let gui = gui(body);
         let window = gui.template("w").unwrap();
-        let bindings = Bindings {
+        let mut bindings = Bindings {
             pointer: Some(pointer),
             ..Bindings::default()
         };
+        if let Some((name, state)) = ticked {
+            let bound = bindings.bind(window.path_named(name).unwrap());
+            bound.effect_state = Some(state);
+            bound.effect_since = Some(1.0);
+        }
         layout(window, None, &fixture(), &bindings)
             .unwrap()
             .unwrap()
@@ -1172,21 +1181,45 @@ fn the_pointer_hovers_and_presses_buttons() {
             .collect::<Vec<_>>()
     };
     let effect = synthetic::buttonstate();
-    let hovered = states(Pointer {
+    let pointer = Pointer {
         at: [5.0, 5.0],
         pressed: None,
-        since: 1.0,
-    });
+        over: None,
+        clip_at: None,
+        drawn: None,
+        drawn_boxes: Vec::new(),
+    };
+    let hovered = states(pointer.clone(), None);
     assert_eq!(hovered[0], (0, shading(&effect, "Up", 0.0)));
-    assert_eq!(hovered[1], (2, shading(&effect, "Over", 1.0)));
+    assert_eq!(hovered[1], (2, shading(&effect, "Over", 0.0)));
     assert_eq!(hovered[2], (0, shading(&effect, "Up", 0.0)));
-    // Pressed on `away`, held while the pointer is elsewhere; `high` is still hovered.
-    let pressed = states(Pointer {
-        at: [5.0, 5.0],
-        pressed: Some("w.away".into()),
-        since: 1.0,
-    });
+    // Its instance ticked it Over: the clock runs from that tick.
+    let ticked = states(pointer.clone(), Some(("high", 3)));
+    assert_eq!(ticked[1], (2, shading(&effect, "Over", 1.0)));
+    // Ticked in another state, the change restarts it.
+    let changed = states(pointer.clone(), Some(("high", 2)));
+    assert_eq!(changed[1], (2, shading(&effect, "Over", 0.0)));
+    // Pressed on `away`, held while the pointer is elsewhere: `high` takes no Over meanwhile.
+    let pressed = states(
+        Pointer {
+            pressed: Some("w.away".into()),
+            ..pointer.clone()
+        },
+        Some(("away", 2)),
+    );
     assert_eq!(pressed[3], (1, shading(&effect, "Down", 1.0)));
+    assert_eq!(pressed[1], (0, shading(&effect, "Up", 0.0)));
+    // The map's hit test names `away`; nothing under `at` is hit.
+    let named = states(
+        Pointer {
+            at: [f32::NAN; 2],
+            over: Some("w.away".into()),
+            ..pointer
+        },
+        None,
+    );
+    assert_eq!(named[1], (0, shading(&effect, "Up", 0.0)));
+    assert_eq!(named[3], (2, shading(&effect, "Over", 0.0)));
     // Alpha-tested sprites need their texels.
     let gui = gui("buttonType = { name = \"a\" spriteType = \"GFX_alpha\" }");
     let bindings = Bindings {

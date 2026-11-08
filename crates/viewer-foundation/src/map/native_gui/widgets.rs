@@ -787,6 +787,8 @@ impl<'a> Walk<'a> {
             hits: Vec::new(),
             hovered: None,
             boxes: Vec::new(),
+            pointed: None,
+            target: None,
             text_effect: None,
             sized: None,
             via: None,

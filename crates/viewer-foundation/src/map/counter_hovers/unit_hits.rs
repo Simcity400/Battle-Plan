@@ -30,11 +30,19 @@ pub struct Hit {
     pub kind: Kind,
     pub members: Arc<[u64]>,
     pub layer: u64,
+    /// The drawn `count_bg` the pointer's button state applies to; `None` on a part that only
+    /// forwards its counter's selection.
+    pub plate: Option<[f32; 4]>,
 }
 
 impl Hit {
     pub fn contains(&self, point: [f32; 2]) -> bool {
         contains(self.rect, point)
+    }
+
+    /// Whether `point` is on the counter's `count_bg` itself.
+    pub fn on_plate(&self, point: [f32; 2]) -> bool {
+        self.plate.is_some_and(|plate| contains(plate, point))
     }
 
     pub fn units(&self) -> impl Iterator<Item = Unit> + '_ {

@@ -292,6 +292,7 @@ pub(super) mod tests {
     fn task_force_hover_never_matches_a_port_or_other_unit_class_with_the_same_handle() {
         let hover = hover(Control::Normal, &[7]);
         let mut hit = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+            plate: None,
             ours: true,
             port: false,
             rect: [0.; 4],

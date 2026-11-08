@@ -229,7 +229,7 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
     let entries = |viewer: &mut Viewer| {
         let document = viewer.document.take().unwrap();
         let drawn = viewer
-            .draw_picker(&document, MAP, false, 0., false)
+            .draw_picker(&document, MAP, false, 0., false, None)
             .unwrap()
             .unwrap();
         let modes = super::picker::all_modes(&document, super::picker::four_buttons(&document));
@@ -237,14 +237,14 @@ fn the_picker_keys_and_toggles_reach_one_map() -> std::io::Result<()> {
         let shown: Vec<_> = drawn
             .controls
             .iter()
-            .filter(|(_, control)| matches!(control, viewer_combat::picker::Control::Entry(_)))
-            .cloned()
+            .filter(|placed| matches!(placed.control, viewer_combat::picker::Control::Entry(_)))
+            .map(|placed| (placed.rect, placed.control.clone()))
             .collect();
         let windows: Vec<_> = drawn
             .controls
             .iter()
-            .filter(|(_, control)| *control == viewer_combat::picker::Control::Window)
-            .map(|(rect, _)| *rect)
+            .filter(|placed| placed.control == viewer_combat::picker::Control::Window)
+            .map(|placed| placed.rect)
             .collect();
         (shown, windows, modes.len())
     };

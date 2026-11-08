@@ -279,6 +279,8 @@ pub struct Content {
     pub game_audio: dashboard::protocol::MapAudio,
     /// The game's second master factor (`dev_master_volume`), a fraction.
     pub game_dev_master: f32,
+    /// The game's arrow cursor, or why it is not shown.
+    pub cursor: Result<eframe::egui::CustomCursorImage, String>,
     /// The game images and textures the map passes draw from.
     pub assets: MapAssets,
     /// Persistent recording compatibility, content verification and presentation limitations.
@@ -619,6 +621,17 @@ impl DumpOverlay<'_> {
 }
 
 impl PreparedOverlay {
+    /// The counter plate the primary button holds and the one under the pointer, which draw
+    /// without a new preparation.
+    pub fn set_pressed(
+        &mut self,
+        pressed: Option<viewer_foundation::unit_handle::Unit>,
+        plate_hovered: Option<viewer_foundation::unit_handle::Unit>,
+    ) {
+        self.counter_view.pressed = pressed;
+        self.counter_view.plate_hovered = plate_hovered;
+    }
+
     pub fn counter_view(&self) -> &CounterView {
         &self.counter_view
     }
@@ -711,6 +724,8 @@ impl PreparedOverlay {
             selected_air_bases: &self.counter_view.air_bases,
             selected_fleets: &self.counter_view.fleets_selected,
             hovered: self.counter_view.hovered,
+            pressed: self.counter_view.pressed,
+            plate_hovered: self.counter_view.plate_hovered,
             schedule: self.counter_view.presentation.schedule(),
             movement_history: self.counter_view.presentation.movement(),
             visibility: self.counter_view.visibility,
@@ -1628,6 +1643,16 @@ impl Document {
         let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
         let game_audio = dashboard::map_settings::game_audio(&settings);
         let game_dev_master = dashboard::map_settings::game_dev_master(&settings);
+        let cursor = content
+            .layers
+            .read_uncovered("gfx/cursors/normal.cur")
+            .and_then(|bytes| installed_content_image::cursor::decode(&bytes))
+            .map(|cursor| eframe::egui::CustomCursorImage {
+                rgba: cursor.image.pixels.into(),
+                size: [cursor.image.width as u16, cursor.image.height as u16],
+                hotspot: cursor.hotspot,
+            })
+            .map_err(|error| format!("gfx/cursors/normal.cur: {error}"));
         let map_defines = crate::map_assets::graphics_define(
             &content.layers,
             "camera and map",
@@ -2756,6 +2781,7 @@ impl Document {
             game_strategic_names,
             game_audio,
             game_dev_master,
+            cursor,
             assets,
             warnings,
             uncovered_reads,
@@ -4389,6 +4415,8 @@ impl<'a> Hour<'a> {
             selected_air_bases: &view.air_bases,
             selected_fleets: &view.fleets_selected,
             hovered: view.hovered,
+            pressed: view.pressed,
+            plate_hovered: view.plate_hovered,
             schedule: view.presentation.schedule(),
             movement_history: view.presentation.movement(),
             visibility: view.visibility,

@@ -759,6 +759,29 @@ pub fn gui_assets(
 }
 
 impl CounterAssets {
+    /// The sounds `unit`'s counter plays: its window's `count_bg` button's, as any button's.
+    pub fn plate_sounds(&self, unit: Unit) -> Result<native::ButtonSounds, String> {
+        let window = match unit {
+            Unit::Division(_) => LAND_WINDOW,
+            Unit::RailwayGun(_) => GUN_WINDOW,
+            Unit::TaskForce(_) => NAVY_WINDOW,
+        };
+        let button = self
+            .windows
+            .guis
+            .template(window)
+            .ok_or_else(|| format!("{window} is not declared"))?
+            .find(native::Kind::Button, "count_bg")
+            .and_then(native::Element::button)
+            .ok_or_else(|| format!("{window} has no count_bg button"))?;
+        let sprite_click = self
+            .gui
+            .registry()
+            .sprite(&button.sprite)
+            .map_or(&[][..], |facts| facts.kind.click_sound());
+        Ok(button.sounds(sprite_click, &self.windows.guis.default_sounds()))
+    }
+
     /// Takes the counter layouts and the natively read windows, loads exactly the sprites the
     /// layouts name, packs the flags; the windows' own resources load in [`Self::load_gui`].
     ///
@@ -1710,6 +1733,10 @@ pub struct CounterInputs<'a> {
     pub selected_fleets: &'a [u64],
     /// The local pointer's active counter window, identified by one bound member.
     pub hovered: Option<Unit>,
+    /// The counter whose `count_bg` the primary button went down on, held until release.
+    pub pressed: Option<Unit>,
+    /// The counter whose `count_bg` is under the pointer.
+    pub plate_hovered: Option<Unit>,
     /// The host view's shared province schedule.
     pub schedule: &'a Shared,
     /// The host view's unit presentation history, which its figures share.
@@ -2151,6 +2178,8 @@ pub struct CounterReport {
     pub groups: usize,
     /// What the perspective resolved to, so the caller can word its limitation.
     pub perspective: Arc<Vision>,
+    /// The counter this frame drew in the pointer's state.
+    pub pointed: Option<Unit>,
 }
 
 impl CounterReport {
@@ -2460,6 +2489,7 @@ impl CounterReport {
             grouping_gaps,
             groups,
             perspective,
+            pointed,
         } = later;
         self.unit_hits.append(unit_hits);
         self.base_hits.append(base_hits);
@@ -2552,6 +2582,9 @@ impl CounterReport {
         self.groups += std::mem::take(groups);
         // The branch report keeps its default perspective, which nothing reads.
         let _ = perspective;
+        if let Some(pointed) = pointed.take() {
+            self.pointed = Some(pointed);
+        }
     }
 
     /// `*self = source.clone()`, reusing this report's storage: a report kept across frames
@@ -2655,6 +2688,7 @@ impl CounterReport {
             grouping_gaps,
             groups,
             perspective,
+            pointed,
         } = source;
         self.unit_hits.clone_from(unit_hits);
         self.base_hits.clone_from(base_hits);
@@ -2787,6 +2821,7 @@ impl CounterReport {
         self.grouping_gaps.clone_from(grouping_gaps);
         self.groups = *groups;
         self.perspective.clone_from(perspective);
+        self.pointed = *pointed;
     }
 }
 
@@ -3684,6 +3719,128 @@ fn prepare_with(
     })
 }
 
+/// The counter whose `count_bg` the pointer holds, Down while pressed, and its time in state.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CounterPointer {
+    pub(crate) unit: Unit,
+    pub(crate) down: bool,
+    pub(crate) since: f32,
+}
+
+/// The pressed counter while held, else the hovered one, timed from its change; and the counters
+/// it left, back in Up, each timed from leaving.
+fn hold_pointer(
+    pointer: &mut Option<(Option<(Unit, bool)>, f32)>,
+    left: &mut Vec<(Unit, f32)>,
+    inputs: &CounterInputs<'_>,
+    time: f32,
+) -> (Option<CounterPointer>, Vec<CounterExit>) {
+    let held = inputs
+        .pressed
+        .map(|unit| (unit, true))
+        .or(inputs.plate_hovered.map(|unit| (unit, false)));
+    if pointer.is_none_or(|(last, _)| last != held) {
+        if let Some(Some((last, _))) = pointer.map(|(last, _)| last)
+            && held.is_none_or(|(unit, _)| unit != last)
+        {
+            left.retain(|(gone, _)| *gone != last);
+            left.push((last, time));
+        }
+        *pointer = Some((held, time));
+    }
+    if let Some((unit, _)) = held {
+        left.retain(|(gone, _)| *gone != unit);
+    }
+    let at = pointer.map_or(time, |(_, at)| at);
+    let current = held.map(|(unit, down)| CounterPointer {
+        unit,
+        down,
+        since: time - at,
+    });
+    let exits = left
+        .iter()
+        .map(|&(unit, at)| CounterExit {
+            unit,
+            since: time - at,
+        })
+        .collect();
+    (current, exits)
+}
+
+/// The counter the pointer left: its `count_bg` back in Up, and the time since.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CounterExit {
+    pub(crate) unit: Unit,
+    pub(crate) since: f32,
+}
+
+/// What the code set on a counter window's `count_bg`, which a pointer state draws it with.
+pub(crate) struct PlateBinding<'a> {
+    /// A replacement sprite ([`viewer_foundation::map::native_gui::SpriteSetter::Button`]).
+    pub(crate) sprite: Option<&'a str>,
+    /// A one-based frame the code wrote.
+    pub(crate) frame: Option<i32>,
+    pub(crate) tint: [f32; 4],
+}
+
+/// Draws `window`'s `count_bg` in Over, Down or the Up it went back to, `since` seconds into it:
+/// whether its effect still runs.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_pointed_plate(
+    inputs: &CounterInputs<'_>,
+    batch: &mut Batch,
+    window: &str,
+    origin: [f32; 2],
+    plate: PlateBinding<'_>,
+    down: Option<bool>,
+    since: f32,
+    time: f32,
+) -> Result<bool, String> {
+    let drawn = (|| {
+        let root = inputs
+            .windows
+            .guis
+            .template(window)
+            .ok_or_else(|| format!("{window} is not declared"))?;
+        let element = root
+            .find(native::Kind::Button, "count_bg")
+            .ok_or_else(|| format!("{window} has no count_bg button"))?;
+        let resources = gui_windows::gui_assets(inputs, None);
+        let mut bindings = viewer_foundation::map::native_gui::Bindings::default();
+        bindings.viewport = Some(viewer_foundation::map::gui_resources::viewport(
+            inputs.viewport,
+            inputs.ui_scale,
+        ));
+        bindings.time = time;
+        let bound = bindings.bind(element);
+        bound.color = Some(plate.tint);
+        bound.frame = plate.frame;
+        if let Some(sprite) = plate.sprite {
+            bound.sprite = Some(sprite.as_bytes().to_vec());
+            bound.setter = viewer_foundation::map::native_gui::SpriteSetter::Button;
+        }
+        let cause = viewer_foundation::map::gui_resources::refused_cause;
+        let layout = viewer_foundation::map::native_gui::pointed_button(
+            root, element, &resources, bindings, down, since,
+        )
+        .map_err(|refusals| {
+            refusals
+                .iter()
+                .map(|refusal| cause(window, refusal))
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
+        let at = origin.map(|value| value as i32);
+        if at.map(|value| value as f32) != origin {
+            return Err(format!("{window} is placed between whole interface pixels"));
+        }
+        viewer_foundation::map::native_gui::draw(&layout, at, &resources, batch)
+            .map_err(|refusal| cause(window, &refusal))?;
+        Ok::<_, String>(layout.parts.iter().any(|part| part.shading.changing()))
+    })();
+    drawn.map_err(|why| format!("count_bg's pointer state is not drawn: {why}"))
+}
+
 /// Per-hour icon state. Only the columns' positions and their screen layout depend on the
 /// fraction; bases, port items and combat icons retain their batches.
 pub struct PreparedCounters {
@@ -3779,6 +3936,8 @@ impl PreparedCounters {
         land_combats: &mut land_windows::View,
     ) -> io::Result<()> {
         let Self { fixed, land, drawn } = self;
+        let (counter_pointer, counter_exit) =
+            hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
         let DrawnCounters {
             batch,
             combats,
@@ -3826,7 +3985,12 @@ impl PreparedCounters {
         drop(span);
         let span = viewer_foundation::profiling::span("dc_land");
         let columns = match land.as_mut() {
-            Some(land) => land.draw(inputs, batch, report, missing_owners, &mut at_sea)?,
+            Some(land) => {
+                land.pointer = counter_pointer;
+                land.exits = counter_exit;
+                land.time = time;
+                land.draw(inputs, batch, report, missing_owners, &mut at_sea)?
+            }
             None => Vec::new(),
         };
         drop(span);
@@ -3850,12 +4014,28 @@ impl PreparedCounters {
                 &plates,
                 &columns,
                 time,
+                counter_pointer,
                 naval,
                 &mut fixed.bases,
                 batch,
                 combats,
                 report,
             )?;
+            // The windows' tick resets their activity; a land plate's pointer state keeps it.
+            if land
+                .as_ref()
+                .is_some_and(|land| land.pointer_running.replace(false))
+            {
+                naval.keep_active();
+            }
+            // A plate left behind draws its Up only while that effect runs.
+            let running = land
+                .as_ref()
+                .map(|land| land.exits_running.take())
+                .unwrap_or_default();
+            naval
+                .pointer_left
+                .retain(|(unit, _)| running.contains(unit));
         }
         batch.quads.extend_from_slice(&fixed.counters.quads);
         let span = viewer_foundation::profiling::span("dc_air");
@@ -3896,6 +4076,13 @@ impl PreparedCounters {
     ) -> io::Result<Option<viewer_foundation::profiling::OwnerSample>> {
         use viewer_foundation::map::request_order::{Preceding, following};
         let Self { fixed, land, drawn } = self;
+        let (counter_pointer, counter_exit) =
+            hold_pointer(&mut naval.pointer_clock, &mut naval.pointer_left, inputs, time);
+        if let Some(land) = land.as_mut() {
+            land.pointer = counter_pointer;
+            land.exits = counter_exit;
+            land.time = time;
+        }
         let DrawnCounters {
             batch,
             combats,
@@ -3984,12 +4171,28 @@ impl PreparedCounters {
                 &plates,
                 &columns,
                 time,
+                counter_pointer,
                 naval,
                 &mut fixed.bases,
                 batch,
                 combats,
                 report,
             )?;
+            // The windows' tick resets their activity; a land plate's pointer state keeps it.
+            if land
+                .as_ref()
+                .is_some_and(|land| land.pointer_running.replace(false))
+            {
+                naval.keep_active();
+            }
+            // A plate left behind draws its Up only while that effect runs.
+            let running = land
+                .as_ref()
+                .map(|land| land.exits_running.take())
+                .unwrap_or_default();
+            naval
+                .pointer_left
+                .retain(|(unit, _)| running.contains(unit));
         }
         batch.quads.extend_from_slice(&fixed.counters.quads);
         let span = viewer_foundation::profiling::span("dc_air");
@@ -4335,6 +4538,8 @@ struct CoarseCounter<'a> {
     /// `(plate, flag, count)` child keys: the children's declaration indices,
     /// which the caller ranks into the icon's slots ([`rank_children`]).
     keys: (u32, u32, u32),
+    /// The caller drew `count_bg` in the pointer's state.
+    plate_drawn: bool,
 }
 
 /// the coarse counter: `count_bg` keeps its allegiance tint and
@@ -4357,10 +4562,11 @@ fn draw_coarse_counter(
         owner,
         count,
         keys,
+        plate_drawn,
     } = coarse;
     let assets = inputs.assets;
     batch.at_layer(u64::from(keys.0));
-    if let Some(sheet) = assets.sheet(&plate.sprite) {
+    if !plate_drawn && let Some(sheet) = assets.sheet(&plate.sprite) {
         draw_child(batch, sheet, plate, origin, COARSE_PLATE_FRAME, tint);
     }
     batch.at_layer(u64::from(keys.1));

@@ -293,9 +293,6 @@ impl HitGeometry {
     }
 
     pub fn contains(&self, point: [f32; 2]) -> bool {
-        if self.form == Hit::Through {
-            return false;
-        }
         // Logical clipping precedes the inverse, with inclusive upper edges.
         if self.clip.is_some_and(|[left, top, right, bottom]| {
             point[0] < left as f32
@@ -303,6 +300,14 @@ impl HitGeometry {
                 || point[1] < top as f32
                 || (bottom as f32) < point[1]
         }) {
+            return false;
+        }
+        self.contains_unclipped(point)
+    }
+
+    /// [`Self::contains`] for a point its caller already clipped, in the clips' own space.
+    pub(super) fn contains_unclipped(&self, point: [f32; 2]) -> bool {
+        if self.form == Hit::Through {
             return false;
         }
         let (world, pivot, inherited) = self.world();

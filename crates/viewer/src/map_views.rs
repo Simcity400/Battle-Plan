@@ -258,6 +258,10 @@ pub struct CounterView {
     pub air_bases: Arc<Vec<u64>>,
     pub fleets_selected: Arc<Vec<u64>>,
     pub hovered: Option<Unit>,
+    /// The counter whose `count_bg` the primary button went down on, while it is held.
+    pub pressed: Option<Unit>,
+    /// The counter whose `count_bg` is under the pointer.
+    pub plate_hovered: Option<Unit>,
     /// Whether the view shows the Operatives map mode, whose intel icons it then draws.
     pub operatives: bool,
     /// The exact occupation mode; both share the same counter visibility.
@@ -292,6 +296,8 @@ impl CounterView {
             air_bases: Arc::default(),
             fleets_selected: Arc::default(),
             hovered: None,
+            pressed: None,
+            plate_hovered: None,
             operatives: false,
             occupation: None,
             presentation: Arc::default(),

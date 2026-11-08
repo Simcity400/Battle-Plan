@@ -6,6 +6,7 @@
 //! container detail and never a map coordinate.
 
 pub mod bmp;
+pub mod cursor;
 pub mod dds;
 pub mod native;
 pub mod rgba;

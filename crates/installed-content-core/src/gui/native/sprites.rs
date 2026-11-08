@@ -404,6 +404,14 @@ impl SpriteKind {
         }
     }
 
+    /// The `clicksound` the kind declares, empty when it has none.
+    pub fn click_sound(&self) -> &[u8] {
+        match self {
+            Self::Text(text) => &text.click_sound,
+            _ => self.plain().map_or(&[], |plain| plain.click_sound.as_slice()),
+        }
+    }
+
     /// The plain sprite fields of the plain family.
     pub fn plain(&self) -> Option<&Plain> {
         match self {

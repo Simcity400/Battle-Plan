@@ -12,6 +12,7 @@ use viewer_foundation::engaged::Ambiguity;
 use viewer_foundation::engagement_history::CombatFlags;
 use viewer_foundation::engagement_history::History;
 use viewer_foundation::map::native_gui::lifecycle;
+use viewer_foundation::map::native_gui::pointer::Input;
 use viewer_foundation::map::native_text::RESOLVED_FLAG;
 use viewer_foundation::map::perspective::Choice;
 use viewer_foundation::map::perspective::cached_vision;
@@ -187,6 +188,8 @@ pub struct Window {
     tactics_position: Option<[f32; 2]>,
     dragging_tactics: bool,
     hover: HoverState,
+    /// Whether the last hover with text, whose tooltip shows, was the map's.
+    tooltip_from_map: bool,
     cached: Option<Cached>,
     bindings_dirty: bool,
     gui: gui::Windows,
@@ -424,6 +427,19 @@ impl Window {
         );
         warnings
     }
+    /// Whether the primary button holds one of the shown window's buttons.
+    pub fn holding(&self) -> bool {
+        self.cached.as_ref().is_some_and(|cached| cached.shown) && self.gui.holding()
+    }
+
+    /// The window's control the last draw drew for the pointer.
+    pub fn highlighted(&self) -> Option<&str> {
+        self.cached
+            .as_ref()
+            .filter(|cached| cached.shown)
+            .and_then(|_| self.gui.highlighted())
+    }
+
     pub fn gui_active(&self) -> bool {
         self.cached.as_ref().is_some_and(|cached| cached.shown) && self.gui.active()
     }
@@ -488,23 +504,17 @@ impl Window {
             false
         }
     }
-    /// The popup's own controls; true when `point` was one of them.
-    pub fn handle_click(&mut self, drawn: &Drawn, point: [f32; 2]) -> bool {
+    /// Acts on the control a native click took, by its path or the rectangle it drew.
+    pub fn click(&mut self, drawn: &Drawn, path: &str, rect: [f32; 4]) -> bool {
         if matches!(self.selection, Some(Selection::AirRegion(_)))
-            && let Some((_, action)) = drawn
-                .air_controls
-                .iter()
-                .rev()
-                .find(|(rect, _)| contains(*rect, point))
+            && let Some((_, action)) = drawn.air_controls.iter().find(|(at, _)| at == path)
         {
             self.air.click(action);
             self.bindings_dirty = true;
             return true;
         }
         if matches!(self.selection, Some(Selection::NavalResult(_)))
-            && drawn
-                .result_details_button
-                .is_some_and(|rect| contains(rect, point))
+            && drawn.result_details_button == Some(rect)
         {
             let Some(cache) = self.cached.as_mut() else {
                 return false;
@@ -524,22 +534,23 @@ impl Window {
             cache.generation = cache.generation.wrapping_add(1);
             return true;
         }
-        if drawn
-            .tactics_close
-            .is_some_and(|rect| contains(rect, point))
-        {
+        if drawn.tactics_close == Some(rect) {
             self.tactics_open = false;
             return true;
         }
-        if drawn.tactics_rect.is_some_and(|rect| contains(rect, point)) {
-            return true;
-        }
-        if drawn
-            .tactics_button
-            .is_some_and(|rect| contains(rect, point))
-        {
+        if drawn.tactics_button == Some(rect) {
             self.tactics_open = !self.tactics_open;
             self.tactics_position = None;
+            return true;
+        }
+        if drawn.close == Some(rect) || drawn.dismiss == Some(rect) {
+            self.close();
+            return true;
+        }
+        if let Some((_, target, direction)) =
+            drawn.scroll_buttons.iter().find(|(at, _, _)| *at == rect)
+        {
+            self.scroll(target.clone(), *direction, false);
             return true;
         }
         false
@@ -616,6 +627,7 @@ impl Window {
                 || delayed.is_some_and(|text| !text.is_empty())
                 || shortcut.is_some_and(|text| !text.is_empty()))
         {
+            self.tooltip_from_map = combat_hit.is_none();
             self.hover.anchor = window.zip(point).map(|(window, point)| TooltipPosition {
                 point,
                 naval_window: Some(window),
@@ -640,6 +652,11 @@ impl Window {
                 )
             })
     }
+    /// Whether the tooltip [`Self::tooltip`] last gave is the map's.
+    pub fn tooltip_from_map(&self) -> bool {
+        self.tooltip_from_map
+    }
+
     /// When the tooltip next changes with a still pointer, for a repaint.
     pub fn tooltip_repaint_after(
         &self,
@@ -670,6 +687,7 @@ impl Window {
         hovers: bool,
         time: f32,
         advance: bool,
+        input: Option<Input>,
     ) -> io::Result<Option<Drawn>> {
         let Some(selection) = self.selection else {
             return Ok(None);
@@ -896,6 +914,7 @@ impl Window {
             hovers,
             tick,
             advance,
+            input,
         )?;
         self.refused.clone_from(&drawn.refused);
         Ok(Some(drawn))
@@ -904,7 +923,7 @@ impl Window {
 
 #[derive(Default)]
 pub struct Drawn {
-    air_controls: Vec<([f32; 4], air_menu::Action)>,
+    air_controls: Vec<(String, air_menu::Action)>,
     air_details_rect: Option<[f32; 4]>,
     air_combat_rect: Option<[f32; 4]>,
     pub batch: Batch,
@@ -921,6 +940,11 @@ pub struct Drawn {
     tactics_button: Option<[f32; 4]>,
     tactics_close: Option<[f32; 4]>,
     tactics_rect: Option<[f32; 4]>,
+    /// The sound effects its buttons' state changes play this frame, in order.
+    pub sounds: Vec<viewer_foundation::map::native_gui::pointer::Played>,
+    /// Each control clicked this frame: its path, the rectangle it drew and the click's order
+    /// among the frame's button changes.
+    pub clicks: Vec<(String, [f32; 4], usize)>,
 }
 impl Drawn {
     /// Adds another window's hover regions above this window's, as a later window paints over
@@ -1189,7 +1213,7 @@ mod tests {
             result_details_button: Some([5., 5., 20., 20.]),
             ..Default::default()
         };
-        assert!(window.handle_click(&drawn, [10., 10.]));
+        assert!(window.click(&drawn, "", [5., 5., 20., 20.]));
         assert!(window.result_details_open);
         let cached = window.cached.as_ref().unwrap();
         assert_eq!(cached.generation, 2);
@@ -1222,7 +1246,7 @@ mod tests {
         ] {
             assert!(!at.result_ui_at(&changed));
         }
-        assert!(window.handle_click(&drawn, [10., 10.]));
+        assert!(window.click(&drawn, "", [5., 5., 20., 20.]));
         assert!(!window.result_details_open);
         window.open(Selection::NavalResult(7));
         assert!(!window.result_details_open && window.cached.is_none());

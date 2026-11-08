@@ -73,6 +73,10 @@ pub(super) fn presented(
         regions: holder.place_regions(place, &layout.regions),
         holders: Vec::new(),
         diagnostics: Vec::new(),
+        pointed: None,
+        hovered: None,
+        target: None,
+        boxes: Vec::new(),
     };
     placed
         .regions
@@ -261,6 +265,7 @@ mod tests {
         assert!(carrier.supported && carrier.contains([115., 262.]));
         assert!(!carrier.contains([109., 262.]));
         let plate = viewer_foundation::map::counter_hovers::unit_hits::Hit {
+            plate: None,
             ours: true,
             port: true,
             rect: [140., 252., 0., 28.],
