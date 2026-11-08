@@ -22,7 +22,10 @@ use std::{
     cell::{OnceCell, RefCell},
     collections::{HashMap, HashSet},
     hash::Hash,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 /// One read an answer depends on. `D` is the product's own derived read.
@@ -129,7 +132,7 @@ impl Changes for Between<'_> {
         self.rows[table.index()]
             .get_or_init(|| {
                 let (then, now) = self.views(table);
-                changed_rows(then, now)
+                changed_rows(table, then, now)
             })
             .as_ref()
             .map(|(changed, deleted)| (changed.as_slice(), deleted.as_slice()))
@@ -139,7 +142,13 @@ impl Changes for Between<'_> {
         let (then, now) = self.views(table);
         match (&**then, &**now) {
             (TableView::Complete(old), TableView::Complete(new)) => {
-                old.visit_pair(new, Compare { from, to, fields }).ok()
+                match old.visit_pair(new, Compare { from, to, fields }) {
+                    Ok(same) => Some(same),
+                    Err(_) => {
+                        mismatched(table);
+                        Some(false)
+                    }
+                }
             }
             _ => None,
         }
@@ -282,17 +291,38 @@ pub fn record<'f, D: Clone + Ord + 'static, T>(
     (value, reads)
 }
 
-/// The rows `now` changes from `then`, ascending by key, each with the fields it changed
-/// (every field for one `now` inserts), and the keys it deletes; None when either view is
-/// not complete.
-pub fn changed_rows(then: &SharedView, now: &SharedView) -> Option<(Vec<(u128, u64)>, Vec<u128>)> {
+/// The rows `now` changes from `then` in `table`, ascending by key, each with the fields it
+/// changed (every field for one `now` inserts), and the keys it deletes; None when either
+/// view is not complete.
+pub fn changed_rows(
+    table: TableId,
+    then: &SharedView,
+    now: &SharedView,
+) -> Option<(Vec<(u128, u64)>, Vec<u128>)> {
     if SharedView::ptr_eq(then, now) {
         return Some((Vec::new(), Vec::new()));
     }
     match (&**then, &**now) {
-        (TableView::Complete(old), TableView::Complete(new)) => old.visit_pair(new, Diff).ok(),
+        (TableView::Complete(old), TableView::Complete(new)) => match old.visit_pair(new, Diff) {
+            Ok(rows) => Some(rows),
+            Err(_) => {
+                mismatched(table);
+                None
+            }
+        },
         _ => None,
     }
+}
+
+/// Two views of `table` that hold different kinds of rows, a defect: counted, logged and
+/// failed in debug builds. Answers that read it are made again.
+fn mismatched(table: TableId) {
+    static MISMATCHED: AtomicU64 = AtomicU64::new(0);
+    let count = MISMATCHED.fetch_add(1, Ordering::Relaxed) + 1;
+    if count.is_power_of_two() {
+        eprintln!("kept: two views of {table:?} hold different kinds of rows ({count} so far)");
+    }
+    debug_assert!(false, "kept: two views of {table:?} hold different kinds of rows");
 }
 
 struct Diff;

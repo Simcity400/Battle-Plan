@@ -21,16 +21,14 @@ impl Default for RetainedBridge {
 }
 
 impl RetainedBridge {
-    pub(super) fn read<'a>(
+    pub(super) fn read(
         &self,
-        frame: &'a DecodedFrame,
-        content: &'a model_selection::Content,
-    ) -> Result<bridge::Prepared<'a>, String> {
-        self.0
-            .get_or_build(frame, (), |projected| {
-                bridge::Retained::read(projected, content).map(Arc::new)
-            })
-            .map(|retained| retained.prepared())
+        frame: &DecodedFrame,
+        content: &model_selection::Content,
+    ) -> Result<Arc<bridge::Retained>, String> {
+        self.0.get_or_build(frame, (), |projected| {
+            bridge::Retained::read(projected, content).map(Arc::new)
+        })
     }
 }
 

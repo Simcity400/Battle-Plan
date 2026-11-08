@@ -1254,6 +1254,8 @@ pub struct CounterContent {
     /// Recent immutable grouping products, keyed by their ordered state projection and content.
     geography: geography::Memo,
     template_icons: TemplateIconMemo,
+    /// Division routes, shared by the counter tables and the unit models.
+    pub routes: viewer_foundation::map::counter_move::RouteMemo,
     /// Province to strategic region, from `map/strategicregions/*.txt`.
     pub region_of: Arc<BTreeMap<u32, u32>>,
     /// Each strategic region's provinces in file order. Repeated provinces are logged
@@ -1449,6 +1451,7 @@ impl CounterContent {
             bounds: Arc::new(province_boxes(&provinces)),
             geography: geography::Memo::default(),
             template_icons: TemplateIconMemo::default(),
+            routes: Default::default(),
             region_of: Arc::new(region_of),
             region_provinces,
             region_icons: BTreeMap::new(),
@@ -3353,7 +3356,9 @@ pub fn hour_tables_profiled(
             .filter(|group| group.leader != 0 && group.hq_provider != 0)
             .map(|group| group.hq_provider)
             .collect();
-        let type_tints = type_tint::Index::read(type_tints, frame, &links, vision.ours());
+        let type_tints = spans.measure("overlay.tables.counters.remaining_hour_base.type_tints", |_| {
+            type_tint::Index::read(type_tints, frame, &links, vision.ours())
+        });
         let tables = HourBase {
             frame: Arc::new(frame.clone()),
             engagement_content,
@@ -3362,19 +3367,23 @@ pub fn hour_tables_profiled(
             naval: spans.measure("overlay.tables.counters.remaining_hour_base.naval", |_| {
                 NavalTables::read(frame, &vision)
             })?,
-            ideologies: rows::<tables::TaskForces>(frame)?
-                .rows()
-                .iter()
-                .filter_map(|force| links.get(&force.logical_owner).copied())
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .map(|slot| {
-                    (
-                        slot,
-                        naval::ideology_frame(frame, &content.ideologies, &country_ids, slot),
-                    )
-                })
-                .collect(),
+            ideologies: spans.measure("overlay.tables.counters.remaining_hour_base.ideologies", |_| {
+                Ok::<_, io::Error>(
+                    rows::<tables::TaskForces>(frame)?
+                        .rows()
+                        .iter()
+                        .filter_map(|force| links.get(&force.logical_owner).copied())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .map(|slot| {
+                            (
+                                slot,
+                                naval::ideology_frame(frame, &content.ideologies, &country_ids, slot),
+                            )
+                        })
+                        .collect(),
+                )
+            })?,
             bases: spans.measure("overlay.tables.counters.remaining_hour_base.bases", |_| {
                 BaseTables::read(frame, &vision, content)
             })?,
@@ -3401,12 +3410,19 @@ pub fn hour_tables_profiled(
                 |_| hq_portraits(frame, &native),
             )?,
             hq_providers,
-            icon_inputs: rows::<tables::ArmyIconInputs>(frame)?
-                .rows()
-                .iter()
-                .map(|row| (row.division, row.clone()))
-                .collect(),
-            native_relations: Arc::new(allegiance::NativeRelations::read(frame, &links)?),
+            icon_inputs: spans.measure("overlay.tables.counters.remaining_hour_base.icon_inputs", |_| {
+                Ok::<_, io::Error>(
+                    rows::<tables::ArmyIconInputs>(frame)?
+                        .rows()
+                        .iter()
+                        .map(|row| (row.division, row.clone()))
+                        .collect(),
+                )
+            })?,
+            native_relations: spans.measure(
+                "overlay.tables.counters.remaining_hour_base.native_relations",
+                |_| allegiance::NativeRelations::read(frame, &links).map(Arc::new),
+            )?,
             links,
             vision,
             countries: Arc::new(countries),
@@ -3415,16 +3431,24 @@ pub fn hour_tables_profiled(
             peace_conference,
             order,
             native,
-            orders: counter_inputs::OrdersIndex::read(frame)?,
-            icons: content.template_icons.read(frame)?,
-            status: DivisionStatuses::read(frame)?,
+            orders: spans.measure("overlay.tables.counters.remaining_hour_base.orders", |_| {
+                counter_inputs::OrdersIndex::read(frame)
+            })?,
+            icons: spans.measure("overlay.tables.counters.remaining_hour_base.template_icons", |_| {
+                content.template_icons.read(frame)
+            })?,
+            status: spans.measure("overlay.tables.counters.remaining_hour_base.status", |_| {
+                DivisionStatuses::read(frame)
+            })?,
             movement,
             actions,
             relations,
             pings,
             guns,
             abilities,
-            task_forces: TaskForceMotions::read(frame)?,
+            task_forces: spans.measure("overlay.tables.counters.remaining_hour_base.task_forces", |_| {
+                TaskForceMotions::read(frame)
+            })?,
             type_tints,
         };
         Ok::<_, io::Error>(tables)

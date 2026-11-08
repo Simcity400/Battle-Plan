@@ -42,7 +42,7 @@ fn figures(
                 etas: &Etas::default(),
                 anchor: &|_, _| Some([0.0; 3]),
                 world: None,
-                terrain: &BTreeMap::new(),
+                terrain: &BTreeMap::new(), routes: None,
                 ships: &ShipPlaces {
                     motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(
                     ),

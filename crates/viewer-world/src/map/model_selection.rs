@@ -3,7 +3,7 @@
 //! equipment exclusions and model-country selection remain presentation rules.
 use dashboard_text::subunit_requirements as shared;
 pub use dashboard_text::subunit_requirements::{
-    Definition, EquipmentModel, Group, Sources, SubUnit, Template, text,
+    Definition, EquipmentModel, Group, SourceIndex, Sources, SubUnit, Template, text,
 };
 use installed_content_core::ResolvedLayers;
 use replay_data::rows::{DivisionEquipmentRow, VariantDefinitionRow};
@@ -120,6 +120,11 @@ impl Content {
             }
             let mut candidates = Vec::new();
             for row in equipment {
+                replay_frame::frame::kept::note_row(
+                    replay_data::rows::TableId::VariantDefinitions,
+                    u128::from(row.variant_handle),
+                    u64::MAX,
+                );
                 let variant = *variants.get(&row.variant_handle).ok_or_else(|| {
                     invalid(format!("missing equipment variant {}", row.variant_handle))
                 })?;

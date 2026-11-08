@@ -35,7 +35,7 @@ pub type Label = Result<Vec<u8>, String>;
 
 /// One country's label operands.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Country {
+pub(crate) struct Country {
     tag: Vec<u8>,
     /// The original-or-own tag ([`country_flags::original_tag`]), which
     /// names a dynamic country's labels.
@@ -108,6 +108,11 @@ impl<'a> Labels<'a> {
             Err(reason) => labels.unavailable = Some(reason),
         }
         labels
+    }
+
+    /// What it read of the hour: the countries' tags, or why it could not.
+    pub(crate) fn operands(&self) -> (&BTreeMap<u32, Country>, Option<&String>) {
+        (&self.countries, self.unavailable.as_ref())
     }
 
     fn localise(&self, key: &[u8]) -> Label {

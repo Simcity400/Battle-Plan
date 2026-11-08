@@ -58,7 +58,8 @@ impl Pool {
                                 Ok(job) => {
                                     // Receiver lock is released before capacity callbacks or work.
                                     capacity.dequeued();
-                                    job();
+                                    // A panicking job must not take its thread, and the pool's width, with it.
+                                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                                 }
                                 Err(_) => return,
                             }

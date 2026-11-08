@@ -118,7 +118,7 @@ pub struct CountryContext {
 
 /// One hour's strict join. Positive native country references resolve through
 /// CountryLinks; no local viewing country or selected map object is involved.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 #[derive(replay_spool::Spooled)]
 pub struct Prepared {
     slots: BTreeMap<u32, u32>,

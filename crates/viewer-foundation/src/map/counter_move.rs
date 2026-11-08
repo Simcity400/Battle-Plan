@@ -410,13 +410,117 @@ impl DivisionRoute {
 /// This hour's division routes and how many the content map could not place.
 #[derive(Clone, Debug, Default)]
 pub struct DivisionRoutes {
-    pub by_division: BTreeMap<u64, DivisionRoute>,
+    pub by_division: Arc<BTreeMap<u64, DivisionRoute>>,
     /// Moving divisions whose route the content map cannot place; they stand
     /// on their province and are counted, never dropped.
     pub unresolved: usize,
     /// Later route hops the placed routes' polylines skip ([`walk_route`]):
     /// no content neighbour of the province before them, or no anchor.
     pub skipped_hops: usize,
+}
+
+/// One division's placed route and the movement fields and province it was placed from.
+struct Placed {
+    province: u32,
+    combat_role: u8,
+    combat_count: u32,
+    combat_province: u32,
+    target: u32,
+    naval_transfer: u8,
+    path_total: u32,
+    path: Vec<u32>,
+    alternate_total: u32,
+    alternate_path: Vec<u32>,
+    stack_kind: u32,
+    display: Vec<u32>,
+    kind_resolved: bool,
+    skipped: usize,
+    unresolved: bool,
+}
+
+impl Placed {
+    fn new(
+        row: &replay_data::rows::DivisionMovementRow,
+        province: u32,
+        map: Option<&MovementMap>,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+    ) -> Self {
+        let route = UnitRoute::division(row);
+        let resolved = map.and_then(|map| route.stack_kind(province, map, anchor));
+        let (stack_kind, display, kind_resolved, skipped, unresolved) = match (map, resolved) {
+            (Some(map), Some(kind)) => {
+                let path = route.display_path();
+                let skipped = walk_route(map, province, path, anchor).skipped;
+                (kind, path.to_vec(), true, skipped, false)
+            }
+            _ => {
+                // An unplaceable route stands still on its province; the
+                // stand-off kinds need no geometry.
+                let kind = stack_kind(StackKindInputs {
+                    combat_role: row.combat_role,
+                    ..Default::default()
+                });
+                // Defending in its first combat is kind 10 whatever the
+                // route, so only that fallback is native.
+                let unresolved = !route.display_path().is_empty();
+                (kind, Vec::new(), row.combat_role == 2, 0, unresolved)
+            }
+        };
+        Self {
+            province,
+            combat_role: row.combat_role,
+            combat_count: row.combat_count,
+            combat_province: row.combat_province,
+            target: row.target,
+            naval_transfer: row.naval_transfer,
+            path_total: row.path_total,
+            path: row.path.clone(),
+            alternate_total: row.alternate_total,
+            alternate_path: row.alternate_path.clone(),
+            stack_kind,
+            display,
+            kind_resolved,
+            skipped,
+            unresolved,
+        }
+    }
+
+    /// Whether it was placed from exactly what `row` and `province` hold ([`UnitRoute::division`]).
+    fn reads(&self, row: &replay_data::rows::DivisionMovementRow, province: u32) -> bool {
+        self.province == province
+            && self.combat_role == row.combat_role
+            && self.combat_count == row.combat_count
+            && self.combat_province == row.combat_province
+            && self.target == row.target
+            && self.naval_transfer == row.naval_transfer
+            && self.path_total == row.path_total
+            && self.alternate_total == row.alternate_total
+            && self.path == row.path
+            && self.alternate_path == row.alternate_path
+    }
+}
+
+/// The content's division routes: each hour's whole while a reader holds its routes, shared
+/// by the hour's readers, and each division's placed route, kept while the fields it reads
+/// are unchanged.
+#[derive(Default)]
+pub struct RouteMemo {
+    hours: Mutex<Vec<HeldRoutes>>,
+    placed: Mutex<std::collections::HashMap<u64, Arc<Placed>>>,
+}
+
+/// An hour's routes, held while a reader keeps their division map.
+struct HeldRoutes {
+    at: (replay_data::BranchId, replay_data::Hour),
+    by_division: std::sync::Weak<BTreeMap<u64, DivisionRoute>>,
+    unresolved: usize,
+    skipped_hops: usize,
+}
+
+impl std::fmt::Debug for RouteMemo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RouteMemo")
+    }
 }
 
 impl DivisionRoutes {
@@ -428,53 +532,101 @@ impl DivisionRoutes {
         map: Option<&MovementMap>,
         anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
     ) -> std::io::Result<Self> {
+        Self::read_placing(frame, etas, map, anchor, None)
+    }
+
+    /// [`Self::read`] through `memo`, which must be for this `map` and `anchor`'s content.
+    pub fn read_kept(
+        frame: &replay_frame::frame::DecodedFrame,
+        etas: &Etas,
+        map: Option<&MovementMap>,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+        memo: &RouteMemo,
+    ) -> std::io::Result<Self> {
+        let key = (frame.branch, frame.hour);
+        let held = memo
+            .hours
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .find(|held| held.at == key)
+            .and_then(|held| {
+                Some(Self {
+                    by_division: held.by_division.upgrade()?,
+                    unresolved: held.unresolved,
+                    skipped_hops: held.skipped_hops,
+                })
+            });
+        if let Some(routes) = held {
+            return Ok(routes);
+        }
+        let routes = Self::read_placing(frame, etas, map, anchor, Some(&memo.placed))?;
+        let mut hours = memo.hours.lock().unwrap_or_else(|error| error.into_inner());
+        hours.retain(|held| held.at != key && held.by_division.strong_count() > 0);
+        hours.push(HeldRoutes {
+            at: key,
+            by_division: Arc::downgrade(&routes.by_division),
+            unresolved: routes.unresolved,
+            skipped_hops: routes.skipped_hops,
+        });
+        Ok(routes)
+    }
+
+    fn read_placing(
+        frame: &replay_frame::frame::DecodedFrame,
+        etas: &Etas,
+        map: Option<&MovementMap>,
+        anchor: &dyn Fn(u32) -> Option<[f32; 3]>,
+        memo: Option<&Mutex<std::collections::HashMap<u64, Arc<Placed>>>>,
+    ) -> std::io::Result<Self> {
         use replay_data::rows::tables;
         let location: BTreeMap<u64, u32> = rows::<tables::Divisions>(frame)?
             .rows()
             .iter()
             .map(|row| (row.id, row.province))
             .collect();
+        let movement = rows::<tables::DivisionMovement>(frame)?;
+        // Taken whole, so concurrent hours never wait; the last to finish keeps its own.
+        let kept = memo
+            .map(|memo| std::mem::take(&mut *memo.lock().unwrap_or_else(|error| error.into_inner())))
+            .unwrap_or_default();
+        let mut placed = std::collections::HashMap::with_capacity(if memo.is_some() {
+            movement.rows().len()
+        } else {
+            0
+        });
         let mut out = Self::default();
-        for row in rows::<tables::DivisionMovement>(frame)?.rows() {
-            let route = UnitRoute::division(row);
+        let mut by_division = BTreeMap::new();
+        for row in movement.rows() {
             let province = location.get(&row.division).copied().unwrap_or(0);
-            let resolved = map.and_then(|map| route.stack_kind(province, map, anchor));
-            let (stack_kind, path, kind_resolved) = match (map, resolved) {
-                (Some(map), Some(kind)) => {
-                    let path = route.display_path();
-                    out.skipped_hops += walk_route(map, province, path, anchor).skipped;
-                    (kind, path.to_vec(), true)
-                }
-                _ => {
-                    // An unplaceable route stands still on its province; the
-                    // stand-off kinds need no geometry.
-                    if !route.display_path().is_empty() {
-                        out.unresolved += 1;
-                    }
-                    let kind = stack_kind(StackKindInputs {
-                        combat_role: row.combat_role,
-                        ..Default::default()
-                    });
-                    // Defending in its first combat is kind 10 whatever the
-                    // route, so only that fallback is native.
-                    (kind, Vec::new(), row.combat_role == 2)
-                }
+            let route = match kept.get(&row.division).filter(|kept| kept.reads(row, province)) {
+                Some(kept) => Arc::clone(kept),
+                None => Arc::new(Placed::new(row, province, map, anchor)),
             };
-            out.by_division.insert(
+            out.skipped_hops += route.skipped;
+            out.unresolved += usize::from(route.unresolved);
+            by_division.insert(
                 row.division,
                 DivisionRoute {
-                    path,
+                    path: route.display.clone(),
                     eta: etas.get(row.division),
                     naval_transfer: row.naval_transfer != 0,
                     retreat: row.retreat != 0,
                     combat_role: row.combat_role,
                     combat_count: row.combat_count,
-                    stack_kind,
-                    kind_resolved,
+                    stack_kind: route.stack_kind,
+                    kind_resolved: route.kind_resolved,
                     idle: crate::map::unit_rules::idle(row.path_total, row.combat_count),
                 },
             );
+            if memo.is_some() {
+                placed.insert(row.division, route);
+            }
         }
+        if let Some(memo) = memo {
+            *memo.lock().unwrap_or_else(|error| error.into_inner()) = placed;
+        }
+        out.by_division = Arc::new(by_division);
         Ok(out)
     }
 }

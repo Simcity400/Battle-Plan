@@ -208,6 +208,11 @@ fn evaluate<'a>(
             {
                 continue;
             }
+            replay_frame::frame::kept::note_row(
+                replay_data::rows::TableId::VariantDefinitions,
+                u128::from(variant.handle),
+                u64::MAX,
+            );
             let definition = inputs.definitions.get(&variant.handle).ok_or_else(|| {
                 format!(
                     "model roster variant {} lacks its definition",
@@ -567,6 +572,11 @@ fn source_label(inputs: &Inputs<'_, '_>, group: &Group<'_>, source: legacy::Sour
         }
         legacy::Source::Variant(handle) | legacy::Source::Best(handle) => handle,
     };
+    replay_frame::frame::kept::note_row(
+        replay_data::rows::TableId::VariantDefinitions,
+        u128::from(handle),
+        u64::MAX,
+    );
     let definition = inputs
         .definitions
         .get(&handle)

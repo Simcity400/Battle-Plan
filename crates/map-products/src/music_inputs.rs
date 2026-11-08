@@ -46,6 +46,8 @@ struct Evaluation {
 }
 struct Entry {
     content: Arc<viewer_audio::Content>,
+    /// The frame every evaluation last read its inputs at.
+    frame: Arc<DecodedFrame>,
     branch: replay_data::BranchId,
     country: u32,
     songs: Vec<Option<Arc<Evaluation>>>,
@@ -101,6 +103,16 @@ impl Memo {
         });
         // Reread answers belong to this call only, never another hour.
         let mut rereads = HashMap::new();
+        let now = Arc::new(frame.clone());
+        // Only the reads whose tables changed since the kept hour are read again. A step back
+        // in time moves relations' start and end hours the other way, so it reads all again.
+        let between = previous
+            .as_ref()
+            .filter(|entry| entry.frame.hour <= frame.hour)
+            .map(|entry| (entry.frame.hour, inputs::Between::new(&entry.frame, frame)));
+        let since = between.as_ref().map(|(from, between)| {
+            inputs::Since::span(frame.branch, *from, frame.hour, Some(frame), between)
+        });
         let evaluator = Evaluator::new(world, None);
         let scopes = Scopes::of(Scope::Country(country));
         let mut output = viewer_audio::Chances {
@@ -119,7 +131,7 @@ impl Memo {
                 .and_then(|entry| entry.songs[index].as_ref())
                 .map(|last| last.inputs.clone());
             let confirmed = certificate.as_mut().is_some_and(|inputs| {
-                inputs.confirm(frame, |key| {
+                inputs.confirm_since(frame, since.as_ref(), |key| {
                     *rereads.entry(key.clone()).or_insert_with(|| match key {
                         inputs::Key::World(query) => Some(world.reread(query)),
                         inputs::Key::Scopes(query) => Some(world.recorded().reread(query)),
@@ -178,8 +190,11 @@ impl Memo {
             value.value.clone().append(&mut output);
             songs.push(Some(value));
         }
+        drop(since);
+        drop(between);
         let entry = Arc::new(Entry {
             content: Arc::clone(content),
+            frame: now,
             branch: frame.branch,
             country,
             songs,

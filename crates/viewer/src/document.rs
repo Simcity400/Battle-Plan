@@ -3796,6 +3796,7 @@ impl<'a> Hour<'a> {
                     anchor: &anchor,
                     world: world.as_ref(),
                     terrain: &content.terrain.combat_terrain,
+                    routes: Some(&content.routes),
                     ships: &viewer_world::map::unit_models::ShipPlaces {
                         motions: &motions,
                         movement,

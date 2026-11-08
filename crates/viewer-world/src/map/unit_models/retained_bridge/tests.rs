@@ -230,7 +230,7 @@ fn prepare(assets: &UnitModelAssets, frame: &DecodedFrame) -> PreparedModels {
                 etas: &Etas::default(),
                 anchor: &|province, _| Some([province as f32, 0., province as f32 * 0.25]),
                 world: None,
-                terrain: &BTreeMap::new(),
+                terrain: &BTreeMap::new(), routes: None,
                 ships: &ShipPlaces {
                     motions: &motions,
                     movement: None,
@@ -555,7 +555,7 @@ fn retained_bridge_keeps_reference_census_and_cold_hour_records_across_live_chan
         let retained = new
             .conventional
             .read(&frame, &new.sub_units)
-            .map(|value| value.comparison_state());
+            .map(|value| value.prepared().comparison_state());
         assert_eq!(direct, retained, "census hour {hour}");
         let divisions: Vec<_> = (0..24_u64)
             .filter(|id| !(id + random).is_multiple_of(7))
@@ -718,7 +718,7 @@ fn coarse_selection_scopes_keep_hour_records_and_lazy_join_order() {
             profiled.prepare_with_spans(PrepareInputs {
                 frame: &frame, limits, vision: &Vision::default(), etas: &Etas::default(),
                 anchor: &|province, _| Some([province as f32, 0., province as f32 * 0.25]),
-                world: None, terrain: &BTreeMap::new(),
+                world: None, terrain: &BTreeMap::new(), routes: None,
                 ships: &ShipPlaces {
                     motions: &viewer_foundation::map::task_force_visual::TaskForceMotions::default(),
                     movement: None, land: &|_| false, missions: &Default::default(),

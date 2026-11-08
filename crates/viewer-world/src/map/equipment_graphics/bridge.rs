@@ -5,6 +5,7 @@
 //! foreign and stored best-variant candidates), upgrade bytes and
 //! runtime country references to authored equipment definitions.
 
+use replay_frame::frame::kept;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ pub struct Prepared<'a> {
     data: Arc<Census>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 struct Census {
     /// Indexed by the complete raw definition census, including invalid rows.
     states: Vec<VariantState>,
@@ -62,13 +63,39 @@ impl Variants<'_> {
     }
 }
 
+/// A census entry a model selection read.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) enum CensusRead {
+    /// Whether the census could be read, or why not.
+    Census,
+    /// The first definition of no known archetype.
+    Unknown,
+    /// The first invalid definition of an archetype.
+    Archetype(String),
+    /// A country reference's canonical slot.
+    Link(u32),
+    /// A canonical slot's availability list of one kind.
+    List(u32, u8),
+    /// A variant handle's entry.
+    Handle(u64),
+}
+
+impl kept::Grouped for CensusRead {
+    /// The census is rebuilt whole; its entries are asked about every hour.
+    fn table(&self) -> Option<replay_data::rows::TableId> {
+        None
+    }
+}
+
 /// Owned successful census. Only scalar joins and authored strings survive;
 /// current country, script limits and selected-model answers are never stored.
+#[derive(PartialEq)]
 pub(crate) struct Retained {
     variants: Arc<[OwnedVariant]>,
     data: Arc<Census>,
 }
 
+#[derive(Debug, PartialEq)]
 struct OwnedVariant {
     handle: u64,
     id: u32,
@@ -134,6 +161,58 @@ impl Retained {
         })
     }
 
+    /// Whether `read` reads the same in `other` as here.
+    pub(crate) fn same_read(&self, other: &Self, read: &CensusRead) -> bool {
+        fn state(census: &Retained, index: usize) -> Result<&OwnedVariant, &str> {
+            match &census.data.states[index] {
+                VariantState::Ready(index) => Ok(&census.variants[*index]),
+                VariantState::InvalidKnown { error } | VariantState::InvalidUnknown { error } => {
+                    Err(error.as_str())
+                }
+            }
+        }
+        match read {
+            CensusRead::Census => true,
+            CensusRead::Unknown => {
+                self.data.invalid_unknown.map(|index| state(self, index))
+                    == other.data.invalid_unknown.map(|index| state(other, index))
+            }
+            CensusRead::Archetype(archetype) => {
+                fn entry<'c>(
+                    census: &'c Retained,
+                    archetype: &str,
+                ) -> Option<Result<&'c OwnedVariant, &'c str>> {
+                    let index = *census.data.invalid_by_archetype.get(archetype)?;
+                    Some(state(census, index))
+                }
+                entry(self, archetype) == entry(other, archetype)
+            }
+            CensusRead::Link(reference) => {
+                self.data.links.get(reference) == other.data.links.get(reference)
+            }
+            CensusRead::List(slot, kind) => {
+                match (
+                    self.data.available.get(&(*slot, *kind)),
+                    other.data.available.get(&(*slot, *kind)),
+                ) {
+                    (Some(mine), Some(theirs)) => {
+                        mine.len() == theirs.len()
+                            && mine
+                                .iter()
+                                .zip(theirs)
+                                .all(|(&a, &b)| state(self, a) == state(other, b))
+                    }
+                    (None, None) => true,
+                    _ => false,
+                }
+            }
+            CensusRead::Handle(handle) => {
+                self.data.by_handle.get(handle).map(|&index| state(self, index))
+                    == other.data.by_handle.get(handle).map(|&index| state(other, index))
+            }
+        }
+    }
+
     pub(crate) fn prepared(&self) -> Prepared<'static> {
         Prepared {
             variants: Variants::Retained(Arc::clone(&self.variants)),
@@ -148,7 +227,7 @@ pub struct Selection<'a> {
     pub variant: Option<u64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum VariantState {
     Ready(usize),
     InvalidKnown { error: String },
@@ -181,6 +260,10 @@ impl<'a> Prepared<'a> {
         country_ref: u32,
         required_archetypes: &BTreeSet<&str>,
     ) -> Result<Vec<legacy::Variant<'_>>, String> {
+        kept::note(|| CensusRead::Unknown);
+        for archetype in required_archetypes {
+            kept::note(|| CensusRead::Archetype((*archetype).to_owned()));
+        }
         if let Some(index) = self.data.invalid_unknown {
             return Err(self.data.states[index]
                 .error()
@@ -198,6 +281,7 @@ impl<'a> Prepared<'a> {
         let slot = self.canonical_slot(country_ref)?;
         let mut roster = Vec::new();
         for kind in [0, 1] {
+            kept::note(|| CensusRead::List(slot, kind));
             for &index in self.data.available.get(&(slot, kind)).into_iter().flatten() {
                 match &self.data.states[index] {
                     VariantState::Ready(ready) => roster.push(self.variants.get(*ready)),
@@ -228,6 +312,7 @@ impl<'a> Prepared<'a> {
 
     fn listed(&self, country_ref: u32, kind: u8) -> Result<Vec<legacy::Variant<'_>>, String> {
         let slot = self.canonical_slot(country_ref)?;
+        kept::note(|| CensusRead::List(slot, kind));
         self.data
             .available
             .get(&(slot, kind))
@@ -397,6 +482,8 @@ impl<'a> Prepared<'a> {
     ) -> Result<Option<String>, String> {
         let slot = self.canonical_slot(country_ref)?;
         if let Some(archetype) = subunit.first_archetype {
+            kept::note(|| CensusRead::Archetype(archetype.to_owned()));
+            kept::note(|| CensusRead::Unknown);
             if let Some(&index) = self.data.invalid_by_archetype.get(archetype) {
                 return Err(self.data.states[index]
                     .error()
@@ -424,10 +511,13 @@ impl<'a> Prepared<'a> {
                 })
                 .collect()
         };
+        kept::note(|| CensusRead::List(slot, 0));
+        kept::note(|| CensusRead::List(slot, BEST_CANDIDATES));
         let available = ready(0);
         let best = ready(BEST_CANDIDATES);
         let selected = selected_variant
             .map(|handle| {
+                kept::note(|| CensusRead::Handle(handle));
                 let index = *self
                     .data
                     .by_handle
@@ -459,6 +549,7 @@ impl<'a> Prepared<'a> {
     }
 
     fn canonical_slot(&self, reference: u32) -> Result<u32, String> {
+        kept::note(|| CensusRead::Link(reference));
         self.data
             .links
             .get(&reference)

@@ -732,6 +732,35 @@ pub struct Built {
     pub(crate) trace: trace::TargetTrace,
 }
 
+impl Built {
+    /// `target` with `reason` for its layers: an hour that could not be built.
+    fn undelivered(
+        epoch: u64,
+        (branch, hour): (BranchId, Hour),
+        view: View,
+        reason: String,
+    ) -> Self {
+        Self {
+            epoch,
+            branch,
+            hour,
+            view,
+            current: Current::Gap {
+                branch,
+                hour,
+                reason: reason.clone(),
+            },
+            viewing: None,
+            layers: Err(reason),
+            laps: Vec::new(),
+            child_laps: Vec::new(),
+            wall: 0.0,
+            waits: Waits::default(),
+            trace: Default::default(),
+        }
+    }
+}
+
 type PartWork = Box<dyn FnMut(&HourView<'_>, &mut BuilderSpans) -> Delivery + Send>;
 
 enum Part {
@@ -914,6 +943,8 @@ enum Event {
     Shutdown,
     PoolSpace,
     ResultSpace,
+    /// Print the coordinator's state.
+    Dump,
     Frame {
         ticket: u64,
         key: (BranchId, Hour),
@@ -2598,6 +2629,48 @@ struct PartJob {
     vision_choice: perspective::Choice,
     work: PartWork,
 }
+/// An accepted part's report, sent failed if its job ends without one, a panic included, so
+/// its hour always completes.
+struct Unreported {
+    events: Sender<Event>,
+    ticket: u64,
+    epoch: u64,
+    branch: BranchId,
+    hour: Hour,
+    name: &'static str,
+    armed: bool,
+}
+
+impl Drop for Unreported {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let why = if std::thread::panicking() {
+            "panicked before it delivered"
+        } else {
+            "stopped before it delivered"
+        };
+        let _ = self.events.send(Event::Part {
+            ticket: self.ticket,
+            epoch: self.epoch,
+            branch: self.branch,
+            hour: self.hour,
+            name: self.name,
+            timing: PartTiming {
+                ms: 0.0,
+                cpu_ms: None,
+            },
+            children: Vec::new(),
+            part: Box::new(Part::refused(
+                self.name,
+                io::Error::other(format!("{}: the hour builder {why}", self.name)),
+            )),
+            held: None,
+        });
+    }
+}
+
 fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
     dispatch_plan::HeldJob {
         name: job.name,
@@ -2610,6 +2683,15 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                 name,
                 ..
             } = job;
+            let mut unreported = Unreported {
+                events: job.events.clone(),
+                ticket,
+                epoch,
+                branch,
+                hour,
+                name,
+                armed: true,
+            };
             let _cost = replay_frame::cpu::scope(
                 "viewer",
                 Some(match name {
@@ -2653,6 +2735,8 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
             };
             // Another view's builder delivers the part once its shared product is built.
             let Delivery::Now(part, held) = part else {
+                // The shared product's builder delivers it, a failed build included.
+                unreported.armed = false;
                 job.trace.finish(name, "joined");
                 drop(job.work);
                 return;
@@ -2663,6 +2747,7 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
                     .map(|used| used.as_secs_f64() * 1000.0)
             });
             job.trace.finish(name, "done");
+            unreported.armed = false;
             let _ = job.events.send(Event::Part {
                 ticket,
                 epoch,
@@ -2679,6 +2764,16 @@ fn part_job(mut job: PartJob) -> dispatch_plan::HeldJob {
             });
             drop(job.work);
         }),
+    }
+}
+
+/// Asks the coordinator to print its state to standard error.
+#[derive(Clone)]
+pub(crate) struct StateDump(Sender<Event>);
+
+impl StateDump {
+    pub(crate) fn request(&self) {
+        let _ = self.0.send(Event::Dump);
     }
 }
 
@@ -3064,6 +3159,11 @@ impl Pipeline {
         &self.completed
     }
 
+    /// A handle any thread can ask the coordinator's state with.
+    pub(crate) fn state_dump(&self) -> StateDump {
+        StateDump(self.events.0.clone())
+    }
+
     #[cfg(test)]
     pub fn wait(&self) -> io::Result<Built> {
         self.want.as_ref().ok_or_else(stopped)?;
@@ -3105,7 +3205,7 @@ impl Completions {
         Ok(built)
     }
 
-    /// The next hour to finish.
+    /// The next hour to finish; an error once the coordinator, the results' only sender, is gone.
     pub(crate) fn wait(&self) -> io::Result<Built> {
         let built = self.results.recv().map_err(|_| stopped())?;
         self.results_freed();

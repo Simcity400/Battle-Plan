@@ -1633,6 +1633,7 @@ pub(super) fn with_counter_inputs_fixture<R>(
         bounds: Default::default(),
         geography: geography::Memo::default(),
         template_icons: TemplateIconMemo::default(),
+        routes: Default::default(),
         region_of: Default::default(),
         region_provinces: Default::default(),
         region_icons: Default::default(),
@@ -3443,7 +3444,7 @@ fn land_markers(attackers: Vec<u64>, flag: Engaged, sides: TableView) -> LandMar
         ..Default::default()
     };
     let movement = Movements {
-        by_division: BTreeMap::from([(2, route(9)), (3, route(0)), (6, Default::default())]),
+        by_division: Arc::new(BTreeMap::from([(2, route(9)), (3, route(0)), (6, Default::default())])),
         ..Default::default()
     };
     LandMarkers::read(

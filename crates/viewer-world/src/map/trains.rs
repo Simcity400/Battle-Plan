@@ -167,6 +167,57 @@ pub struct TrainAssets {
     /// The declared equipment types by the lexer's token identity.
     equipment: installed_content_core::equipment::Database,
     pub defines: TrainDefines,
+    /// Route curves by province path, kept while the rail network they follow is unchanged.
+    routes: RouteCache,
+}
+
+/// A path's curve and cumulative distances, or `None` where no train runs it.
+type Curve = Option<Arc<(super::railways::TrainRoute, Vec<f32>)>>;
+
+/// Curves of the networks hours still hold: hours built at once may hold different networks.
+#[derive(Default)]
+struct RouteCache(std::sync::Mutex<Vec<(CurveKey, Arc<std::sync::Mutex<std::collections::HashMap<Vec<u32>, Curve>>>)>>);
+
+/// The rail geometry, heightmap and network a curve was sampled on.
+struct CurveKey {
+    rails: u64,
+    heights: (usize, usize),
+    network: std::sync::Weak<super::railways::RailNetwork>,
+}
+
+impl RouteCache {
+    fn curves(
+        &self,
+        rails: &super::railways::RailGeometry,
+        heights: &HeightField<'_>,
+        network: &Arc<super::railways::RailNetwork>,
+    ) -> Arc<std::sync::Mutex<std::collections::HashMap<Vec<u32>, Curve>>> {
+        let key = (rails.projection_id(), (heights.values.as_ptr() as usize, heights.values.len()));
+        let mut kept = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        kept.retain(|(held, _)| held.network.strong_count() > 0);
+        let network = Arc::downgrade(network);
+        if let Some((_, curves)) = kept.iter().find(|(held, _)| {
+            held.rails == key.0 && held.heights == key.1 && held.network.ptr_eq(&network)
+        }) {
+            return Arc::clone(curves);
+        }
+        let curves = Arc::default();
+        kept.push((
+            CurveKey {
+                rails: key.0,
+                heights: key.1,
+                network,
+            },
+            Arc::clone(&curves),
+        ));
+        curves
+    }
+}
+
+impl std::fmt::Debug for RouteCache {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RouteCache")
+    }
 }
 
 impl TrainAssets {
@@ -220,6 +271,7 @@ impl TrainAssets {
             database,
             equipment,
             defines,
+            routes: RouteCache::default(),
         })
     }
 
@@ -784,6 +836,7 @@ impl TrainPlan {
             .iter()
             .flat_map(|e| [(e.from, e.to), (e.to, e.from)])
             .collect();
+        let curves = assets.routes.curves(rails, heights, &network);
         let mut shared = BTreeMap::new();
         for node in nodes {
             let weight = departure_weight(node);
@@ -802,22 +855,41 @@ impl TrainPlan {
                     index
                 } else {
                     let seed = path.iter().fold(SEED, |h, p| h.rotate_left(5) ^ p);
-                    // The train runs on the drawn railway curves.
-                    let Some(route) = rails.train_route(&path, &network, heights) else {
+                    let kept = curves
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .get(&path)
+                        .cloned();
+                    let curve = match kept {
+                        Some(curve) => curve,
+                        None => {
+                            // The train runs on the drawn railway curves.
+                            let curve = rails.train_route(&path, &network, heights).map(|route| {
+                                let mut distance = vec![0.0];
+                                for pair in route.points.windows(2) {
+                                    distance.push(
+                                        distance.last().unwrap()
+                                            + (pair[0][0] - pair[1][0]).hypot(pair[0][2] - pair[1][2]),
+                                    );
+                                }
+                                Arc::new((route, distance))
+                            });
+                            curves
+                                .lock()
+                                .unwrap_or_else(|error| error.into_inner())
+                                .insert(path.clone(), curve.clone());
+                            curve
+                        }
+                    };
+                    let Some(curve) = curve else {
                         continue;
                     };
-                    let mut distance = vec![0.0];
-                    for pair in route.points.windows(2) {
-                        distance.push(
-                            distance.last().unwrap()
-                                + (pair[0][0] - pair[1][0]).hypot(pair[0][2] - pair[1][2]),
-                        );
-                    }
+                    let (route, distance) = &*curve;
                     let index = plan.routes.len();
                     plan.routes.push(Route {
                         path: path.clone(),
-                        points: route.points,
-                        distance,
+                        points: route.points.clone(),
+                        distance: distance.clone(),
                         seed,
                         open_end: route.open_end,
                     });
@@ -1862,6 +1934,7 @@ pub(crate) mod tests {
             },
             equipment: installed_content_core::equipment::Database::default(),
             defines: DEFINES,
+            routes: RouteCache::default(),
         }
     }
 

@@ -270,6 +270,8 @@ pub(crate) fn measure(
     let mut gpu_allocated = None::<u64>;
     let mut gpu_reserved = None::<u64>;
     let mut warning_frames = 0u32;
+    // A `dump` line on standard input prints the hour coordinator's state.
+    let mut dump_reader = None;
     let mut frames = io::BufWriter::new(std::fs::File::create_new(output.join("frames.jsonl"))?);
     let mut labels_before = main_labels(&cpu::snapshot());
     shader_pipeline::gpu::stats::mark_window_thread();
@@ -311,6 +313,24 @@ pub(crate) fn measure(
                 result = viewer.map_with_state(ui, &state, &mut document);
             },
         );
+        if dump_reader.is_none()
+            && let Some(hours) = &viewer.hours
+        {
+            let dump = hours.state_dump();
+            dump_reader = Some(
+                std::thread::Builder::new()
+                    .name("playback cost dump".into())
+                    .spawn_carried(move || {
+                        for line in io::stdin().lines() {
+                            match line {
+                                Ok(line) if line.trim() == "dump" => dump.request(),
+                                Ok(_) => {}
+                                Err(_) => return,
+                            }
+                        }
+                    })?,
+            );
+        }
         result.map_err(io::Error::other)?;
         if !viewer.drew_frame
             || (document.playback.branch(), document.playback.hour()) != (branch, hour)

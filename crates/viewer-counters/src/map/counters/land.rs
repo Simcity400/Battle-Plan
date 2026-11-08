@@ -1122,7 +1122,7 @@ pub(super) type Movement = counter_move::DivisionRoute;
 /// rebuilds.
 #[derive(Clone, Default)]
 pub(super) struct Movements {
-    pub(super) by_division: BTreeMap<u64, Movement>,
+    pub(super) by_division: Arc<BTreeMap<u64, Movement>>,
     pub(super) eta: Report,
 }
 impl Movements {
@@ -1135,14 +1135,18 @@ impl Movements {
         content: &CounterContent,
     ) -> io::Result<Self> {
         let map = movement.map(|movement| &movement.map);
-        let routes = counter_move::DivisionRoutes::read(frame, etas, map, &|id| {
-            content.anchor(id, STANDSTILL)
-        })?;
+        let routes = counter_move::DivisionRoutes::read_kept(
+            frame,
+            etas,
+            map,
+            &|id| content.anchor(id, STANDSTILL),
+            &content.routes,
+        )?;
         let mut eta = etas.report().clone();
         eta.routes_unresolved = routes.unresolved;
         eta.route_hops_skipped = routes.skipped_hops;
         Ok(Self {
-            by_division: routes.by_division,
+            by_division: Arc::clone(&routes.by_division),
             eta,
         })
     }

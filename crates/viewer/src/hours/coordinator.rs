@@ -1,5 +1,6 @@
 //! Event-driven coordinator adapter. It never seeks, waits on a slot, or parks
 //! on pool/output admission. Accepted work retains its original epoch.
+use std::io::Write as _;
 use super::*;
 use dispatch_plan::{DispatchPlan, HeldJob, PreparedTarget};
 use flow::Ledger;
@@ -58,6 +59,8 @@ pub(super) struct Driver<B: BuildTarget = Coordinator> {
     started: Instant,
     /// Whether this view counts against the pool's shared width.
     busy: bool,
+    /// Whether it stopped because its window went away, the only exit that needs no account.
+    released: bool,
 }
 
 pub(super) fn start(core: Coordinator) -> Driver {
@@ -74,7 +77,7 @@ pub(super) fn run(mut driver: Driver, inbox: Receiver<Event>) {
         if let Some(event) = next.take()
             && !driver.event(event)
         {
-            return;
+            return driver.stopped();
         }
         // A poll reduces the complete available batch before choosing stable
         // ready tickets. Independent unavailable targets never head-of-line it.
@@ -82,19 +85,25 @@ pub(super) fn run(mut driver: Driver, inbox: Receiver<Event>) {
             match inbox.try_recv() {
                 Ok(event) => {
                     if !driver.event(event) {
-                        return;
+                        return driver.stopped();
                     }
                 }
                 Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    driver.released = true;
+                    return;
+                }
             }
         }
         match driver.turn() {
-            Turn::Stop => return,
+            Turn::Stop => return driver.stopped(),
             Turn::Progress => {} // service inbox again before another admission
             Turn::Park => match inbox.recv() {
                 Ok(event) => next = Some(event),
-                Err(_) => return,
+                Err(_) => {
+                    driver.released = true;
+                    return;
+                }
             },
         }
     }
@@ -123,12 +132,59 @@ impl<B: BuildTarget> Driver<B> {
             output_blocked: false,
             started: Instant::now(),
             busy: false,
+            released: false,
         }
+    }
+
+    /// Accounts for an exit that is not the window's; its results' channel closes with it.
+    fn stopped(&self) {
+        if !self.released {
+            self.dump();
+        }
+    }
+
+    /// Its state, for a stall or an exit that is not the window's.
+    fn dump(&self) {
+        let want = self
+            .core
+            .want
+            .as_ref()
+            .map(|want| (want.branch, want.hour, want.ahead, want.behind, want.playing));
+        // Dumped while unwinding too, so a closed stderr must not panic again.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "hour coordinator: epoch {} want {want:?} ledger {:?} reading {:?} decode {:?} history {:?} \
+             targets {:?} sending {:?} pool_blocked {} output_blocked {} sent {:?}",
+            self.core.epoch,
+            self.ledger,
+            self.reading.as_ref().map(|reading| (reading.ticket, reading.key)),
+            self.decode
+                .as_ref()
+                .map(|plan| (plan.ticket, plan.hour, plan.next_source)),
+            self.history
+                .as_ref()
+                .map(|history| (history.ticket, history.key, history.work.is_some())),
+            self.targets
+                .iter()
+                .map(|(ticket, target)| (
+                    *ticket,
+                    matches!(target, PreparedTarget::Ready(_))
+                ))
+                .collect::<Vec<_>>(),
+            self.sending,
+            self.pool_blocked,
+            self.output_blocked,
+            self.core.sent,
+        );
     }
 
     fn event(&mut self, event: Event) -> bool {
         match event {
-            Event::Shutdown => return false,
+            Event::Shutdown => {
+                self.released = true;
+                return false;
+            }
+            Event::Dump => self.dump(),
             Event::PoolSpace => self.pool_blocked = false,
             Event::ResultSpace => {
                 // Clear coalescing before retry: a subsequent UI receive must
@@ -172,10 +228,25 @@ impl<B: BuildTarget> Driver<B> {
                     return true;
                 }
                 self.spent.entry(ticket).or_default().source += reading.posted.elapsed();
-                let Some(plan) = &mut self.decode else {
+                let Some(plan) = self.decode.as_mut().filter(|plan| plan.ticket == ticket) else {
+                    // A live target with no plan to continue finishes as an error, or nothing
+                    // could ever be planned after it.
+                    assert!(self.ledger.source_finished(ticket));
+                    let flight = self.ledger.get(ticket).expect("live flight");
+                    let (epoch, key) = (flight.epoch, flight.key);
+                    if let Some(view) = self.core.want.as_ref().map(|want| want.view) {
+                        let built = Built::undelivered(
+                            epoch,
+                            key,
+                            view,
+                            format!("hour {} lost its decode before it was built", key.1),
+                        );
+                        assert!(self.ledger.gap(ticket));
+                        self.targets
+                            .insert(ticket, PreparedTarget::Ready(Box::new(built)));
+                    }
                     return true;
                 };
-                assert_eq!(plan.ticket, ticket);
                 let (current, sample) = match reply {
                     source_mailbox::Reply::Ready { value, sample } => (value, sample),
                     source_mailbox::Reply::Cancelled => {
@@ -386,7 +457,10 @@ impl<B: BuildTarget> Driver<B> {
                         self.output_blocked = true;
                         break;
                     }
-                    Err(mpsc::TrySendError::Disconnected(_)) => return Turn::Stop,
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        self.released = true;
+                        return Turn::Stop;
+                    }
                 }
             }
         }
@@ -567,6 +641,9 @@ pub(super) fn retarget_ledger(
 
 impl<B: BuildTarget> Drop for Driver<B> {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.dump();
+        }
         self.core.width.set_busy(self.busy, false);
         if let Some(reading) = &self.reading {
             reading.handle.cancel();

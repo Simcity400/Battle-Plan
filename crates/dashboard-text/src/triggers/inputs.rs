@@ -35,7 +35,7 @@ use replay::{campaign::QuietHours, campaign::TableFields};
 use replay_data::{
     BranchId, Hour, rows::DeltaRow, rows::TableId, rows::full_mask, rows::tables,
 };
-use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity, view_reads};
+use replay_frame::frame::{DecodedFrame, HourFrame, Rowset, ViewIdentity, kept, view_reads};
 use std::sync::LazyLock;
 
 /// Evaluations run, reused, and (in check mode) reused but run anyway,
@@ -463,6 +463,28 @@ impl TableChanges for QuietTables<'_> {
         } else {
             watched(self.watched, table)
                 .map_or(TableChange::Any, |fields| TableChange::Fields(!fields))
+        }
+    }
+}
+
+/// The [`TableChanges`] between any two held frames of a branch, as their field stamps tell
+/// it ([`kept::Between`]): never a comparison of rows, so confirming costs no more than reading
+/// again would.
+pub struct Between<'a>(kept::Between<'a>);
+
+impl<'a> Between<'a> {
+    pub fn new(then: &'a DecodedFrame, now: &'a DecodedFrame) -> Self {
+        Self(kept::Between::new(then, now))
+    }
+}
+
+impl TableChanges for Between<'_> {
+    fn table(&self, table: TableId) -> TableChange<'_> {
+        use kept::{Change, Changes};
+        match self.0.table(table) {
+            Change::Same => TableChange::Same,
+            Change::Fields(fields) => TableChange::Fields(fields),
+            Change::Rows(..) | Change::Any => TableChange::Any,
         }
     }
 }

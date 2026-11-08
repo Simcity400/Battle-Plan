@@ -96,7 +96,7 @@ use installed_content_image::native::Decode;
 use installed_content_localisation::localisation::Localisation;
 use replay_data::{
     rows::DivisionModelInputRow, rows::DivisionStatusRow, rows::DivisionTemplateIconRow,
-    rows::VariantDefinitionRow, rows::tables,
+    rows::TableId, rows::VariantDefinitionRow, rows::tables,
 };
 use replay_frame::frame::DecodedFrame;
 
@@ -111,6 +111,7 @@ use {
     crate::map::equipment_graphics::context, crate::map::model_labels,
     crate::map::model_multi_fallback, crate::map::model_selection,
     crate::map::model_selection::Definition, crate::map::model_selection::SelectedPair,
+    crate::map::equipment_graphics::bridge::CensusRead, replay_frame::frame::kept,
     crate::map::model_selection::SubUnit, crate::map::model_selection::Template,
     crate::map::models::ModelField, crate::map::models::ModelInstance,
     crate::map::models::ModelLibrary, crate::map::models::hash_rotation,
@@ -571,6 +572,9 @@ pub struct UnitModelAssets {
     /// What the lazy bakes reported, such as refused attachments, each line once.
     bake_warnings: Mutex<BTreeSet<String>>,
     conventional: retained_bridge::RetainedBridge,
+    /// The last built hour's stack selections, kept while what they read is unchanged. Hours
+    /// built side by side each start from them.
+    selections: Mutex<Option<Arc<Selections>>>,
     roster: Arc<mesh::Roster>,
     /// The content the library bakes from.
     layers: ResolvedLayers,
@@ -608,6 +612,8 @@ pub struct PrepareInputs<'a> {
     pub world: Option<&'a counter_move::RouteWorld<'a>>,
     /// Each province's authored terrain, for camouflage conditions.
     pub terrain: &'a BTreeMap<u32, String>,
+    /// The content's division routes, which the counter tables share.
+    pub routes: Option<&'a counter_move::RouteMemo>,
     /// Where each task force's counter stands, for its formation.
     pub ships: &'a ShipPlaces<'a>,
     /// The display language the fallback option labels read.
@@ -734,6 +740,7 @@ impl UnitModelAssets {
             bakes: Mutex::new(BTreeMap::new()),
             bake_warnings: Mutex::default(),
             conventional: retained_bridge::RetainedBridge::default(),
+            selections: Mutex::new(None),
             roster: Arc::new(mesh::Roster::default()),
             layers: ResolvedLayers::default(),
             sub_units: model_selection::Content::default(),
@@ -806,6 +813,7 @@ impl UnitModelAssets {
             bakes: Mutex::new(BTreeMap::new()),
             bake_warnings: Mutex::default(),
             conventional: retained_bridge::RetainedBridge::default(),
+            selections: Mutex::new(None),
             sub_units,
             gates: Gates::read(defines)?,
             bounds: Arc::new(province_boxes(&ProvinceMap {
@@ -1390,6 +1398,7 @@ impl UnitModelAssets {
             anchor,
             world,
             terrain,
+            routes,
             ships,
             localisation,
         } = inputs;
@@ -1404,11 +1413,15 @@ impl UnitModelAssets {
             .filter(|r| r.path_total > 0 && r.target == 0)
             .map(|r| r.division)
             .collect();
-        let movements =
-            counter_move::DivisionRoutes::read(frame, etas, world.map(|world| world.map), &|id| {
-                anchor(id, STANDSTILL)
-            })?
-            .by_division;
+        let anchor_standstill = |id| anchor(id, STANDSTILL);
+        let map = world.map(|world| world.map);
+        let movements = match routes {
+            Some(memo) => Arc::clone(
+                &counter_move::DivisionRoutes::read_kept(frame, etas, map, &anchor_standstill, memo)?
+                    .by_division,
+            ),
+            None => counter_move::DivisionRoutes::read(frame, etas, map, &anchor_standstill)?.by_division,
+        };
         lap("um_routes");
         let alternates: BTreeMap<u64, u64> = rows::<tables::ArmyIconInputs>(frame)?
             .rows()
@@ -1472,6 +1485,50 @@ impl UnitModelAssets {
             stacks: stacks.len(),
             ..ModelReport::default()
         };
+        let view = model_multi_fallback::view_country_ref(frame, vision);
+        let census = hour
+            .retained_conventional()
+            .map(|(retained, _)| Arc::clone(retained))
+            .map_err(Clone::clone);
+        let now = Arc::new(frame.clone());
+        // Kept answers stand while the hour's country context is the same and every row,
+        // range and census entry they read reads the same ([`kept`]).
+        let held = self
+            .selections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .filter(|kept| {
+                kept.context.same(&hour, &view) && hour.limits.decide_the_same(&kept.decided)
+            });
+        let (context, then, held_census, chosen_answers, graphical_answers, fallback_answers) =
+            match held {
+                Some(held) => (
+                    Some(Arc::clone(&held.context)),
+                    Arc::clone(&held.frame),
+                    held.census.clone(),
+                    held.chosen.clone(),
+                    held.graphical.clone(),
+                    held.fallbacks.clone(),
+                ),
+                None => (
+                    None,
+                    Arc::clone(&now),
+                    Err(String::new()),
+                    kept::Kept::checked(),
+                    kept::Kept::checked(),
+                    kept::Kept::checked(),
+                ),
+            };
+        let between = kept::Between::new(&then, &now);
+        let census_changed: &dyn Fn(&CensusRead) -> bool = &|read| match (&held_census, &census) {
+            (Ok(was), Ok(is)) => !(Arc::ptr_eq(was, is) || was.same_read(is, read)),
+            (Err(was), Err(is)) => was != is,
+            _ => true,
+        };
+        let mut chosen_answers = chosen_answers.hour(&between, census_changed);
+        let graphical_answers = RefCell::new(graphical_answers.hour(&between, census_changed));
+        let fallback_answers = RefCell::new(fallback_answers.hour(&between, census_changed));
         let mut selector = Selector {
             assets: self,
             hour: &hour,
@@ -1479,7 +1536,9 @@ impl UnitModelAssets {
             vision,
             graphical: BTreeMap::new(),
             fallbacks: BTreeMap::new(),
-            view: None,
+            view: Some(view.clone()),
+            graphical_answers: &graphical_answers,
+            fallback_answers: &fallback_answers,
         };
         let mut templates = BTreeMap::new();
         // Selection first; the chosen entities are then baked in one batch.
@@ -1493,14 +1552,34 @@ impl UnitModelAssets {
                 .route
                 .as_ref()
                 .is_some_and(|route| route.naval_transfer);
-            let selection = if transport {
+            if transport {
                 report.transports += 1;
-                selector.transport(stack)
-            } else {
-                selector.land(stack, &mut templates)
+            }
+            let key = SelectionKey {
+                transport,
+                template: stack.template,
+                oldest: stack.oldest,
+                roster_owner: stack.roster_owner,
+                expeditionary_owner: stack.expeditionary_owner,
             };
-            let (level, mut name, key) = match selection {
-                Ok(Some(selected)) => selected,
+            let selected = match chosen_answers.get(&key) {
+                Some(answer) => answer.value,
+                None => {
+                    let (selected, reads) = kept::record::<CensusRead, _>(frame, || {
+                        let selected = if transport {
+                            selector.transport(stack)
+                        } else {
+                            selector.land(stack, &mut templates)
+                        };
+                        selected.map(|selected| {
+                            selected.map(|(level, name, key)| (level, name, key.map(str::to_owned)))
+                        })
+                    });
+                    chosen_answers.put(key, selected, reads).value
+                }
+            };
+            let (level, mut name) = match &*selected {
+                Ok(Some((level, name, _))) => (*level, name.clone()),
                 Ok(None) => {
                     report.unknown_identity += 1;
                     continue;
@@ -1510,7 +1589,7 @@ impl UnitModelAssets {
                     continue;
                 }
                 Err(Missing::Input(reason)) => {
-                    report.error(reason);
+                    report.error(reason.clone());
                     continue;
                 }
             };
@@ -1537,8 +1616,28 @@ impl UnitModelAssets {
                     }
                 }
             }
-            chosen.push((*province, *owner, stack, level, name, base, key, transport));
+            chosen.push((*province, *owner, stack, level, name, base, selected, transport));
         }
+        drop(selector);
+        let (chosen_answers, graphical_answers, fallback_answers) = (
+            chosen_answers.finish(),
+            graphical_answers.into_inner().finish(),
+            fallback_answers.into_inner().finish(),
+        );
+        drop(between);
+        let selections = Selections {
+            context: context.unwrap_or_else(|| Arc::new(SelectionContext::capture(&hour, view))),
+            frame: now,
+            decided: hour.limits.decided(),
+            census,
+            chosen: chosen_answers,
+            graphical: graphical_answers,
+            fallbacks: fallback_answers,
+        };
+        *self
+            .selections
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(selections));
         lap("um_selection");
         spans.append(hour.spans.replace(spans.fork()));
         hour.selection.append_to(spans);
@@ -1548,7 +1647,11 @@ impl UnitModelAssets {
         let library = self.library();
         let clock_unavailable = counter_move::MovementFrame::clock_speed(frame).is_none();
         let mut placed = Vec::new();
-        for (province, owner, stack, level, name, base, key, transport) in chosen {
+        for (province, owner, stack, level, name, base, selected, transport) in chosen {
+            let key = match &*selected {
+                Ok(Some((_, _, key))) => key.as_deref(),
+                _ => None,
+            };
             if let Some(reason) = self.refusal(&name) {
                 report.error(reason);
                 continue;
@@ -1698,7 +1801,7 @@ struct Hour<'a> {
     classification: OnceCell<Option<model_selection::facts::Hour>>,
     /// Joined on first use: most hours need neither.
     geography: OnceCell<Result<context::Prepared, String>>,
-    conventional: OnceCell<Result<bridge::Prepared<'a>, String>>,
+    conventional: OnceCell<Result<(Arc<bridge::Retained>, bridge::Prepared<'a>), String>>,
     assets: &'a UnitModelAssets,
     frame: &'a DecodedFrame,
     limits: equipment_graphics::Limits<'a>,
@@ -1775,7 +1878,11 @@ impl<'a> Hour<'a> {
                 self.spans
                     .borrow_mut()
                     .measure("units.selection.geography_read", |_| {
-                        context::Prepared::read(self.frame, &self.assets.geography)
+                        // Kept selections compare the joined context whole each hour
+                        // ([`SelectionContext::same`]) rather than record what joining read.
+                        replay_frame::frame::view_reads::unrecorded(|| {
+                            context::Prepared::read(self.frame, &self.assets.geography)
+                        })
                     })
             })
             .as_ref()
@@ -1783,16 +1890,31 @@ impl<'a> Hour<'a> {
     }
 
     fn conventional(&self) -> Result<&bridge::Prepared<'a>, String> {
+        self.retained_conventional()
+            .map(|(_, prepared)| prepared)
+            .map_err(Clone::clone)
+    }
+
+    fn retained_conventional(
+        &self,
+    ) -> Result<&(Arc<bridge::Retained>, bridge::Prepared<'a>), &String> {
+        // A refusal read the census too: it stands only while the census still fails the same way.
+        kept::note(|| CensusRead::Census);
         self.conventional
             .get_or_init(|| {
                 self.spans
                     .borrow_mut()
                     .measure("units.selection.bridge_read", |_| {
-                        self.assets.conventional.read(self.frame, &self.assets.sub_units)
+                        self.assets
+                            .conventional
+                            .read(self.frame, &self.assets.sub_units)
+                            .map(|retained| {
+                                let prepared = retained.prepared();
+                                (retained, prepared)
+                            })
                     })
             })
             .as_ref()
-            .map_err(Clone::clone)
     }
 
     fn classification(&self) -> Option<&model_selection::facts::Hour> {
@@ -1943,7 +2065,85 @@ impl<'a> Equipment<'a> {
     }
 }
 
+/// A stack's selection, owned so a later hour can keep it.
+type Chosen = Result<Option<(Level, String, Option<String>)>, Missing>;
+type GraphicalAnswer = Result<Option<(Level, String)>, String>;
+type FallbackAnswer = Result<Option<model_multi_fallback::Resolved>, String>;
+
+/// The selections and answers an hour made, kept while what each read reads the same.
+struct Selections {
+    context: Arc<SelectionContext>,
+    /// The hour the answers were kept at.
+    frame: Arc<DecodedFrame>,
+    /// Every limit pool the hour decided, the selections' among them.
+    decided: equipment_graphics::Decided,
+    /// The census the answers' census reads were read in.
+    census: Result<Arc<bridge::Retained>, String>,
+    chosen: kept::Kept<SelectionKey, Chosen, CensusRead>,
+    graphical: kept::Kept<GraphicalAnswerKey, GraphicalAnswer, CensusRead>,
+    /// Fallback answers by template.
+    fallbacks: kept::Kept<u64, FallbackAnswer, CensusRead>,
+}
+
+/// What a stack selection reads of the hour beyond the rows and census entries it notes.
+struct SelectionContext {
+    view: Result<u32, String>,
+    links: BTreeMap<u32, u32>,
+    countries: BTreeMap<u32, ModelCountry>,
+    labels: (BTreeMap<u32, model_labels::Country>, Option<String>),
+    sources: Option<Arc<model_selection::SourceIndex>>,
+    tokens: Option<replay_frame::frame::SharedView>,
+    geography: Result<context::Prepared, String>,
+}
+
+impl SelectionContext {
+    fn capture(hour: &Hour<'_>, view: Result<u32, String>) -> Self {
+        let (labels, unavailable) = hour.labels.operands();
+        Self {
+            view,
+            links: hour.links.clone(),
+            countries: hour.countries.clone(),
+            labels: (labels.clone(), unavailable.cloned()),
+            sources: Some(Arc::clone(hour.sources.index())),
+            tokens: Some(hour.frame.tables[TableId::LexicalTokens.index()].clone()),
+            geography: hour.geography().cloned(),
+        }
+    }
+
+    fn same(&self, hour: &Hour<'_>, view: &Result<u32, String>) -> bool {
+        let (labels, unavailable) = hour.labels.operands();
+        let tokens = &hour.frame.tables[TableId::LexicalTokens.index()];
+        self.view == *view
+            && self.links == hour.links
+            && self.countries == hour.countries
+            && self.labels.0 == *labels
+            && self.labels.1.as_ref() == unavailable
+            && self.sources.as_ref().is_some_and(|sources| {
+                Arc::ptr_eq(sources, hour.sources.index()) || **sources == **hour.sources.index()
+            })
+            && self.tokens.as_ref().is_some_and(|was| {
+                replay_frame::frame::SharedView::ptr_eq(was, tokens) || **was == **tokens
+            })
+            && match (&self.geography, hour.geography()) {
+                (Ok(was), Ok(now)) => was == now,
+                (Err(was), Err(now)) => *was == now,
+                _ => false,
+            }
+    }
+}
+
+/// A stack selection's identity: what it is selected for.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct SelectionKey {
+    transport: bool,
+    template: u64,
+    oldest: u64,
+    roster_owner: u32,
+    expeditionary_owner: u32,
+}
+
 /// Why a stack has no figure.
+#[derive(Clone)]
 enum Missing {
     /// This hour does not record the stack's template.
     Template,
@@ -1969,22 +2169,33 @@ type Selected<'a> = Result<Option<(Level, String, Option<&'a str>)>, Missing>;
 
 type GraphicalKey = (u64, String, Definition, u32);
 
+/// A graphics answer's pair and the first archetype it was resolved with.
+type GraphicalAnswerKey = (GraphicalKey, Option<String>);
+
 /// Each template resolved against content once an hour.
 type Templates<'a> = BTreeMap<u64, Result<Template<'a>, String>>;
 
 /// Memoised selection over one hour: stacks sharing a pair or a fallback
 /// share the answer.
-struct Selector<'a, 'h> {
+struct Selector<'a, 'h, 'k> {
     assets: &'a UnitModelAssets,
     hour: &'h Hour<'a>,
     frame: &'a DecodedFrame,
     vision: &'a Vision,
-    graphical: BTreeMap<GraphicalKey, Result<Option<(Level, String)>, String>>,
-    fallbacks: BTreeMap<u64, Result<Option<model_multi_fallback::Resolved>, String>>,
+    /// This hour's answers by pair, and what each read, for every stack the pair serves.
+    graphical: BTreeMap<GraphicalKey, kept::Answer<GraphicalAnswer, CensusRead>>,
+    fallbacks: BTreeMap<u64, kept::Answer<FallbackAnswer, CensusRead>>,
     view: Option<Result<u32, String>>,
+    /// The graphics and fallback answers kept from earlier hours, and this hour's.
+    graphical_answers: &'h RefCell<CensusChecked<'k, GraphicalAnswerKey, GraphicalAnswer>>,
+    fallback_answers: &'h RefCell<CensusChecked<'k, u64, FallbackAnswer>>,
 }
 
-impl<'a> Selector<'a, '_> {
+/// One hour's check of kept answers whose own reads are census entries.
+type CensusChecked<'h, K, V> =
+    kept::Checked<'h, K, V, CensusRead, kept::Between<'h>, &'h dyn Fn(&CensusRead) -> bool>;
+
+impl<'a> Selector<'a, '_, '_> {
     fn exists(&self, name: &str) -> bool {
         self.assets.registered(name)
     }
@@ -2013,6 +2224,11 @@ impl<'a> Selector<'a, '_> {
     fn land(&mut self, stack: &Stack, templates: &mut Templates<'a>) -> Selected<'a> {
         let hour = self.hour;
         hour.selection.measure(Stage::Land, || {
+            kept::note_row(
+                TableId::DivisionTemplateIcons,
+                u128::from(stack.template),
+                u64::MAX,
+            );
             let template = *self
                 .hour
                 .templates
@@ -2029,6 +2245,13 @@ impl<'a> Selector<'a, '_> {
                 return Ok(Some((Level::Template, explicit.to_owned(), None)));
             }
             // The game ranks the whole native equipment list.
+            let division = u128::from(stack.oldest) << 32;
+            for table in [
+                TableId::NewDivisionEquipment,
+                TableId::DivisionEquipment,
+            ] {
+                kept::note_range(table, division, division + (1 << 32), u64::MAX);
+            }
             let equipment = self
                 .hour
                 .equipment
@@ -2115,10 +2338,28 @@ impl<'a> Selector<'a, '_> {
                     .chain(&composition.representative)
                     .find(|group| group.identity == pair.identity)
                     .and_then(Template::first_requirement);
-                let resolved = self.graphical_model(pair, first, stack.roster_owner);
-                self.graphical.insert(memo.clone(), resolved);
+                let key = (memo.clone(), first.map(str::to_owned));
+                let kept = self.graphical_answers.borrow_mut().get(&key);
+                let answer = match kept {
+                    Some(kept) => kept,
+                    None => {
+                        let (resolved, reads) = kept::record::<CensusRead, _>(self.frame, || {
+                            kept::note_row(
+                                TableId::VariantDefinitions,
+                                u128::from(pair.variant.id),
+                                u64::MAX,
+                            );
+                            self.graphical_model(pair, first, stack.roster_owner)
+                        });
+                        self.graphical_answers.borrow_mut().put(key, resolved, reads)
+                    }
+                };
+                self.graphical.insert(memo.clone(), answer);
+            } else {
+                // Every stack the answer serves read what the answer read.
+                kept::note_all(&self.graphical[&memo].reads);
             }
-            if let Some((level, name)) = self.graphical[&memo].clone()? {
+            if let Some((level, name)) = (*self.graphical[&memo].value).clone()? {
                 return Ok(Some((level, name, key)));
             }
             let country = model_selection::model_country(pair, stack.roster_owner);
@@ -2144,34 +2385,50 @@ impl<'a> Selector<'a, '_> {
     ) -> Result<Option<model_multi_fallback::Resolved>, Missing> {
         let hour = self.hour;
         hour.selection.measure(Stage::Fallback, || {
-            if !self.fallbacks.contains_key(&template.template) {
-                let view = self
-                    .view
-                    .get_or_insert_with(|| {
-                        model_multi_fallback::view_country_ref(self.frame, self.vision)
-                    })
-                    .clone();
-                let resolved = view.and_then(|view| {
-                    model_multi_fallback::resolve(&model_multi_fallback::Inputs {
-                        template,
-                        composition,
-                        content: &self.assets.sub_units,
-                        graphics: &self.assets.graphics,
-                        geography: self.hour.geography()?,
-                        conventional: self.hour.conventional()?,
-                        countries: &self.hour.countries,
-                        links: &self.hour.links,
-                        definitions: &self.hour.variants,
-                        tokens: &self.hour.tokens,
-                        viewing_country_ref: view,
-                        limits: &self.hour.limits,
-                        registered: &self.assets.registered,
-                        labels: &self.hour.labels,
-                    })
-                });
-                self.fallbacks.insert(template.template, resolved);
+            if let Some(answer) = self.fallbacks.get(&template.template) {
+                kept::note_all(&answer.reads);
+            } else {
+                let kept = self.fallback_answers.borrow_mut().get(&template.template);
+                let answer = match kept {
+                    Some(kept) => kept,
+                    None => {
+                        let view = self
+                            .view
+                            .get_or_insert_with(|| {
+                                model_multi_fallback::view_country_ref(self.frame, self.vision)
+                            })
+                            .clone();
+                        let (resolved, reads) = kept::record::<CensusRead, _>(self.frame, || {
+                            kept::note_row(
+                                TableId::DivisionTemplateIcons,
+                                u128::from(template.template),
+                                u64::MAX,
+                            );
+                            view.and_then(|view| {
+                                model_multi_fallback::resolve(&model_multi_fallback::Inputs {
+                                    template,
+                                    composition,
+                                    content: &self.assets.sub_units,
+                                    graphics: &self.assets.graphics,
+                                    geography: self.hour.geography()?,
+                                    conventional: self.hour.conventional()?,
+                                    countries: &self.hour.countries,
+                                    links: &self.hour.links,
+                                    definitions: &self.hour.variants,
+                                    tokens: &self.hour.tokens,
+                                    viewing_country_ref: view,
+                                    limits: &self.hour.limits,
+                                    registered: &self.assets.registered,
+                                    labels: &self.hour.labels,
+                                })
+                            })
+                        });
+                        self.fallback_answers.borrow_mut().put(template.template, resolved, reads)
+                    }
+                };
+                self.fallbacks.insert(template.template, answer);
             }
-            Ok(self.fallbacks[&template.template].clone()?)
+            Ok((*self.fallbacks[&template.template].value).clone()?)
         })
     }
 
@@ -2182,6 +2439,12 @@ impl<'a> Selector<'a, '_> {
             let Some(model_country) = self.hour.country(country) else {
                 return Ok(None);
             };
+            for table in [
+                TableId::DivisionStatus,
+                TableId::DivisionModelInputs,
+            ] {
+                kept::note_row(table, u128::from(stack.oldest), u64::MAX);
+            }
             let status = self.hour.statuses.get(&stack.oldest).ok_or_else(|| {
                 Missing::Input("division model number status is unavailable".into())
             })?;

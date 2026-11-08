@@ -261,7 +261,7 @@ fn held_model_facts_keep_the_original_census_and_refusal_order_across_hours() {
         assert_eq!(
             retained
                 .read(&frame, &warm)
-                .map(|census| census.comparison_state()),
+                .map(|census| census.prepared().comparison_state()),
             original,
             "retained hour {hour}"
         );

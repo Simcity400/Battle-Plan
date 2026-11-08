@@ -664,7 +664,7 @@ fn read_grant(key: &str, value: &Value, refused: &mut Vec<Refusal>) -> Option<Gr
 
 /// Native sub-unit definition identity: a local clone and the global
 /// definition share a token but are separate definitions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Definition {
     Global(u32),
     Local { country: u32, token: u32 },
@@ -677,7 +677,7 @@ pub struct Sources<'a> {
 }
 
 /// The hour's country links and local sub-unit overrides, as [`Sources`] reads them.
-#[derive(replay_spool::Spooled)]
+#[derive(PartialEq, replay_spool::Spooled)]
 pub struct SourceIndex {
     links: BTreeMap<u32, u32>,
     /// (canonical country, token) -> the override's (archetype token, amount).
