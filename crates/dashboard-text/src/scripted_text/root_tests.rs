@@ -194,18 +194,18 @@ fn root_views_preserve_warm_lexical_duplicate_diagnostics() {
         ]));
     let first = fixture.text(1);
     assert_eq!(
-        first.lexical_names.token_of(b"same"),
+        first.lexical_names().token_of(b"same"),
         Err("SAME names several lexer tokens".into())
     );
     let second = first.for_root(2);
     assert_eq!(
-        second.lexical_names.token_of(b"same"),
+        second.lexical_names().token_of(b"same"),
         Err("SAME names several lexer tokens".into())
     );
-    assert_eq!(second.lexical_names.token_of(b"other"), Ok(None));
+    assert_eq!(second.lexical_names().token_of(b"other"), Ok(None));
     assert_eq!(
-        second.lexical_names.token_of(b"same"),
-        fixture.text(2).lexical_names.token_of(b"same")
+        second.lexical_names().token_of(b"same"),
+        fixture.text(2).lexical_names().token_of(b"same")
     );
 }
 

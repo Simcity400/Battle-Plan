@@ -965,7 +965,7 @@ pub(crate) fn query_debug_resolved<V: std::fmt::Debug>(
 }
 
 /// Whether an evaluation on this thread records reads here.
-fn recording() -> bool {
+pub(crate) fn recording() -> bool {
     SUSPENDED.with(Cell::get) == 0 && RECORDING.with(|recording| !recording.borrow().is_empty())
 }
 

@@ -660,8 +660,9 @@ pub struct ScriptedText<'a> {
     localisation: &'a Localisation,
     content: &'a ScriptedContent,
     scopes: std::sync::Arc<RecordedScopes<'a>>,
-    names: std::sync::Arc<recorded_names::RecordedNames<'a>>,
-    lexical_names: std::sync::Arc<crate::faction_names::LexicalNames<'a>>,
+    /// The hour's country names and lexical token names, read on first use.
+    names: std::sync::Arc<std::sync::OnceLock<recorded_names::RecordedNames<'a>>>,
+    lexical_names: std::sync::Arc<std::sync::OnceLock<crate::faction_names::LexicalNames<'a>>>,
     frame: HourFrame<'a>,
     /// Raw zero's tag, read on first use.
     reserved_tag: std::sync::OnceLock<Result<String, String>>,
@@ -909,22 +910,44 @@ impl<'a> ScriptedText<'a> {
         root: u32,
         scopes: RecordedScopes<'a>,
     ) -> Self {
-        let names = CountryNames::read(&frame, localisation);
-        Self {
+        let text = Self {
             localisation,
             content,
             scopes: std::sync::Arc::new(scopes),
-            names: std::sync::Arc::new(recorded_names::RecordedNames(names)),
-            lexical_names: std::sync::Arc::new(
-                crate::faction_names::LexicalNames::from_tables(frame),
-            ),
+            names: std::sync::Arc::default(),
+            lexical_names: std::sync::Arc::default(),
             frame,
             reserved_tag: std::sync::OnceLock::new(),
             root,
             nato_counters: installed_content_settings::settings::MapOptions::DEFAULT.nato_counters,
             lexicon: None,
             world: std::sync::OnceLock::new(),
+        };
+        // Reads made while recording stay the answer's inputs; the others wait for first use.
+        if crate::triggers::inputs::recording() {
+            text.names
+                .get_or_init(|| recorded_names::RecordedNames(CountryNames::read(&frame, localisation)));
+            text.lexical_names
+                .get_or_init(|| crate::faction_names::LexicalNames::from_tables(frame));
         }
+        text
+    }
+
+    /// The hour's country names, read whole on first use.
+    fn names(&self) -> &recorded_names::RecordedNames<'a> {
+        self.names.get_or_init(|| {
+            crate::triggers::inputs::unrecorded(|| {
+                recorded_names::RecordedNames(CountryNames::read(&self.frame, self.localisation))
+            })
+        })
+    }
+
+    fn lexical_names(&self) -> &crate::faction_names::LexicalNames<'a> {
+        self.lexical_names.get_or_init(|| {
+            crate::triggers::inputs::unrecorded(|| {
+                crate::faction_names::LexicalNames::from_tables(self.frame)
+            })
+        })
     }
 
     /// A different root using these same hour inputs, with its own lazy world.
@@ -1219,13 +1242,13 @@ impl<'a> ScriptedText<'a> {
             Key::ClockSeed => Some(crate::triggers::inputs::digest(&clock_seed_in(self.frame))),
             Key::World(query) => self.trigger_world().ok().map(|world| world.reread(query)),
             Key::Scopes(query) => Some(self.scopes.reread(query)),
-            Key::Names(query) => Some(self.names.reread(query)),
+            Key::Names(query) => Some(self.names().reread(query)),
             Key::Text(query) => Some(self.reread_text(query)),
         }
     }
 
     pub(crate) fn country_names(&self) -> &recorded_names::RecordedNames<'_> {
-        &self.names
+        self.names()
     }
 
     pub(crate) fn viewing_country(&self) -> u32 {
@@ -1250,9 +1273,9 @@ impl<'a> ScriptedText<'a> {
         definite: bool,
     ) -> Result<String, String> {
         if definite {
-            self.names.name_with(country, "_DEF")
+            self.names().name_with(country, "_DEF")
         } else {
-            self.names.name(country)
+            self.names().name(country)
         }
     }
 
@@ -1283,13 +1306,13 @@ impl<'a> ScriptedText<'a> {
     /// Flag-marked definite country name with its first byte capitalised.
     pub(crate) fn country_marked_name(&self, country: u32) -> Result<String, String> {
         let tag = self.country_tag(country)?;
-        let name = crt_case_text(&self.names.name_with(country, "_DEF")?, true, true);
+        let name = crt_case_text(&self.names().name_with(country, "_DEF")?, true, true);
         Ok(format!("\u{12}{tag} {name}"))
     }
 
     /// The country adjective resolved from its recorded naming inputs.
     pub(crate) fn country_adjective(&self, country: u32) -> Result<String, String> {
-        self.names.name_with(country, "_ADJ")
+        self.names().name_with(country, "_ADJ")
     }
 
     pub(crate) fn recorded_language(&self) -> &str {
@@ -1811,8 +1834,8 @@ impl<'a> ScriptedText<'a> {
             name,
             &tag,
             self.localisation,
-            |suffix| self.names.name_with(slot, suffix),
-            || Ok(self.names.ruling_group(slot)?.map(str::to_owned)),
+            |suffix| self.names().name_with(slot, suffix),
+            || Ok(self.names().ruling_group(slot)?.map(str::to_owned)),
         )? {
             return Ok(Some(text));
         }
@@ -2430,7 +2453,7 @@ impl<'a> ScriptedText<'a> {
             templates.as_deref().map_err(Clone::clone),
             self.localisation,
             &self.content.recorded_language,
-            |name| self.lexical_names.token_of(name),
+            |name| self.lexical_names().token_of(name),
         )
     }
 }

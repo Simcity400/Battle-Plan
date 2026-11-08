@@ -471,7 +471,7 @@ impl<'a> ScriptedText<'a> {
                 continue;
             };
             let naming = self
-                .names
+                .names()
                 .operands(slot)
                 .cloned()
                 .unwrap_or_else(|| Err(format!("country slot {slot} has no naming operands")));
@@ -481,7 +481,7 @@ impl<'a> ScriptedText<'a> {
                 pending.push(overlord);
             }
             if slot == 0 {
-                operands.reserved = self.names.reserved_built();
+                operands.reserved = self.names().reserved_built();
             }
             let tag = self.country_tag(slot).map(str::to_owned);
             operands

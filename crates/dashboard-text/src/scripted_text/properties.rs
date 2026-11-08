@@ -209,7 +209,7 @@ impl<'a> ScriptedText<'a> {
             .as_ref()
             .ok_or_else(|| format!("{entry}: {what} was unreadable or longer than 256 bytes"))?;
         if old.is_empty() {
-            return self.names.name_with(slot, suffix);
+            return self.names().name_with(slot, suffix);
         }
         self.stored_text(old, &format!("{entry}: {what}"))
     }
