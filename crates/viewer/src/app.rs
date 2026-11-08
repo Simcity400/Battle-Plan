@@ -1268,9 +1268,10 @@ pub(crate) fn load_scene(
     queue: &wgpu::Queue,
     document: &Document,
     graphics: dashboard::protocol::MapGraphics,
+    workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
     engine_executable::executable_tables::scope(document.content.tables, || {
-        load_scene_scoped(device, queue, document, graphics)
+        load_scene_scoped(device, queue, document, graphics, workers)
     })
 }
 
@@ -1279,6 +1280,7 @@ fn load_scene_scoped(
     queue: &wgpu::Queue,
     document: &Document,
     graphics: dashboard::protocol::MapGraphics,
+    workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
     let textures =
         document
@@ -1291,6 +1293,7 @@ fn load_scene_scoped(
         &document.assets,
         &document.icons.lazy,
         graphics,
+        workers,
     )?;
     scene.apply(
         device,
@@ -2508,7 +2511,10 @@ impl Viewer {
                     // The builders need seconds for the first hour and the UI
                     // thread idles on the spinner meanwhile; the whole
                     // hour-independent scene is cheaper here than on any frame.
-                    match load_scene(&device, &queue, &document, preferences.graphics) {
+                    let workers = resources
+                        .as_ref()
+                        .map_or_else(Default::default, |resources| resources.workers());
+                    match load_scene(&device, &queue, &document, preferences.graphics, &workers) {
                         Ok(scene) => break (document, decoder, scene),
                         // Whatever failed, content with the visual mods probes without them, as its
                         // frames then decide; only a scene that cannot be built without them

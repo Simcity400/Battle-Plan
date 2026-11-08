@@ -782,10 +782,19 @@ impl Scene {
     ) -> io::Result<Self> {
         check_device(device, graphics.samples)?;
         let textures = SceneTextures::new(device, queue, assets, icon_images)?;
-        Self::with_textures(device, queue, textures, assets, lazy, graphics)
+        Self::with_textures(
+            device,
+            queue,
+            textures,
+            assets,
+            lazy,
+            graphics,
+            &viewer_foundation::parallel::Workers::default(),
+        )
     }
 
-    /// [`Scene::new`] drawing `textures`, uploaded from these `assets` and their icon images.
+    /// [`Scene::new`] drawing `textures`, uploaded from these `assets` and their icon images, its
+    /// load split with the builders `workers` lends while they are free.
     pub fn with_textures(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -793,6 +802,7 @@ impl Scene {
         assets: &MapAssets,
         lazy: &Arc<LazyTextures>,
         graphics: dashboard_core::protocol::MapGraphics,
+        workers: &viewer_foundation::parallel::Workers,
     ) -> io::Result<Self> {
         check_device(device, graphics.samples)?;
         let samples = graphics.samples;
@@ -970,6 +980,7 @@ impl Scene {
                 assets.heightmap_texels(),
                 [assets.map.width, assets.map.height],
                 samples,
+                workers,
             )?,
             terrain_null,
             water: WaterPass::new(
@@ -3549,6 +3560,7 @@ impl Scene {
                 ),
             )
         };
+        self.compiled_terrain.keep_views(&offsets);
         // Complete each admitted wrap before starting the next. Its
         // PS b2 light-grid upload is replaced by the land-border call in that wrap.
         for view in 0..offsets.len() {

@@ -1014,6 +1014,11 @@ impl Resources {
         Ok(store)
     }
 
+    /// The builders' threads, lent to scene creation's split work while they are free.
+    pub fn workers(&self) -> Workers {
+        Workers::new(Arc::clone(&self.pool) as _)
+    }
+
     /// A bounded nonblocking admission path for scene creation. The caller can
     /// retry next frame when hour work already occupies the shared queue.
     pub fn try_submit(&self, work: impl FnOnce() + Send + 'static) -> bool {

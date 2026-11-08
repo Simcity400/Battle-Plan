@@ -8,10 +8,15 @@ use installed_content_core::{
 use installed_content_image::native::Decode;
 use shader_pipeline::{ScalarKind, binding, gpu, library::Effect};
 use std::cell::RefCell;
-use std::{collections::BTreeMap, io, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io,
+    sync::{Arc, Mutex},
+};
 use viewer_foundation::map::gpu_contract::DEPTH_FORMAT;
 use viewer_foundation::map::gpu_contract::REFRACTION_FORMAT;
 use viewer_foundation::map::gpu_contract::SCENE_FORMAT;
+use viewer_foundation::parallel::Workers;
 
 /// The uniform grid one frame draws.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,6 +145,17 @@ struct Patch {
     step: u32,
 }
 fn heights(bytes: &[u8], map: [u32; 2], patch: Patch) -> Vec<[i16; 2]> {
+    let mut out = Vec::new();
+    heights_into(&positions(), bytes, map, patch, &mut out);
+    out
+}
+fn heights_into(
+    positions: &[[i16; 4]],
+    bytes: &[u8],
+    map: [u32; 2],
+    patch: Patch,
+    out: &mut Vec<[i16; 2]>,
+) {
     let sample = |x: u32, z: u32| {
         let x = x % map[0];
         let z = z.min(map[1] - 1);
@@ -147,25 +163,23 @@ fn heights(bytes: &[u8], map: [u32; 2], patch: Patch) -> Vec<[i16; 2]> {
         // height samples for the terrain vertex stream are bottom-up.
         i16::from(bytes[((map[1] - 1 - z) * map[0] + x) as usize]) * 10
     };
-    positions()
-        .into_iter()
-        .map(|[x, z, edge, direction]| {
-            let world = [
-                patch.origin[0] + x as u32 * patch.step,
-                patch.origin[1] + z as u32 * patch.step,
-            ];
-            let first = sample(world[0], world[1]);
-            let alternate = if edge == 0 {
-                first
-            } else {
-                sample(
-                    world[0] + u32::from(direction == 0) * patch.step,
-                    world[1] + u32::from(direction == 1) * patch.step,
-                )
-            };
-            [first, alternate]
-        })
-        .collect()
+    out.clear();
+    out.extend(positions.iter().map(|&[x, z, edge, direction]| {
+        let world = [
+            patch.origin[0] + x as u32 * patch.step,
+            patch.origin[1] + z as u32 * patch.step,
+        ];
+        let first = sample(world[0], world[1]);
+        let alternate = if edge == 0 {
+            first
+        } else {
+            sample(
+                world[0] + u32::from(direction == 0) * patch.step,
+                world[1] + u32::from(direction == 1) * patch.step,
+            )
+        };
+        [first, alternate]
+    }));
 }
 
 fn validate_grid(grid: Grid, map: [u32; 2]) -> io::Result<()> {
@@ -303,11 +317,78 @@ impl Mode {
         }
     }
 }
+/// One patch's height stream: a sample pair for each of the patch's vertex positions.
+const PATCH_BYTES: usize = ((SIDE + 1) * (SIDE + 1)) as usize * size_of::<[i16; 2]>();
 struct Geometry {
-    cpu_heights: Arc<[u8]>,
-    heights: wgpu::Buffer,
+    /// The slab holding this patch's heights, and where in it.
+    slab: usize,
+    offset: u64,
     indices: wgpu::Buffer,
     count: u32,
+}
+
+/// Every patch a uniform grid or a free eye's blocks can draw: each power-of-two step up to the
+/// coarsest either reaches, at every origin on that step's lattice within the map.
+fn every_patch(map: [u32; 2]) -> impl Iterator<Item = Patch> {
+    // The uniform grid stops at 256; a free eye's root block spans the map.
+    let widest = map[0]
+        .max(map[1])
+        .div_ceil(SIDE)
+        .next_power_of_two()
+        .max(256);
+    std::iter::successors(Some(1u32), move |step| (*step < widest).then_some(step * 2)).flat_map(
+        move |step| {
+            let pitch = (SIDE * step) as usize;
+            (0..map[1]).step_by(pitch).flat_map(move |z| {
+                (0..map[0]).step_by(pitch).map(move |x| Patch {
+                    origin: [x, z],
+                    step,
+                })
+            })
+        },
+    )
+}
+/// Patches per fill task: enough to amortise a turn, few enough to share among the builders.
+const FILL_GROUP: usize = 64;
+/// Writes every patch's heights into its slab's mapped memory, on the calling thread and the
+/// builders `workers` lends while they are free.
+fn fill_slabs(
+    slabs: &[wgpu::Buffer],
+    patches: &[Patch],
+    bytes: &[u8],
+    map: [u32; 2],
+    workers: &Workers,
+) -> io::Result<()> {
+    let mut views = slabs
+        .iter()
+        .map(|slab| slab.slice(..).get_mapped_range_mut())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| refuse(format!("terrain heights could not be written: {error}")))?;
+    // Slabs hold the patches in order, so the slabs' chunks line up with `patches`.
+    let mut pairs = patches.iter().copied().zip(
+        views
+            .iter_mut()
+            .flat_map(|view| view.slice(..).into_chunks::<PATCH_BYTES>().0),
+    );
+    let mut groups = Vec::new();
+    loop {
+        let group: Vec<_> = pairs.by_ref().take(FILL_GROUP).collect();
+        if group.is_empty() {
+            break;
+        }
+        groups.push(Mutex::new(group));
+    }
+    let positions = positions();
+    workers.run(groups.len(), &|index| {
+        let group = std::mem::take(&mut *groups[index].lock().unwrap_or_else(|e| e.into_inner()));
+        let mut patch_heights = Vec::with_capacity(positions.len());
+        for (patch, out) in group {
+            heights_into(&positions, bytes, map, patch, &mut patch_heights);
+            wgpu::WriteOnly::<[u8]>::from(out)
+                .copy_from_slice(bytemuck::cast_slice(&patch_heights));
+        }
+    });
+    Ok(())
 }
 pub struct Terrain {
     pub effect: Arc<Effect>,
@@ -316,7 +397,13 @@ pub struct Terrain {
     positions: wgpu::Buffer,
     bytes: Vec<u8>,
     map: [u32; 2],
+    /// Every patch's heights, packed into as few buffers as the device allows.
+    slabs: Vec<wgpu::Buffer>,
+    /// Made at load for [`every_patch`], so no frame builds one.
     geometry: BTreeMap<Patch, Geometry>,
+    /// Each wrap view's last patch and its height stream, which that view's next draws inherit,
+    /// by the view's offset bits.
+    retained_heights: Vec<(u32, Patch, Arc<[u8]>)>,
     samples: u32,
 }
 pub struct Inputs<'a> {
@@ -339,6 +426,7 @@ impl Terrain {
         bytes: &[u8],
         map: [u32; 2],
         samples: u32,
+        workers: &Workers,
     ) -> io::Result<Self> {
         // Native loader explicitly errors on dimensions not divisible by64.
         if map.contains(&0)
@@ -354,6 +442,57 @@ impl Terrain {
             contents: bytemuck::cast_slice(&positions()),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        let patches: Vec<Patch> = every_patch(map).collect();
+        let per_slab = (device.limits().max_buffer_size / PATCH_BYTES as u64) as usize;
+        if per_slab == 0 {
+            return Err(refuse(format!(
+                "the device's largest buffer cannot hold one {PATCH_BYTES}-byte terrain patch"
+            )));
+        }
+        let slabs: Vec<wgpu::Buffer> = patches
+            .chunks(per_slab)
+            .map(|chunk| {
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("native terrain heights"),
+                    size: (chunk.len() * PATCH_BYTES) as u64,
+                    usage: wgpu::BufferUsages::VERTEX,
+                    mapped_at_creation: true,
+                })
+            })
+            .collect();
+        fill_slabs(&slabs, &patches, bytes, map, workers)?;
+        for slab in &slabs {
+            slab.unmap();
+        }
+        // One index buffer per shape: interior patches share one, the map's edges a few more.
+        let mut shapes = BTreeMap::<[u32; 2], (wgpu::Buffer, u32)>::new();
+        let mut geometry = BTreeMap::new();
+        for (index, &patch) in patches.iter().enumerate() {
+            let cells: [u32; 2] = std::array::from_fn(|axis| {
+                ((map[axis] - patch.origin[axis]) / patch.step).min(SIDE)
+            });
+            let (indices, count) = shapes
+                .entry(cells)
+                .or_insert_with(|| {
+                    let indices = indices(cells);
+                    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("native terrain indices"),
+                        contents: bytemuck::cast_slice(&indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    });
+                    (buffer, indices.len() as u32)
+                })
+                .clone();
+            geometry.insert(
+                patch,
+                Geometry {
+                    slab: index / per_slab,
+                    offset: ((index % per_slab) * PATCH_BYTES) as u64,
+                    indices,
+                    count,
+                },
+            );
+        }
         Ok(Self {
             effect: effect.clone(),
             pipelines: BTreeMap::new(),
@@ -361,7 +500,9 @@ impl Terrain {
             positions,
             bytes: bytes.to_vec(),
             map,
-            geometry: BTreeMap::new(),
+            slabs,
+            geometry,
+            retained_heights: Vec::new(),
             samples,
         })
     }
@@ -547,28 +688,12 @@ impl Terrain {
             let blocks = self.view_blocks(inputs.cover, *offset)?;
             let last = blocks.len().saturating_sub(1);
             for (index, (patch, snap)) in blocks.into_iter().enumerate() {
-                self.geometry.entry(patch).or_insert_with(|| {
-                    let cells = std::array::from_fn(|axis| {
-                        ((self.map[axis] - patch.origin[axis]) / patch.step).min(SIDE)
-                    });
-                    let indices = indices(cells);
-                    let cpu_heights: Arc<[u8]> =
-                        bytemuck::cast_slice(&heights(&self.bytes, self.map, patch)).into();
-                    Geometry {
-                        heights: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("native terrain heights"),
-                            contents: &cpu_heights,
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                        indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("native terrain indices"),
-                            contents: bytemuck::cast_slice(&indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        }),
-                        cpu_heights,
-                        count: indices.len() as u32,
-                    }
-                });
+                if !self.geometry.contains_key(&patch) {
+                    return Err(refuse(format!(
+                        "terrain patch at {:?}, step {}, lies outside the patches made at load",
+                        patch.origin, patch.step
+                    )));
+                }
                 let b1 = constants(patch, matrix, snap);
                 for stage in [Stage::Vertex, Stage::Pixel] {
                     let block = buffers.entry(binding(1, stage)).or_insert_with(Vec::new);
@@ -581,7 +706,21 @@ impl Terrain {
                 {
                     let mut tracked = retained.borrow_mut();
                     self.programs[&mode].bind(&mut tracked, &buffers, &textures);
-                    tracked.bind_vertex(1, 4, self.geometry[&patch].cpu_heights.clone());
+                    let view = offset.to_bits();
+                    let kept = self.retained_heights.iter().find_map(|(v, kept, heights)| {
+                        (*v == view && *kept == patch).then(|| heights.clone())
+                    });
+                    let heights = match kept {
+                        Some(heights) => heights,
+                        None => {
+                            let made: Arc<[u8]> =
+                                bytemuck::cast_slice(&heights(&self.bytes, self.map, patch)).into();
+                            self.retained_heights.retain(|(v, ..)| *v != view);
+                            self.retained_heights.push((view, patch, made.clone()));
+                            made
+                        }
+                    };
+                    tracked.bind_vertex(1, 4, heights);
                 }
                 batches.push((
                     patch,
@@ -592,6 +731,11 @@ impl Terrain {
             }
         }
         Ok(Prepared { pipeline, batches })
+    }
+    /// Forgets the retained heights of wrap views not among `offsets`, this frame's.
+    pub fn keep_views(&mut self, offsets: &[f32]) {
+        self.retained_heights
+            .retain(|(view, ..)| offsets.iter().any(|offset| offset.to_bits() == *view));
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, prepared: &Prepared) {
         shader_pipeline::gpu::stats::pipeline();
@@ -606,7 +750,11 @@ impl Terrain {
             bindings.bind_after(pass, previous);
             previous = Some(bindings);
             shader_pipeline::gpu::stats::state();
-            pass.set_vertex_buffer(1, geometry.heights.slice(..));
+            pass.set_vertex_buffer(
+                1,
+                self.slabs[geometry.slab]
+                    .slice(geometry.offset..geometry.offset + PATCH_BYTES as u64),
+            );
             shader_pipeline::gpu::stats::state();
             pass.set_index_buffer(geometry.indices.slice(..), wgpu::IndexFormat::Uint16);
             shader_pipeline::gpu::stats::draw();

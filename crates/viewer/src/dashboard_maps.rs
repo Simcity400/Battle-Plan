@@ -949,12 +949,13 @@ impl DashboardMaps {
             let wake = ctx.clone();
             let alive = Arc::new(AtomicBool::new(true));
             let job_alive = Arc::clone(&alive);
+            let workers = self.resources.workers();
             if self.resources.try_submit(move || {
                 if !job_alive.load(Ordering::Acquire) {
                     return;
                 }
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    load_scene(&device, &queue, &document, graphics)
+                    load_scene(&device, &queue, &document, graphics, &workers)
                         .map(|scene| (document, scene))
                         .map_err(|error| error.to_string())
                 }))

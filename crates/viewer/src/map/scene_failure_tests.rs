@@ -148,6 +148,7 @@ impl Fixture {
                 samples,
                 ..Default::default()
             },
+            &Default::default(),
         )?;
         // These scenes draw names they install no hour for.
         scene.build_names_in_upload(true);
@@ -249,6 +250,7 @@ fn a_window_scene_admits_unit_models_by_the_content_cutoffs() -> io::Result<()> 
             samples: 1,
             ..Default::default()
         },
+        &Default::default(),
     )?;
     assert_eq!(scene.unit_gates(), Some(fixture.document.unit_models.gates));
     Ok(())

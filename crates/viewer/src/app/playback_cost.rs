@@ -221,6 +221,7 @@ pub(crate) fn measure(
         &state.queue,
         &document,
         viewer.graphics,
+        &Default::default(),
     )?);
     viewer.scene.as_mut().unwrap().set_graphics(viewer.graphics);
     // Frames written as PNGs are captures, so their models draw complete.
