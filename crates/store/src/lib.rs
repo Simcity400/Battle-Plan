@@ -31,6 +31,7 @@ use windows_sys::Win32::{
     },
 };
 
+mod blocks;
 mod spill;
 pub use spill::{Piece, Pieces, Spill};
 
@@ -162,11 +163,13 @@ fn published(directory: &Path, publication: impl FnOnce() -> Option<io::Result<S
 }
 /// The manifest is a small root naming each section's runs of entries in
 /// append-only entry logs, with the section names in a names file. Manifests
-/// of an older layout (one flat file of every entry, or one file per range)
-/// read as absent.
-const VERSION: u32 = 4;
-/// An entry: pack id, offset and length, little-endian.
-const ENTRY_BYTES: u64 = 24;
+/// of an older layout (one flat file of every entry, one file per range, or
+/// uncompressed ranges) read as absent.
+const VERSION: u32 = 5;
+/// An entry: pack id, offset, length, and stored length with the packed flag
+/// in its top bit, little-endian.
+const ENTRY_BYTES: u64 = 32;
+const PACKED: u64 = 1 << 63;
 /// A pack or log table record: id, listed (live) bytes and length.
 const PACK_BYTES: u64 = 24;
 /// A root's section record: range count and run count.
@@ -1427,28 +1430,38 @@ fn prefix_inputs(previous: &SourceKey, current: &SourceKey) -> io::Result<bool> 
         && current.recording_current()?)
 }
 
-/// Where one range's bytes live: a pack, an offset in it and a length. Equal
+/// Where one range's bytes live: a pack, an offset in it, its length, and
+/// the bytes it takes there, raw or as compressed blocks ([`blocks`]). Equal
 /// identities name the same immutable bytes. An empty range lives in no pack.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RangeId {
     pack: u64,
     offset: u64,
     len: u64,
+    stored: u64,
+    packed: bool,
 }
 
 impl RangeId {
     /// Every empty range. No pack has id 0, so no pack can be removed under it.
-    const EMPTY: Self = Self {
-        pack: 0,
-        offset: 0,
-        len: 0,
-    };
+    const EMPTY: Self = Self::raw(0, 0, 0);
+
+    const fn raw(pack: u64, offset: u64, len: u64) -> Self {
+        Self {
+            pack,
+            offset,
+            len,
+            stored: len,
+            packed: false,
+        }
+    }
 
     /// Serializable identity for transient cache keys, without a pack handle.
     pub fn cache_key(&self) -> [u64; 3] {
         [self.pack, self.offset, self.len]
     }
 
+    /// Its decoded length.
     pub fn len(&self) -> u64 {
         self.len
     }
@@ -1470,29 +1483,66 @@ impl RangeId {
 
     fn encode(&self) -> [u8; ENTRY_BYTES as usize] {
         let mut bytes = [0; ENTRY_BYTES as usize];
-        bytes[..8].copy_from_slice(&self.pack.to_le_bytes());
-        bytes[8..16].copy_from_slice(&self.offset.to_le_bytes());
-        bytes[16..].copy_from_slice(&self.len.to_le_bytes());
+        let stored = self.stored | if self.packed { PACKED } else { 0 };
+        for (at, word) in [self.pack, self.offset, self.len, stored]
+            .into_iter()
+            .enumerate()
+        {
+            bytes[at * 8..at * 8 + 8].copy_from_slice(&word.to_le_bytes());
+        }
         bytes
     }
 
     fn decode(bytes: &[u8]) -> io::Result<Self> {
         let [pack, offset, len] = words(bytes);
+        let stored = u64::from_le_bytes(bytes[24..32].try_into().unwrap());
+        let id = Self {
+            pack,
+            offset,
+            len,
+            stored: stored & !PACKED,
+            packed: stored & PACKED != 0,
+        };
         offset
-            .checked_add(len)
+            .checked_add(id.stored)
+            .filter(|_| if id.packed { len != 0 } else { id.stored == len })
             .ok_or_else(|| invalid("prepared range exceeds its pack"))?;
-        Ok(Self { pack, offset, len })
+        Ok(id)
+    }
+
+    /// Blocks of a packed range.
+    fn blocks(&self) -> u64 {
+        self.len.div_ceil(blocks::BLOCK as u64)
+    }
+
+    /// The decoded length of block `block`.
+    fn block_len(&self, block: u64) -> usize {
+        (self.len - block * blocks::BLOCK as u64).min(blocks::BLOCK as u64) as usize
     }
 }
 
 /// One range's bytes: an owned pack handle bounded to the range (none for an
 /// empty range). It stays valid while held, through replacement, Clear and
 /// later commits.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Range {
     file: Option<Arc<File>>,
     id: RangeId,
     position: u64,
+    /// A packed range's block ends, read at its first multi-block read.
+    ends: Option<Arc<Vec<u64>>>,
+    /// The compressed block a partial read last decoded, and its bytes: all a range holds decoded.
+    current: Option<u64>,
+    decoded: Vec<u8>,
+}
+
+impl std::fmt::Debug for Range {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Range")
+            .field("id", &self.id)
+            .field("position", &self.position)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Range {
@@ -1504,6 +1554,9 @@ impl Range {
             file: Some(file),
             id,
             position: 0,
+            ends: None,
+            current: None,
+            decoded: Vec::new(),
         }
     }
 
@@ -1512,10 +1565,13 @@ impl Range {
             file: None,
             id: RangeId::EMPTY,
             position: 0,
+            ends: None,
+            current: None,
+            decoded: Vec::new(),
         }
     }
 
-    /// The range's length in bytes.
+    /// The range's decoded length in bytes.
     pub fn len(&self) -> u64 {
         self.id.len
     }
@@ -1527,6 +1583,116 @@ impl Range {
     /// Where these bytes live; replacement gives a non-empty range a new identity.
     pub fn id(&self) -> RangeId {
         self.id
+    }
+
+    fn file(&self) -> io::Result<&File> {
+        self.file
+            .as_deref()
+            .ok_or_else(|| invalid("prepared range has no pack"))
+    }
+
+    /// Fills `buffer` from `at` bytes into the range's stored bytes.
+    fn read_stored(&self, buffer: &mut [u8], at: u64) -> io::Result<()> {
+        if read_at(self.file()?, buffer, self.id.offset + at)? != buffer.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "prepared range is truncated",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Where block `block`'s stored bytes start and end. A first block, lone or not, is always a
+    /// frame smaller than it decodes; a lone one's table entry is read and checked with the frame.
+    fn block_span(&mut self, block: u64) -> io::Result<(u64, u64)> {
+        let count = self.id.blocks();
+        let table = count * 8;
+        let blocks_end = self
+            .id
+            .stored
+            .checked_sub(table)
+            .ok_or_else(blocks::damaged)?;
+        if count == 1 {
+            if blocks_end >= self.id.len {
+                return Err(blocks::damaged());
+            }
+            return Ok((0, blocks_end));
+        }
+        if self.ends.is_none() {
+            self.ends = Some(Arc::new(self.read_ends(count, blocks_end)?));
+        }
+        let ends = self.ends.as_deref().unwrap();
+        let block = block as usize;
+        Ok((if block == 0 { 0 } else { ends[block - 1] }, ends[block]))
+    }
+
+    /// The table of `count` block ends after `blocks_end` stored bytes, read a bounded step at a
+    /// time so a damaged length fails at its pack's end rather than claiming what it names.
+    fn read_ends(&self, count: u64, blocks_end: u64) -> io::Result<Vec<u64>> {
+        let mut ends = Vec::new();
+        let mut step = [0; blocks::TABLE_STEP];
+        let mut start = 0;
+        while (ends.len() as u64) < count {
+            let words = ((count - ends.len() as u64) as usize).min(blocks::TABLE_STEP / 8);
+            let bytes = &mut step[..words * 8];
+            self.read_stored(bytes, blocks_end + ends.len() as u64 * 8)?;
+            engine_allocation::reserve_exact(&mut ends, words)?;
+            for word in bytes.chunks_exact(8) {
+                let end = u64::from_le_bytes(word.try_into().unwrap());
+                let size = self.id.block_len(ends.len() as u64) as u64;
+                // Only a range whose first block compressed is packed: only later blocks are raw.
+                let most = if ends.is_empty() { size - 1 } else { size };
+                if end < start || end - start > most {
+                    return Err(blocks::damaged());
+                }
+                start = end;
+                ends.push(end);
+            }
+        }
+        if start != blocks_end {
+            return Err(blocks::damaged());
+        }
+        Ok(ends)
+    }
+
+    /// Reads a packed range's decoded bytes from its position into `buffer`, within one block.
+    fn read_packed(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let block = self.position / blocks::BLOCK as u64;
+        let within = (self.position % blocks::BLOCK as u64) as usize;
+        let size = self.id.block_len(block);
+        let count = buffer.len().min(size - within);
+        let (start, end) = self.block_span(block)?;
+        let stored = to_usize(end - start)?;
+        let lone = self.id.blocks() == 1;
+        if stored == size && !lone {
+            self.read_stored(&mut buffer[..count], start + within as u64)?;
+            return Ok(count);
+        }
+        let trailer = if lone { 8 } else { 0 };
+        let read = |range: &Self, frame: &mut [u8]| {
+            range.read_stored(frame, start)?;
+            if lone && frame[stored..] != (stored as u64).to_le_bytes() {
+                return Err(blocks::damaged());
+            }
+            Ok(())
+        };
+        if self.current != Some(block) {
+            if count == size {
+                blocks::decode(stored, trailer, &mut buffer[..count], |frame| read(self, frame))?;
+                return Ok(count);
+            }
+            self.current = None;
+            let mut decoded = std::mem::take(&mut self.decoded);
+            decoded.clear();
+            engine_allocation::reserve_exact(&mut decoded, size)?;
+            decoded.resize(size, 0);
+            let result = blocks::decode(stored, trailer, &mut decoded, |frame| read(self, frame));
+            self.decoded = decoded;
+            result?;
+            self.current = Some(block);
+        }
+        buffer[..count].copy_from_slice(&self.decoded[within..within + count]);
+        Ok(count)
     }
 }
 
@@ -1542,9 +1708,14 @@ impl Read for Range {
         if want == 0 {
             return Ok(0);
         }
+        if self.id.packed {
+            let read = self.read_packed(&mut buffer[..want])?;
+            self.position += read as u64;
+            return Ok(read);
+        }
         let file = self
             .file
-            .as_ref()
+            .as_deref()
             .ok_or_else(|| invalid("prepared range has no pack"))?;
         let at = self.id.offset + self.position;
         loop {
@@ -1582,13 +1753,17 @@ impl Read for Range {
             buffer
                 .try_reserve_exact(step)
                 .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
-            let filled = buffer.len();
-            buffer.resize(filled + step, 0);
-            match self.read(&mut buffer[filled..]) {
-                Ok(read) => buffer.truncate(filled + read),
-                Err(error) => {
-                    buffer.truncate(filled);
-                    return Err(error);
+            let mut filled = buffer.len();
+            let end = filled + step;
+            buffer.resize(end, 0);
+            while filled < end {
+                match self.read(&mut buffer[filled..end]) {
+                    Ok(read) => filled += read,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(error) => {
+                        buffer.truncate(filled);
+                        return Err(error);
+                    }
                 }
             }
         }
@@ -1738,12 +1913,11 @@ struct PackRecord {
 
 impl PackRecord {
     fn encode(&self) -> [u8; PACK_BYTES as usize] {
-        RangeId {
-            pack: self.id,
-            offset: self.live,
-            len: self.size,
+        let mut bytes = [0; PACK_BYTES as usize];
+        for (at, word) in [self.id, self.live, self.size].into_iter().enumerate() {
+            bytes[at * 8..at * 8 + 8].copy_from_slice(&word.to_le_bytes());
         }
-        .encode()
+        bytes
     }
 
     fn decode(bytes: &[u8]) -> Self {
@@ -2330,77 +2504,135 @@ impl Pack {
         self.flushed + self.buffer.len() as u64
     }
 
-    /// Appends one whole range. A failed range leaves no bytes the next
-    /// range would keep.
-    fn append<R: Read + ?Sized>(&mut self, data: &mut R) -> io::Result<RangeId> {
+    /// Appends one whole range, packed when its first block compresses
+    /// ([`blocks`]); `direct` writes it straight to the file and lets the
+    /// buffer go. A failed range leaves no bytes the next range would keep.
+    fn append<R: Read + ?Sized>(&mut self, data: &mut R, direct: bool) -> io::Result<RangeId> {
+        if direct {
+            self.flush()?;
+            self.buffer = Vec::new();
+        }
         let offset = self.end();
-        match self.fill(data) {
-            Ok(()) => Ok(RangeId {
-                pack: self.id,
-                offset,
-                len: self.end() - offset,
-            }),
-            Err(error) => {
-                if offset >= self.flushed {
-                    self.buffer.truncate((offset - self.flushed) as usize);
-                } else {
-                    self.buffer.clear();
-                    self.flushed = offset;
-                }
-                Err(error)
+        let result = blocks::Encoder::with(|encoder| self.encode(data, direct, offset, encoder));
+        if result.is_err() {
+            if offset >= self.flushed {
+                self.buffer.truncate((offset - self.flushed) as usize);
+            } else {
+                self.buffer.clear();
+                self.flushed = offset;
             }
         }
+        result
     }
 
-    fn fill<R: Read + ?Sized>(&mut self, data: &mut R) -> io::Result<()> {
-        loop {
-            if self.buffer.len() as u64 >= PACK_BUFFER {
-                self.flush()?;
-            }
-            let room = PACK_BUFFER - self.buffer.len() as u64;
-            if io::copy(&mut (&mut *data).take(room), &mut self.buffer)? < room {
-                return Ok(());
-            }
-        }
-    }
-
-    fn append_with_scratch(
+    fn encode<R: Read + ?Sized>(
         &mut self,
-        data: &mut impl Read,
-        scratch: &mut [u8],
+        data: &mut R,
+        direct: bool,
+        offset: u64,
+        encoder: &mut blocks::Encoder,
     ) -> io::Result<RangeId> {
+        let mut len = 0u64;
+        let mut packed = None;
+        encoder.ends.clear();
+        loop {
+            encoder.block.clear();
+            (&mut *data)
+                .take(blocks::BLOCK as u64)
+                .read_to_end(&mut encoder.block)?;
+            let size = encoder.block.len();
+            if size == 0 {
+                break;
+            }
+            len = len
+                .checked_add(size as u64)
+                .ok_or_else(|| invalid("prepared pack overflow"))?;
+            if packed == Some(false) {
+                self.emit(&encoder.block, direct)?;
+            } else {
+                let frame = encoder.compress()?;
+                let keep = match packed {
+                    None => blocks::pays(frame.len(), size),
+                    _ => frame.len() < size,
+                };
+                if packed.is_none() {
+                    packed = Some(keep);
+                }
+                if keep {
+                    self.emit(frame, direct)?;
+                } else {
+                    self.emit(&encoder.block, direct)?;
+                }
+                if packed == Some(true) {
+                    encoder.ends.push(self.end() - offset);
+                }
+            }
+            if size < blocks::BLOCK {
+                break;
+            }
+        }
+        if packed == Some(true) {
+            let table: Vec<u8> = encoder.ends.iter().flat_map(|end| end.to_le_bytes()).collect();
+            self.emit(&table, direct)?;
+        }
+        Ok(RangeId {
+            pack: self.id,
+            offset,
+            len,
+            stored: self.end() - offset,
+            packed: packed == Some(true),
+        })
+    }
+
+    /// Adds bytes after the pack's end, through the buffer unless `direct`.
+    fn emit(&mut self, bytes: &[u8], direct: bool) -> io::Result<()> {
+        if !direct && self.buffer.len() + bytes.len() > PACK_BUFFER as usize {
+            self.flush()?;
+        }
+        if direct || bytes.len() >= PACK_BUFFER as usize {
+            let end = self
+                .flushed
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| invalid("prepared pack overflow"))?;
+            self.extent = self.extent.max(end);
+            write_all_at(&self.file, bytes, self.flushed)?;
+            self.flushed = end;
+        } else {
+            self.buffer.extend_from_slice(bytes);
+        }
+        Ok(())
+    }
+
+    /// Copies a range's stored bytes from `file` as they are, straight to this pack's file.
+    fn copy(&mut self, file: Arc<File>, id: RangeId, scratch: &mut [u8]) -> io::Result<RangeId> {
         if scratch.is_empty() {
             return Err(invalid("empty prepared write scratch"));
         }
         self.flush()?;
         self.buffer = Vec::new();
         let offset = self.flushed;
+        let mut from = Range::new(file, RangeId::raw(id.pack, id.offset, id.stored));
         let result = (|| {
             loop {
-                let count = match data.read(scratch) {
+                let count = match from.read(scratch) {
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     result => result?,
                 };
                 if count == 0 {
-                    return Ok(RangeId {
-                        pack: self.id,
-                        offset,
-                        len: self.flushed - offset,
-                    });
+                    return Ok(());
                 }
-                let end = self
-                    .flushed
-                    .checked_add(count as u64)
-                    .ok_or_else(|| invalid("prepared pack overflow"))?;
-                self.extent = self.extent.max(end);
-                write_all_at(&self.file, &scratch[..count], self.flushed)?;
-                self.flushed = end;
+                self.emit(&scratch[..count], true)?;
             }
         })();
-        if result.is_err() {
+        if let Err(error) = result {
             self.flushed = offset;
+            return Err(error);
         }
-        result
+        Ok(RangeId {
+            pack: self.id,
+            offset,
+            ..id
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -2429,7 +2661,7 @@ impl Pack {
     }
 
     fn reader(&mut self, id: RangeId) -> io::Result<Range> {
-        if id.offset + id.len > self.flushed {
+        if id.offset + id.stored > self.flushed {
             self.flush()?;
         }
         Ok(Range::new(Arc::clone(&self.file), id))
@@ -2477,11 +2709,7 @@ impl Mover<'_> {
             Some(into) => into,
             into => into.insert(Pack::create(self.directory)?),
         };
-        let moved = into.append_with_scratch(&mut Range::new(file, id), scratch)?;
-        if moved.len != id.len {
-            return Err(invalid("truncated prepared range"));
-        }
-        Ok(moved)
+        into.copy(file, id, scratch)
     }
 }
 
@@ -2678,11 +2906,7 @@ impl ReadJournal {
     fn validate(&self, writer: &Writer, detached: bool) -> io::Result<()> {
         let mut input = io::BufReader::new(Range::new(
             Arc::clone(&self.file),
-            RangeId {
-                pack: 0,
-                offset: 0,
-                len: self.len,
-            },
+            RangeId::raw(0, 0, self.len),
         ));
         for _ in 0..self.count {
             let mut word = [0; 8];
@@ -3426,12 +3650,12 @@ impl Writer {
     }
 
     /// Appends one range to this writer's pack, creating the pack first.
-    fn append(&mut self, data: &mut impl Read) -> io::Result<RangeId> {
+    fn append(&mut self, data: &mut impl Read, direct: bool) -> io::Result<RangeId> {
         let pack = match &mut self.pack {
             Some(pack) => pack,
             pack => pack.insert(Pack::create_pinned(&self.directory, self.pins.as_deref())?),
         };
-        let id = pack.append(data)?;
+        let id = pack.append(data, direct)?;
         Ok(if id.len == 0 { RangeId::EMPTY } else { id })
     }
 
@@ -3566,7 +3790,7 @@ impl Writer {
             .bytes_replaced
             .checked_add(old.len)
             .ok_or_else(|| invalid("prepared byte count overflow"))?;
-        let id = self.append(&mut data)?;
+        let id = self.append(&mut data, false)?;
         self.bytes_written = self
             .bytes_written
             .checked_add(id.len)
@@ -3586,46 +3810,20 @@ impl Writer {
 
     /// Streams a whole, immutable range; no existing range is modified.
     /// Ranges are consecutive per section, with boundaries defined by its producer.
-    pub fn write(&mut self, section: &str, mut data: impl Read) -> io::Result<u64> {
-        self.ensure_section(section)?;
-        let index = self.position(section).unwrap();
-        let range = self.sections[index].count()?;
-        let id = self.append(&mut data)?;
-        self.bytes_written = self
-            .bytes_written
-            .checked_add(id.len)
-            .ok_or_else(|| invalid("prepared byte count overflow"))?;
-        self.sections[index].added.push(id);
-        self.record(|writer| Operation::Write {
-            section: writer.reference(Some(index), section),
-            range,
-            id,
-            old: Slot::Missing,
-            bytes: id.len,
-            replaced: 0,
-        });
-        Ok(range)
+    pub fn write(&mut self, section: &str, data: impl Read) -> io::Result<u64> {
+        self.write_range(section, data, false)
     }
 
-    /// Streams using only caller-owned scratch, releasing this pack's buffered capacity.
-    pub fn write_with_scratch(
-        &mut self,
-        section: &str,
-        mut data: impl Read,
-        scratch: &mut [u8],
-    ) -> io::Result<u64> {
-        if scratch.is_empty() {
-            return Err(invalid("empty prepared write scratch"));
-        }
+    /// [`Self::write`] straight to the pack file, releasing this pack's buffered capacity.
+    pub fn write_unbuffered(&mut self, section: &str, data: impl Read) -> io::Result<u64> {
+        self.write_range(section, data, true)
+    }
+
+    fn write_range(&mut self, section: &str, mut data: impl Read, direct: bool) -> io::Result<u64> {
         self.ensure_section(section)?;
         let index = self.position(section).unwrap();
         let range = self.sections[index].count()?;
-        let pack = match &mut self.pack {
-            Some(pack) => pack,
-            pack => pack.insert(Pack::create_pinned(&self.directory, self.pins.as_deref())?),
-        };
-        let id = pack.append_with_scratch(&mut data, scratch)?;
-        let id = if id.len == 0 { RangeId::EMPTY } else { id };
+        let id = self.append(&mut data, direct)?;
         self.bytes_written = self
             .bytes_written
             .checked_add(id.len)
@@ -3666,7 +3864,7 @@ impl Writer {
         self.commit_continue_with_scratch(&mut [0; COMMIT_SCRATCH])
     }
 
-    /// Publishes and reopens using caller-admitted scratch, at least 72 bytes.
+    /// Publishes and reopens using caller-admitted scratch, at least 96 bytes.
     pub fn commit_continue_with_scratch(self, scratch: &mut [u8]) -> io::Result<Writer> {
         let lock = self._lock.try_clone()?;
         let key = self.key.clone();
@@ -3697,7 +3895,7 @@ impl Writer {
         self.commit_with_scratch(&mut [0; COMMIT_SCRATCH])
     }
 
-    /// Publishes with caller-admitted scratch, at least 72 bytes; no historical entry buffer.
+    /// Publishes with caller-admitted scratch, at least 96 bytes; no historical entry buffer.
     pub fn commit_with_scratch(mut self, scratch: &mut [u8]) -> io::Result<()> {
         if scratch.len() < 3 * ENTRY_BYTES as usize {
             return Err(io::Error::new(
@@ -4043,7 +4241,7 @@ impl Writer {
         let accounting = || invalid("prepared pack accounting does not match its ranges");
         for old in self.dropped.iter().filter(|id| id.len != 0) {
             let (live, _) = table.get_mut(&old.pack).ok_or_else(accounting)?;
-            *live = live.checked_sub(old.len).ok_or_else(accounting)?;
+            *live = live.checked_sub(old.stored).ok_or_else(accounting)?;
         }
         for (index, section) in self.sections.iter().enumerate() {
             for &range in section.replaced.keys() {
@@ -4054,7 +4252,7 @@ impl Writer {
                     continue;
                 }
                 let (live, _) = table.get_mut(&old.pack).ok_or_else(accounting)?;
-                *live = live.checked_sub(old.len).ok_or_else(accounting)?;
+                *live = live.checked_sub(old.stored).ok_or_else(accounting)?;
             }
             for id in section
                 .added
@@ -4063,7 +4261,7 @@ impl Writer {
                 .filter(|id| id.len != 0)
             {
                 let (live, _) = table.get_mut(&id.pack).ok_or_else(accounting)?;
-                *live = live.checked_add(id.len).ok_or_else(accounting)?;
+                *live = live.checked_add(id.stored).ok_or_else(accounting)?;
             }
         }
         table.retain(|_, (live, _)| *live > 0);

@@ -342,6 +342,19 @@ fn commit_peak_stays_bounded_while_a_fact_history_grows() {
     fs::remove_dir_all(root).unwrap();
 }
 
+/// Bytes no compressor shrinks, so the store keeps them at their length.
+fn noise(len: usize) -> Vec<u8> {
+    let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 32) as u8
+        })
+        .collect()
+}
+
 #[test]
 fn pack_relocation_and_scattered_rewrites_do_not_materialize_historical_entries() {
     let _serial = MEASUREMENTS.lock().unwrap_or_else(|e| e.into_inner());
@@ -358,11 +371,11 @@ fn pack_relocation_and_scattered_rewrites_do_not_materialize_historical_entries(
         let mut scratch = [0; 8192];
         let mut writer = store.replace(key.clone()).unwrap();
         writer
-            .write_with_scratch("heavy", std::io::repeat(0).take(2 << 20), &mut scratch)
+            .write_unbuffered("heavy", noise(2 << 20).as_slice())
             .unwrap();
         for range in 0..32768u64 {
             writer
-                .write_with_scratch("pages", &(range.to_le_bytes())[..], &mut scratch)
+                .write_unbuffered("pages", &(range.to_le_bytes())[..])
                 .unwrap();
         }
         writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();

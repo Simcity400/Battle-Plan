@@ -8,20 +8,16 @@ use std::{
 
 #[test]
 fn range_cache_keys_serialize_each_identity_operand_losslessly() {
-    let first = RangeId {
-        pack: u64::MAX,
-        offset: 7,
-        len: 11,
-    };
+    let first = RangeId::raw(u64::MAX, 7, 11);
     let encoded = serde_json::to_vec(&first.cache_key()).unwrap();
     assert_eq!(
         serde_json::from_slice::<[u64; 3]>(&encoded).unwrap(),
         [u64::MAX, 7, 11]
     );
     for other in [
-        RangeId { pack: 1, ..first },
-        RangeId { offset: 8, ..first },
-        RangeId { len: 12, ..first },
+        RangeId::raw(1, 7, 11),
+        RangeId::raw(u64::MAX, 8, 11),
+        RangeId::raw(u64::MAX, 7, 12),
     ] {
         assert_ne!(other.cache_key(), first.cache_key());
     }
@@ -462,6 +458,241 @@ fn bytes(mut range: Range) -> Vec<u8> {
     let mut bytes = Vec::new();
     range.read_to_end(&mut bytes).unwrap();
     bytes
+}
+
+/// Bytes no compressor shrinks, so they are stored as they are.
+fn noise(len: usize, seed: u64) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 32) as u8
+        })
+        .collect()
+}
+
+/// Compressible bytes: short runs of a few values.
+fn text(len: usize, seed: u64) -> Vec<u8> {
+    let words = noise(len / 16 + 1, seed);
+    (0..len).map(|at| b'a' + words[at / 16] % 4).collect()
+}
+
+#[test]
+fn compressible_ranges_are_packed_in_blocks_and_read_anywhere() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut long = text(3 * blocks::BLOCK + 1234, 1);
+    // A middle block of noise is stored raw within the packed range.
+    long[blocks::BLOCK..2 * blocks::BLOCK].copy_from_slice(&noise(blocks::BLOCK, 2));
+    let short = text(300, 3);
+    let raw = noise(5000, 4);
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", long.as_slice()).unwrap();
+    writer.write_unbuffered("pages", short.as_slice()).unwrap();
+    writer.write("pages", raw.as_slice()).unwrap();
+    let staged = writer.range_id("pages", 0).unwrap().unwrap();
+    assert!(staged.packed && staged.stored < staged.len / 2, "{staged:?}");
+    assert_eq!(bytes(writer.read_at("pages", 0).unwrap().unwrap()), long);
+    writer.commit().unwrap();
+    let ids: Vec<_> = (0..3)
+        .map(|range| {
+            fixture
+                .store
+                .range_id(&key, "pages", range)
+                .unwrap()
+                .unwrap()
+        })
+        .collect();
+    assert!(ids[0].packed && ids[1].packed && !ids[2].packed, "{ids:?}");
+    assert_eq!(ids[2].stored, raw.len() as u64);
+    assert_eq!(
+        fixture.packs().iter().map(|pack| pack.live).sum::<u64>(),
+        ids.iter().map(|id| id.stored).sum::<u64>()
+    );
+    for (range, expected) in [&long, &short, &raw].into_iter().enumerate() {
+        let mut opened = fixture
+            .store
+            .read(&key, "pages", range as u64)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.len(), expected.len() as u64);
+        assert_eq!(bytes(opened.clone()), *expected);
+        for at in [0, 17, blocks::BLOCK - 3, blocks::BLOCK + 5, expected.len() - 9] {
+            let at = at.min(expected.len() - 1);
+            let mut piece = vec![0; (expected.len() - at).min(blocks::BLOCK + 10)];
+            opened.seek(SeekFrom::Start(at as u64)).unwrap();
+            opened.read_exact(&mut piece).unwrap();
+            assert_eq!(piece, expected[at..at + piece.len()], "range {range} at {at}");
+        }
+        opened.seek(SeekFrom::End(0)).unwrap();
+        assert_eq!(opened.read(&mut [0; 8]).unwrap(), 0);
+    }
+}
+
+#[test]
+fn compaction_moves_packed_ranges_as_they_are_stored() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let page = |range: u64, version: u64| text(2 * blocks::BLOCK + range as usize, version);
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    for range in 0..4 {
+        writer.write("pages", page(range, 0).as_slice()).unwrap();
+    }
+    writer.commit().unwrap();
+    let before: Vec<_> = (0..4)
+        .map(|range| fixture.store.range_id(&key, "pages", range).unwrap().unwrap())
+        .collect();
+    let mut writer = fixture.store.extend(&key).unwrap();
+    for range in 0..3 {
+        writer
+            .write_at("pages", range, page(range, 1).as_slice())
+            .unwrap();
+    }
+    writer.commit().unwrap();
+    let moved = fixture.store.range_id(&key, "pages", 3).unwrap().unwrap();
+    assert_ne!(moved.pack, before[3].pack);
+    assert_eq!(
+        (moved.len, moved.stored, moved.packed),
+        (before[3].len, before[3].stored, true)
+    );
+    for range in 0..4 {
+        let version = u64::from(range < 3);
+        assert_eq!(
+            bytes(fixture.store.read(&key, "pages", range).unwrap().unwrap()),
+            page(range, version)
+        );
+    }
+}
+
+#[test]
+fn a_damaged_block_table_or_frame_reads_as_invalid_data() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let page = text(2 * blocks::BLOCK + 99, 5);
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", page.as_slice()).unwrap();
+    writer.commit().unwrap();
+    let id = fixture.store.range_id(&key, "pages", 0).unwrap().unwrap();
+    let path = fixture.range_path(0, 0);
+    let original = fs::read(&path).unwrap();
+    let damage = |at: u64, value: u8| {
+        let mut changed = original.clone();
+        changed[at as usize] ^= value;
+        fs::write(&path, &changed).unwrap();
+        let mut read = Vec::new();
+        fixture
+            .store
+            .read(&key, "pages", 0)
+            .unwrap()
+            .unwrap()
+            .read_to_end(&mut read)
+            .unwrap_err()
+            .kind()
+    };
+    // The first block's end, past its next.
+    assert_eq!(
+        damage(id.offset + id.stored - 3 * 8 + 1, 0x40),
+        io::ErrorKind::InvalidData
+    );
+    // The first block's frame header.
+    assert_eq!(damage(id.offset + 4, 0xff), io::ErrorKind::InvalidData);
+    // The second block's frame: the first block's bytes are kept, as `Read` promises.
+    let mut table = [0; 8];
+    table.copy_from_slice(&original[(id.offset + id.stored - 24) as usize..][..8]);
+    let second = id.offset + u64::from_le_bytes(table);
+    assert_eq!(damage(second + 4, 0xff), io::ErrorKind::InvalidData);
+    let mut read = Vec::new();
+    let mut opened = fixture.store.read(&key, "pages", 0).unwrap().unwrap();
+    assert!(opened.read_to_end(&mut read).is_err());
+    assert_eq!(read, page[..blocks::BLOCK]);
+}
+
+#[test]
+fn a_table_naming_a_raw_first_block_reads_as_invalid_data() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let mut page = text(2 * blocks::BLOCK, 7);
+    page[blocks::BLOCK..].copy_from_slice(&noise(blocks::BLOCK, 8));
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", page.as_slice()).unwrap();
+    writer.commit().unwrap();
+    let id = fixture.store.range_id(&key, "pages", 0).unwrap().unwrap();
+    // The second block is stored raw, the first as a frame.
+    assert!(id.packed && id.stored > blocks::BLOCK as u64);
+    let path = fixture.range_path(0, 0);
+    let mut changed = fs::read(&path).unwrap();
+    let first = (id.offset + id.stored - 16) as usize;
+    changed[first..first + 8].copy_from_slice(&(blocks::BLOCK as u64).to_le_bytes());
+    fs::write(&path, &changed).unwrap();
+    let mut read = Vec::new();
+    let error = fixture
+        .store
+        .read(&key, "pages", 0)
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut read)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(read.is_empty());
+}
+
+#[test]
+fn a_lone_block_checks_its_table_entry() {
+    let fixture = Fixture::new();
+    let key = fixture.key();
+    let page = text(5000, 6);
+    let mut writer = fixture.store.replace(key.clone()).unwrap();
+    writer.write("pages", page.as_slice()).unwrap();
+    writer.commit().unwrap();
+    let id = fixture.store.range_id(&key, "pages", 0).unwrap().unwrap();
+    assert!(id.packed && id.stored < id.len);
+    let path = fixture.range_path(0, 0);
+    let mut changed = fs::read(&path).unwrap();
+    changed[(id.offset + id.stored - 8) as usize] ^= 1;
+    fs::write(&path, &changed).unwrap();
+    let mut read = Vec::new();
+    let error = fixture
+        .store
+        .read(&key, "pages", 0)
+        .unwrap()
+        .unwrap()
+        .read_to_end(&mut read)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn a_huge_listed_table_fails_at_the_pack_end_without_claiming_it() {
+    let fixture = Fixture::new();
+    let path = fixture.root.join("short-pack");
+    fs::write(&path, vec![0; 4096]).unwrap();
+    let id = RangeId {
+        stored: 1 << 37,
+        packed: true,
+        ..RangeId::raw(1, 0, 1 << 50)
+    };
+    let mut range = Range::new(Arc::new(File::open(&path).unwrap()), id);
+    let error = range.read(&mut [0; 16]).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+}
+
+#[test]
+fn a_single_block_listed_longer_than_it_decodes_reads_as_invalid_data() {
+    let fixture = Fixture::new();
+    let path = fixture.root.join("overlong");
+    fs::write(&path, vec![0; 4096]).unwrap();
+    let id = RangeId {
+        stored: 1000,
+        packed: true,
+        ..RangeId::raw(1, 0, 100)
+    };
+    let mut read = Vec::new();
+    let error = Range::new(Arc::new(File::open(&path).unwrap()), id)
+        .read_to_end(&mut read)
+        .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }
 
 #[test]
@@ -1056,11 +1287,7 @@ fn hundred_year_range_count_opens_only_the_root_and_needed_run() {
     // Sparse synthetic entries give each section a century of hourly ranges.
     let count = 100 * 366 * 24;
     let pack = 0x0123_4567_89ab_cdef;
-    let id = RangeId {
-        pack,
-        offset: 7,
-        len: 18,
-    };
+    let id = RangeId::raw(pack, 7, 18);
     let directory = &fixture.store.directory;
     let log = 0x0fed_cba9_8765_4321;
     let entries = 2 * count * ENTRY_BYTES;
@@ -1459,7 +1686,7 @@ fn an_older_layout_reads_as_absent_and_the_next_writer_removes_it() {
 fn packs_under_half_live_are_emptied_at_commit_without_changing_held_readers() {
     let fixture = Fixture::new();
     let key = fixture.key();
-    let page = |range: u64, version: u8| vec![version; 100 + range as usize];
+    let page = |range: u64, version: u8| noise(100 + range as usize, u64::from(version) << 8 | range);
     let mut writer = fixture.store.replace(key.clone()).unwrap();
     for range in 0..10 {
         writer.write("pages", page(range, 0).as_slice()).unwrap();
@@ -2810,7 +3037,7 @@ fn snapshot_packs_do_not_delay_compaction_of_unrelated_published_packs() {
     let fixture = Fixture::new();
     let key = fixture.key();
     let mut writer = fixture.store.replace(key.clone()).unwrap();
-    writer.write("snapshot", &[0; 1024][..]).unwrap();
+    writer.write("snapshot", noise(1024, 9).as_slice()).unwrap();
     writer.commit().unwrap();
     let mut writer = fixture.store.extend(&key).unwrap();
     let mut stage = writer.stage().unwrap();
@@ -2829,7 +3056,7 @@ fn snapshot_packs_do_not_delay_compaction_of_unrelated_published_packs() {
     );
     assert_eq!(
         bytes(stage.read_at("snapshot", 0).unwrap().unwrap()),
-        vec![0; 1024]
+        noise(1024, 9)
     );
     assert_eq!(
         fixture.packs().iter().map(|pack| pack.size).sum::<u64>(),
@@ -3028,34 +3255,24 @@ fn caller_scratch_writes_release_pack_capacity_and_preserve_failure_and_adoption
     let mut writer = fixture.store.replace(key.clone()).unwrap();
     writer.write("records", b"buffered".as_slice()).unwrap();
     assert!(writer.resident_metadata().3 > 0);
-    let mut scratch = [0; 31];
     assert_eq!(
         writer
-            .write_with_scratch("records", b"direct".as_slice(), &mut scratch)
+            .write_unbuffered("records", b"direct".as_slice())
             .unwrap(),
         1
     );
     assert_eq!(writer.resident_metadata().3, 0);
-    assert!(
-        writer
-            .write_with_scratch("records", Broken(false), &mut scratch)
-            .is_err()
-    );
+    assert!(writer.write_unbuffered("records", Broken(false)).is_err());
     assert_eq!(
         writer
-            .write_with_scratch("records", b"after".as_slice(), &mut scratch)
+            .write_unbuffered("records", b"after".as_slice())
             .unwrap(),
         2
-    );
-    assert!(
-        writer
-            .write_with_scratch("records", b"never".as_slice(), &mut [])
-            .is_err()
     );
     let mut stage = writer.stage().unwrap();
     assert_eq!(
         stage
-            .write_with_scratch("records", b"staged".as_slice(), &mut scratch)
+            .write_unbuffered("records", b"staged".as_slice())
             .unwrap(),
         3
     );
@@ -3085,7 +3302,7 @@ fn an_appended_section_keeps_one_run_per_set_bit_of_its_commit_count() {
         for step in 0..4u64 {
             let value = ((commit - 1) * 4 + step).to_le_bytes();
             writer
-                .write_with_scratch("pages", value.as_slice(), &mut scratch)
+                .write_unbuffered("pages", value.as_slice())
                 .unwrap();
         }
         writer = writer.commit_continue_with_scratch(&mut scratch).unwrap();
@@ -3108,16 +3325,16 @@ fn an_appended_section_keeps_one_run_per_set_bit_of_its_commit_count() {
 fn streamed_compaction_with_minimal_scratch_keeps_ranges_and_flat_snapshots() {
     let fixture = Fixture::new();
     let key = fixture.key();
-    let mut scratch = [0; 73];
+    let mut scratch = [0; 97];
     let mut expected: Vec<Vec<u8>> = (0..129u64).map(|n| n.to_le_bytes().to_vec()).collect();
     let mut writer = fixture.store.replace(key.clone()).unwrap();
     for value in &expected {
         writer
-            .write_with_scratch("pages", value.as_slice(), &mut scratch)
+            .write_unbuffered("pages", value.as_slice())
             .unwrap();
     }
     writer = writer
-        .commit_continue_with_scratch(&mut scratch[..72])
+        .commit_continue_with_scratch(&mut scratch[..96])
         .unwrap();
     for revision in 1..=6u64 {
         for range in (0..expected.len()).step_by(3) {
@@ -3134,7 +3351,7 @@ fn streamed_compaction_with_minimal_scratch_keeps_ranges_and_flat_snapshots() {
                 (revision * 100 + ordinal).to_le_bytes().to_vec()
             };
             writer
-                .write_with_scratch("pages", value.as_slice(), &mut scratch)
+                .write_unbuffered("pages", value.as_slice())
                 .unwrap();
             expected.push(value);
         }
@@ -3201,7 +3418,7 @@ fn truncated_entry_compaction_leaves_the_previous_root_and_no_temporary_spool() 
         writer.write("pages", io::empty()).unwrap();
     }
     assert_eq!(
-        writer.commit_with_scratch(&mut [0; 73]).unwrap_err().kind(),
+        writer.commit_with_scratch(&mut [0; 97]).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
     assert_eq!(
@@ -3777,6 +3994,7 @@ fn truncated_entry_fills_retry_without_retaining_partial_bytes() {
         let changed = RangeId {
             offset: expected[1][6].offset + 1,
             len: expected[1][6].len - 1,
+            stored: expected[1][6].stored - 1,
             ..expected[1][6]
         };
         let start = offset as usize;

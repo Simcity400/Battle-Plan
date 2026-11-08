@@ -66,7 +66,7 @@ pub(crate) fn encode<T: Serialize + ?Sized>(value: &T) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 pub(crate) fn write(writer: &mut store::Writer, section: &str, data: impl Read) -> io::Result<u64> {
-    writer.write_with_scratch(section, data, &mut [0; 8192])
+    writer.write_unbuffered(section, data)
 }
 
 pub(crate) fn read<T: Page>(
