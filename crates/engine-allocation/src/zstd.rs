@@ -143,6 +143,20 @@ pub fn bound(raw: usize) -> usize {
     unsafe { zstd_sys::ZSTD_compressBound(raw) }
 }
 
+/// The raw bytes `frame`'s header declares; none when it declares none or is no frame.
+pub fn content_size(frame: &[u8]) -> Option<u64> {
+    // SAFETY: zstd reads within the slice.
+    let size = unsafe { zstd_sys::ZSTD_getFrameContentSize(frame.as_ptr().cast(), frame.len()) };
+    // The unknown and error sizes are the two largest values.
+    (size < u64::MAX - 1).then_some(size)
+}
+
+/// The stored bytes of the one frame `stored` starts with; none when it is no whole frame.
+pub fn frame_size(stored: &[u8]) -> Option<usize> {
+    // SAFETY: zstd reads within the slice.
+    checked(unsafe { zstd_sys::ZSTD_findFrameCompressedSize(stored.as_ptr().cast(), stored.len()) }).ok()
+}
+
 /// A compression context, its level set.
 pub struct Compressor(NonNull<ZSTD_CCtx>);
 
@@ -162,6 +176,11 @@ impl Compressor {
         // SAFETY: a live context.
         checked(unsafe { zstd_sys::ZSTD_CCtx_setParameter(self.0.as_ptr(), parameter, value) })?;
         Ok(())
+    }
+
+    /// Frames from now on are compressed at `level`.
+    pub fn level(&mut self, level: i32) -> io::Result<()> {
+        self.set(ZSTD_cParameter::ZSTD_c_compressionLevel, level)
     }
 
     /// Frames from now on use windows of 2^`log` bytes; 0 sizes each by its level and input.

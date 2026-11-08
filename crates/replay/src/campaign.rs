@@ -1,8 +1,8 @@
 //! A campaign's recording: one `<Campaign name>.battleplan` file holding every session of it
-//! (`H4COLUMN` version 8, [`replay_columnar::envelope`]). Its runs hold every table's hours as
-//! columns ([`crate::columnar_frames`]); its root's campaign records extents hold its sessions,
+//! (`H4COLUMN` version 9, [`replay_columnar::container`]). Its world log's runs hold every
+//! table's hours as columns ([`crate::columnar_frames`]); its records section holds its sessions,
 //! branches, gaps, control records, recovery notes, where each run came from and where a
-//! capture's writer stopped ([`records`]); its facts extents hold the game facts it carries.
+//! capture's writer stopped ([`records`]); its facts section holds the game facts it carries.
 //!
 //! [`Replay`] opens one held on disk or in memory, reads its records and names each run's pages
 //! as [`BlockIndex`] entries; its hours are read through [`hours`]. [`writer`] creates one and
@@ -19,7 +19,10 @@ use crate::{
     scope::CaptureMode,
     spool::ControlRecord,
 };
-use replay_columnar::envelope::{self, Extent};
+use replay_columnar::{
+    container::{SectionKey, schema},
+    envelope::{self, Extent},
+};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::File,
@@ -160,21 +163,7 @@ pub enum SeekResult {
     },
 }
 
-/// One published revision: its number, the file's length through its footer and its root's
-/// digest. A file grows only by later revisions, so one holding this length and root holds it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Revision {
-    pub number: u64,
-    pub length: u64,
-    pub root: [u8; 16],
-}
-
-impl Revision {
-    /// A digest naming the revision, for records kept beside a recording.
-    pub fn digest(self) -> u64 {
-        u64::from_le_bytes(self.root[..8].try_into().expect("eight bytes"))
-    }
-}
+pub use replay_columnar::container::Revision;
 
 /// A campaign's recording, opened: its records, its runs' pages and its revision.
 pub struct Replay {
@@ -228,7 +217,7 @@ impl Replay {
     fn read(recording: Recording, path: Option<PathBuf>) -> io::Result<Self> {
         let root = recording.root();
         let mut records = Records::default();
-        for extent in &root.controls {
+        for extent in recording.records_extents() {
             records.decode_into(&recording.extent_bytes(extent)?)?;
         }
         let identity = decode_identity(&root.identity.content)?;
@@ -242,7 +231,7 @@ impl Replay {
             length: recording.len(),
             root: root_digest(&recording)?,
         };
-        let fact_packs = engine_allocation::copy_vec(&root.facts)?;
+        let fact_packs = engine_allocation::copy_vec(recording.facts_extents())?;
         let Records {
             sessions,
             branches,
@@ -653,11 +642,11 @@ impl Summary {
         let mut root_file = crate::columnar_frames::RootFile::open(file)?;
         let root = root_file.root().clone();
         let mut records = Records::default();
-        for extent in &root.controls {
+        for extent in &root_file.section_extents(SectionKey::RECORDS, schema::RECORDS)? {
             records.decode_into(&root_file.raw(extent)?)?;
         }
         let mut span: Option<(Hour, Hour)> = None;
-        for extent in &root.runs {
+        for extent in &root_file.section_extents(SectionKey::WORLD_LOG, schema::WORLD_LOG)? {
             let directory = envelope::RunDirectory::read(&root_file.raw(extent)?, extent, extent.run)?;
             if directory.ordinals == 0 {
                 continue;

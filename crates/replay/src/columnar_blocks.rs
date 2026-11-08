@@ -292,7 +292,7 @@ impl BlockBuilder {
     /// The block under way, with a restart when due.
     fn close(&mut self) -> io::Result<Finished> {
         let open = self.open.take().ok_or_else(|| invalid("No block is under way"))?;
-        let run = self.run.as_mut().ok_or_else(|| invalid("A block needs a run under way"))?;
+        let run = self.run.as_ref().ok_or_else(|| invalid("A block needs a run under way"))?;
         let mut tables = Vec::new();
         for (table, encoder) in open.tables.into_iter().enumerate() {
             if let Some(encoder) = encoder {
@@ -303,37 +303,9 @@ impl BlockBuilder {
         let due = open.hours == UNIT_ORDINALS
             && (run.ordinal / UNIT_ORDINALS) % self.restart_blocks == 0;
         let restart = if due {
-            let mut states = Vec::with_capacity(self.kinds.len());
-            for table in 0..self.kinds.len() {
-                let status = self.state.status(table).expect("schema table");
-                let refusal = match status {
-                    Status::Unavailable { reason } => Some(reason),
-                    _ => None,
-                };
-                let held = self.state.table(table).expect("schema table");
-                let last = self.state.last(table);
-                let mut ids = referenced_ids(held, refusal)?;
-                if let Some(Last::Apart(apart, _)) = last {
-                    let more = referenced_ids(apart, None)?;
-                    engine_allocation::reserve(&mut ids, more.len())?;
-                    ids.extend(more);
-                }
-                states.push(RestartState {
-                    bytes: restart::write_with(
-                        held,
-                        status,
-                        &Acquisition {
-                            last_read: self.state.sampled_at(table),
-                            available_from: run.available_from[table],
-                            refusal,
-                        },
-                        self.state.truncated_view(table).unwrap_or(&[]),
-                        last,
-                    )?,
-                    ids,
-                });
-            }
+            let states = self.restart_states()?;
             self.state.freeze_dictionary()?;
+            let run = self.run.as_mut().expect("a run under way");
             Some((std::mem::take(&mut run.strings), states))
         } else {
             None
@@ -349,6 +321,48 @@ impl BlockBuilder {
             status_changed: open.status_changed,
             restart,
         })
+    }
+
+    /// Every table's state after the last hour, as a restart holds it, with the run's dictionary
+    /// ids it references.
+    pub fn restart_states(&self) -> io::Result<Vec<RestartState>> {
+        let run = self.run.as_ref().ok_or_else(|| invalid("A restart needs a run under way"))?;
+        let mut states = engine_allocation::vec(self.kinds.len())?;
+        for table in 0..self.kinds.len() {
+            let status = self.state.status(table).expect("schema table");
+            let refusal = match status {
+                Status::Unavailable { reason } => Some(reason),
+                _ => None,
+            };
+            let held = self.state.table(table).expect("schema table");
+            let last = self.state.last(table);
+            let mut ids = referenced_ids(held, refusal)?;
+            if let Some(Last::Apart(apart, _)) = last {
+                let more = referenced_ids(apart, None)?;
+                engine_allocation::reserve(&mut ids, more.len())?;
+                ids.extend(more);
+            }
+            states.push(RestartState {
+                bytes: restart::write_with(
+                    held,
+                    status,
+                    &Acquisition {
+                        last_read: self.state.sampled_at(table),
+                        available_from: run.available_from[table],
+                        refusal,
+                    },
+                    self.state.truncated_view(table).unwrap_or(&[]),
+                    last,
+                )?,
+                ids,
+            });
+        }
+        Ok(states)
+    }
+
+    /// The run's strings first used since its previous restart; none without a run under way.
+    pub fn strings(&self) -> &[Box<[u8]>] {
+        self.run.as_ref().map_or(&[], |run| &run.strings)
     }
 
     /// Ends the run under way: its last block, short, when one is under way.

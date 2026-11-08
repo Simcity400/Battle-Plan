@@ -6,14 +6,13 @@ use super::{
     Segment, columns_at, withheld_at,
     input::{Decoder, Held, Source, check, chunk_places},
     invalid, schema,
+    sections::{self, SectionReader},
 };
 use crate::rows::{TABLE_COUNT, TableId};
 use replay_columnar::{
     block::TableDecoder,
-    envelope::{
-        self, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, Root,
-        RunDirectory,
-    },
+    container::{Root, Section, SectionKey, SectionKind, schema as sections_schema},
+    envelope::{self, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, RunDirectory},
     section::Scratch,
     manifest::Manifest,
     restart::WeakRestored,
@@ -416,10 +415,8 @@ pub struct RootFile {
 impl RootFile {
     pub fn open(file: File) -> io::Result<Self> {
         let (source, extent) = Source::open(Held::File(file))?;
-        let mut decoder = Decoder::new()?;
-        let mut raw = Vec::new();
-        decoder.append(&source, &extent, &mut raw)?;
-        let root = Root::read(&raw)?;
+        let decoder = Decoder::new()?;
+        let root = Root::read(&root_bytes(&source, &extent)?)?;
         Ok(Self {
             source,
             decoder,
@@ -442,12 +439,28 @@ impl RootFile {
         self.source.len()
     }
 
+    /// Every extent of `key`'s section, refused by name unless it is of `version`; none when
+    /// the root holds no such section.
+    pub fn section_extents(&mut self, key: SectionKey, version: u32) -> io::Result<Vec<Extent>> {
+        match self.root.open(key, version)? {
+            Some(section) => sections::extents(&self.source, &mut self.decoder, section),
+            None => Ok(Vec::new()),
+        }
+    }
+
     /// `extent`, one the root names or one those name, decoded.
     pub fn raw(&mut self, extent: &Extent) -> io::Result<Vec<u8>> {
         let mut raw = Vec::new();
         self.decoder.append(&self.source, extent, &mut raw)?;
         Ok(raw)
     }
+}
+
+/// The root `extent` names in `source`, decoded without trusting the length its frame
+/// declares ([`replay_columnar::container::decompress`]).
+fn root_bytes(source: &Source, extent: &Extent) -> io::Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    replay_columnar::container::decompress(source.stored_checked(extent, &mut buffer)?, None)
 }
 
 /// A columnar recording ([`replay_columnar::envelope`]), read from its file or memory: its root, every
@@ -462,8 +475,12 @@ pub struct Recording {
     /// The identity block every run's chain starts from.
     identity: Vec<u8>,
     root_identity: envelope::Identity,
-    /// The root's control records' extents.
-    controls: Box<[Extent]>,
+    /// Its campaign records' extents, in order.
+    records: Box<[Extent]>,
+    /// Its game facts packs' extents, oldest first.
+    facts: Box<[Extent]>,
+    /// Its run directories' extents, in run order.
+    directories: Box<[Extent]>,
     /// The campaign its identity names.
     campaign: Vec<u8>,
     /// Each schema table's columns it holds: the first of this build's.
@@ -544,25 +561,33 @@ impl Recording {
         let (source, root_extent) = Source::open(held).map_err(unlocated)?;
         let source = Arc::new(source);
         let mut decoder = Decoder::new()?;
-        let mut raw = Vec::new();
-        decoder
-            .append(&source, &root_extent, &mut raw)
-            .map_err(unlocated)?;
-        let root = Root::read(&raw).map_err(unlocated)?;
+        let root = Root::read(&root_bytes(&source, &root_extent).map_err(unlocated)?).map_err(unlocated)?;
+        let mut held = |key: SectionKey, version: u32| -> io::Result<Vec<Extent>> {
+            match root.open(key, version)? {
+                Some(section) => sections::extents(&source, &mut decoder, section),
+                None => Ok(Vec::new()),
+            }
+        };
+        let directories = held(SectionKey::WORLD_LOG, sections_schema::WORLD_LOG).map_err(unlocated)?;
+        let records = held(SectionKey::RECORDS, sections_schema::RECORDS).map_err(unlocated)?;
+        let facts = held(SectionKey::FACTS, sections_schema::FACTS).map_err(unlocated)?;
         let (columns, withheld) = recorded_columns(&root, || {
-            let Some(first) = root.controls.first() else {
+            // Every revision's records name the row format: a campaign's in each extent, a
+            // capture's in its record, the last.
+            let Some(last) = records.last() else {
                 return Ok(None);
             };
             let mut raw = Vec::new();
-            decoder.append(&source, first, &mut raw)?;
+            decoder.append(&source, last, &mut raw)?;
             if let Some(format) = crate::campaign::Records::format_of(&raw) {
                 return Ok(Some(format));
             }
             Ok(Some(crate::columnar_file::Capture::read(&raw)?.format))
         })?;
         let mut damage = Vec::new();
-        let mut runs = engine_allocation::vec(root.runs.len())?;
-        for (index, extent) in (0..).zip(&root.runs) {
+        let mut raw = Vec::new();
+        let mut runs = engine_allocation::vec(directories.len())?;
+        for (index, extent) in (0..).zip(&directories) {
             let run = Run::read(&source, &mut decoder, &mut raw, extent, index, &mut damage)?;
             runs.push(run.map(Arc::new));
         }
@@ -598,7 +623,9 @@ impl Recording {
         }
         Ok(Self {
             identity: root.identity.chain_bytes()?,
-            controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&root.controls)?)?,
+            records: engine_allocation::boxed_slice(records)?,
+            facts: engine_allocation::boxed_slice(facts)?,
+            directories: engine_allocation::boxed_slice(directories)?,
             campaign: root.identity.campaign.clone(),
             columns: engine_allocation::boxed_slice(columns)?,
             withheld: engine_allocation::boxed_slice(withheld)?,
@@ -640,7 +667,9 @@ impl Recording {
             withheld: engine_allocation::boxed_slice(withheld)?,
             identity: engine_allocation::copy_vec(&self.identity)?,
             root_identity: self.root_identity.clone(),
-            controls: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.controls)?)?,
+            records: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.records)?)?,
+            facts: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.facts)?)?,
+            directories: engine_allocation::boxed_slice(engine_allocation::copy_vec(&self.directories)?)?,
             campaign: engine_allocation::copy_vec(&self.campaign)?,
             runs: engine_allocation::boxed_slice(engine_allocation::collect_vec(
                 self.runs.iter().cloned(),
@@ -794,19 +823,18 @@ impl Recording {
         &self.identity
     }
 
-    /// The capture the file's runs belong to, as the root's control records hold it; none
-    /// when the root holds none.
+    /// The capture the file's runs belong to, as its records hold it; none when they hold none.
     pub fn capture(&self) -> io::Result<Option<crate::columnar_file::Capture>> {
         let mut decoder = Decoder::new()?;
         let mut raw = Vec::new();
-        if let Some(first) = self.controls.first() {
-            decoder.append(&self.source, first, &mut raw)?;
+        if let Some(last) = self.records.last() {
+            decoder.append(&self.source, last, &mut raw)?;
             // A campaign's recording holds campaign records, not one capture's.
             if crate::campaign::Records::format_of(&raw).is_some() {
                 return Ok(None);
             }
         }
-        crate::columnar_file::read_capture(&self.controls, |extent| {
+        crate::columnar_file::read_capture(&self.records, |extent| {
             let mut raw = Vec::new();
             decoder.append(&self.source, extent, &mut raw)?;
             Ok(raw)
@@ -919,6 +947,35 @@ impl Recording {
     /// The root its footer names.
     pub fn root(&self) -> &Root {
         &self.root
+    }
+
+    /// Every section its root names.
+    pub fn sections(&self) -> &[Section] {
+        &self.root.sections
+    }
+
+    /// Section `id` of `kind`, refused by name unless it is of schema `version`, the only one
+    /// this build's reader of it decodes; none when the recording holds none.
+    pub fn section(&self, kind: SectionKind, id: u32, version: u32) -> io::Result<Option<SectionReader<'_>>> {
+        Ok(self
+            .root
+            .open(SectionKey::new(kind, id), version)?
+            .map(|section| SectionReader::new(&self.source, section)))
+    }
+
+    /// Its campaign records' extents, in order.
+    pub fn records_extents(&self) -> &[Extent] {
+        &self.records
+    }
+
+    /// Its game facts packs' extents, oldest first.
+    pub fn facts_extents(&self) -> &[Extent] {
+        &self.facts
+    }
+
+    /// Its run directories' extents, in run order.
+    pub fn run_directories(&self) -> &[Extent] {
+        &self.directories
     }
 
     /// The digest of the root its footer names, which names its revision.
@@ -1051,6 +1108,12 @@ impl Recording {
             .append(&self.source, extent, &mut raw)
             .map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))?;
         Ok(raw)
+    }
+
+    /// `extent`'s bytes, its place and digest checked: as stored for one stored as it is, else
+    /// decoded from its frame.
+    pub fn section_bytes(&self, extent: &Extent) -> io::Result<Vec<u8>> {
+        sections::read(&self.source, extent).map_err(|error| Damage::wrap(DamageScope::Extent(*extent), error))
     }
 
     /// The identity its root names.
@@ -1899,6 +1962,31 @@ impl<'r> Walker<'r> {
             decoded.push((index, weak));
         }
         drop(decoded);
+        state.trim_dictionary()
+    }
+
+    /// Replaces `state` with run `run`'s tables as a writer's resume state holds them: each
+    /// table's state as a restart holds it, with the run's dictionary chunks it references, after
+    /// the strings the run's restarts hold and `strings`, those first used since.
+    pub fn resume_from(&mut self, run: u32, tables: &[(Vec<u8>, Vec<u32>)], strings: &[Box<[u8]>], state: &mut State) -> io::Result<()> {
+        let recording = self.recording;
+        let held = recording.shared(run)?;
+        if tables.len() != TABLE_COUNT {
+            return Err(invalid("A resume state does not hold every table"));
+        }
+        let (_, ids) = held.chunk_starts();
+        *state = recording.state()?;
+        recording.select_in(state)?;
+        state.set_dictionary(Dictionary::run(held.clone(), ids as usize));
+        state.append_strings(strings)?;
+        for (index, (bytes, chunks)) in tables.iter().enumerate() {
+            for &ordinal in chunks {
+                let at = held.chunk_at(ordinal)?;
+                state.pin_strings(held.load(at)?)?;
+            }
+            let restored = state.decode(index, bytes)?;
+            state.restore_restored(index, restored)?;
+        }
         state.trim_dictionary()
     }
 

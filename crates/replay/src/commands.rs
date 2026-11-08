@@ -28,17 +28,7 @@ impl Recording {
     /// The commands of a campaign's recording, or of one capture's file in a session spool.
     pub fn open_path(path: &Path) -> io::Result<Self> {
         let recording = crate::columnar_frames::Recording::open_path(path)?;
-        let capture = match recording.root().controls.first() {
-            Some(first) => {
-                let bytes = recording.extent_bytes(first)?;
-                if crate::campaign::Records::format_of(&bytes).is_none() {
-                    Some(crate::columnar_file::Capture::read(&bytes)?)
-                } else {
-                    None
-                }
-            }
-            None => None,
-        };
+        let capture = recording.capture()?;
         drop(recording);
         match capture {
             Some(capture) => Self::from_columnar(capture),

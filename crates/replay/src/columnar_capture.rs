@@ -2,20 +2,24 @@
 //! ([`crate::columnar_journal`]): each hour applied as it arrives, each block written once it
 //! fills or its run ends ([`crate::columnar_blocks`]), and the file revised at each journal
 //! segment's end, after which the segment is removed. The capture record counts the segments
-//! the file holds, so a writer taking up its partial file after a stop resumes at the next.
+//! the file holds, so a writer taking up its partial file after a stop resumes at the next. Each
+//! revision is written with the world log's resume state ([`CaptureWriter::world_log_state`]): a
+//! writer taking the file up restores the run under way from it, reading no hour again.
 //!
-//! The file is `columnar.<capture>.h4col.partial` beside the journal while it is written, and
-//! `columnar.<capture>.h4col` once finished.
+//! The file is `columnar.<capture>.h4col.partial` beside the journal while it is written, its
+//! resume state `columnar.<capture>.h4col.partial.state` ([`StateFile`]), and
+//! `columnar.<capture>.h4col` once finished, the resume state gone.
 
 use crate::{
-    columnar_blocks::{BlockBuilder, Finished, note_availability},
+    columnar_blocks::{BlockBuilder, Finished},
     columnar_file::{Capture, CAPTURE_NAME_BYTES, FileWriter, OpenRun, Resumed, Settings, Stop, capture_name},
     columnar_frames::{Recording, Walker, schema},
     columnar_journal::{self, Record, Tail},
 };
 use replay_columnar::{
+    container::{self, SectionKey, StateEntry, StateFile, state_file},
     envelope::{self, UNIT_ORDINALS},
-    manifest::Status,
+    leaf::{Reader, Writer as Bytes},
     restart,
     walk::State,
 };
@@ -51,6 +55,18 @@ pub fn retire_journal(directory: &Path, capture: u32) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The schema version of the world log's resume state ([`CaptureWriter::world_log_state`]).
+const WORLD_LOG_STATE: u32 = 1;
+
+/// Each table's first hour of its current availability, as each of `restarts`' tables holds it.
+fn availability(restarts: &[Vec<u8>], tables: usize) -> io::Result<Vec<Option<i32>>> {
+    let mut available = vec![None; tables];
+    for (table, bytes) in restarts.iter().enumerate().take(tables) {
+        available[table] = restart::acquisition(bytes)?.1.available_from;
+    }
+    Ok(available)
 }
 
 /// What one call to [`CaptureWriter::advance`] got to.
@@ -102,13 +118,14 @@ impl CaptureWriter {
             taken: false,
             done: false,
         };
-        if writer.partial.exists() {
-            if writer.segment_path(0).exists() {
-                // No revision retired the journal's first segment: the journal rebuilds the file.
+        if writer.partial.exists() && !writer.segment_path(0).exists() {
+            writer.resume()?;
+        } else {
+            // No revision retired the journal's first segment: the journal rebuilds the file.
+            if writer.partial.exists() {
                 fs::remove_file(&writer.partial)?;
-            } else {
-                writer.resume()?;
             }
+            state_file::remove_at(&StateFile::path_for(&writer.partial))?;
         }
         Ok(writer)
     }
@@ -130,9 +147,22 @@ impl CaptureWriter {
         Ok(finished)
     }
 
-    /// Takes up the partial file at its last revision: its capture record, its runs, and the last
-    /// run's tables walked from its last restart through its last block.
+    /// Takes up the partial file at the newest revision whose resume state verifies beside it:
+    /// its capture record, its runs, and the last run's tables as that state holds them.
     fn resume(&mut self) -> io::Result<()> {
+        let state = StateFile::open(&StateFile::path_for(&self.partial))?;
+        let file = fs::OpenOptions::new().read(true).write(true).open(&self.partial)?;
+        let recovered = container::recover(&file, Some(&state))?;
+        if recovered.skipped > 0 {
+            // Each revision retires the journal segment it took in: the hours of those after the
+            // one taken up are gone.
+            return Err(invalid(format!(
+                "The partial columnar file's last {} revisions name resume state that does not verify beside it, and their journal is retired",
+                recovered.skipped
+            )));
+        }
+        file.set_len(recovered.length)?;
+        drop(file);
         let recording = Recording::open_path(&self.partial)?;
         let record = recording
             .capture()?
@@ -144,6 +174,8 @@ impl CaptureWriter {
         {
             if Self::ends_capture(&stale)? {
                 drop(recording);
+                drop(state);
+                state_file::remove_at(&StateFile::path_for(&self.partial))?;
                 fs::rename(&self.partial, &self.finished)?;
                 retire(&stale)?;
                 self.done = true;
@@ -151,43 +183,15 @@ impl CaptureWriter {
             }
             retire(&stale)?;
         }
-        let root = recording.root();
-        let tables = schema()?.len();
-        let mut open = None;
-        let runs = recording.run_count();
-        if let Some(last) = runs.checked_sub(1) {
-            let run = recording.run(last)?;
-            // A run whose last block is short ended there; a whole one may go on.
-            if run.ordinals > 0 && run.ordinals % UNIT_ORDINALS == 0 {
-                let (state, strings, previous, available_from) = Self::walk_last(&recording, last)?;
-                let directory = envelope::RunDirectory {
-                    branch: run.branch,
-                    epoch: run.epoch,
-                    first_hour: run.first_hour,
-                    ordinals: run.ordinals,
-                    chain: run.chain,
-                    pages: run.page_extents().to_vec(),
-                };
-                let (chunks, ids) = run.chunk_starts();
-                self.builder.resume(
-                    state,
-                    run.branch,
-                    run.first_hour + run.ordinals as i32,
-                    run.ordinals,
-                    strings,
-                    available_from,
-                )?;
-                open = Some(OpenRun {
-                    run: last,
-                    directory,
-                    chunks,
-                    ids,
-                    previous,
-                });
+        let open = match recovered.state.iter().find(|entry| entry.owner == SectionKey::WORLD_LOG) {
+            Some(entry) => {
+                entry.expect(WORLD_LOG_STATE)?;
+                Some(self.take_up(&recording, &entry.bytes)?)
             }
-        }
+            None => None,
+        };
         let mut last = None;
-        for index in (0..runs).rev() {
+        for index in (0..recording.run_count()).rev() {
             let run = recording.run(index)?;
             if run.ordinals > 0 {
                 last = Some((run.branch, run.first_hour + (run.ordinals - 1) as i32));
@@ -195,65 +199,156 @@ impl CaptureWriter {
             }
         }
         let resumed = Resumed {
-            last,
+            root: recording.root().clone(),
             length: recording.len(),
-            identity: root.identity.clone(),
-            revision: root.revision,
-            runs: root.runs.clone(),
-            controls: root.controls.clone(),
+            last,
             controls_written: record.controls.len(),
             open,
         };
         drop(recording);
+        let tables = schema()?.len();
         let file = fs::OpenOptions::new().read(true).write(true).open(&self.partial)?;
-        self.file = Some(FileWriter::resume(file, resumed, tables, self.settings, |file, length| file.set_len(length))?);
+        self.file = Some(FileWriter::resume(file, resumed, tables, self.settings, Some(state), |file, length| {
+            file.set_len(length)
+        })?);
         self.segment = record.journaled;
         self.record = Some(record);
         Ok(())
     }
 
-    /// The last run's tables after its last block, the strings it first used since its last
-    /// restart, every table's raw bytes at that restart, and each table's first hour of its
-    /// current availability. A run whose last page ends with a restart is that restart.
-    #[allow(clippy::type_complexity)]
-    fn walk_last(recording: &Recording, run: u32) -> io::Result<(State, Vec<Box<[u8]>>, Vec<Vec<u8>>, Vec<Option<i32>>)> {
-        let segment = *recording
-            .segments()
-            .iter()
-            .rev()
-            .find(|segment| segment.run == run)
-            .ok_or_else(|| invalid("A run holds no segment"))?;
-        let last = recording.run(run)?.pages() - 1;
-        let at_end = recording.page(run, last)?.restart.is_some();
-        let restart = if at_end { Some(last) } else { segment.restart };
-        let previous = match restart {
-            Some(at) => recording.restart_tables(run, at)?,
-            None => Vec::new(),
+    /// The run under way as its resume state `bytes` hold it, the builder taking it up after its
+    /// last block ([`Self::world_log_state`]).
+    fn take_up(&mut self, recording: &Recording, bytes: &[u8]) -> io::Result<OpenRun> {
+        let mut reader = Reader::new(bytes);
+        let index = reader.varint_u32()?;
+        let ordinals = reader.varint_u32()?;
+        let restarted = match reader.u8()? {
+            0 => false,
+            1 => true,
+            _ => return Err(invalid("The world log's resume state is malformed")),
         };
+        let run = recording.run(index)?;
+        if index + 1 != recording.run_count() || run.ordinals != ordinals || ordinals % UNIT_ORDINALS != 0 {
+            return Err(invalid("The world log's resume state names another run than the file's last"));
+        }
         let tables = schema()?.len();
-        let (mut statuses, mut available_from) = (vec![Status::NotRecorded; tables], vec![None; tables]);
-        for (table, bytes) in previous.iter().enumerate() {
-            let (status, acquisition) = restart::acquisition(bytes)?;
-            statuses[table] = status;
-            available_from[table] = acquisition.available_from;
-        }
-        let mut walker = Walker::new(recording)?;
+        let last = run.pages() - 1;
         let mut state = State::new(schema()?)?;
-        if at_end {
-            walker.restore(run, last, &mut state)?;
-            return Ok((state, Vec::new(), previous, available_from));
-        }
-        walker.begin(&segment, &mut state)?;
-        let mut strings = Vec::new();
-        walker.walk(&segment, &mut state, |_, manifest, _| {
-            for append in &manifest.appends {
-                strings.push(append.to_vec().into_boxed_slice());
+        let mut walker = Walker::new(recording)?;
+        let (strings, previous, available) = if restarted {
+            if recording.page(index, last)?.restart.is_none() {
+                return Err(invalid("The world log's resume state names a restart its run's last page holds none of"));
             }
-            note_availability(&mut available_from, &statuses, &manifest.statuses, manifest.hour);
-            statuses.copy_from_slice(&manifest.statuses);
-            Ok(true)
-        })?;
-        Ok((state, strings, previous, available_from))
+            walker.restore(index, last, &mut state)?;
+            let previous = recording.restart_tables(index, last)?;
+            let available = availability(&previous, tables)?;
+            (Vec::new(), previous, available)
+        } else {
+            let count = reader.count()?;
+            if count > bytes.len() {
+                return Err(invalid("The world log's resume state counts more strings than it holds"));
+            }
+            let mut strings = engine_allocation::vec(count)?;
+            for _ in 0..count {
+                let length = reader.count()?;
+                strings.push(engine_allocation::copy_vec(reader.raw(length)?)?.into_boxed_slice());
+            }
+            if reader.count()? != tables {
+                return Err(invalid("The world log's resume state does not hold every table"));
+            }
+            let mut held = engine_allocation::vec(tables)?;
+            for _ in 0..tables {
+                let length = reader.count()?;
+                let table = engine_allocation::copy_vec(reader.raw(length)?)?;
+                let count = reader.count()?;
+                if count > bytes.len() {
+                    return Err(invalid("The world log's resume state counts more chunks than it holds"));
+                }
+                let mut chunks = engine_allocation::vec(count)?;
+                for _ in 0..count {
+                    chunks.push(reader.varint_u32()?);
+                }
+                held.push((table, chunks));
+            }
+            walker.resume_from(index, &held, &strings, &mut state)?;
+            let restart = recording
+                .segments()
+                .iter()
+                .rev()
+                .find(|segment| segment.run == index)
+                .and_then(|segment| segment.restart);
+            let previous = match restart {
+                Some(at) => recording.restart_tables(index, at)?,
+                None => Vec::new(),
+            };
+            let bytes: Vec<Vec<u8>> = engine_allocation::collect_vec(held.into_iter().map(|(table, _)| table))?;
+            (strings, previous, availability(&bytes, tables)?)
+        };
+        reader.finish()?;
+        let next_hour = run
+            .first_hour
+            .checked_add_unsigned(ordinals)
+            .ok_or_else(|| invalid("A run's hours pass 2^31"))?;
+        self.builder.resume(state, run.branch, next_hour, ordinals, strings, available)?;
+        let (chunks, ids) = run.chunk_starts();
+        Ok(OpenRun {
+            run: index,
+            directory: envelope::RunDirectory {
+                branch: run.branch,
+                epoch: run.epoch,
+                first_hour: run.first_hour,
+                ordinals,
+                chain: run.chain,
+                pages: run.page_extents().to_vec(),
+            },
+            chunks,
+            ids,
+            previous,
+            restarted,
+        })
+    }
+
+    /// The world log's resume state after the last block written: the run under way, and unless
+    /// its last block ended with a restart, which holds them, the run's strings since its last
+    /// restart and every table's state with the dictionary chunks it references. None without a
+    /// run under way.
+    fn world_log_state(&self) -> io::Result<Option<StateEntry>> {
+        let Some(run) = self.file.as_ref().and_then(FileWriter::open_run) else {
+            return Ok(None);
+        };
+        let mut out = Bytes::new();
+        out.varint(u64::from(run.run))?;
+        out.varint(u64::from(run.ordinals))?;
+        out.u8(u8::from(run.restarted))?;
+        if !run.restarted {
+            let strings = self.builder.strings();
+            out.varint(strings.len() as u64)?;
+            for string in strings {
+                out.varint(string.len() as u64)?;
+                out.raw(string)?;
+            }
+            let states = self.builder.restart_states()?;
+            out.varint(states.len() as u64)?;
+            let mut held = Vec::new();
+            for state in &states {
+                out.varint(state.bytes.len() as u64)?;
+                out.raw(&state.bytes)?;
+                // Ids past the run's restarts are the strings since, which the state holds.
+                held.clear();
+                engine_allocation::reserve(&mut held, state.ids.len())?;
+                held.extend(state.ids.iter().copied().filter(|&id| id < run.ids));
+                let chunks = crate::columnar_file::chunks_holding(run.chunks, &held)?;
+                out.varint(chunks.len() as u64)?;
+                for chunk in chunks {
+                    out.varint(u64::from(chunk))?;
+                }
+            }
+        }
+        Ok(Some(StateEntry {
+            owner: SectionKey::WORLD_LOG,
+            version: WORLD_LOG_STATE,
+            bytes: out.into_bytes(),
+        }))
     }
 
     /// Lets go of the journal segment it reads until its next advance, which takes up where
@@ -335,7 +430,8 @@ impl CaptureWriter {
                     .write(true)
                     .create_new(true)
                     .open(&self.partial)?;
-                self.file = Some(FileWriter::create(file, identity, schema()?.len(), self.settings)?);
+                let state = StateFile::open(&StateFile::path_for(&self.partial))?;
+                self.file = Some(FileWriter::create_with(file, identity, schema()?.len(), self.settings, Some(state))?);
                 self.record = Some(record);
             }
             Record::Run {
@@ -401,7 +497,9 @@ impl CaptureWriter {
         match finish {
             None => {
                 let capture = self.record.clone();
-                self.file_mut()?.revise(capture.as_ref(), |file| file.sync_data())?;
+                let state = self.world_log_state()?;
+                let state = state.as_ref().map(std::slice::from_ref);
+                self.file_mut()?.revise(capture.as_ref(), state, |file| file.sync_data())?;
             }
             Some(stop) => {
                 let mut capture = self.record.take().expect("held");

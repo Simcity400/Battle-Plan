@@ -5,8 +5,11 @@
 //! The records the save adds and a game facts pack go in with them, and a new root names it all.
 
 use super::{Replay, Revision, records::Records, records::RunSource};
-use crate::{columnar_file::compress, columnar_frames::Recording, format::FormatVersion};
-use replay_columnar::envelope::{self, Extent, Kind, Root, RunDirectory};
+use crate::{columnar_frames::Recording, format::FormatVersion};
+use replay_columnar::{
+    container::{ContainerWriter, SectionKey, Tags, schema},
+    envelope::{self, Extent, Kind, RunDirectory},
+};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
@@ -40,13 +43,9 @@ pub struct Ingest {
 }
 
 pub struct CampaignWriter<W: Write + Seek> {
-    file: W,
+    container: ContainerWriter<W>,
     level: i32,
-    identity: envelope::Identity,
-    revision: u64,
     runs: Vec<HeldRun>,
-    controls: Vec<Extent>,
-    facts: Vec<Extent>,
     /// Where each run came from: the file's, then those this save adds.
     sources: Vec<RunSource>,
     pending: Records,
@@ -56,18 +55,19 @@ pub struct CampaignWriter<W: Write + Seek> {
 
 impl<W: Write + Seek> CampaignWriter<W> {
     /// A new recording at `file`'s start, of `identity`, its extents compressed at `level`.
-    pub fn create(mut file: W, identity: envelope::Identity, level: i32) -> io::Result<Self> {
-        file.write_all(envelope::MAGIC)?;
-        file.write_all(&envelope::VERSION.to_le_bytes())?;
+    pub fn create(file: W, identity: envelope::Identity, level: i32) -> io::Result<Self> {
+        Self::with(ContainerWriter::create(file, identity, level, None)?, level, Vec::new(), Vec::new())
+    }
+
+    fn with(mut container: ContainerWriter<W>, level: i32, runs: Vec<HeldRun>, sources: Vec<RunSource>) -> io::Result<Self> {
+        container.section(SectionKey::WORLD_LOG, schema::WORLD_LOG)?;
+        container.section(SectionKey::RECORDS, schema::RECORDS)?;
+        container.section(SectionKey::FACTS, schema::FACTS)?;
         Ok(Self {
-            file,
+            container,
             level,
-            identity,
-            revision: 0,
-            runs: Vec::new(),
-            controls: Vec::new(),
-            facts: Vec::new(),
-            sources: Vec::new(),
+            runs,
+            sources,
             pending: Records::default(),
             poisoned: false,
         })
@@ -75,7 +75,7 @@ impl<W: Write + Seek> CampaignWriter<W> {
 
     /// The file it writes.
     pub fn into_inner(self) -> W {
-        self.file
+        self.container.into_inner()
     }
 
     /// Whether this save adds anything yet.
@@ -90,7 +90,7 @@ impl<W: Write + Seek> CampaignWriter<W> {
 
     /// The game facts packs the file carries, these saves' included.
     pub fn facts(&self) -> usize {
-        self.facts.len()
+        self.container.section_of(SectionKey::FACTS).map_or(0, |section| section.len() as usize)
     }
 
     /// Adds `records` to the save.
@@ -104,9 +104,7 @@ impl<W: Write + Seek> CampaignWriter<W> {
         let result = (|| {
             // Stored as it is: a pack is compressed within, and read at its offsets.
             let extent = self.append(Kind::Facts, 0, 0, 0, 0, pack.len(), pack)?;
-            engine_allocation::reserve(&mut self.facts, 1)?;
-            self.facts.push(extent);
-            Ok(())
+            self.container.append(SectionKey::FACTS, extent)
         })();
         self.poison(result)
     }
@@ -138,9 +136,10 @@ impl<W: Write + Seek> CampaignWriter<W> {
                 "A capture that cannot be read whole is not saved: {damage}"
             )));
         }
-        if capture.root_identity().schema != self.identity.schema
-            || !capture.campaign().eq_ignore_ascii_case(&self.identity.campaign)
-            || capture.root_identity().capture_mode != self.identity.capture_mode
+        let identity = self.container.identity();
+        if capture.root_identity().schema != identity.schema
+            || !capture.campaign().eq_ignore_ascii_case(&identity.campaign)
+            || capture.root_identity().capture_mode != identity.capture_mode
         {
             return Err(invalid(
                 "A capture of another campaign, capture mode or schema than its recording's",
@@ -268,10 +267,10 @@ impl<W: Write + Seek> CampaignWriter<W> {
         sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
         prepare: impl FnOnce(Revision) -> io::Result<()>,
     ) -> io::Result<Revision> {
-        let mut controls = engine_allocation::copy_vec(&self.controls)?;
         if !self.pending.is_empty() {
             let bytes = self.pending.encode(FormatVersion::CURRENT)?;
-            controls.push(self.extent(Kind::Controls, 0, 0, 0, &bytes)?);
+            let extent = self.extent(Kind::Controls, 0, 0, 0, &bytes)?;
+            self.container.append(SectionKey::RECORDS, extent)?;
         }
         let mut directories = engine_allocation::vec(self.runs.len())?;
         for at in 0..self.runs.len() {
@@ -293,40 +292,15 @@ impl<W: Write + Seek> CampaignWriter<W> {
             };
             directories.push(directory);
         }
-        sync(&mut self.file)?;
-        let root = Root {
-            identity: self.identity.clone(),
-            revision: self.revision + 1,
-            runs: directories,
-            controls,
-            facts: engine_allocation::copy_vec(&self.facts)?,
-        };
-        let written = root.write()?;
-        let extent = self.extent(Kind::Root, 0, 0, 0, &written)?;
-        sync(&mut self.file)?;
-        let length = self.file.stream_position()? + envelope::FOOTER_BYTES as u64;
-        prepare(Revision {
-            number: self.revision + 1,
-            length,
-            root: extent.digest,
-        })?;
-        self.file
-            .write_all(&envelope::footer(extent.offset, extent.stored, &extent.digest))?;
-        self.file.flush()?;
-        sync(&mut self.file)?;
+        self.container.set_open(SectionKey::WORLD_LOG, &directories)?;
+        let revision = self.container.commit_with(None, sync, prepare)?;
         // Named now: the next save writes only what changes after this.
-        for (held, directory) in self.runs.iter_mut().zip(&root.runs) {
-            held.directory = Some(*directory);
+        for (held, directory) in self.runs.iter_mut().zip(directories) {
+            held.directory = Some(directory);
             held.dirty = false;
         }
-        self.controls = root.controls;
         self.pending = Records::default();
-        self.revision += 1;
-        Ok(Revision {
-            number: self.revision,
-            length,
-            root: extent.digest,
-        })
+        Ok(revision)
     }
 
     fn usable(&self) -> io::Result<()> {
@@ -347,8 +321,13 @@ impl<W: Write + Seek> CampaignWriter<W> {
 
     /// `raw`, compressed, appended as an extent.
     fn extent(&mut self, kind: Kind, run: u32, first: u32, hours: u32, raw: &[u8]) -> io::Result<Extent> {
-        let stored = compress(self.level, raw, None)?;
-        self.append(kind, run, 0, first, hours, raw.len(), &stored)
+        let tags = Tags {
+            run,
+            first,
+            hours,
+            ..Tags::default()
+        };
+        self.container.put_zstd(kind, tags, raw, self.level)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -362,19 +341,7 @@ impl<W: Write + Seek> CampaignWriter<W> {
         raw: usize,
         stored: &[u8],
     ) -> io::Result<Extent> {
-        let offset = self.file.stream_position()?;
-        self.file.write_all(stored)?;
-        Ok(Extent {
-            kind,
-            run,
-            stream,
-            first,
-            hours,
-            offset,
-            stored: stored.len() as u64,
-            raw: raw as u64,
-            digest: envelope::digest(stored),
-        })
+        self.container.put(kind, Tags { run, stream, first, hours }, raw as u64, stored)
     }
 }
 
@@ -385,8 +352,9 @@ impl<W: Write + Seek> CampaignWriter<W> {
         replay.require_undamaged()?;
         let recording = replay.recording();
         let root = recording.root();
-        let mut runs = engine_allocation::vec(root.runs.len())?;
-        for (at, directory) in (0..).zip(&root.runs) {
+        let directories = recording.run_directories();
+        let mut runs = engine_allocation::vec(directories.len())?;
+        for (at, directory) in (0..).zip(directories) {
             let run = recording.run(at)?;
             runs.push(HeldRun {
                 directory: Some(*directory),
@@ -399,18 +367,8 @@ impl<W: Write + Seek> CampaignWriter<W> {
                 dirty: false,
             });
         }
-        Ok(Self {
-            file,
-            level,
-            identity: root.identity.clone(),
-            revision: root.revision,
-            runs,
-            controls: engine_allocation::copy_vec(&root.controls)?,
-            facts: engine_allocation::copy_vec(&root.facts)?,
-            sources: replay.sources.clone(),
-            pending: Records::default(),
-            poisoned: false,
-        })
+        let container = ContainerWriter::resume(file, root.clone(), replay.saved_length(), level, None)?;
+        Self::with(container, level, runs, replay.sources.clone())
     }
 }
 

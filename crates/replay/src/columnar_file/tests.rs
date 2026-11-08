@@ -378,8 +378,8 @@ fn revisions_publish_every_block_so_far_and_the_finished_file_reads_whole() {
     let mut published = Vec::new();
     for hour in 1..=hours {
         if runs.hour(&frame(hour), hour == 1) {
-            runs.file.revise(None, |_| Ok(())).unwrap();
-            published.push((hour, runs.file.file.get_ref().clone()));
+            runs.file.revise(None, None, |_| Ok(())).unwrap();
+            published.push((hour, runs.file.file_mut().get_ref().clone()));
         }
     }
     assert_eq!(published.len(), 3);
@@ -654,12 +654,12 @@ fn revisions_append_only_new_control_records() {
         controls: vec![noise(1)],
     };
     let mut file = file();
-    file.revise(Some(&capture), |_| Ok(())).unwrap();
-    let first = file.file.get_ref().len();
+    file.revise(Some(&capture), None, |_| Ok(())).unwrap();
+    let first = file.file_mut().get_ref().len();
     capture.controls.push(b"later".to_vec());
-    file.revise(Some(&capture), |_| Ok(())).unwrap();
-    assert!(file.file.get_ref().len() - first < 4 * 1024);
-    let published = Recording::open(file.file.get_ref().clone()).unwrap();
+    file.revise(Some(&capture), None, |_| Ok(())).unwrap();
+    assert!(file.file_mut().get_ref().len() - first < 4 * 1024);
+    let published = Recording::open(file.file_mut().get_ref().clone()).unwrap();
     assert_eq!(published.capture().unwrap(), Some(capture.clone()));
     capture.controls.push(b"last".to_vec());
     let bytes = file

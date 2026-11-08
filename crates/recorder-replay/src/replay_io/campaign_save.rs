@@ -377,7 +377,10 @@ pub(super) fn remove_captures(campaign_dir: &Path) -> io::Result<()> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if capture_of(&name).is_some() || replay::columnar_journal::segment_of(&name).is_some() {
+        if capture_of(&name).is_some()
+            || replay::columnar_file::resume_state_of(&name).is_some()
+            || replay::columnar_journal::segment_of(&name).is_some()
+        {
             match replay::publication::posix_delete(&entry.path()) {
                 Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
                 _ => {}

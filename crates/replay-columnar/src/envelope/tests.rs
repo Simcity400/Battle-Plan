@@ -169,36 +169,6 @@ fn a_run_directory_reads_back_and_its_pages_cover_the_run_with_one_short_tail() 
     assert!(directory(pages, UNIT_ORDINALS + 6).write(2).is_err());
 }
 
-fn root() -> Root {
-    Root {
-        identity: Identity {
-            schema: [1; 32],
-            campaign: b"campaign".to_vec(),
-            content: b"content".to_vec(),
-            capture_mode: 2,
-        },
-        revision: 4,
-        runs: vec![
-            extent(Kind::RunDirectory, 0, 0, 0, 0),
-            extent(Kind::RunDirectory, 1, 0, 0, 0),
-        ],
-        controls: vec![extent(Kind::Controls, 0, 0, 0, 0); 2],
-        facts: vec![extent(Kind::Facts, 0, 0, 0, 0)],
-    }
-}
-
-#[test]
-fn a_root_lists_its_run_directories_in_order_and_its_controls() {
-    let written = root();
-    assert_eq!(Root::read(&written.write().unwrap()).unwrap(), written);
-    let mut swapped = root();
-    swapped.runs.swap(0, 1);
-    assert!(swapped.write().is_err());
-    let mut misplaced = root();
-    misplaced.controls[1].kind = Kind::RunDirectory;
-    assert!(misplaced.write().is_err());
-}
-
 #[test]
 fn an_extent_is_read_only_inside_the_extents_and_with_its_digest() {
     let mut file = MAGIC.to_vec();

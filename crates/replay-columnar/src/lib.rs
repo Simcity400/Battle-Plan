@@ -3,6 +3,7 @@
 //! that compares an hour's rows with them to make those runs.
 
 pub mod block;
+pub mod container;
 pub mod envelope;
 pub mod leaf;
 pub mod manifest;

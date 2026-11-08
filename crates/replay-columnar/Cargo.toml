@@ -11,7 +11,7 @@ doctest = false
 
 [dependencies]
 blake3.workspace = true
-engine-allocation.workspace = true
+engine-allocation = { workspace = true, features = ["zstd"] }
 foldhash = "0.2"
 replay-spool.workspace = true
 

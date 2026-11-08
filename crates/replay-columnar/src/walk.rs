@@ -1189,6 +1189,11 @@ impl State {
         self.dictionary = dictionary;
     }
 
+    /// Appends `strings` to the dictionary, as the hours that first used them would.
+    pub fn append_strings(&mut self, strings: &[Box<[u8]>]) -> io::Result<()> {
+        strings.iter().try_for_each(|text| self.dictionary.append(text))
+    }
+
     /// Holds `strings`, a chunk of the run the dictionary is of, whole.
     pub fn pin_strings(&mut self, strings: Arc<Packed>) -> io::Result<()> {
         self.dictionary.pin(strings)

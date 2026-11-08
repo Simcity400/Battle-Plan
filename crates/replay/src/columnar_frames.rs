@@ -26,7 +26,10 @@ use crate::{
     scope::CaptureMode,
 };
 #[cfg(test)]
-use replay_columnar::envelope::{Extent, Kind, Root};
+use replay_columnar::{
+    container::Root,
+    envelope::{Extent, Kind},
+};
 #[cfg(any(test, feature = "test-support"))]
 use replay_columnar::envelope::{self, IndexPage};
 use replay_columnar::{
@@ -47,8 +50,10 @@ use std::{
 
 mod input;
 mod reader;
+mod sections;
 pub(crate) use reader::{Reads, Spread, Steps};
 pub use reader::{Damage, DamageScope, Recording, RootFile, Run, Tally, Timings, Walker};
+pub use sections::SectionReader;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;

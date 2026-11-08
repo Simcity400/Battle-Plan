@@ -3,12 +3,13 @@
 
 use super::invalid;
 use engine_allocation::zstd::{Decompressor, Error, Holder};
-use replay_columnar::envelope::{self, Extent, Kind};
+use replay_columnar::{
+    container::{Footers, ReadAt},
+    envelope::{self, Extent, Kind},
+};
 use std::{fs::File, io, mem::MaybeUninit, ops::Range};
 use zstd::zstd_safe;
 
-/// The blocks a footer is searched for and a file's root hashed in.
-const BLOCK: usize = 64 << 10;
 /// The most bytes a zstd frame's header takes, its content size among them.
 const FRAME_HEADER: usize = 18;
 
@@ -61,92 +62,24 @@ impl Held {
             }
         }
     }
+}
 
-    /// The digest of `length` bytes from `at`, within the bytes held, as
-    /// [`envelope::digest`] makes it; a file's are read through `block`.
-    fn digest(&self, at: u64, length: u64, block: &mut [u8]) -> io::Result<[u8; 16]> {
-        match self {
-            Self::Memory(bytes) => Ok(envelope::digest(&bytes[at as usize..][..length as usize])),
-            Self::File(file) => {
-                let mut hasher = blake3::Hasher::new();
-                let mut done = 0;
-                while done < length {
-                    let count = (length - done).min(block.len() as u64) as usize;
-                    read_at(file, at + done, &mut block[..count])?;
-                    hasher.update(&block[..count]);
-                    done += count as u64;
-                }
-                Ok(hasher.finalize().as_bytes()[..16]
-                    .try_into()
-                    .expect("sixteen bytes"))
-            }
-        }
+impl ReadAt for Held {
+    fn len(&self) -> io::Result<u64> {
+        Held::len(self)
+    }
+
+    fn read_at(&self, at: u64, out: &mut [u8]) -> io::Result<()> {
+        self.read(at, out)
     }
 }
 
-/// The last footer whose root verifies, as [`envelope::last_root`] finds it, read a block at
-/// a time from the end: its root's envelope, and the recording's length through the footer.
+/// The last footer whose root verifies ([`Footers`]): its root's envelope, and the recording's
+/// length through the footer.
 fn last_root(held: &Held) -> io::Result<(Extent, u64)> {
-    let length = held.len()?;
-    let header = envelope::HEADER_BYTES as u64;
-    let footer = envelope::FOOTER_BYTES as u64;
-    let mut start = [0; envelope::HEADER_BYTES];
-    held.read(0, &mut start[..length.min(header) as usize])?;
-    envelope::check_header(&start[..length.min(header) as usize])?;
-    if length < header + footer {
-        return Err(invalid("An H4COLUMN recording holds no footer"));
-    }
-    let magic = envelope::FOOTER_MAGIC.len();
-    let mut block = engine_allocation::filled(BLOCK, 0_u8)?;
-    let mut hashed = engine_allocation::filled(BLOCK, 0_u8)?;
-    // A root sits right before its footer. All candidates' roots together are hashed at most
-    // twice the file's length: a tail of footer-shaped bytes cannot cost more.
-    let (mut work, mut stop) = (0_u64, length);
-    while stop > header {
-        let first = stop.saturating_sub(BLOCK as u64).max(header);
-        let count = (stop - first) as usize;
-        held.read(first, &mut block[..count])?;
-        for at in (0..(count + 1).saturating_sub(magic)).rev() {
-            if block[at..at + magic] != *envelope::FOOTER_MAGIC {
-                continue;
-            }
-            let end = first + (at + magic) as u64;
-            if end < header + footer {
-                continue;
-            }
-            let mut bytes = [0; envelope::FOOTER_BYTES];
-            held.read(end - footer, &mut bytes)?;
-            let root = Extent {
-                kind: Kind::Root,
-                run: 0,
-                stream: 0,
-                first: 0,
-                hours: 0,
-                offset: u64::from_le_bytes(bytes[..8].try_into().expect("eight bytes")),
-                stored: u64::from_le_bytes(bytes[8..16].try_into().expect("eight bytes")),
-                raw: 0,
-                digest: bytes[16..32].try_into().expect("sixteen bytes"),
-            };
-            if root.offset < header || root.offset.checked_add(root.stored) != Some(end - footer) {
-                continue;
-            }
-            work += root.stored;
-            if work > 2 * length {
-                return Err(invalid(
-                    "Recovering the recording's footer exceeds its work bound",
-                ));
-            }
-            if held.digest(root.offset, root.stored, &mut hashed)? == root.digest {
-                return Ok((root, end));
-            }
-        }
-        if first == header {
-            break;
-        }
-        // Blocks overlap by a magic less one byte, so one across their boundary is seen.
-        stop = first + magic as u64 - 1;
-    }
-    Err(invalid("The recording has no footer whose root verifies"))
+    Footers::new(held)?
+        .next()?
+        .ok_or_else(|| invalid("The recording has no footer whose root verifies"))
 }
 
 /// A recording's bytes through its last footer whose root verifies.

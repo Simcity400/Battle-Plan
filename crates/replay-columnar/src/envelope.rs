@@ -1,25 +1,22 @@
-//! A recording's saved-file envelope (`H4COLUMN` version 8): one campaign, every session in it.
+//! A recording's extents and its world log's layout (`H4COLUMN` version 9): one campaign, every
+//! session in it, in sections ([`crate::container`]).
 //!
-//! The file is append-only: zstd extents in any order, then a [`Root`] extent, then a
-//! fixed [`FOOTER_BYTES`] footer naming the root. A writer appends extents, syncs, appends
-//! the root, syncs, then appends the footer and syncs; a reader takes the last footer whose
-//! root verifies ([`last_root`]), so a torn tail after it is ignored, and a writer reopening
-//! the file truncates that tail first. Every extent is described where it is referenced, by
-//! an [`Extent`] envelope carrying a digest of its stored bytes, so a reader checks an
-//! extent's place and length before allocating and its bytes before decoding.
+//! Every extent is described where it is referenced, by an [`Extent`] envelope carrying a
+//! digest of its stored bytes, so a reader checks an extent's place and length before allocating
+//! and its bytes before decoding. The file's header, footer and root are [`crate::container`]'s.
 //!
-//! A run is one continuous span of one branch and observation epoch, on its own grid of
-//! [`UNIT_ORDINALS`]-ordinal blocks, each written once and never revised: one [`IndexPage`]
-//! per block names its hour records ([`crate::records`]) and each table's block
-//! ([`crate::block`]) for the tables with hours in it, the restart that may end it (one extent
-//! per table and the run's dictionary chunk, under one ordinal barrier), which tables the block
-//! touched, and the chain after it. A page's records and blocks (its units) each decode alone,
-//! stored as frames of [`CHUNK_BYTES`] raw bytes each compressed apart ([`IndexPage::chunks`]),
-//! so one unit decodes on many threads. A restart's table is stored as a change from the run's
-//! previous restart's ([`RestartTable::base`]), every [`KEYFRAME_RESTARTS`]th whole. Dictionary
-//! ids are run-local. Each run's pages are listed by its own [`RunDirectory`] extent, the
-//! campaign's records by [`Kind::Controls`] extents and its game facts by [`Kind::Facts`]
-//! extents, so a revision rewrites only the directories of the runs it adds to and a small root.
+//! The world log holds the runs. A run is one continuous span of one branch and observation
+//! epoch, on its own grid of [`UNIT_ORDINALS`]-ordinal blocks, each written once and never
+//! revised: one [`IndexPage`] per block names its hour records ([`crate::records`]) and each
+//! table's block ([`crate::block`]) for the tables with hours in it, the restart that may end it
+//! (one extent per table and the run's dictionary chunk, under one ordinal barrier), which tables
+//! the block touched, and the chain after it. A page's records and blocks (its units) each decode
+//! alone, stored as frames of [`CHUNK_BYTES`] raw bytes each compressed apart
+//! ([`IndexPage::chunks`]), so one unit decodes on many threads. A restart's table is stored as a
+//! change from the run's previous restart's ([`RestartTable::base`]), every
+//! [`KEYFRAME_RESTARTS`]th whole. Dictionary ids are run-local. Each run's pages are listed by its
+//! own [`RunDirectory`] extent, the world log's entry for the run, so a revision rewrites only the
+//! directories of the runs it adds to and a small root.
 //!
 //! The chain covers each block's extents by their digests ([`chain_block`]).
 
@@ -34,10 +31,11 @@ use std::io;
 mod tests;
 
 pub const MAGIC: &[u8; 8] = b"H4COLUMN";
-/// 8: a page's units decode alone, in chunks ([`CHUNK_BYTES`]); 7: a whole restart every 16th
-/// ([`KEYFRAME_RESTARTS`]); 6: a whole campaign in one file, its records and game facts in the
-/// root; 5: each table's hours stored once per block of [`UNIT_ORDINALS`].
-pub const VERSION: u32 = 8;
+/// 9: versioned sections, the world log, records and game facts among them, and resume state
+/// beside the file ([`crate::container`]); 8: a page's units decode alone, in chunks
+/// ([`CHUNK_BYTES`]); 7: a whole restart every 16th ([`KEYFRAME_RESTARTS`]); 6: a whole campaign in
+/// one file; 5: each table's hours stored once per block of [`UNIT_ORDINALS`].
+pub const VERSION: u32 = 9;
 pub const HEADER_BYTES: usize = 12;
 pub const FOOTER_MAGIC: &[u8; 8] = b"H4COLEND";
 /// Root offset, root stored length, root digest and the footer magic.
@@ -136,6 +134,12 @@ pub enum Kind {
     Controls = 8,
     /// One pack of the game facts the recording carries, opaque here.
     Facts = 9,
+    /// A page of a section's index tree ([`crate::container::Frozen`]); its stream is its level.
+    Index = 10,
+    /// A section owner's bytes as one zstd frame; its other fields are the owner's tags.
+    Data = 11,
+    /// A section owner's bytes as they are; its other fields are the owner's tags.
+    Stored = 12,
 }
 
 impl Kind {
@@ -150,6 +154,9 @@ impl Kind {
             7 => Self::RunDirectory,
             8 => Self::Controls,
             9 => Self::Facts,
+            10 => Self::Index,
+            11 => Self::Data,
+            12 => Self::Stored,
             _ => return Err(invalid(format!("Unknown extent kind {byte}"))),
         })
     }
@@ -731,81 +738,6 @@ impl RunDirectory {
     }
 }
 
-/// What the footer names.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Root {
-    pub identity: Identity,
-    /// Increases with every published revision of the file; chains never include it.
-    pub revision: u64,
-    /// Each run's directory, in run order.
-    pub runs: Vec<Extent>,
-    /// The campaign records' extents, in the order `replay` reads them.
-    pub controls: Vec<Extent>,
-    /// The game facts packs' extents, oldest first.
-    pub facts: Vec<Extent>,
-}
-
-impl Root {
-    pub fn write(&self) -> io::Result<Vec<u8>> {
-        self.validate()?;
-        let mut writer = Writer::new();
-        let identity = self.identity.chain_bytes()?;
-        writer.varint(identity.len() as u64)?;
-        writer.raw(&identity)?;
-        writer.varint(self.revision)?;
-        for list in [&self.runs, &self.controls, &self.facts] {
-            writer.varint(list.len() as u64)?;
-            for extent in list {
-                extent.write(&mut writer)?;
-            }
-        }
-        Ok(writer.into_bytes())
-    }
-
-    pub fn read(bytes: &[u8]) -> io::Result<Self> {
-        let mut reader = Reader::new(bytes);
-        let length = reader.count()?;
-        let identity = Identity::read(reader.raw(length)?)?;
-        let revision = reader.varint()?;
-        let mut lists = [Vec::new(), Vec::new(), Vec::new()];
-        for list in &mut lists {
-            let count = bounded(reader.count()?, usize::MAX, bytes, EXTENT_BYTES)?;
-            *list = engine_allocation::vec(count)?;
-            for _ in 0..count {
-                list.push(Extent::read(&mut reader)?);
-            }
-        }
-        reader.finish()?;
-        let [runs, controls, facts] = lists;
-        let root = Self {
-            identity,
-            revision,
-            runs,
-            controls,
-            facts,
-        };
-        root.validate()?;
-        Ok(root)
-    }
-
-    /// Run `n`'s directory is the `n`th; controls are controls and facts facts.
-    fn validate(&self) -> io::Result<()> {
-        for (at, run) in self.runs.iter().enumerate() {
-            run.expect(
-                Kind::RunDirectory,
-                u32::try_from(at).map_err(|_| invalid("Too many runs"))?,
-            )?;
-        }
-        for controls in &self.controls {
-            controls.expect(Kind::Controls, 0)?;
-        }
-        for facts in &self.facts {
-            facts.expect(Kind::Facts, 0)?;
-        }
-        Ok(())
-    }
-}
-
 /// The footer of a file whose root was written at `root` with `stored` bytes and `digest`.
 pub fn footer(root: u64, stored: u64, digest: &[u8; 16]) -> [u8; FOOTER_BYTES] {
     let mut bytes = [0; FOOTER_BYTES];
@@ -837,58 +769,8 @@ pub fn check_header(header: &[u8]) -> io::Result<()> {
 /// The last footer of a file of this version whose root verifies: its root's envelope, and
 /// the file's length through that footer. Anything after it is a torn tail.
 pub fn last_root(file: &[u8]) -> io::Result<(Extent, usize)> {
-    check_header(file)?;
-    if file.len() < HEADER_BYTES + FOOTER_BYTES {
-        return Err(invalid("An H4COLUMN recording holds no footer"));
-    }
-    // A root sits right before its footer. All candidates' roots together are hashed at
-    // most twice the file's length: a tail of footer-shaped bytes cannot cost more.
-    let mut work = 0_u64;
-    let budget = 2 * file.len() as u64;
-    let mut end = file.len();
-    while end >= HEADER_BYTES + FOOTER_BYTES {
-        let Some(at) = file[HEADER_BYTES..end]
-            .windows(FOOTER_MAGIC.len())
-            .rposition(|window| window == FOOTER_MAGIC)
-            .map(|at| at + HEADER_BYTES)
-        else {
-            break;
-        };
-        let stop = at + FOOTER_MAGIC.len();
-        if stop >= HEADER_BYTES + FOOTER_BYTES {
-            let footer = &file[stop - FOOTER_BYTES..stop];
-            let root = Extent {
-                kind: Kind::Root,
-                run: 0,
-                stream: 0,
-                first: 0,
-                hours: 0,
-                offset: u64::from_le_bytes(footer[..8].try_into().expect("eight bytes")),
-                stored: u64::from_le_bytes(footer[8..16].try_into().expect("eight bytes")),
-                raw: 0,
-                digest: footer[16..32].try_into().expect("sixteen bytes"),
-            };
-            let body = &file[..stop];
-            let placed = usize::try_from(root.offset)
-                .ok()
-                .zip(usize::try_from(root.stored).ok())
-                .and_then(|(start, length)| Some(start..start.checked_add(length)?))
-                .filter(|range| {
-                    range.start >= HEADER_BYTES && range.end == body.len() - FOOTER_BYTES
-                });
-            if let Some(range) = placed {
-                work += root.stored;
-                if work > budget {
-                    return Err(invalid(
-                        "Recovering the recording's footer exceeds its work bound",
-                    ));
-                }
-                if digest(&body[range]) == root.digest {
-                    return Ok((root, stop));
-                }
-            }
-        }
-        end = at + FOOTER_MAGIC.len() - 1;
-    }
-    Err(invalid("The recording has no footer whose root verifies"))
+    crate::container::Footers::new(file)?
+        .next()?
+        .map(|(root, end)| (root, end as usize))
+        .ok_or_else(|| invalid("The recording has no footer whose root verifies"))
 }

@@ -50,7 +50,6 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
 /// Every stored byte `replay`'s file names, by what it holds.
 pub(crate) fn measure(replay: &Replay) -> std::io::Result<Sizes> {
     let recording = replay.recording();
-    let root = recording.root();
     let mut sizes = Sizes {
         hours: recording.hours(),
         pages: 0,
@@ -58,12 +57,12 @@ pub(crate) fn measure(replay: &Replay) -> std::io::Result<Sizes> {
         records: 0,
         dictionaries: 0,
         index: 0,
-        facts: root.facts.iter().map(|extent| extent.stored).sum(),
+        facts: recording.facts_extents().iter().map(|extent| extent.stored).sum(),
         blocks: vec![0; TABLE_COUNT],
         restarts: vec![0; TABLE_COUNT],
     };
     let stored = |extents: &[Extent]| extents.iter().map(|extent| extent.stored).sum::<u64>();
-    sizes.index += stored(&root.runs) + stored(&root.controls);
+    sizes.index += stored(recording.run_directories()) + stored(recording.records_extents());
     for run in 0..recording.run_count() {
         let held = recording.run(run)?;
         for (at, page) in held.page_extents().iter().enumerate() {

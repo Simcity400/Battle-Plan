@@ -1,4 +1,5 @@
-//! A columnar recording file ([`replay_columnar::envelope`]) written run by run, a block at a
+//! A columnar recording file's world log ([`replay_columnar::envelope`]) and records, in its
+//! container ([`replay_columnar::container`]), written run by run, a block at a
 //! time ([`crate::columnar_blocks`]): each block's hour records and its tables' blocks, each in
 //! chunks of [`CHUNK_BYTES`] compressed apart, every [`RESTART_BLOCKS`]th with a restart of every
 //! table, each stored as a change from the run's previous restart's but every
@@ -11,6 +12,7 @@
 
 use engine_allocation::zstd::{Compressor, Holder};
 use replay_columnar::{
+    container::{ContainerWriter, Framing, Root, SectionKey, StateEntry, StateFile, Tags, schema},
     envelope::{self, CHUNK_BYTES, Extent, IndexPage, KEYFRAME_RESTARTS, RestartDirectory, RestartTable, RunDirectory},
     leaf::{Reader, Writer as Bytes},
     state::{Bits, Column, Table},
@@ -48,6 +50,13 @@ pub fn capture_of(name: &OsStr) -> Option<(u32, bool)> {
         None => (name.strip_suffix(".h4col")?, false),
     };
     Some((counted(number)?, partial))
+}
+
+/// The capture whose partial file's resume state a spool directory's file `name` holds:
+/// `columnar.<n>.h4col.partial.state` ([`StateFile::path_for`]).
+pub fn resume_state_of(name: &OsStr) -> Option<u32> {
+    let name = name.to_str()?.strip_suffix(".state")?;
+    capture_of(OsStr::new(name)).filter(|&(_, partial)| partial).map(|(capture, _)| capture)
 }
 
 /// The folder of `replay_dir` holding `campaign`'s published columnar recordings: its id's
@@ -453,17 +462,17 @@ fn read_controls(reader: &mut Reader<'_>, limit: usize, into: &mut Vec<Vec<u8>>)
     Ok(())
 }
 
-/// The capture a root's control extents hold: a capture record, then each later revision's
-/// newly added control records.
+/// The capture a root's records extents hold: each revision's newly added control records, in
+/// order, then the capture record, which every revision replaces.
 pub fn read_capture(
     extents: &[Extent],
     mut raw: impl FnMut(&Extent) -> io::Result<Vec<u8>>,
 ) -> io::Result<Option<Capture>> {
-    let Some((first, rest)) = extents.split_first() else {
+    let Some((last, chunks)) = extents.split_last() else {
         return Ok(None);
     };
-    let mut capture = Capture::read(&raw(first)?)?;
-    for extent in rest {
+    let mut capture = Capture::read(&raw(last)?)?;
+    for extent in chunks {
         let bytes = raw(extent)?;
         let mut reader = Reader::new(&bytes);
         read_controls(&mut reader, bytes.len(), &mut capture.controls)?;
@@ -493,18 +502,30 @@ struct Run {
     /// The run's previous restart's raw bytes of every table, which the next restart's are a
     /// change from; none before its first.
     previous: Vec<Vec<u8>>,
+    /// Its last block ended with a restart.
+    restarted: bool,
 }
 
-/// Where a writer takes up a file it wrote before ([`FileWriter::resume`]): the file's runs, the
-/// last published revision, and, when its last run may go on, that run.
+/// The run under way, as its resume state names it ([`FileWriter::open_run`]).
+pub struct RunCursor<'a> {
+    pub run: u32,
+    pub ordinals: u32,
+    /// Each restart's dictionary chunk's first id, by restart ordinal.
+    pub chunks: &'a [u32],
+    /// The run's dictionary ids its restarts hold.
+    pub ids: u32,
+    /// Its last block ended with a restart.
+    pub restarted: bool,
+}
+
+/// Where a writer takes up a file it wrote before ([`FileWriter::resume`]): the root it takes up
+/// and, when its last run may go on, that run.
 pub struct Resumed {
+    pub root: Root,
+    /// The file's length through that root's footer.
     pub length: u64,
     /// The branch and hour of the last hour the file holds.
     pub last: Option<(u64, i32)>,
-    pub identity: envelope::Identity,
-    pub revision: u64,
-    pub runs: Vec<Extent>,
-    pub controls: Vec<Extent>,
     /// The control records the file's capture holds.
     pub controls_written: usize,
     pub open: Option<OpenRun>,
@@ -518,21 +539,20 @@ pub struct OpenRun {
     pub chunks: Vec<u32>,
     pub ids: u32,
     pub previous: Vec<Vec<u8>>,
+    /// Its last block ended with a restart.
+    pub restarted: bool,
 }
 
+/// Writes a columnar recording's world log and capture records into its container.
 pub struct FileWriter<W: Write + Seek> {
-    file: W,
+    container: ContainerWriter<W>,
     settings: Settings,
     compressor: Compressor,
-    /// Taken by the root.
-    identity: Option<envelope::Identity>,
     tables: usize,
     run: Option<Run>,
+    /// The finished runs' directories.
     runs: Vec<Extent>,
-    /// The last root revision published; zero before the first.
-    revision: u64,
-    /// Earlier revisions' extents of the control records they added, and how many those hold.
-    control_chunks: Vec<Extent>,
+    /// The control records earlier revisions wrote.
     controls_written: usize,
     /// A write failed partway: what the file holds no longer matches what was given.
     poisoned: bool,
@@ -546,23 +566,32 @@ pub struct FileWriter<W: Write + Seek> {
 
 impl<W: Write + Seek> FileWriter<W> {
     /// Starts the file at its header.
-    pub fn create(mut file: W, identity: envelope::Identity, tables: usize, settings: Settings) -> io::Result<Self> {
-        file.write_all(envelope::MAGIC)?;
-        file.write_all(&envelope::VERSION.to_le_bytes())?;
-        Self::with(file, identity, tables, settings)
+    pub fn create(file: W, identity: envelope::Identity, tables: usize, settings: Settings) -> io::Result<Self> {
+        Self::create_with(file, identity, tables, settings, None)
     }
 
-    fn with(file: W, identity: envelope::Identity, tables: usize, settings: Settings) -> io::Result<Self> {
+    /// [`Self::create`], its revisions' resume state kept in `state`.
+    pub fn create_with(
+        file: W,
+        identity: envelope::Identity,
+        tables: usize,
+        settings: Settings,
+        state: Option<StateFile>,
+    ) -> io::Result<Self> {
+        let mut container = ContainerWriter::create(file, identity, settings.level, state)?;
+        container.section(SectionKey::WORLD_LOG, schema::WORLD_LOG)?;
+        container.section(SectionKey::RECORDS, schema::RECORDS)?;
+        Self::with(container, tables, settings)
+    }
+
+    fn with(container: ContainerWriter<W>, tables: usize, settings: Settings) -> io::Result<Self> {
         Ok(Self {
-            file,
+            container,
             settings,
             compressor: Compressor::new(&WRITER, settings.level)?,
-            identity: Some(identity),
             tables,
             run: None,
             runs: Vec::new(),
-            revision: 0,
-            control_chunks: Vec::new(),
             controls_written: 0,
             poisoned: false,
             written: Written::default(),
@@ -579,28 +608,33 @@ impl<W: Write + Seek> FileWriter<W> {
         self
     }
 
-    /// Takes up `file`, which `resumed` read, after its last published revision: what follows
-    /// it is cut, and its last run goes on when `resumed` holds it open.
+    /// Takes up `file` after the revision `resumed` names, its resume state kept in `state`: what
+    /// follows the revision is cut, and its last run goes on when `resumed` holds it open.
     pub fn resume(
         mut file: W,
         resumed: Resumed,
         tables: usize,
         settings: Settings,
+        state: Option<StateFile>,
         truncate: impl FnOnce(&mut W, u64) -> io::Result<()>,
     ) -> io::Result<Self> {
         truncate(&mut file, resumed.length)?;
-        file.seek(SeekFrom::Start(resumed.length))?;
-        let mut writer = Self::with(file, resumed.identity, tables, settings)?;
-        writer.revision = resumed.revision;
+        let mut runs = match resumed.root.open(SectionKey::WORLD_LOG, schema::WORLD_LOG)? {
+            Some(section) if section.frozen.is_empty() => engine_allocation::copy_vec(&section.open)?,
+            Some(_) => return Err(invalid("A columnar file's world log names its runs in its root")),
+            None => Vec::new(),
+        };
+        let mut container = ContainerWriter::resume(file, resumed.root, resumed.length, settings.level, state)?;
+        container.section(SectionKey::WORLD_LOG, schema::WORLD_LOG)?;
+        container.section(SectionKey::RECORDS, schema::RECORDS)?;
+        let mut writer = Self::with(container, tables, settings)?;
         writer.last = resumed.last;
-        writer.runs = resumed.runs;
-        writer.control_chunks = resumed.controls.get(1..).unwrap_or(&[]).to_vec();
         writer.controls_written = resumed.controls_written;
         if let Some(open) = resumed.open {
-            if writer.runs.len() != open.run as usize + 1 {
+            if runs.len() != open.run as usize + 1 {
                 return Err(invalid("A run taken up is the file's last"));
             }
-            writer.runs.pop();
+            runs.pop();
             writer.run = Some(Run {
                 run: open.run,
                 branch: open.directory.branch,
@@ -612,8 +646,10 @@ impl<W: Write + Seek> FileWriter<W> {
                 chunks: open.chunks,
                 ids: open.ids,
                 previous: open.previous,
+                restarted: open.restarted,
             });
         }
+        writer.runs = runs;
         Ok(writer)
     }
 
@@ -636,6 +672,17 @@ impl<W: Write + Seek> FileWriter<W> {
         self.run.is_some()
     }
 
+    /// The run under way once it holds an hour.
+    pub fn open_run(&self) -> Option<RunCursor<'_>> {
+        self.run.as_ref().filter(|run| run.ordinal > 0).map(|run| RunCursor {
+            run: run.run,
+            ordinals: run.ordinal,
+            chunks: &run.chunks,
+            ids: run.ids,
+            restarted: run.restarted,
+        })
+    }
+
     /// The runs the file holds, the one under way included once it holds an hour.
     pub fn published_runs(&self) -> usize {
         self.runs.len() + usize::from(self.run.as_ref().is_some_and(|run| run.ordinal > 0))
@@ -644,6 +691,17 @@ impl<W: Write + Seek> FileWriter<W> {
     /// The stored bytes written so far.
     pub fn written(&self) -> Written {
         self.written
+    }
+
+    /// The file it writes, for tests reading it between revisions.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn file_mut(&mut self) -> &mut W {
+        self.container.file_mut()
+    }
+
+    /// The stored bytes its container wrote of its own.
+    pub fn framing(&self) -> Framing {
+        self.container.framing()
     }
 
     /// The branch and hour of the last hour written.
@@ -668,6 +726,7 @@ impl<W: Write + Seek> FileWriter<W> {
             chunks: Vec::new(),
             ids: 0,
             previous: Vec::new(),
+            restarted: false,
         });
         Ok(())
     }
@@ -729,6 +788,7 @@ impl<W: Write + Seek> FileWriter<W> {
             None => None,
         };
         let run = self.run.as_mut().expect("a run under way");
+        run.restarted = restart.is_some();
         run.chain = envelope::chain_block(&run.chain, &records, &tables);
         let bits = |words: &[u64]| Bits::from_words(engine_allocation::copy_vec(words)?);
         #[allow(unused_mut)]
@@ -852,16 +912,27 @@ impl<W: Write + Seek> FileWriter<W> {
         Ok(extent)
     }
 
-    /// Publishes everything written so far as the next root revision: the run under way's
-    /// directory and a root whose control records hold `capture`. `sync` makes what is written
-    /// durable before what names it. A failure leaves the file at its last published revision.
-    pub fn revise(&mut self, capture: Option<&Capture>, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<()> {
+    /// Publishes everything written so far as the next revision: the run under way's directory
+    /// and the capture records holding `capture`, written with resume state `state`. `sync`
+    /// makes what is written durable before what names it. A failure leaves the file at its last
+    /// published revision.
+    pub fn revise(
+        &mut self,
+        capture: Option<&Capture>,
+        state: Option<&[StateEntry]>,
+        mut sync: impl FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<()> {
         self.usable()?;
-        let result = self.publish(capture, &mut sync);
+        let result = self.publish(capture, state, &mut sync);
         self.poison(result)
     }
 
-    fn publish(&mut self, capture: Option<&Capture>, sync: &mut dyn FnMut(&mut W) -> io::Result<()>) -> io::Result<()> {
+    fn publish(
+        &mut self,
+        capture: Option<&Capture>,
+        state: Option<&[StateEntry]>,
+        sync: &mut dyn FnMut(&mut W) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut runs = engine_allocation::copy_vec(&self.runs)?;
         if let Some(run) = self.run.take() {
             let directory = self.directory(&run);
@@ -870,66 +941,51 @@ impl<W: Write + Seek> FileWriter<W> {
                 runs.push(directory?);
             }
         }
-        self.root(runs, capture, sync)
-    }
-
-    fn root(&mut self, runs: Vec<Extent>, capture: Option<&Capture>, sync: &mut dyn FnMut(&mut W) -> io::Result<()>) -> io::Result<()> {
-        let controls = self.controls(capture, runs.len())?;
-        sync(&mut self.file)?;
-        let identity = self.identity.take().ok_or_else(|| invalid("A finished file takes no revision"))?;
-        let root = envelope::Root {
-            identity,
-            revision: self.revision + 1,
-            runs,
-            controls,
-            facts: Vec::new(),
-        };
-        let written = root.write();
-        self.identity = Some(root.identity);
-        let root = self.extent(envelope::Kind::Root, 0, 0, 0, 0, &written?, None)?;
-        self.written.index += root.stored;
-        sync(&mut self.file)?;
-        self.file.write_all(&envelope::footer(root.offset, root.stored, &root.digest))?;
-        self.file.flush()?;
-        sync(&mut self.file)?;
-        self.revision += 1;
+        self.name(&runs, capture)?;
+        let before = self.container.framing().roots;
+        self.container.commit(state, sync)?;
+        self.written.index += self.container.framing().roots - before;
         Ok(())
     }
 
-    /// The root's control records: `capture`, which names a session for each of `runs` runs.
-    /// Its record holds no controls; earlier revisions' control extents are kept, and only
-    /// those added since are written.
-    fn controls(&mut self, capture: Option<&Capture>, runs: usize) -> io::Result<Vec<Extent>> {
-        let mut controls = Vec::new();
-        if let Some(capture) = capture {
-            if capture.run_sessions.len() != runs {
-                return Err(invalid("A capture names a session for every run"));
-            }
-            let added = capture
-                .controls
-                .get(self.controls_written..)
-                .ok_or_else(|| invalid("A capture's control records only grow"))?;
-            if !added.is_empty() {
-                let mut bytes = Bytes::new();
-                write_controls(&mut bytes, added)?;
-                let chunk = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, bytes.bytes(), None)?;
-                self.written.index += chunk.stored;
-                engine_allocation::reserve(&mut self.control_chunks, 1)?;
-                self.control_chunks.push(chunk);
-                self.controls_written = capture.controls.len();
-            }
-            let bytes = capture.write_with(&[])?;
-            let record = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, None)?;
-            self.written.index += record.stored;
-            engine_allocation::reserve(&mut controls, 1 + self.control_chunks.len())?;
-            controls.push(record);
-            controls.extend_from_slice(&self.control_chunks);
-        }
-        Ok(controls)
+    /// Names `runs`' directories in the world log and `capture`, which names a session for each,
+    /// in the records.
+    fn name(&mut self, runs: &[Extent], capture: Option<&Capture>) -> io::Result<()> {
+        self.controls(capture, runs.len())?;
+        self.container.set_open(SectionKey::WORLD_LOG, runs)
     }
 
-    /// Finishes the run under way, then appends the root and the footer naming it. `sync`
-    /// makes what is written durable before what names it.
+    /// The capture records: `capture`, which names a session for each of `runs` runs. Its record
+    /// holds no controls and every revision replaces it; the control records added since the
+    /// last revision are appended before it.
+    fn controls(&mut self, capture: Option<&Capture>, runs: usize) -> io::Result<()> {
+        let Some(capture) = capture else {
+            return self.container.set_open(SectionKey::RECORDS, &[]);
+        };
+        if capture.run_sessions.len() != runs {
+            return Err(invalid("A capture names a session for every run"));
+        }
+        let added = capture
+            .controls
+            .get(self.controls_written..)
+            .ok_or_else(|| invalid("A capture's control records only grow"))?;
+        if !added.is_empty() {
+            let mut bytes = Bytes::new();
+            write_controls(&mut bytes, added)?;
+            let chunk = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, bytes.bytes(), None)?;
+            self.written.index += chunk.stored;
+            self.container.set_open(SectionKey::RECORDS, &[])?;
+            self.container.append(SectionKey::RECORDS, chunk)?;
+            self.controls_written = capture.controls.len();
+        }
+        let bytes = capture.write_with(&[])?;
+        let record = self.extent(envelope::Kind::Controls, 0, 0, 0, 0, &bytes, None)?;
+        self.written.index += record.stored;
+        self.container.set_open(SectionKey::RECORDS, &[record])
+    }
+
+    /// Finishes the run under way, then publishes the last revision: it names no resume state,
+    /// and the state file goes. `sync` makes what is written durable before what names it.
     pub fn finish(self, sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Finished<W>> {
         self.finish_with(None, sync)
     }
@@ -940,15 +996,16 @@ impl<W: Write + Seek> FileWriter<W> {
         self.finish_with(Some(capture), sync)
     }
 
-    fn finish_with(mut self, capture: Option<&Capture>, mut sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Finished<W>> {
+    fn finish_with(mut self, capture: Option<&Capture>, sync: impl FnMut(&mut W) -> io::Result<()>) -> io::Result<Finished<W>> {
         self.usable()?;
         self.finish_run()?;
         let runs = std::mem::take(&mut self.runs);
-        self.root(runs, capture, &mut sync)?;
-        Ok(Finished {
-            file: self.file,
-            written: self.written,
-        })
+        self.name(&runs, capture)?;
+        let before = self.container.framing().roots;
+        let Self { container, mut written, .. } = self;
+        let (file, _, framing) = container.finish(&[], sync)?;
+        written.index += framing.roots - before;
+        Ok(Finished { file, written })
     }
 
     /// One compressed extent, described by its envelope; with `base`, compressed with those raw
@@ -992,19 +1049,8 @@ impl<W: Write + Seek> FileWriter<W> {
         raw: usize,
         stored: &[u8],
     ) -> io::Result<Extent> {
-        let offset = self.file.stream_position()?;
-        self.file.write_all(stored)?;
-        Ok(Extent {
-            kind,
-            run,
-            stream,
-            first,
-            hours,
-            offset,
-            stored: stored.len() as u64,
-            raw: raw as u64,
-            digest: envelope::digest(stored),
-        })
+        let tags = Tags { run, stream, first, hours };
+        self.container.put(kind, tags, raw as u64, stored)
     }
 }
 
@@ -1081,9 +1127,13 @@ pub fn keep_branches<W: Write + Seek>(
             let mut page = recording.page(run, at)?;
             let copy = |writer: &mut FileWriter<W>, extent: &Extent| -> io::Result<Extent> {
                 let stored = recording.stored_bytes(extent)?;
-                let offset = writer.file.stream_position()?;
-                writer.file.write_all(&stored)?;
-                Ok(Extent { run: to, offset, ..*extent })
+                let tags = Tags {
+                    run: to,
+                    stream: extent.stream,
+                    first: extent.first,
+                    hours: extent.hours,
+                };
+                writer.container.put(extent.kind, tags, extent.raw, &stored)
             };
             page.run = to;
             page.records = copy(&mut writer, &page.records)?;
@@ -1200,7 +1250,7 @@ fn of_left_out(record: &[u8], keep: &impl Fn(u64) -> bool) -> io::Result<bool> {
 /// The restart ordinals whose dictionary chunks hold `ids`, ascending. `starts` holds each
 /// chunk's first id, ascending from 0; an empty chunk starts where the next does, so the
 /// last chunk starting at or before an id holds it.
-fn chunks_holding(starts: &[u32], ids: &[u32]) -> io::Result<Vec<u32>> {
+pub(crate) fn chunks_holding(starts: &[u32], ids: &[u32]) -> io::Result<Vec<u32>> {
     let mut used = engine_allocation::filled(starts.len(), false)?;
     for &id in ids {
         let chunk = starts.partition_point(|&start| start <= id);
