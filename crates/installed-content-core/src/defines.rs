@@ -421,12 +421,18 @@ impl Defines {
         match read(stack).and_then(|shown| self.with_graphics_of(&shown)) {
             Ok((graphics, kept)) => {
                 for why in kept {
-                    layers.note_overlay_refusal(format!("graphics define {why}"));
+                    layers.note_overlay_refusal(format!(
+                        "graphics define {why}, from {}",
+                        stack.visual_mod_names().join(", ")
+                    ));
                 }
                 graphics
             }
             Err(error) => {
-                layers.note_overlay_refusal(format!("graphics defines ({error})"));
+                layers.note_overlay_refusal(format!(
+                    "graphics defines of {} ({error})",
+                    stack.visual_mod_names().join(", ")
+                ));
                 self.clone()
             }
         }

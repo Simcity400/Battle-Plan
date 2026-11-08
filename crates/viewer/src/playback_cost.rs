@@ -137,6 +137,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
         pan: None,
         pngs: Vec::new(),
     };
+    let mut visual_mods = Vec::new();
     let mut from = false;
     let mut speed = false;
     let mut args = args.iter();
@@ -171,6 +172,17 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         .and_then(|v| v.parse::<u32>().ok())
                         .ok_or_else(|| invalid("--png-frame needs a frame index"))?,
                 );
+            }
+            Some("--visual-mod") => {
+                let id = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .filter(|v| !v.is_empty())
+                    .ok_or_else(|| invalid("--visual-mod needs a mod id, such as mod/name.mod"))?;
+                visual_mods.push(installed_content_core::content::visual::Choice {
+                    id: id.to_owned(),
+                    name: id.to_owned(),
+                });
             }
             Some("--pan") => {
                 schedule.pan = Some(
@@ -276,10 +288,15 @@ fn run(args: &[OsString]) -> io::Result<()> {
             hour: options.hour,
             hour_fraction: 0.0,
         },
-        None,
+        (!visual_mods.is_empty()).then_some(visual_mods.as_slice()),
         0,
     )?;
     engine_executable::executable_tables::enter(document.content.tables);
+    // What the stack's defines, visual mods' included, gave the camera, and what loading refused.
+    let camera_law = format!("{:?}", document.camera_law);
+    let camera_heights = document.map_defines.heights;
+    let load_warnings = document.warnings.clone();
+    let content_reads = document.uncovered_reads.clone();
     let branch = options.branch.unwrap_or(document.playback.branch());
     let (first, last) = document
         .playback
@@ -315,6 +332,18 @@ fn run(args: &[OsString]) -> io::Result<()> {
     );
     report["game_directory"] = json!(resolve.game_dir);
     report["user_directory"] = json!(resolve.user_dir);
+    report["visual_mods"] = json!(
+        visual_mods
+            .iter()
+            .map(|choice| &choice.id)
+            .collect::<Vec<_>>()
+    );
+    report["camera_law"] = json!(camera_law);
+    report["camera_heights"] = json!(camera_heights);
+    // The map's limitations: the load's warnings and what the content's reads refused.
+    let mut limitations = load_warnings;
+    content_reads.append_to(&mut limitations);
+    report["limitations"] = json!(limitations);
     report["file_cache"] =
         json!("uncontrolled; isolated application caches, no system cache purge");
     let after = fs::metadata(&recording)?;

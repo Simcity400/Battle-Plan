@@ -740,10 +740,21 @@ fn mount(
             "Visual mod {name} is not shown: it cannot be mounted with the others ({error})."
         ));
     }
-    layers.presentation_defines = presentation
-        .as_ref()
-        .and_then(|presentation| presentation.with_defines().ok())
-        .map(std::sync::Arc::new);
+    layers.presentation_defines = match presentation.as_ref().map(ResolvedLayers::with_defines) {
+        Some(Ok(defines)) => Some(std::sync::Arc::new(defines)),
+        Some(Err(error)) => {
+            plan.warnings.push(format!(
+                "The defines of visual mods {} are not shown: their scripts cannot be mounted                  ({error}), so graphics defines are the recording's.",
+                plan.order
+                    .iter()
+                    .map(|choice| choice.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            None
+        }
+        None => None,
+    };
     layers.presentation = presentation.map(std::sync::Arc::new);
     Ok(plan)
 }

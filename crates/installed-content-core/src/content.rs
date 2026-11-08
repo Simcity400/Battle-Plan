@@ -3321,6 +3321,14 @@ impl ResolvedLayers {
         self.layers.iter().any(|layer| layer.overlay.is_some())
     }
 
+    /// The names of the visual mods this stack shows, in mount order.
+    pub fn visual_mod_names(&self) -> Vec<String> {
+        self.layers
+            .iter()
+            .filter_map(|layer| layer.overlay.as_ref().map(|overlay| overlay.name.clone()))
+            .collect()
+    }
+
     /// This stack sharing every inventory, memo and cache, but whose visual mod diagnostics
     /// (files they supplied, artwork drawn from the recording instead, refusals) start empty and
     /// are its own: a presentation [`visual::apply`] mounts on it reports apart from the stack it
@@ -3397,7 +3405,10 @@ impl ResolvedLayers {
     /// stack still reads recorded simulation content. A mod's defines show only in
     /// [`Self::presentation_defines`].
     fn overlay_sees(&self, lower: &[u8]) -> bool {
-        overlay_sees(self.defines_visible, lower) && !self.recorded_fact(lower)
+        // Defines are recorded facts, but this stack only lends the graphics sections of the mods'
+        // scripts (`Defines::with_graphics_of`), so it shows the scripts whole.
+        (self.defines_visible && below(lower, DEFINES_ROOT.as_bytes()))
+            || (overlay_sees(self.defines_visible, lower) && !self.recorded_fact(lower))
     }
 
     /// Whether `path` is one of the facts a played-back recording carries, which only the
