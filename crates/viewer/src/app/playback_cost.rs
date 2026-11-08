@@ -298,6 +298,8 @@ pub(crate) fn measure(
         let process_before = process_cycles();
         let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
         let frame_start = Instant::now();
+        // Each frame is a window frame of the perf map log, when it is written.
+        crate::perf_log::frame_start();
         let mut result = Ok(());
         let _other_cost = cpu::scope("frame.harness", Some("other"));
         let _ = ctx.run_ui(
@@ -347,6 +349,7 @@ pub(crate) fn measure(
                 timeout: None,
             })
             .map_err(io::Error::other)?;
+        crate::perf_log::frame_end();
         frame_wall.push(frame_start.elapsed().as_secs_f64() * 1e6);
         if let Some(ns) = process_before
             .zip(process_cycles())

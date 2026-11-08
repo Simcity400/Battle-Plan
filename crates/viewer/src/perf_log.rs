@@ -2,7 +2,8 @@
 
 use job_priority::SpawnCarried as _;
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
+    collections::VecDeque,
     fs::File,
     io::{BufWriter, Write},
     sync::{
@@ -62,8 +63,16 @@ fn open() -> Option<Log> {
         Ok("popout") => "popout",
         _ => "main",
     };
+    let (timer, reason) = match GPU_TIMER.get() {
+        Some(Ok(())) => ("timestamps", "null".to_owned()),
+        Some(Err(reason)) => ("unsupported", json_string(reason)),
+        None => (
+            "unsupported",
+            json_string("the log opened before the map device existed"),
+        ),
+    };
     let opening = format!(
-        r#"{{"t":"map_open","at":{:.3},"pid":{pid},"role":"{role}"}}"#,
+        r#"{{"t":"map_open","at":{:.3},"pid":{pid},"role":"{role}","gpu_timer":"{timer}","gpu_timer_reason":{reason}}}"#,
         epoch_ms()
     );
     let (queue, lines) = mpsc::sync_channel::<Message>(QUEUE_LINES);
@@ -177,7 +186,23 @@ fn owed_loss(out: &mut impl Write) {
     }
 }
 
+/// Whether the map device can time its frames, set once it exists ([`gpu_timer`]).
+static GPU_TIMER: OnceLock<Result<(), String>> = OnceLock::new();
+
+fn json_string(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| "null".to_owned())
+}
+
+/// Records whether the map device can time its frames, before the log opens.
+pub(crate) fn gpu_timer(support: Result<(), String>) {
+    let _ = GPU_TIMER.set(support);
+}
+
 thread_local! {
+    /// The number the next `map` record carries.
+    static FRAME: Cell<u64> = const { Cell::new(0) };
+    /// Frames' GPU milliseconds, or why they have none, not yet written, oldest first.
+    static GPU: RefCell<VecDeque<(u64, Result<f64, String>)>> = const { RefCell::new(VecDeque::new()) };
     static STARTED: Cell<Option<Instant>> = const { Cell::new(None) };
     static PREVIOUS: Cell<Option<Instant>> = const { Cell::new(None) };
     /// The last paint's milliseconds, whole and waiting for a swapchain image.
@@ -215,6 +240,20 @@ pub(crate) fn frame_ui() {
     }
 }
 
+/// The number of the window frame under way, for timing its GPU work; none when no frame is
+/// under way or the log is off.
+pub(crate) fn frame_id() -> Option<u64> {
+    log()?;
+    STARTED.with(Cell::get).map(|_| FRAME.with(Cell::get))
+}
+
+/// Frames' GPU milliseconds just settled; each later `map` record carries one.
+pub(crate) fn gpu_times(times: Vec<(u64, Result<f64, String>)>) {
+    if !times.is_empty() && log().is_some() {
+        GPU.with(|gpu| gpu.borrow_mut().extend(times));
+    }
+}
+
 /// Egui's paint and the present fall outside `work_ms`, inside the interval only; the record
 /// carries the paint that ended the previous frame (`paint_ms`, `acquire_ms`), null when none did.
 pub(crate) fn frame_end() {
@@ -235,11 +274,18 @@ pub(crate) fn frame_end() {
         || ("null".to_owned(), "null".to_owned()),
         |(paint, acquire)| (format!("{paint:.3}"), format!("{acquire:.3}")),
     );
+    let frame = FRAME.with(|frame| frame.replace(frame.get() + 1));
+    // The GPU time of an earlier frame, read back since; `gpu_frame` names it.
+    let (gpu_frame, gpu_ms, gpu_error) = match GPU.with(|gpu| gpu.borrow_mut().pop_front()) {
+        None => ("null".to_owned(), "null".to_owned(), "null".to_owned()),
+        Some((frame, Ok(ms))) => (frame.to_string(), format!("{ms:.3}"), "null".to_owned()),
+        Some((frame, Err(why))) => (frame.to_string(), "null".to_owned(), json_string(&why)),
+    };
     let at = epoch_ms();
     let pid = std::process::id();
     log.send(
         format!(
-            r#"{{"t":"map","at":{at:.3},"pid":{pid},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire}}}"#
+            r#"{{"t":"map","at":{at:.3},"pid":{pid},"frame":{frame},"work_ms":{work:.3},"dt":{interval},"paint_ms":{paint},"acquire_ms":{acquire},"gpu_frame":{gpu_frame},"gpu_ms":{gpu_ms},"gpu_error":{gpu_error}}}"#
         ),
         at,
     );

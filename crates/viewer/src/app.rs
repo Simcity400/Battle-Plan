@@ -1504,6 +1504,9 @@ impl Viewer {
         embedded: Option<crate::embedded::Controller>,
         gpu: Option<(wgpu::Device, wgpu::Queue)>,
     ) -> Self {
+        if let Some((device, _)) = &gpu {
+            crate::perf_log::gpu_timer(viewer_foundation::map::gpu_frame_time::support(device));
+        }
         if let Some(embedded) = &embedded
             && let Err(tables_error) = embedded
                 .service()
@@ -1754,6 +1757,11 @@ impl Viewer {
         self.air_selection = Default::default();
         self.fleet_selection = Default::default();
         self.document = Some(document);
+        if !self.dashboard_map
+            && let Some(scene) = &mut self.scene
+        {
+            crate::perf_log::gpu_times(scene.retire_gpu_frame_times());
+        }
         self.scene = Some(scene);
         self.revision = Some(revision);
         self.error = None;
@@ -1908,6 +1916,11 @@ impl Viewer {
 
     pub(crate) fn retire_map<T: Send + 'static>(&mut self, frame: &eframe::Frame, permit: T) {
         self.free_scene_target(frame);
+        if !self.dashboard_map
+            && let Some(scene) = &mut self.scene
+        {
+            crate::perf_log::gpu_times(scene.retire_gpu_frame_times());
+        }
         let retired = (
             self.document.take(),
             self.scene.take(),
@@ -2573,6 +2586,11 @@ impl Viewer {
         self.loaded_config = None;
         self.rendered = None;
         self.revision = None;
+        if !self.dashboard_map
+            && let Some(scene) = &mut self.scene
+        {
+            crate::perf_log::gpu_times(scene.retire_gpu_frame_times());
+        }
         self.scene = None;
         // hours: a newer snapshot of this recording keeps its engaged index.
         self.playhead = None;
@@ -5488,6 +5506,11 @@ impl Viewer {
         };
         let laid_out = overlay.quads.len();
         overlay.quads.extend(additions.quads);
+        // Only the window's own map is timed; a dashboard widget's shares the window's frames.
+        let timed = !self.dashboard_map;
+        if timed && let Some(frame) = crate::perf_log::frame_id() {
+            scene.time_frame(frame);
+        }
         let rendered = scene
             .render(
                 &state.device,
@@ -5525,6 +5548,9 @@ impl Viewer {
                 },
             );
         overlay.quads.truncate(laid_out);
+        if timed {
+            crate::perf_log::gpu_times(scene.gpu_frame_times(&state.device));
+        }
         rendered.map_err(|e| e.to_string())?;
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.after-render", Some("other"));

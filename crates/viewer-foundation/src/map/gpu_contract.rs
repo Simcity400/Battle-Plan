@@ -579,6 +579,10 @@ pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'sta
     if crate::map::gpu_passes::requested() {
         wanted |= crate::map::gpu_passes::features();
     }
+    // The perf map log's per-frame GPU time (`map::gpu_frame_time`).
+    if crate::map::gpu_frame_time::requested() {
+        wanted |= crate::map::gpu_frame_time::features();
+    }
     let features = adapter.features() & wanted;
     wgpu::DeviceDescriptor {
         label: Some("Battle Plan viewer"),

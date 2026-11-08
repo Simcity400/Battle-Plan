@@ -10,6 +10,7 @@ pub mod directed_wars;
 pub mod frame;
 pub mod free_icons;
 pub mod gpu_contract;
+pub mod gpu_frame_time;
 pub mod gpu_passes;
 pub mod gradient_math;
 pub mod gui_resources;

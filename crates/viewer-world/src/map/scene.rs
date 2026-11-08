@@ -297,6 +297,8 @@ pub struct Scene {
     render_laps: [f64; 4],
     /// Per-pass GPU timestamps under `BATTLE_PLAN_VIEWER_GPU_PASSES`.
     pass_timer: Option<PassTimer>,
+    /// Each window frame's GPU time under the perf map log, read back frames later.
+    frame_timer: Option<viewer_foundation::map::gpu_frame_time::FrameTimer>,
     /// The hour builders' threads a frame's presentation step may lend its work;
     /// the calling thread alone until the window lends them ([`Scene::use_workers`]).
     workers: viewer_foundation::parallel::Workers,
@@ -1003,6 +1005,7 @@ impl Scene {
             rail_fade: RailFade::default(),
             render_laps: [0.0; 4],
             pass_timer: PassTimer::new(device, queue),
+            frame_timer: viewer_foundation::map::gpu_frame_time::FrameTimer::new(device, queue),
             workers: Default::default(),
             province_frame: None,
             pass_diagnostics: Default::default(),
@@ -2678,10 +2681,13 @@ impl Scene {
         // its encoder.
         let mut timer = self.pass_timer.take();
         let rendered = self.render_frame(device, queue, request, &mut timer);
-        if rendered.is_err()
-            && let Some(timer) = &mut timer
-        {
-            timer.abandon();
+        if rendered.is_err() {
+            if let Some(timer) = &mut timer {
+                timer.abandon();
+            }
+            if let Some(frame_timer) = &mut self.frame_timer {
+                frame_timer.abandon();
+            }
         }
         self.pass_timer = timer;
         // A frame that failed before its walk leaves the schedule as if it was never cut.
@@ -3122,6 +3128,13 @@ impl Scene {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
         let mut command_buffers = Vec::new();
+        if let Some(start) = self
+            .frame_timer
+            .as_mut()
+            .and_then(|frame_timer| frame_timer.begin(device))
+        {
+            command_buffers.push(ModelPass::finished_buffer(start));
+        }
         let mut mark = |encoder: &mut wgpu::CommandEncoder, label: &'static str| {
             cpu_mark(if label == "model_layers" {
                 "model_recycle"
@@ -4317,10 +4330,16 @@ impl Scene {
         self.arena.flush(queue);
         cpu_mark("arena_flush");
         let encoded = clock.map(|clock| clock.elapsed());
+        if let Some(frame_timer) = &self.frame_timer {
+            frame_timer.end(&mut encoder);
+        }
         command_buffers.push(ModelPass::finished_buffer(encoder.finish()));
         cpu_mark("encoder_finish");
         // Joining here preserves native buffer order without earlier encoder waits.
         queue.submit(ModelPass::submitted_buffers(command_buffers));
+        if let Some(frame_timer) = &mut self.frame_timer {
+            frame_timer.submitted();
+        }
         cpu_mark("queue_submit");
         if let Some(political) = political {
             political.submitted();
@@ -4357,6 +4376,32 @@ impl Scene {
     /// encoding and submitting, under `BATTLE_PLAN_VIEWER_PROFILE`.
     pub fn render_laps(&self) -> [f64; 4] {
         self.render_laps
+    }
+
+    /// Numbers the next frame for its GPU time under the perf map log.
+    pub fn time_frame(&mut self, frame: u64) {
+        if let Some(frame_timer) = &mut self.frame_timer {
+            frame_timer.label(frame);
+        }
+    }
+
+    /// Every frame whose GPU time is not yet reported, as the scene closes; never waits.
+    pub fn retire_gpu_frame_times(
+        &mut self,
+    ) -> Vec<viewer_foundation::map::gpu_frame_time::FrameTime> {
+        self.frame_timer
+            .as_mut()
+            .map_or_else(Vec::new, |frame_timer| frame_timer.retire())
+    }
+
+    /// The frames whose GPU time settled since the last call, oldest first; never waits.
+    pub fn gpu_frame_times(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> Vec<viewer_foundation::map::gpu_frame_time::FrameTime> {
+        self.frame_timer
+            .as_mut()
+            .map_or_else(Vec::new, |frame_timer| frame_timer.take(device))
     }
 
     /// Numbers the next frame's `PROFILE gpu_passes` line.
