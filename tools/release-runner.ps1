@@ -1,5 +1,5 @@
 # The self-hosted GitHub Actions runner on the maintainer's machine: the only place Rust compiles
-# here (release builds and pull-request checks). It runs as the user, from a logon task, never as a
+# here (release builds). It runs as the user, from a logon task, never as a
 # service, at below-normal CPU and low I/O priority, which every job it starts inherits.
 #   Install: release-runner.ps1 -Install -TokenFile <file holding a registration token>
 #   Start:   what the logon task runs; also starts it by hand.
@@ -37,6 +37,12 @@ if (-not $Install) {
     Enter-Background
     $run = Join-Path $runner 'run.cmd'
     if (-not (Test-Path -LiteralPath $run)) { throw "$run is missing; install the runner first." }
+    # Git for Windows puts only its `cmd` folder on the PATH; the jobs' `shell: bash` needs its bash.
+    # git.exe sits in `cmd` or `mingw64\bin` under Git's root, so walk up to the folder holding bin\bash.exe.
+    $git = Split-Path (Get-Command git.exe -ErrorAction Stop).Source
+    while ($git -and -not (Test-Path -LiteralPath (Join-Path $git 'bin\bash.exe'))) { $git = Split-Path $git }
+    if (-not $git) { throw "Git for Windows' bin\bash.exe was not found above git.exe." }
+    $env:PATH = "$(Join-Path $git 'bin');$env:PATH"
     # The runner exits to update itself; start it again after a pause.
     while ($true) {
         $process = Start-Process -FilePath $run -WorkingDirectory $runner -NoNewWindow -PassThru -Wait
