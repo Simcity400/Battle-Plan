@@ -232,7 +232,7 @@ test('Follow dates an unchanged daily score by its latest reached recorded hour'
   const original = shared.airTimeline;
   shared.airDay = { ...(original as object), view: 'moment', fallback: [], firstHour: 24, lastHour: 47, regions: [],
     recorded: [{ firstHour: 24, lastHour: 47 }], complete: [], wingsKnown: [], excluded: [], theatreReads: [] };
-  try { assert.equal(render(26).result.projectedTimeline?.periods.at(-1)?.readHour, 26); }
+  try { assert.equal(render(26).result.projectedTimeline?.tail?.period.readHour, 26); }
   finally { delete shared.airDay; }
 });
 
@@ -258,11 +258,11 @@ test('Follow keeps the default state of selected regions absent from current-day
     fallback: [[24, 47, 'no-air-object']], recorded: [{ firstHour: 24, lastHour: 47 }], complete: [], wingsKnown: [], excluded: [], theatreReads: [] };
   try {
     const current = render(26).result.projectedTimeline!;
-    assert.equal(current.viewAt(7000, current.periods.length - 1)?.state, 'no-air-object');
+    assert.equal(current.viewAt(7000, current.periods.length)?.state, 'no-air-object');
     shared.airDay = { ...(shared.airDay as object), fallback: [[24, 47, 'outside-theatres']] };
     const outside = render(26).result.projectedTimeline!;
-    assert.equal(outside.viewAt(7000, outside.periods.length - 1)?.reason, 'outside-theatres');
-    assert.equal(outside.rows[0].cells.at(-1)?.filtered, true);
+    assert.equal(outside.viewAt(7000, outside.periods.length)?.reason, 'outside-theatres');
+    assert.equal(outside.tail?.cells[0].filtered, true);
   } finally { shared.airTimeline = original; delete shared.airDay; }
 });
 
@@ -316,16 +316,16 @@ test('Follow effects retain paired reads across days and clear them across clien
     shared.airTimeline = undefined; shared.airDay = undefined;
     const waiting = draw(48);
     assert.equal(waiting.result.data, timeline);
-    assert.equal(waiting.result.projectedTimeline?.periods.at(-1)?.readHour, 47);
-    assert.equal(waiting.result.projectedTimeline?.rows[0].cells.at(-1)?.parts[0].share, 2 / 5);
+    assert.equal(waiting.result.projectedTimeline?.tail?.period.readHour, 47);
+    assert.equal(waiting.result.projectedTimeline?.tail?.cells[0].parts[0].share, 2 / 5);
     assert.equal(held?.day, day);
     const nextTimeline = { ...timeline, lastHour: 48, days: [23, 47, 48], rows: [{ region: 7000, name: 'Mod region', cells: [[3, ['1', '1']]] }] };
     const nextDay = { ...day, firstHour: 48, lastHour: 71, regions: [{ ...region, runs: [[48, 71, ['3', '1']]] }], recorded: [{ firstHour: 48, lastHour: 71 }] };
     shared.airTimeline = nextTimeline; shared.airDay = nextDay;
     const arrived = draw(49);
     assert.equal(arrived.result.data, nextTimeline);
-    assert.equal(arrived.result.projectedTimeline?.periods.at(-1)?.readHour, 49);
-    assert.equal(arrived.result.projectedTimeline?.rows[0].cells.at(-1)?.parts[0].share, 3 / 4);
+    assert.equal(arrived.result.projectedTimeline?.tail?.period.readHour, 49);
+    assert.equal(arrived.result.projectedTimeline?.tail?.cells[0].parts[0].share, 3 / 4);
     assert.equal(held?.timeline, nextTimeline); assert.equal(held?.day, nextDay);
     shared.airTimeline = undefined; shared.airDay = undefined;
     shared.airClient = {};

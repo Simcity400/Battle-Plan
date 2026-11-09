@@ -80,6 +80,7 @@ export interface AirColourSources { sides: Map<string, string>; viewpoint?: stri
 /** The colours shown at one hour, by side key and for the viewpoint. */
 export interface AirColourGroup { sides: ReadonlyMap<string, string>; viewpoint?: string }
 export type AirColourGroups = ReadonlyMap<number, { inputs: readonly unknown[]; group: AirColourGroup }>;
+const NO_COLOUR_SOURCES: ReadonlyMap<number, AirColourSources> = new Map();
 /** Colours by side and hour; `at` gives an hour's group, so hours colouring alike compare cheaply. */
 export interface AirColourLookup { color(side: AirSide, at: number): string; viewpoint(at: number): string; at(hour: number): AirColourGroup | undefined }
 
@@ -125,7 +126,7 @@ const sameGroup = (a: AirColourGroup, b: AirColourGroup) => a.viewpoint === b.vi
  * unchanged keeps its group from `previous`, and one colouring alike the hour before
  * shares that group, so only hours whose reads arrived are coloured again. */
 export function airColourGroups(history: ReadonlyMap<number, AirColourSources>, day: ReadonlyMap<number, AirColourSources>,
-  style: (key: string) => unknown, surface: string, fixed: boolean, previous: AirColourGroups = new Map()): AirColourGroups {
+  style: (key: string) => unknown, surface: string, fixed: boolean, previous: Pick<AirColourGroups, 'get'> = new Map()): AirColourGroups {
   const groups = new Map<number, { inputs: readonly unknown[]; group: AirColourGroup }>();
   let before: AirColourGroup | undefined;
   for (const at of new Set([...history.keys(), ...day.keys()])) {
@@ -155,11 +156,12 @@ export function airColourGroups(history: ReadonlyMap<number, AirColourSources>, 
   return groups;
 }
 
-function lookup(groups: AirColourGroups, muted: string): AirColourLookup {
+function lookup(groups: AirColourGroups, muted: string, overlay?: AirColourGroups): AirColourLookup {
+  const at = (hour: number) => (overlay?.get(hour) ?? groups.get(hour))?.group;
   return {
-    color: (side, at) => groups.get(at)?.group.sides.get(side.key) ?? muted,
-    viewpoint: at => groups.get(at)?.group.viewpoint ?? muted,
-    at: hour => groups.get(hour)?.group,
+    color: (side, hour) => at(hour)?.sides.get(side.key) ?? muted,
+    viewpoint: hour => at(hour)?.viewpoint ?? muted,
+    at,
   };
 }
 
@@ -177,16 +179,31 @@ export function useAirCountryColours(client: DashboardClient, track: BoundTrack 
   const dayWanted = useMemo(() => dayPlan.wanted.filter(item => !plan.keys.has(nameKey(item.hour, item.tag))), [plan, dayPlan]);
   const styles = useCountryFactsRead<CountryColour>(client, track, plan.wanted, active, data?.view === 'moment' ? STYLES : COLOURS, plan.maxHours);
   const dayStyles = useCountryFactsRead(client, track, dayWanted, active, STYLES, dayPlan.maxHours);
-  const held = useRef<{ groups: AirColourGroups; hours: number[]; shown: (AirColourGroup | undefined)[]; muted: string; reply: AirColourLookup } | null>(null);
-  const groups = useMemo(() => airColourGroups(plan.sources, dayPlan.sources, key => styles.get(key) ?? dayStyles.get(key),
-    tokens.surface, tokens.countryColours === 'fixed', held.current?.groups), [plan, dayPlan, styles, dayStyles, tokens.surface, tokens.countryColours]);
+  const historyHeld = useRef<AirColourGroups>(new Map());
+  const dayHeld = useRef<AirColourGroups>(new Map());
+  const history = useMemo(() => {
+    const groups = airColourGroups(plan.sources, NO_COLOUR_SOURCES, key => styles.get(key), tokens.surface, tokens.countryColours === 'fixed', historyHeld.current);
+    historyHeld.current = groups;
+    return groups;
+  }, [plan, styles, tokens.surface, tokens.countryColours]);
+  const overlay = useMemo(() => {
+    const shared = new Map([...dayPlan.sources.keys()].flatMap(hour => {
+      const source = plan.sources.get(hour);
+      return source ? [[hour, source] as const] : [];
+    }));
+    const groups = airColourGroups(shared, dayPlan.sources, key => styles.get(key) ?? dayStyles.get(key), tokens.surface, tokens.countryColours === 'fixed',
+      { get: hour => dayHeld.current.get(hour) ?? history.get(hour) });
+    dayHeld.current = groups;
+    return groups;
+  }, [plan, dayPlan, history, styles, dayStyles, tokens.surface, tokens.countryColours]);
+  const held = useRef<{ hours: number[]; shown: (AirColourGroup | undefined)[]; muted: string; reply: AirColourLookup } | null>(null);
   return useMemo(() => {
-    const latest = lookup(groups, tokens.muted);
-    const hours = [...plan.sources.keys()], shown = hours.map(at => groups.get(at)?.group);
+    const latest = lookup(history, tokens.muted, overlay);
+    const hours = [...plan.sources.keys()], shown = hours.map(at => latest.at(at));
     const kept = held.current;
     const reply = kept && kept.muted === tokens.muted && kept.hours.length === hours.length && hours.every((at, index) => at === kept.hours[index] && shown[index] === kept.shown[index])
-      ? kept.reply : latest;
-    held.current = { groups, hours, shown, muted: tokens.muted, reply };
+      ? kept.reply : lookup(history, tokens.muted, hours.some(at => overlay.has(at)) ? overlay : undefined);
+    held.current = { hours, shown, muted: tokens.muted, reply };
     return { reply, latest };
-  }, [groups, plan, tokens.muted]);
+  }, [history, overlay, plan, tokens.muted]);
 }

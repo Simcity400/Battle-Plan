@@ -184,30 +184,29 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
   // The reply's own hours keep their looks while the current day's read moves.
   const appearance = useMemo(() => looksWith(countryColours.reply), [looksWith, countryColours.reply]);
   const dayLooks = useMemo(() => looksWith(countryColours.latest), [looksWith, countryColours.latest]);
+  const timelineRegions = useMemo(() => new Map(data?.view === 'timeline' ? data.rows.map(row => [row.region, row]) : []), [data]);
   const baseTimeline = useMemo(() => data?.view === 'timeline' ? timelineViews(data, appearance) : null, [data, appearance]);
+  const historyPeriods = useMemo(() => baseTimeline?.periods.slice(0, -1), [baseTimeline]);
   const projectedTimeline = useMemo(() => {
     // While later days load, the held reply's own last column stays its own: nothing is drawn over the band.
     if (!baseTimeline || !follow || !dayData || dayRead == null || loading.length || data?.view !== 'timeline'
       || Math.floor(dayData.firstHour / data.dayHours) !== Math.floor(data.lastHour / data.dayHours)) return baseTimeline;
     const regions = data.rows.map(row => ({ id: row.region, name: row.name }));
     const liveRows = new Map(momentViews(dayData, dayRecorded ?? dayRead, dayLooks, { regions }).map(row => [row.region.id, row]));
-    const periods = [...baseTimeline.periods];
-    const column = periods.length - 1;
-    periods[column] = { firstHour: periods[column].firstHour, lastHour: dayData.lastHour, readHour: dayRecorded };
+    const column = baseTimeline.periods.length - 1;
+    const period = { firstHour: baseTimeline.periods[column].firstHour, lastHour: dayData.lastHour, readHour: dayRecorded };
     const gap: AirView = { ...appearance, state: 'gap', parts: [], total: 0n, unknown: [], noAirObject: [], excluded: 0, wings: null, hour: null };
-    const rows = baseTimeline.rows.map(row => {
+    const cells = baseTimeline.rows.map(row => {
       const view = liveRows.get(Number(row.id))?.view;
-      const cells = [...row.cells];
-      cells[column] = { parts: view?.parts ?? [], unknown: view?.state === 'unknown', filtered: view?.reason === 'outside-theatres' };
-      return { ...row, cells };
+      return { parts: view?.parts ?? [], unknown: view?.state === 'unknown', filtered: view?.reason === 'outside-theatres' };
     });
-    const shown = new Set(rows.map(row => Number(row.id)));
-    return { rows, periods, viewAt: (region: number, day: number) => day === column && shown.has(region) ? liveRows.get(region)?.view ?? gap : baseTimeline.viewAt(region, day) };
-  }, [baseTimeline, follow, dayData, dayRead, dayRecorded, loading, appearance, dayLooks, data]);
+    return { ...baseTimeline, periods: historyPeriods!, tail: { period, cells },
+      viewAt: (region: number, day: number) => day === column && timelineRegions.has(region) ? liveRows.get(region)?.view ?? gap : baseTimeline.viewAt(region, day) };
+  }, [baseTimeline, historyPeriods, timelineRegions, follow, dayData, dayRead, dayRecorded, loading, appearance, dayLooks, data]);
+  const timelinePeriods = useMemo(() => projectedTimeline?.tail ? [...projectedTimeline.periods, projectedTimeline.tail.period] : projectedTimeline?.periods, [projectedTimeline]);
   const allChoices = options.order === 'name' ? choices.data : undefined;
   const projectedMoment = useMemo(() => data?.view === 'moment' ? momentViews(data, dataHour, appearance, allChoices) : [], [data, dataHour, appearance, allChoices]);
   const regionMap = useMemo(() => new Map(projectedMoment.map(row => [row.region.id, row])), [projectedMoment]);
-  const timelineRegions = useMemo(() => new Map(data?.view === 'timeline' ? data.rows.map(row => [row.region, row]) : []), [data]);
   const tooltip = useCallback((regionId: number, at: number | null) => {
     let region: { name: string } | undefined, view: AirView | undefined;
     if (data?.view === 'timeline' && projectedTimeline) {
@@ -218,14 +217,15 @@ export function useAir(props: WidgetProps, options: Readonly<Record<string, Opti
       if (region && at != null && pendingAt({ pending: loading }, at))
         return { title: region.name, rows: [{ label: 'State', value: 'Loading' }] };
       const cell = projectedTimeline.viewAt(regionId, index);
-      if (cell) view = { ...cell, hour: projectedTimeline.periods[index]?.readHour ?? null,
-        ...(projectedTimeline.periods[index]?.readHour == null ? { state: 'gap' as const } : {}) };
+      const period = timelinePeriods?.[index];
+      if (cell) view = { ...cell, hour: period?.readHour ?? null,
+        ...(period?.readHour == null ? { state: 'gap' as const } : {}) };
     } else { const row = regionMap.get(regionId); region = row?.region; view = row && { ...row.view, hour: at }; }
     if (!region || !view) return null;
     if (view.hour != null) askHover(view.hour, airTooltipTags(view));
     const full = airTooltip(region, view, mode.mode === 'viewpoint', view.hour == null ? names.country : hoverLabels(view.hour), !!mode.sides.length, factionNames);
     return fitTooltip([airSummaryTooltip(full, view)], viewport, { keep: view.wings == null ? 1 : 2, full });
-  }, [data, projectedTimeline, regionMap, timelineRegions, loading, askHover, hoverLabels, mode.mode, mode.sides.length, names.country, viewport, factionNames]);
+  }, [data, projectedTimeline, timelinePeriods, regionMap, timelineRegions, loading, askHover, hoverLabels, mode.mode, mode.sides.length, names.country, viewport, factionNames]);
   const legend = useMemo(() => mode.mode === 'viewpoint' ? [
     { id: 'friendly', label: `${appearance.viewpoint.name} (friendly)`, color: appearance.viewpoint.color },
     { id: 'enemy', label: `Enemies of ${appearance.viewpoint.name}`, color: tokens.error },

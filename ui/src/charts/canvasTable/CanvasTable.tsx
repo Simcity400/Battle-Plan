@@ -9,6 +9,8 @@ import type { TooltipContent } from '../tooltip';
 import { easeTau } from '../easing';
 import { useChartTokens } from '../useChartTokens';
 import { watchCanvasSize } from '../surface';
+import { cancelGeometry, invalidateGeometry } from '../geometry';
+import { fontFamilies, loadedFontFamily } from '../fonts';
 import { FULL_FIT, fitColumns, rankChanges } from '../table/logic';
 import type { ColumnFit, RankChange, Sort } from '../table/logic';
 import { sortKey } from '../table/options';
@@ -59,6 +61,7 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
   const probe = useRef<HTMLTableSectionElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const spoken = useRef<HTMLTableSectionElement>(null);
+  const spokenRead = useRef<{ moment: PaintMoment<Data>; key: string } | null>(null);
   const live = useRef<HTMLParagraphElement>(null);
   const latest = useRef(props);
   latest.current = props;
@@ -68,7 +71,7 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
   const [widths, setWidths] = useState<readonly number[]>([]);
   // Columns that do not fit hide, the last first, and say their values in the row's tooltip.
   const [fit, setFit] = useState<{ key: string; fit: ColumnFit }>({ key: '', fit: FULL_FIT });
-  const [size, setSize] = useState(0);
+  const geometry = useRef<(() => void) | null>(null);
   // The sorted column never hides: the order it sets must stay in sight.
   const order = columns.filter(column => column.kind === 'numeric' && column.key !== props.sort?.column).map(column => column.key).reverse();
   const fitKey = JSON.stringify([order, density]);
@@ -77,14 +80,10 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
   const shownColumns = columns.filter(column => !held.hidden.includes(column.key));
   const hiddenColumns = columns.filter(column => held.hidden.includes(column.key));
   const columnsKey = JSON.stringify(shownColumns.map(column => [column.key, column.kind]));
+  const geometryKey = JSON.stringify(columns.map(column => [column.key, column.kind, column.label, column.width]));
+  const speechKey = JSON.stringify([rank, columns.map(column => [column.key, column.kind])]);
   const headTable = useRef<HTMLTableElement>(null);
-  useLayoutEffect(() => {
-    const table = headTable.current, row = head.current;
-    if (!table || !row) return;
-    // The tracks are the header row's: its overflow is what does not fit.
-    const next = fitColumns(held, order, table.clientWidth, Math.max(table.scrollWidth, row.scrollWidth));
-    if (next !== held) setFit({ key: fitKey, fit: next });
-  });
+  const fitting = useRef({ held, order, fitKey });
   const hiddenRef = useRef(hiddenColumns);
   hiddenRef.current = hiddenColumns;
 
@@ -93,7 +92,8 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     if (!active || !element || !scroller || !header || !sample) return;
     const context = element.getContext('2d');
     if (!context) return;
-    let look: TableLook = readLook(sample, scroller);
+    let look: TableLook;
+    let styleDue = true, headerHeight = 0, availableHeight = 0;
     let boxes: ColumnBox[] = [];
     // Each numeric column's header as wide as its label needs: a column is never narrower.
     let headerNeeds: number[] = [];
@@ -104,25 +104,28 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     };
     const measureColumns = () => {
       const { rect, x: scale } = zoom(), base = rect.left;
-      headerNeeds = [];
+      const needs: number[] = [];
       [...header.cells].forEach((cell, index) => {
         const column = rank ? shownColumns[index - 1] : shownColumns[index];
         const at = column && cellOf.get(column.key);
-        if (at !== undefined) headerNeeds[at] = Math.ceil(cell.scrollWidth);
+        if (at !== undefined) needs[at] = Math.ceil(cell.scrollWidth);
       });
-      boxes = [...header.cells].map((cell, index) => {
+      const measured = [...header.cells].map((cell, index) => {
         const box = cell.getBoundingClientRect();
         const column = rank ? shownColumns[index - 1] : shownColumns[index];
         return { left: (box.left - base) / scale, width: box.width / scale, numeric: column?.kind === 'numeric', country: column?.kind === 'country', text: column?.kind === 'text', rank: rank && index === 0,
           cell: column ? cellOf.get(column.key) ?? -1 : -1 };
       });
+      return { needs, measured };
     };
     let text = new TextWidths();
     const motion = new TableMotion();
     const flags = new FlagPictures(() => wake());
-    const surface = watchCanvasSize(element, () => { measureColumns(); wake(); });
+    const surface = watchCanvasSize(element, () => wake());
     let scrollTop = scroller.scrollTop, hover: string | null = null, focus: string | null = null, first = true;
-    let shown: PaintMoment<Data> | null = null, spokenMoment: PaintMoment<Data> | null = null, grown = widths, rowCount = -1;
+    let shown: PaintMoment<Data> | null = null, grown = widths, rowCount = -1;
+    let cellIndex = 0;
+    const speechColumns = columns.map(column => column.kind === 'country' ? -1 : cellIndex++);
     // Rank changes against the ranks last drawn; another sort order starts afresh.
     let ranks: ReadonlyMap<string, RankChange> = new Map(), ordering = '', rankTimer = 0;
     const markRanks = (moment: PaintMoment<Data>, now: number) => {
@@ -139,9 +142,8 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     // The scroll is as tall as the rows; the canvas covers what of them shows, under the header.
     const size = () => {
       body.style.height = `${rowCount * look.rowHeight}px`;
-      const headHeight = header.offsetHeight;
-      element.style.top = `${headHeight}px`;
-      element.style.height = `${Math.max(0, Math.min(rowCount * look.rowHeight, scroller.clientHeight - headHeight))}px`;
+      element.style.top = `${headerHeight}px`;
+      element.style.height = `${Math.max(0, Math.min(rowCount * look.rowHeight, availableHeight - headerHeight))}px`;
     };
     // The row painted under a point: the one drawn last (on top) that is not leaving, where it is in this frame.
     let painted: readonly FrameRow[] = [];
@@ -158,18 +160,23 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     // The accessible copy holds still while playing and shows the moment playback stopped at.
     const speak = (moment: PaintMoment<Data>) => {
       const body = spoken.current;
-      if (!body || moment === spokenMoment || clock.getSnapshot().playing) return;
-      spokenMoment = moment;
+      if (!body || (moment === spokenRead.current?.moment && speechKey === spokenRead.current.key) || clock.getSnapshot().playing) return;
+      spokenRead.current = { moment, key: speechKey };
       const rows = moment.rows;
-      while (body.rows.length > rows.length) body.deleteRow(-1);
+      const previous = [...body.rows], added = document.createDocumentFragment();
+      for (let index = previous.length - 1; index >= rows.length; index--) previous[index].remove();
       rows.forEach((row, index) => {
-        const tr = body.rows[index] ?? body.insertRow();
-        const cells = [...(rank ? [row.rank === undefined ? '' : String(row.rank)] : []),
+        const tr = previous[index] ?? document.createElement('tr');
+        const values = [...(rank ? [row.rank === undefined ? '' : String(row.rank)] : []),
           ...columns.map((column, at) => column.kind === 'country' ? `${row.country?.name ?? ''}${row.country && flagText(row.country) ? ` (${flagText(row.country)})` : ''}`
-            : row.cells[at - columns.slice(0, at).filter(item => item.kind === 'country').length]?.text ?? '')];
-        while (tr.cells.length < cells.length) tr.insertCell();
-        cells.forEach((value, at) => { if (tr.cells[at].textContent !== value) tr.cells[at].textContent = value; });
+            : row.cells[speechColumns[at]]?.text ?? '')];
+        const cells = [...tr.cells];
+        while (cells.length > values.length) cells.pop()!.remove();
+        while (cells.length < values.length) { const cell = document.createElement('td'); tr.appendChild(cell); cells.push(cell); }
+        values.forEach((value, at) => { if (cells[at].textContent !== value) cells[at].textContent = value; });
+        if (!previous[index]) added.appendChild(tr);
       });
+      body.appendChild(added);
     };
     // Grows numeric columns to the widest text of the rows in view, as the DOM table measures the
     // rows it mounts: from text, not layout.
@@ -192,9 +199,9 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     };
     // Painted only when something drawn changed: a still table costs one check a frame.
     let dirty = true, moving = false, fitDue = true;
-    const painting: PaintState = { context, look, columns: boxes, widths: text, flags, width: 0, height: 0, scrollTop, hover, focus, focusColour: tokens.accent,
-      delta: key => { const change = ranks.get(key); return change && change.until > painting.now ? change.delta : 0; }, now: 0 };
+    let painting: PaintState;
     const paint = () => {
+      if (!painting) return;
       const now = performance.now();
       const moment = latest.current.moment();
       if (moment && moment !== shown) {
@@ -210,7 +217,6 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
       if (!layoutWidth || !layoutHeight) return;
       if (element.width !== backing.width) element.width = backing.width;
       if (element.height !== backing.height) element.height = backing.height;
-      if (!boxes.length) measureColumns();
       context.setTransform(backing.scaleX, 0, 0, backing.scaleY, 0, 0);
       const frame = motion.frame(now, motionNow().enter, scrollTop / look.rowHeight - 1, (scrollTop + layoutHeight) / look.rowHeight + 1);
       painted = frame.rows;
@@ -229,16 +235,53 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     };
     const loop = liveLoop(clock, paint);
     const wake = () => { dirty = true; loop.wake(); };
+    const measure = () => {
+      const styled = styleDue;
+      const nextLook = styled ? readLook(sample, scroller) : look;
+      const { needs, measured } = measureColumns();
+      const height = scroller.clientHeight, headHeight = header.offsetHeight;
+      const { held, order, fitKey } = fitting.current;
+      const table = headTable.current!;
+      // The tracks are the header row's: its overflow is what does not fit.
+      const nextFit = fitColumns(held, order, table.clientWidth, Math.max(table.scrollWidth, header.scrollWidth));
+      const changed = styled || !painting || height !== availableHeight || headHeight !== headerHeight
+        || needs.length !== headerNeeds.length || needs.some((need, index) => need !== headerNeeds[index])
+        || measured.length !== boxes.length || measured.some((box, index) => {
+          const previous = boxes[index];
+          return box.left !== previous.left || box.width !== previous.width;
+        });
+      return () => {
+        styleDue = false;
+        if (nextFit !== held) setFit({ key: fitKey, fit: nextFit });
+        if (!changed) return;
+        look = nextLook;
+        painting ??= { context, look, columns: boxes, widths: text, flags, width: 0, height: 0, scrollTop, hover, focus, focusColour: tokens.accent,
+          delta: key => { const change = ranks.get(key); return change && change.until > painting.now ? change.delta : 0; }, now: 0 };
+        if (styled) text = new TextWidths();
+        headerNeeds = needs; boxes = measured;
+        headerHeight = headHeight; availableHeight = height;
+        if (rowCount >= 0) size();
+        fitDue = true;
+        wake();
+      };
+    };
+    const invalidate = () => invalidateGeometry(measure);
+    geometry.current = invalidate;
     const stopSource = latest.current.bind(wake);
     const scrolled = () => { scrollTop = scroller.scrollTop; fitDue = true; wake(); };
-    const resized = new ResizeObserver(() => { if (rowCount >= 0) size(); measureColumns(); setSize(scroller.clientWidth); wake(); });
+    const resized = new ResizeObserver(invalidate);
     resized.observe(header);
     resized.observe(scroller);
     // A column that grows moves every column after it; the header row and scroller keep their size.
     for (const cell of header.cells) resized.observe(cell);
-    const restyle = new MutationObserver(() => { look = readLook(sample, scroller); text = new TextWidths(); measureColumns(); fitDue = true; wake(); });
+    const restyled = () => { styleDue = true; invalidate(); };
+    const restyle = new MutationObserver(restyled);
     // A font that loads after the first measure changes every width measured with it.
-    const fontsLoaded = () => { look = readLook(sample, scroller); text = new TextWidths(); measureColumns(); fitDue = true; wake(); };
+    const fontsLoaded = (event: FontFaceSetLoadEvent) => {
+      const families = new Set(look ? [look.font, look.numericFont, look.rankFont, look.deltaFont]
+        .flatMap(font => fontFamilies(font.slice(font.indexOf('px ') + 3))) : []);
+      if (!look || loadedFontFamily(event, families)) restyled();
+    };
     document.fonts?.addEventListener('loadingdone', fontsLoaded);
     restyle.observe(document.documentElement, { attributes: true });
     const tip = (row: PaintRow<Data> | undefined, x: number, y: number) => {
@@ -297,8 +340,9 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     element.addEventListener('contextmenu', menu);
     element.addEventListener('keydown', keys);
     element.addEventListener('blur', blur);
-    wake();
+    invalidate();
     return () => {
+      cancelGeometry(measure); geometry.current = null;
       loop.stop(); stopSource(); surface.disconnect(); clearTimeout(rankTimer); resized.disconnect(); restyle.disconnect(); hideTooltip(owner);
       document.fonts?.removeEventListener('loadingdone', fontsLoaded);
       scroller.removeEventListener('scroll', scrolled);
@@ -307,10 +351,13 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     };
   }, [active, clock, columnsKey, rank, density, tokens, props.bind]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  void size;
+  useLayoutEffect(() => {
+    fitting.current = { held, order, fitKey };
+    geometry.current?.();
+  }, [geometryKey, fitKey, held, widths, props.sort?.direction]);
   const tracks = [...(rank ? ['var(--table-rank-width)'] : []), ...shownColumns.map(column => column.width ?? (column.kind === 'country'
     ? 'minmax(var(--table-country-min), 2fr)' : column.kind === 'text' ? 'minmax(var(--table-name-min), 1fr)' : `${widths[cellOf.get(column.key)!] ?? 80}px`))].join(' ');
-  return <div ref={root} className={`chart-table canvas-table${density === 'compact' ? ' is-compact' : ''}`} style={{ '--table-columns': tracks } as CSSProperties}>
+  return <><div ref={root} className={`chart-table canvas-table${density === 'compact' ? ' is-compact' : ''}`} style={{ '--table-columns': tracks } as CSSProperties}>
     <table ref={headTable} className="canvas-table-head" aria-label={`${label} columns`}>
       <thead><tr ref={head}>
         {rank && <th scope="col" className="table-rank">#</th>}
@@ -330,11 +377,12 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     <div className="canvas-table-body">
       <canvas ref={canvas} className="canvas-table-rows" tabIndex={0} role="img" aria-label={`${label} rows. Arrow keys read each row.`} />
     </div>
-    <table className="sr-only" aria-label={label}>
+  </div>
+    <table className="sr-only canvas-table-spoken" aria-label={label} style={{ '--spoken-columns': columns.length + (rank ? 1 : 0) } as CSSProperties}>
       <thead><tr>{rank && <th scope="col">Rank</th>}{columns.map(column => <th key={column.key} scope="col">{column.label}</th>)}</tr></thead>
       <tbody ref={spoken} />
     </table>
     <p ref={live} className="sr-only" aria-live="polite" />
     {contextMenu.menu}
-  </div>;
+  </>;
 }

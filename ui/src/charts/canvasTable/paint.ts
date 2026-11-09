@@ -23,7 +23,10 @@ export interface TableLook {
 /** The DOM classes the probe row carries; `readLook` reads each one's computed style. */
 export const PROBE_HTML = `<tr class="moving-row"><td class="table-rank">1<span class="table-delta is-positive">▲1</span><span class="table-delta is-negative">▼1</span></td>`
   + `<td class="align-start"><span class="table-country"><span class="country-flag country-flag-unavailable table-country-flag"></span><span>Name</span></span></td>`
-  + `<td class="is-numeric align-end"><span class="table-natural"><span class="table-cell"><i class="table-cellbar"></i><span>0</span></span></span></td></tr>`;
+  + `<td class="is-numeric align-end"><span class="table-natural"><span class="table-cell"><i class="table-cellbar"></i><span>0</span></span></span>`
+  + `<i data-table-colour="hover" style="display:none;color:color-mix(in srgb, var(--text) 4%, transparent)"></i>`
+  + `<i data-table-colour="flash" style="display:none;color:color-mix(in srgb, var(--accent) 16%, transparent)"></i>`
+  + `<i data-table-colour="flag" style="display:none;color:var(--line-soft)"></i></td></tr>`;
 
 export function readLook(probe: HTMLTableRowElement, root: HTMLElement): TableLook {
   const style = (element: Element) => getComputedStyle(element);
@@ -37,26 +40,15 @@ export function readLook(probe: HTMLTableRowElement, root: HTMLElement): TableLo
   return {
     rowHeight, cellX: parseFloat(style(country).paddingLeft) || 8,
     text: style(name).color, muted: style(rank).color, positive: style(positive).color, negative: style(negative).color,
-    line: row.borderBottomColor, hover: resolveColour(root, 'color-mix(in srgb, var(--text) 4%, transparent)'),
-    bar: style(bar).backgroundColor, flash: resolveColour(root, 'color-mix(in srgb, var(--accent) 16%, transparent)'),
-    flagEmpty: flagStyle.backgroundColor, flagEmptyLine: resolveColour(root, 'var(--line-soft)'),
+    line: row.borderBottomColor, hover: style(probe.querySelector('[data-table-colour="hover"]')!).color,
+    bar: style(bar).backgroundColor, flash: style(probe.querySelector('[data-table-colour="flash"]')!).color,
+    flagEmpty: flagStyle.backgroundColor, flagEmptyLine: style(probe.querySelector('[data-table-colour="flag"]')!).color,
     mutedOpacity: parseFloat(rootStyle.getPropertyValue('--table-muted-opacity')) || 0.55,
     font: fontOf(name), numericFont: fontOf(value), rankFont: fontOf(rank), deltaFont: fontOf(positive),
     flagWidth: parseFloat(flagStyle.width) || 18, flagHeight: parseFloat(flagStyle.height) || 12, flagGap: parseFloat(countryStyle.columnGap) || 6,
     barHeight: parseFloat(style(bar).height) || 16, barRadius: parseFloat(style(bar).borderTopLeftRadius) || 3,
     cellMin: parseFloat(style(cell).minWidth) || 64, cellPad: parseFloat(style(value).paddingRight) || 4,
   };
-}
-
-/** A CSS colour expression as the browser resolves it. */
-function resolveColour(root: HTMLElement, expression: string): string {
-  const probe = document.createElement('span');
-  probe.style.color = expression;
-  probe.style.display = 'none';
-  root.appendChild(probe);
-  const colour = getComputedStyle(probe).color;
-  probe.remove();
-  return colour;
 }
 
 /** A CSS cubic-bezier timing function. */

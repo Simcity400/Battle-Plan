@@ -33,6 +33,8 @@ export function useLiveMoments<Data>({ active, lane, runtime, widget, track, con
 }) {
   const [phase, setPhase] = useState<{ lane: string | null; phase: LivePhase }>({ lane: null, phase: { state: 'loading' } });
   const measured = measuredWidget();
+  const timeKey = JSON.stringify([widget.id, widget.kind, widget.time, widget.trackIds, track?.source.id, track?.source.revision, track?.branch.id,
+    track?.branch.firstHour, track?.branch.lastHour, track?.axisOffset, runtime.tracks.map(item => [item.id, item.branch.firstHour, item.axisOffset])]);
   const store = useMemo(() => {
     if (!active || !lane || !track) return null;
     const wakers = new Set<() => void>();
@@ -102,7 +104,7 @@ export function useLiveMoments<Data>({ active, lane, runtime, widget, track, con
       start() { if (countries) labels.start(); wake(); },
       stop() { labels.stop(); ahead.reset(); },
     };
-  }, [active, lane, runtime, widget, track, content, byName]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active, lane, runtime.client, runtime.clock, timeKey, content, countries, byName]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (!store) return; store.start(); return () => store.stop(); }, [store]);
   return { store, phase: phase.lane === lane ? phase.phase : { state: 'loading' } as LivePhase };
 }

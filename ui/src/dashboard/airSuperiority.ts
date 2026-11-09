@@ -1,6 +1,6 @@
 import { countryNameDetails } from '../charts/tooltip.ts';
 import type { AirCell, AirReply as WireAirReply, AirSide, AirSpan } from '../generated/dashboard';
-import type { HeatPeriod, HeatRow } from '../charts/heat/layout';
+import type { HeatPeriod, HeatRow, HeatTail } from '../charts/heat/layout';
 import type { TooltipContent } from '../charts/tooltip';
 import type { CountryLabel } from './countryFlagsAt';
 import { formatAmount, rescale } from '../charts/valueAxis.ts';
@@ -20,7 +20,7 @@ export interface AirView { state: AirState; parts: readonly AirPart[]; total: bi
 /** `lookAt` names what `color` and `viewpointAt` give at an hour: hours with the same
  * value look alike, so a projection need not ask again for each. */
 export interface AirLooks { name(side: AirSide): string; color(side: AirSide, hour?: number): string; viewpointAt?(hour: number): AirLooks['viewpoint']; lookAt?(hour: number): unknown; viewpoint: { name: string; tag?: string; color: string }; enemy: string; scale: number; badBelow: number; goodAbove: number; mode?: 'sides' | 'viewpoint' }
-export interface AirTimelineViews { rows: HeatRow[]; periods: HeatPeriod[]; viewAt(region: number, day: number): AirView | undefined }
+export interface AirTimelineViews { rows: HeatRow[]; periods: HeatPeriod[]; tail?: HeatTail; viewAt(region: number, day: number): AirView | undefined }
 export const FILTERED_NOTE = 'No selected side has a score (others may)';
 
 export const airSegmentAt = (segments: Readonly<Partial<Record<string, readonly AirSpan[]>>>, tag: string, hour: number): number | null =>

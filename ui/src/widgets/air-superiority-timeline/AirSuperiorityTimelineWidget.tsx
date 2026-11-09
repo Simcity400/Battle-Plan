@@ -45,7 +45,7 @@ export default function AirSuperiorityTimelineWidget(props: WidgetProps) {
       <span><i aria-hidden="true" style={{ background: `color-mix(in srgb, ${air.tokens.error} ${air.tokens.gapOpacity * 100}%, ${air.tokens.surface})` }} />Not recorded</span>
       <span><i aria-hidden="true" style={hatchStyle(air.tokens)} />Unknown</span>
     </div>
-    <div className="air-timeline-chart"><HeatChart label="Air superiority timeline" rows={air.projectedTimeline.rows} periods={air.projectedTimeline.periods} labelCatalogue={air.labelCatalogue}
+    <div className="air-timeline-chart"><HeatChart label="Air superiority timeline" rows={air.projectedTimeline.rows} periods={air.projectedTimeline.periods} tail={air.projectedTimeline.tail} labelCatalogue={air.labelCatalogue}
       extent={air.extent} playhead={air.playhead} branchStart={air.track.branch.firstHour} legend={legend} afterPlayhead={props.widget.time.mode !== 'follow'} look={options.look === 'split' ? 'split' : 'margin'}
       active={props.active} revision={air.hoverRevision} hoursPerSecond={air.hoursPerSecond}
       approximate={air.data.view === 'timeline' ? air.data.approximate : undefined} pending={air.data.view === 'timeline' ? air.data.pending : undefined}

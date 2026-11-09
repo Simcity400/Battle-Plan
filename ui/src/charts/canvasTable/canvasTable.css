@@ -5,3 +5,9 @@
 .canvas-table-body { position: relative; }
 .canvas-table-rows { position: sticky; display: block; width: 100%; height: 0; outline: none; }
 .canvas-table-rows:focus-visible { outline: 2px solid var(--accent-line); outline-offset: -2px; }
+/* A fixed off-screen grid keeps copy separators without inheriting visual layout. */
+.canvas-table-spoken { display: grid; contain: strict; font: 1px/1 sans-serif; }
+.canvas-table-spoken tr { display: grid; grid-template-columns: repeat(var(--spoken-columns), max-content); }
+.canvas-table-spoken tbody { display: block; position: relative; }
+.canvas-table-spoken tbody tr { position: absolute; inset: 0 0 auto; height: 1px; }
+.canvas-table-spoken td, .canvas-table-spoken th { white-space: nowrap; }

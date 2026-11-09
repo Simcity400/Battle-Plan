@@ -57,39 +57,40 @@ test('campaign labels, scrolled cells and keyboard rows share the bounded viewpo
       onPointerMoveCapture: (event: { target: Canvas; clientX: number; clientY: number }) => void } };
     const child = (element: Element) => Array.isArray(element.props.children) ? element.props.children[0] : element.props.children;
     let view: Element, chart: TimeChartProps, plot: Element;
-    const render = () => {
+    const render = async () => {
       cursor = 0; effects.length = 0;
       view = child(HeatChart(props)); view.props.ref!.current = surface;
       plot = child(child(child(view)));
       chart = child(plot).props as unknown as TimeChartProps;
       for (const effect of effects) effect();
+      await Promise.resolve();
     };
-    render(); render(); render();
+    await render(); await render(); await render();
     assert.equal(chart!.rows!.labelWidth, labels[4999].length * 7 + 12);
     assert.ok(chart!.rows!.labelWidth > 118);
     assert.ok(chart!.rows!.labels.length < 50);
     assert.ok(plot!.props.style!.height < 400);
     const width = chart!.rows!.labelWidth, initialMeasurements = measured;
     props.playhead = 23;
-    props.rows = props.rows.slice(0, 10); render(); render();
+    props.rows = props.rows.slice(0, 10); await render(); await render();
     assert.equal(chart!.rows!.labelWidth, width, 'playback inventory cannot shrink the campaign gutter');
     assert.equal(measured, initialMeasurements, 'unchanged labels do not repeat text measurement');
     props.rows = labels.map((label, index) => ({ id: String(index), label, cells: [{ parts: [] }] }));
-    surface.scrollTop = 2000 * 13 + 5; view!.props.onScroll(); render();
+    surface.scrollTop = 2000 * 13 + 5; view!.props.onScroll(); await render();
     const canvas = new Canvas();
     view!.props.onPointerMoveCapture({ target: canvas, clientX: 600, clientY: (22 + 6.5) * 2 });
     chart!.rows!.tooltip(0, 23);
     assert.equal(reached.at(-1), '2000', 'Size-scaled pointer resolves the partially visible logical row');
-    view!.props.onKeyDownCapture({ key: 'ArrowDown' }); render();
+    view!.props.onKeyDownCapture({ key: 'ArrowDown' }); await render();
     chart!.rows!.tooltip(0, 23);
     assert.equal(reached.at(-1), '2001');
     for (let index = 2001; index < 4999; index++) view!.props.onKeyDownCapture({ key: 'ArrowDown' });
-    render(); chart!.rows!.tooltip(0, 23);
+    await render(); chart!.rows!.tooltip(0, 23);
     assert.equal(reached.at(-1), '4999', 'keyboard reaches the entire logical inventory');
     assert.ok(surface.scrollTop > 60_000);
     assert.ok(plot!.props.style!.height < 400);
     assert.ok(chart!.rows!.labels.length < 50);
-    view!.props.onKeyDownCapture({ key: 'ArrowUp' }); render(); chart!.rows!.tooltip(0, 23);
+    view!.props.onKeyDownCapture({ key: 'ArrowUp' }); await render(); chart!.rows!.tooltip(0, 23);
     assert.equal(reached.at(-1), '4998');
   } finally {
     delete host.__heatHooks;

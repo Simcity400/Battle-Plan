@@ -6,6 +6,8 @@ export interface HeatCell { parts: readonly HeatPart[]; unknown?: boolean; filte
 /** `exact: false`: a period summarising several reads, whose hours the pointer keeps. */
 export interface HeatPeriod { firstHour: number; lastHour: number; readHour: number | null; exact?: boolean }
 export interface HeatRow { id: string; label: string; cells: readonly HeatCell[] }
+/** An appended period with one cell per row; row cells beyond the history periods are ignored. */
+export interface HeatTail { period: HeatPeriod; cells: readonly HeatCell[] }
 export type HeatLook = 'margin' | 'split';
 
 /** Logical scroll rows, with two rows of drawing margin on either side. */
@@ -23,6 +25,12 @@ export function heatRowAt(y: number, window: ReturnType<typeof heatWindow>, top:
   return Math.max(0, Math.min(count - 1, window.first + Math.floor((y - top + window.offset) / window.rowHeight)));
 }
 
+export function joinedCellPeriod(before: HeatPeriod, period: HeatPeriod, previous: HeatCell, cell: HeatCell): HeatPeriod | null {
+  return previous.parts === cell.parts && !!previous.unknown === !!cell.unknown && !!previous.filtered === !!cell.filtered
+    && !!previous.approximate === !!cell.approximate && before.lastHour + 1 === period.firstHour
+    ? { ...before, lastHour: period.lastHour, readHour: period.readHour } : null;
+}
+
 /** Join only identical adjacent cells. Their tooltips still describe separate
  * reads; this avoids redrawing thousands of equal stripes across a long history. */
 export function cellRuns(row: HeatRow, periods: readonly HeatPeriod[], until: number | null): { period: HeatPeriod; cell: HeatCell }[] {
@@ -31,11 +39,8 @@ export function cellRuns(row: HeatRow, periods: readonly HeatPeriod[], until: nu
     const cell = row.cells[column];
     if (!cell || period.readHour == null || period.readHour > (until ?? Infinity)) return;
     const last = result.at(-1);
-    if (last && last.cell.parts === cell.parts && !!last.cell.unknown === !!cell.unknown && !!last.cell.filtered === !!cell.filtered
-      && !!last.cell.approximate === !!cell.approximate
-      && last.period.lastHour + 1 === period.firstHour) {
-      last.period = { ...last.period, lastHour: period.lastHour, readHour: period.readHour };
-    } else result.push({ period, cell });
+    const joined = last && joinedCellPeriod(last.period, period, last.cell, cell);
+    if (joined) last.period = joined; else result.push({ period, cell });
   });
   return result;
 }

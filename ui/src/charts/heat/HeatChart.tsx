@@ -10,10 +10,12 @@ import { font, VALUE_LABEL_GAP } from '../draw';
 import { toLocal } from '../surface';
 import { keyTarget } from '../rowNavigation';
 import type { Range } from '../view';
-import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, marginColor, periodAt, splitStripes } from './layout';
+import { cellRect, cellRuns, heatNavigation, heatWindow, heatRowAt, joinedCellPeriod, marginColor, periodAt, splitStripes } from './layout';
 import { drawUnknownHatch } from '../hatch';
 import { drawRecordedGap } from '../draw';
-import type { HeatLook, HeatPart, HeatPeriod, HeatRow } from './layout';
+import type { HeatLook, HeatPart, HeatPeriod, HeatRow, HeatTail } from './layout';
+import { cancelGeometry, invalidateGeometry } from '../geometry';
+import { fontFamilies, loadedFontFamily } from '../fonts';
 import { useChartTokens } from '../useChartTokens';
 import { fillPendingBand, markApproximate, spanRanges } from '../prepared';
 import type { Span } from '../prepared';
@@ -23,6 +25,7 @@ import './heat.css';
 
 export interface HeatChartProps {
   label: string; rows: readonly HeatRow[]; periods: readonly HeatPeriod[];
+  tail?: HeatTail;
   /** Full campaign labels, when playback changes the row inventory. */
   labelCatalogue?: readonly string[];
   extent: Range; playhead: number | null; branchStart: number;
@@ -59,6 +62,9 @@ export default function HeatChart(props: HeatChartProps) {
   const labelCache = useRef<{ font: string; labels: Map<string, number> }>({ font: '', labels: new Map() });
   const window = heatWindow(props.rows.length, viewport.scroll, viewport.height, minimumRow, top, bottom);
   const visible = useMemo(() => props.rows.slice(window.first, window.end), [props.rows, window.first, window.end]);
+  const history = props.periods;
+  const periods = useMemo(() => props.tail ? [...history, props.tail.period] : props.periods, [history, props.periods, props.tail]);
+  const historyRuns = useRef<{ rows: readonly HeatRow[]; periods: readonly HeatPeriod[]; read: number; runs: ReturnType<typeof cellRuns>[] } | null>(null);
   const selected = useRef(0);
   const keyboard = useRef(false);
   const pointerY = useRef(top);
@@ -80,10 +86,23 @@ export default function HeatChart(props: HeatChartProps) {
     if (!context) return;
     context.font = font(tokens, tokens.fontSize.small, 500);
     if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, labels: new Map() };
-    const widths = labelCache.current.labels;
-    for (const label of labels) if (!widths.has(label)) widths.set(label, context.measureText(label).width);
-    setLabelWidth(fitLabelWidth(labels, label => widths.get(label)!, 0,
-      viewport.width * 0.45, VALUE_LABEL_GAP * 2));
+    const measure = () => {
+      const widths = labelCache.current.labels;
+      const width = fitLabelWidth(labels, label => {
+        let width = widths.get(label);
+        if (width === undefined) { width = context.measureText(label).width; widths.set(label, width); }
+        return width;
+      }, 0, viewport.width * 0.45, VALUE_LABEL_GAP * 2);
+      return () => setLabelWidth(width);
+    };
+    const families = new Set(fontFamilies(tokens.font));
+    const loaded = (event: FontFaceSetLoadEvent) => {
+      if (!loadedFontFamily(event, families)) return;
+      labelCache.current.labels.clear(); invalidateGeometry(measure);
+    };
+    document.fonts?.addEventListener('loadingdone', loaded);
+    invalidateGeometry(measure);
+    return () => { cancelGeometry(measure); document.fonts?.removeEventListener('loadingdone', loaded); };
   }, [labels, tokens.font, tokens.fontSize.small, viewport.width]);
   const scroll = () => {
     const scrolled = surface.current!.scrollTop;
@@ -111,56 +130,65 @@ export default function HeatChart(props: HeatChartProps) {
     setHoverRow(heatRowAt(pointerY.current, window, top, props.rows.length));
   };
   const legend = useMemo(() => props.legend?.map((item, index) => ({ ...item, id: item.id ?? String(index) })) ?? [], [props.legend]);
-  const navigation = useMemo(() => heatNavigation(props.periods), [props.periods]);
+  const navigation = useMemo(() => heatNavigation(periods), [periods]);
+  const historyLast = useMemo(() => heatNavigation(history).keyHours.at(-1) ?? -Infinity, [history]);
+  const colours = useRef(new WeakMap<readonly HeatPart[], { grey: string; color: string | null }>());
   const layers = useMemo<ChartLayer[]>(() => {
-    const colours = new WeakMap<readonly HeatPart[], { grey: string; color: string | null }>();
-    const gaps = overlayRuns(props.periods.filter(period => period.readHour == null), [], () => false, props.pending ?? []);
-    let builtUntil = -Infinity;
-    let drawnRows: ReturnType<typeof cellRuns>[] = [];
+    const gaps = overlayRuns(periods.filter(period => period.readHour == null), [], () => false, props.pending ?? []);
     return [{ draw(ctx, frame, tokens, state) {
       const grey = mix(tokens.surface, tokens.text, 0.2);
       let lo = 0, hi = navigation.keyHours.length;
       while (lo < hi) { const mid = (lo + hi) >>> 1; if (navigation.keyHours[mid] <= (state.playhead ?? Infinity)) lo = mid + 1; else hi = mid; }
       const read = state.playhead == null ? Infinity : navigation.keyHours[lo - 1] ?? -Infinity;
-      if (read !== builtUntil) {
-        drawnRows = visible.map(row => cellRuns(row, props.periods, read)); builtUntil = read;
-      }
+      const historyRead = Math.min(read, historyLast);
+      let held = historyRuns.current;
+      if (!held || held.rows !== visible || held.periods !== history || held.read !== historyRead)
+        historyRuns.current = held = { rows: visible, periods: history, read: historyRead, runs: visible.map(row => cellRuns(row, history, historyRead)) };
+      const drawnRows = held.runs;
       for (const period of gaps) {
         drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
       }
       for (const [from, to] of [...spanRanges(props.pending, frame.x[0], frame.x[1], state.playhead),
         ...spanRanges(props.loading, frame.x[0], frame.x[1], state.playhead)])
         fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
-      drawnRows.forEach((runs, index) => runs.forEach(({ period, cell }) => {
-        const rect = cellRect(period, index, visible.length, { ...frame, plotTop: frame.plotTop - window.offset,
-          plotHeight: visible.length * window.rowHeight }, frame.x[0], frame.x[1], state.playhead);
-        if (!rect) return;
-        if (cell.filtered) {
-          ctx.strokeStyle = tokens.border; ctx.lineWidth = tokens.lineWidth.grid;
-          ctx.strokeRect(rect.left, rect.top, rect.width, rect.height);
-        } else if (cell.unknown) {
-          drawUnknownHatch(ctx, tokens, rect);
-        } else if (props.look === 'split') for (const stripe of splitStripes(cell.parts, rect.top, rect.height)) {
-          ctx.fillStyle = stripe.color; ctx.fillRect(rect.left, stripe.top, rect.width, stripe.height);
-        } else {
-          let cached = colours.get(cell.parts);
-          if (!cached || cached.grey !== grey) { cached = { grey, color: marginColor(cell.parts, grey) }; colours.set(cell.parts, cached); }
-          if (cached.color) { ctx.fillStyle = cached.color; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
-        }
-        if (cell.approximate) markApproximate(ctx, tokens, rect.left, rect.top, rect.width, rect.height);
-        for (const [from, to] of spanRanges(props.approximate, period.firstHour, period.lastHour + 1)) {
-          const left = Math.max(rect.left, frame.toX(from)), right = Math.min(rect.left + rect.width, frame.toX(to));
-          markApproximate(ctx, tokens, left, rect.top, right - left, rect.height);
-        }
-      }));
+      drawnRows.forEach((runs, index) => {
+        const drawCell = ({ period, cell }: ReturnType<typeof cellRuns>[number]) => {
+          const rect = cellRect(period, index, visible.length, { ...frame, plotTop: frame.plotTop - window.offset,
+            plotHeight: visible.length * window.rowHeight }, frame.x[0], frame.x[1], state.playhead);
+          if (!rect) return;
+          if (cell.filtered) {
+            ctx.strokeStyle = tokens.border; ctx.lineWidth = tokens.lineWidth.grid;
+            ctx.strokeRect(rect.left, rect.top, rect.width, rect.height);
+          } else if (cell.unknown) {
+            drawUnknownHatch(ctx, tokens, rect);
+          } else if (props.look === 'split') for (const stripe of splitStripes(cell.parts, rect.top, rect.height)) {
+            ctx.fillStyle = stripe.color; ctx.fillRect(rect.left, stripe.top, rect.width, stripe.height);
+          } else {
+            let cached = colours.current.get(cell.parts);
+            if (!cached || cached.grey !== grey) { cached = { grey, color: marginColor(cell.parts, grey) }; colours.current.set(cell.parts, cached); }
+            if (cached.color) { ctx.fillStyle = cached.color; ctx.fillRect(rect.left, rect.top, rect.width, rect.height); }
+          }
+          if (cell.approximate) markApproximate(ctx, tokens, rect.left, rect.top, rect.width, rect.height);
+          for (const [from, to] of spanRanges(props.approximate, period.firstHour, period.lastHour + 1)) {
+            const left = Math.max(rect.left, frame.toX(from)), right = Math.min(rect.left + rect.width, frame.toX(to));
+            markApproximate(ctx, tokens, left, rect.top, right - left, rect.height);
+          }
+        };
+        const tail = props.tail, cell = tail?.cells[window.first + index];
+        const shown = tail && cell && tail.period.readHour != null && tail.period.readHour <= read;
+        const last = runs.at(-1);
+        const joined = shown && last && joinedCellPeriod(last.period, tail.period, last.cell, cell);
+        runs.forEach((run, at) => { if (!joined || at < runs.length - 1) drawCell(run); });
+        if (shown) drawCell({ period: joined || tail.period, cell });
+      });
     } }];
-  }, [visible, props.periods, props.look, props.approximate, props.pending, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
+  }, [visible, periods, history, historyLast, props.tail, props.look, props.approximate, props.pending, props.loading, navigation.keyHours, window.offset, window.rowHeight]);
   const rows = useMemo(() => ({ labels: visible.map(row => row.label), labelWidth,
     tooltip: (_row: number, hour: number) => {
       const index = keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length);
-      const column = periodAt(props.periods, hour);
-      return props.rows[index] ? props.tooltip(props.rows[index], column == null ? null : props.periods[column], hour) : null;
-    } }), [visible, labelWidth, props.rows, props.periods, props.tooltip, window.first, window.offset, window.rowHeight, top, hoverRow]);
+      const column = periodAt(periods, hour);
+      return props.rows[index] ? props.tooltip(props.rows[index], column == null ? null : periods[column], hour) : null;
+    } }), [visible, labelWidth, props.rows, periods, props.tooltip, window.first, window.offset, window.rowHeight, top, hoverRow]);
   // TimeChart owns the fixed date axis; align its row labels with the scrolled cells.
   const overlay = (ctx: CanvasRenderingContext2D, frame: Parameters<ChartLayer['draw']>[1], tokens: Parameters<ChartLayer['draw']>[2]) => {
     ctx.save(); ctx.beginPath(); ctx.rect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight); ctx.clip();
@@ -182,8 +210,8 @@ export default function HeatChart(props: HeatChartProps) {
           pickOwner={props.pickOwner} onPick={props.onPick ? hour => {
             // The row under the pointer, or the keyboard's row, as the tooltip reads it.
             const row = props.rows[keyboard.current ? selected.current : heatRowAt(pointerY.current, window, top, props.rows.length)];
-            const column = periodAt(props.periods, hour);
-            if (row) props.onPick!(row, column == null ? null : props.periods[column], hour);
+            const column = periodAt(periods, hour);
+            if (row) props.onPick!(row, column == null ? null : periods[column], hour);
           } : undefined} /></div>
       </div>
     </div>

@@ -1,9 +1,4 @@
-/** One animation loop for every painted widget on the dashboard. A task draws when it is
- * woken and keeps frames coming only while it says it is still moving; hidden
- * tasks never draw, and the loop stops entirely when nothing is moving. Each frame
- * gives tasks a fixed budget, round-robin: a task past it waits for the next frame
- * (first in line there), so under load a widget paints a little less often and a
- * frame never overruns. */
+/** Shared canvas loop; the budget rotates waiting tasks but cannot preempt a long draw. */
 
 export interface FrameInfo {
   now: number;
@@ -23,7 +18,7 @@ export interface FrameHost {
 
 /** Longest step reported to tasks, so a tab returning from the background doesn't jump. */
 const MAX_DT = 64;
-/** What painting may take of a frame, leaving the rest of its 16.7 ms to style, layout and the compositor. */
+/** Style, layout and compositing need the rest of the frame; a task can overrun this. */
 export const PAINT_BUDGET_MS = 6;
 
 /** The canvas a task draws into says, as `drawPending`, whether a draw it was asked for has yet to run: a property, not an
