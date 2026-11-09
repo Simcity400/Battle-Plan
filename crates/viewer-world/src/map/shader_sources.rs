@@ -70,15 +70,19 @@ pub const PASSES: &[(&str, &str)] = &[
     ("colour LUT blending", "gfx/FX/lut_blender.shader"),
 ];
 
-type Sources = BTreeMap<String, Option<Vec<u8>>>;
+type Sources<B> = BTreeMap<String, Option<B>>;
 
-#[derive(Debug, Default)]
-struct Graph {
-    sources: Sources,
+#[derive(Debug)]
+struct Graph<B> {
+    sources: Sources<B>,
     errors: BTreeSet<String>,
 }
 
-fn graph(effect: &str, read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> Graph {
+impl<B> Default for Graph<B> {
+    fn default() -> Self { Self { sources: BTreeMap::new(), errors: BTreeSet::new() } }
+}
+
+fn graph<B: Clone + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_core::content::Bytes>>(effect: &str, read: &dyn Fn(&str) -> io::Result<B>) -> Graph<B> {
     let out = RefCell::new(Graph::default());
     let read = |path: &str| {
         if let Some(bytes) = out.borrow().sources.get(path) {
@@ -129,11 +133,11 @@ pub struct Audit {
 
 /// Compares actual bytes, so an identical replacement is not a false refusal.
 /// Both graphs matter: a replacement can remove an include as well as add one.
-fn audit_paths(
+fn audit_paths<B: Clone + Eq + AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_core::content::Bytes>>(
     layers: &ResolvedLayers,
     passes: &[(&str, &str, &str)],
-    vanilla: &dyn Fn(&str) -> io::Result<Vec<u8>>,
-    content: &dyn Fn(&str) -> io::Result<Vec<u8>>,
+    vanilla: &dyn Fn(&str) -> io::Result<B>,
+    content: &dyn Fn(&str) -> io::Result<B>,
 ) -> Audit {
     let mut graphs = BTreeMap::new();
     let mut changed_files = BTreeSet::new();
@@ -194,7 +198,7 @@ pub fn passes(layers: &ResolvedLayers) -> io::Result<Vec<(String, String)>> {
     passes_with(&|path| layers.read_uncovered(path))
 }
 
-fn passes_with(read: &dyn Fn(&str) -> io::Result<Vec<u8>>) -> io::Result<Vec<(String, String)>> {
+fn passes_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]>>(read: &dyn Fn(&str) -> io::Result<B>) -> io::Result<Vec<(String, String)>> {
     let mut passes: Vec<_> = PASSES
         .iter()
         .map(|&(name, path)| (name.into(), path.into()))

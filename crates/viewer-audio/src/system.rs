@@ -530,7 +530,7 @@ fn sample_path(source: &Source, load: Load) -> Result<&str, String> {
 }
 
 /// Reads a requested file's bytes through the content stack.
-fn read_bytes(source: &Source, load: Load) -> Result<Vec<u8>, String> {
+fn read_bytes(source: &Source, load: Load) -> Result<installed_content_core::content::Bytes, String> {
     let path = sample_path(source, load)?;
     source
         .layers

@@ -1021,9 +1021,11 @@ impl DashboardMaps {
                         allow,
                         &initial,
                         source_handle.replay(),
+                        &source_handle,
                         load_visual_mods.as_deref(),
                         texture_quality,
                         Some((recording.as_str(), &decisions)),
+                        crate::document::LoadTarget::Content,
                     )
                     .map_err(|error| error.to_string())?;
                     document.bind_source(&source_handle);
@@ -1403,7 +1405,10 @@ mod tests {
             let deadline =
                 std::time::Instant::now() + viewer_foundation::map::test_support::TEST_HANG_GUARD;
             while !done(&maps.views[id]) {
-                assert!(std::time::Instant::now() < deadline, "the source did not settle");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the source did not settle"
+                );
                 maps.poll_sources(ctx);
                 thread::sleep(Duration::from_millis(1));
             }

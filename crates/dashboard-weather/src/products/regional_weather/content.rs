@@ -89,7 +89,7 @@ pub(super) fn labels(query: &Query<'_>, warnings: &mut Vec<String>) -> Option<Ar
         let options = query
             .content
             .ok_or_else(|| dashboard_core::invalid("game folders are not chosen"))?;
-        let key = content::localisation_key(options)?;
+        let key = content::localisation_key(query.source, options)?;
         query
             .source
             .state::<KeyedResults<content::LocalisationKey, Labels>>()

@@ -116,14 +116,13 @@ fn formation_nodes(
     let entity = descriptors
         .resolve_entity(formation)
         .ok_or_else(|| invalid(format!("missing naval formation entity {formation}")))?;
-    let bytes = layers.read_uncovered(&entity.definition.file)?;
-    let posed = mesh::read(&bytes)?;
-    let tree = mesh::parse(&bytes)?;
+    let tree = mesh::parse_in(layers, &entity.definition.file)?;
+    let posed = mesh::read_tree(&tree)?;
     // The template's animation, the recording's when the visual mods break it, named; one no
     // stack reads leaves the template unposed, refused by name for the map's fallback.
     let animation = entity.animation.and_then(|animation| {
-        let read = |stack: &ResolvedLayers| -> io::Result<mesh::Animation> {
-            mesh::read_animation(&stack.read_uncovered(&animation.file)?)
+        let read = |stack: &ResolvedLayers| {
+            mesh::read_animation_in(stack, &animation.file)
         };
         match read(layers) {
             Ok(posed) => Some(posed),
@@ -185,7 +184,7 @@ fn formation_nodes(
         .iter()
         .find(|(name, _)| *name == CAPITAL_NODE)
         .map(|(_, transform)| *transform)
-        .or_else(|| capital_joint(&posed, animation.as_ref()));
+        .or_else(|| capital_joint(&posed, animation.as_deref()));
     let nodes: Vec<_> = locators
         .into_iter()
         .filter(|(name, _)| *name != CAPITAL_NODE)

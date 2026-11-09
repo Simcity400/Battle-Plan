@@ -337,6 +337,22 @@ impl RaidAssets {
         map: &MapData,
         registry: &native::resources::Registry,
     ) -> io::Result<Self> {
+        let mut assets = Self::load_content_with_products(products, layers, defines, map)?;
+        assets.retain_glyphs(registry);
+        Ok(assets)
+    }
+
+    pub fn retain_glyphs(&mut self, registry: &native::resources::Registry) {
+        self.glyphs
+            .retain(|name| registry.sprite(name.as_bytes()).is_some());
+    }
+
+    pub fn load_content_with_products(
+        products: Option<&map_products::loader::Loader>,
+        layers: &ResolvedLayers,
+        defines: &installed_content_core::defines::Defines,
+        map: &MapData,
+    ) -> io::Result<Self> {
         let product = map_products::loader::TriggerLoader::new(layers, products);
         let mut warnings = Vec::new();
         let catalog = installed_content_raids::raids::read(layers)?;
@@ -410,10 +426,7 @@ impl RaidAssets {
             }
             wanted.insert(base);
         }
-        let glyphs = wanted
-            .into_iter()
-            .filter(|name| registry.sprite(name.as_bytes()).is_some())
-            .collect();
+        let glyphs = wanted;
         let leader_roles = product.leader_roles();
         if let Err(error) = &leader_roles {
             warnings.push((installed_content_core::DiagnosticKind::Refused, format!(

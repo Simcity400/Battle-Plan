@@ -350,7 +350,7 @@ fn sprite_packet_multiframe_pixels_refusals_bakes_and_arenas_match_fixed_expecta
             installed_content_image::dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
                 width: 1,
                 height: 1,
-                pixels: c.into(),
+                pixels: c.to_vec(),
             })
         })
         .collect();

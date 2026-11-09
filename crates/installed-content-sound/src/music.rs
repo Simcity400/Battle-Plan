@@ -541,7 +541,7 @@ fn installed_music_resolves_and_decodes() {
         eprintln!("  {line}");
     }
     let first = &music.tracks[music.songs[0].track];
-    let pcm = crate::ogg::decode(layers.read_uncovered(&first.path).unwrap()).unwrap();
+    let pcm = crate::ogg::decode(layers.read_uncovered(&first.path).unwrap().to_vec()).unwrap();
     eprintln!(
         "{}: {} Hz, {} channels, {} frames",
         first.path,

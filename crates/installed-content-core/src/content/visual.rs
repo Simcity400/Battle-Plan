@@ -699,6 +699,9 @@ fn mount(
             },
             None => {
                 let mut layer = ResolvedLayer {
+                    content_digest: [0; 32],
+                    inventory_witnesses: Default::default(),
+                    inventory_paths: Default::default(),
                     coverage: layers.coverage,
                     role: super::LayerRole::Visual,
                     facts: None,

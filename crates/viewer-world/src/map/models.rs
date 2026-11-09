@@ -1050,9 +1050,8 @@ impl ModelLibrary {
                     entity.definition.name
                 ))
             };
-            let bytes = layers.read_uncovered(&path).map_err(cannot_load)?;
             self.composing_visual |= layers.supplied_by_visual_mod(&path);
-            let tree = mesh::parse(&bytes).map_err(cannot_load)?;
+            let tree = mesh::parse_in(layers, &path).map_err(cannot_load)?;
             let skeleton =
                 mesh::native_skeleton(&tree, entity.definition.scale).map_err(cannot_load)?;
             let locators =
@@ -1436,21 +1435,18 @@ impl ModelLibrary {
     fn animation(&mut self, layers: &ResolvedLayers, path: &str) -> Option<&Arc<mesh::Animation>> {
         self.composing_visual |= layers.supplied_by_visual_mod(path);
         if !self.animations.contains_key(path) {
-            let read = |stack: &ResolvedLayers| -> Result<mesh::Animation, String> {
-                let bytes = stack
-                    .read_uncovered(path)
-                    .map_err(|error| error.to_string())?;
-                mesh::read_animation(&bytes).map_err(|error| error.to_string())
+            let read = |stack: &ResolvedLayers| {
+                mesh::read_animation_in(stack, path).map_err(|error| error.to_string())
             };
             let decoded = match read(layers) {
-                Ok(animation) => Some(Arc::new(animation)),
+                Ok(animation) => Some(animation),
                 Err(why) => {
                     // An animation the visual mods break is the recording's own, named; one
                     // neither stack reads is refused by name.
                     match layers.without_overlays().map(|recorded| read(&recorded)) {
                         Some(Ok(animation)) => {
                             layers.note_overlay_refusal(format!("animation {path} ({why})"));
-                            Some(Arc::new(animation))
+                            Some(animation)
                         }
                         _ => {
                             layers.note_refused(format!("model animation {path}"));

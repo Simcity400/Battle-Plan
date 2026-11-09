@@ -96,7 +96,7 @@ fn never() -> AtomicBool {
 }
 
 fn text(layers: &ResolvedLayers, path: &str) -> String {
-    String::from_utf8(layers.read(path).unwrap()).unwrap()
+    std::str::from_utf8(&layers.read(path).unwrap()).unwrap().to_owned()
 }
 
 /// A gameplay overhaul that also replaces terrain artwork shows its artwork; its map, scripts,
@@ -314,7 +314,7 @@ replace_path=\"map/terrain\"",
         if bytes == b"unreadable" {
             return Err(invalid("not a texture the map reads"));
         }
-        Ok(String::from_utf8(bytes).unwrap())
+        Ok(std::str::from_utf8(&bytes).unwrap().to_owned())
     };
     assert_eq!(
         layers

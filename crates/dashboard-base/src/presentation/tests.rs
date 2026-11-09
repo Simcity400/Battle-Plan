@@ -235,7 +235,7 @@ fn drawn(catalogue: &Catalogue, key: &str) -> ([u8; 4], Option<String>) {
 }
 
 fn text(layers: &installed_content_core::ResolvedLayers, path: &str) -> String {
-    String::from_utf8(layers.read(path).unwrap()).unwrap()
+    std::str::from_utf8(&layers.read(path).unwrap()).unwrap().to_owned()
 }
 
 /// Two sources over the same recording: each draws its own campaign's visual mods, and neither

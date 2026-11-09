@@ -2360,7 +2360,7 @@ fn air_superiority_region_names_reuse_the_source_content_key_and_invalidate_on_l
         &AtomicBool::new(false),
     )
     .unwrap();
-    let key = content::localisation_key(&content).unwrap();
+    let key = content::localisation_key(&source, &content).unwrap();
     let names = Arc::new([(7000, "Cached mod region".into())].into());
     source.state::<RegionNames>().lock().unwrap().entry = Some((
         key,

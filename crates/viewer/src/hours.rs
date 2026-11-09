@@ -3090,6 +3090,9 @@ impl Pipeline {
             if invalidates {
                 self.epoch += 1;
             }
+            if self.want.as_ref().is_none_or(|previous| previous.view != want.view) {
+                crate::perf_log::hour_view(self.epoch, want.branch, want.hour, want.view);
+            }
             let mut requested = self.requested.lock().map_err(|_| stopped())?;
             let wake = requested.is_none();
             *requested = Some((

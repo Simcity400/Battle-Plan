@@ -25,18 +25,18 @@ pub fn content_key(content: Option<&ContentOptions>) -> Option<ContentKey> {
 pub type LocalisationKey = (ContentKey, PathBuf, Option<String>);
 
 /// The key for these folders, reading the game language from the user folder.
-pub fn localisation_key(content: &ContentOptions) -> io::Result<LocalisationKey> {
+pub fn localisation_key(source: &Source, content: &ContentOptions) -> io::Result<LocalisationKey> {
     Ok((
         content_key(Some(content)).expect("content options given"),
         content.options.cache_dir.clone(),
-        language(&content.options)?,
+        source_language(source, &content.options)?,
     ))
 }
 
 /// The recording's localisation in the user's game language, read once per source
 /// and key and shared by every product that names anything.
 pub fn localisation(source: &Source, content: &ContentOptions) -> io::Result<Arc<Localisation>> {
-    localisation_with_key(source, content, localisation_key(content)?)
+    localisation_with_key(source, content, localisation_key(source, content)?)
 }
 
 pub(crate) fn localisation_with_key(
@@ -90,6 +90,9 @@ pub(crate) fn localisation_in(
 /// first ask does them. A failure is left for the product that needs the part to report with
 /// its reason.
 pub fn warm(source: &Source, content: &ContentOptions) {
+    let _warm = installed_content_core::content::Generation::inherit();
+    let resolved = source.content(&content.options).ok();
+    let _generation = resolved.as_ref().map(|content| content.layers.enter_generation());
     let _ = crate::prepared::files(source, Some(content));
     let _ = localisation(source, content);
     if let Ok(catalogue) = crate::catalogue::catalogue(source, content) {
@@ -134,7 +137,7 @@ pub fn game_language(
     let Some(content) = content else {
         return Ok(None);
     };
-    let requested = language(&content.options).map_err(|error| error.to_string())?;
+    let requested = source_language(source, &content.options).map_err(|error| error.to_string())?;
     let layers = source
         .content(&content.options)
         .map_err(|error| format!("No game language: {error}"))?;
@@ -177,6 +180,17 @@ pub fn language(options: &ResolveOptions) -> io::Result<Option<String>> {
                 path.display()
             ))
         })
+}
+
+fn source_language(source: &Source, options: &ResolveOptions) -> io::Result<Option<String>> {
+    // Settings remain readable when installed artwork cannot be resolved.
+    let resolved = match source.content(options) {
+        Ok(resolved) => resolved,
+        Err(_) => return language(options),
+    };
+    installed_content_settings::settings::language_in(&resolved.layers, &options.user_dir).map_err(|error| {
+        invalid(format!("No game language: {} could not be read: {error}", options.user_dir.join("settings.txt").display()))
+    })
 }
 
 pub fn check_verification(

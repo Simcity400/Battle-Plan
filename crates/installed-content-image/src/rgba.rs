@@ -8,7 +8,7 @@ use std::io;
 
 /// The base level of a two-dimensional texture as RGBA8. Its edges are those the
 /// decoder admitted: the native decoder refuses any past its device limit.
-/// Straight RGBA8 is moved, not copied; 16-bit surfaces expand as the device
+/// Unshared RGBA8 is moved; a shared base level is copied. 16-bit surfaces expand as the device
 /// samples them ([`TextureFormat::sample_16`]).
 pub fn dds_base(mut texture: Texture) -> io::Result<Rgba8Image> {
     if texture.faces != 1 {
@@ -21,7 +21,7 @@ pub fn dds_base(mut texture: Texture) -> io::Result<Rgba8Image> {
         return Ok(Rgba8Image {
             width: mip.width,
             height: mip.height,
-            pixels: mip.data,
+            pixels: mip.data.into_vec(),
         });
     }
     if format.sample_16(0).is_some() {
@@ -157,7 +157,7 @@ mod tests {
             mips: vec![vec![MipLevel {
                 width: 3,
                 height: 2,
-                data,
+                data: data.into(),
             }]],
         })
         .unwrap()

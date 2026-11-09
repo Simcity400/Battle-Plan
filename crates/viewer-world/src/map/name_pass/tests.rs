@@ -91,7 +91,7 @@ fn the_height_sample_interpolates_half_pixel_centres_before_water_clamping() {
     let heightmap = IndexedImage {
         width: 2,
         height: 2,
-        indices: vec![0, 200, 95, 150],
+        indices: vec![0, 200, 95, 150].into(),
         palette: [[0; 4]; 256],
     };
     assert_eq!(height_at(&heightmap, 0.5, -0.5), WATER_HEIGHT);

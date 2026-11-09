@@ -17,13 +17,20 @@ use std::{
 
 fn bounded_read(path: &Path) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take(256 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
+    fs::File::open(path)?.take(256 * 1024 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > 256 * 1024 {
         return Err(io::Error::other("Settings file exceeds its size limit"));
     }
     Ok(bytes)
+}
+
+fn bounded_parse<T: Send + Sync + 'static>(path: &Path, parser: &'static str, read: impl FnOnce(&[u8]) -> io::Result<T>) -> io::Result<std::sync::Arc<T>> {
+    let tables = engine_executable::executable_tables::current()
+        .map_or_else(Vec::new, |tables| tables.identity().sha256.to_vec());
+    installed_content_core::content::Generation::parse_snapshot(path, parser, 1, &tables, bounded_read, |bytes| {
+        if bytes.len() > 256 * 1024 { return Err(io::Error::other("Settings file exceeds its size limit")); }
+        read(bytes)
+    })
 }
 
 /// A `pdx_settings.txt` entry's scalar.
@@ -356,24 +363,46 @@ fn point_in<'a>(
 
 /// The user folder's `settings.txt` through [`SettingsKeys`].
 pub fn read_keys(user: &Path) -> io::Result<SettingsKeys> {
-    let bytes = match bounded_read(&user.join("settings.txt")) {
-        Ok(bytes) => bytes,
-        // The game reads nothing then and keeps its constructed settings.
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(SettingsKeys::absent());
-        }
-        Err(error) => return Err(error),
-    };
-    // The game folds its keys through its keyword table: with none in scope it cannot be read.
-    match engine_executable::executable_tables::current() {
-        Some(tables) => drop(tables.keywords.as_ref().map_err(io::Error::from)?),
-        None => {
-            return Err(io::Error::other(
+    match bounded_parse(&user.join("settings.txt"), "game settings keys", |bytes| {
+        match engine_executable::executable_tables::current() {
+            Some(tables) => drop(tables.keywords.as_ref().map_err(io::Error::from)?),
+            None => return Err(io::Error::other(
                 "settings.txt is read through the game's keyword table, and none is in scope",
-            ));
+            )),
         }
+        Ok(SettingsKeys::read(bytes))
+    }) {
+        Ok(keys) => Ok(std::sync::Arc::unwrap_or_clone(keys)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(SettingsKeys::absent()),
+        Err(error) => Err(error),
     }
-    Ok(SettingsKeys::read(&bytes))
+}
+
+#[derive(Default)]
+struct Languages(std::sync::Mutex<std::collections::BTreeMap<
+    (std::path::PathBuf, Option<[u8; 32]>),
+    (Option<String>, installed_content_core::content::diagnostics::Diagnostics),
+>>);
+
+pub fn language_in(layers: &installed_content_core::ResolvedLayers, user: &Path) -> io::Result<Option<String>> {
+    layers.admit_generation()?;
+    let path = user.join("settings.txt");
+    let tables = engine_executable::executable_tables::current().map(|tables| tables.identity().sha256);
+    let cache = layers.derived::<Languages>();
+    let mut cache = cache.0.lock().unwrap_or_else(|error| error.into_inner());
+    let key = (path.clone(), tables);
+    if let Some((language, diagnostics)) = cache.get(&key) {
+        diagnostics.credit();
+        return Ok(language.clone());
+    }
+    let (value, diagnostics) = installed_content_core::content::diagnostics::capture(|| {
+        layers.with_file_witness(&path, || read_keys(user).map(|keys| keys.language()))
+    });
+    diagnostics.credit();
+    let value = value?;
+    layers.admit_generation()?;
+    cache.insert(key, (value.clone(), diagnostics));
+    Ok(value)
 }
 
 /// The map options the game saves in `settings.txt`.
@@ -461,8 +490,8 @@ impl MapOptions {
 /// Reads the user folder's `pdx_settings.txt`, the launcher's display
 /// settings; `None` when it does not exist, as the engine skips it then.
 pub fn read_pdx(user: &Path) -> io::Result<Option<Document>> {
-    match bounded_read(&user.join("pdx_settings.txt")) {
-        Ok(bytes) => Ok(Some(parser::parse(&bytes)?)),
+    match bounded_parse(&user.join("pdx_settings.txt"), "launcher display settings", parser::parse) {
+        Ok(document) => Ok(Some(std::sync::Arc::unwrap_or_clone(document))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
     }
@@ -969,6 +998,56 @@ pub fn effective_gui_scale(authored: f32, frame: [u32; 2]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn cached_language_tracks_edits_absence_and_transient_read_failures() {
+        use std::os::windows::fs::OpenOptionsExt;
+        engine_executable::executable_tables::initialize_for_tests().unwrap();
+        let root = std::env::temp_dir().join(format!("language-input-{}-{:?}", std::process::id(), std::thread::current().id()));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("settings.txt");
+        let english = b"language=\"l_english\"";
+        let spanish = b"language=\"l_spanish\"";
+        fs::write(&file, english).unwrap();
+        let modified = fs::metadata(&file).unwrap().modified().unwrap();
+        let scope = installed_content_core::content::Generation::enter();
+        let layers = installed_content_core::ResolvedLayers::default();
+        let exclusive = fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&file).unwrap();
+        assert!(language_in(&layers, &root).is_err());
+        drop(exclusive);
+        let original = SettingsKeys::read(english).language();
+        assert_eq!(language_in(&layers, &root).unwrap(), original);
+        assert_eq!(language_in(&layers, &root).unwrap(), original);
+        fs::write(&file, spanish).unwrap();
+        fs::File::options().write(true).open(&file).unwrap().set_modified(modified).unwrap();
+        assert!(layers.validate_generation().is_err());
+        assert!(language_in(&layers, &root).is_err());
+        drop(layers);
+        drop(scope);
+        let scope = installed_content_core::content::Generation::enter();
+        let layers = installed_content_core::ResolvedLayers::default();
+        let changed = SettingsKeys::read(spanish).language();
+        assert_ne!(original, changed);
+        assert_eq!(language_in(&layers, &root).unwrap(), changed);
+        drop(layers);
+        drop(scope);
+        fs::remove_file(&file).unwrap();
+        let scope = installed_content_core::content::Generation::enter();
+        let layers = installed_content_core::ResolvedLayers::default();
+        assert_eq!(language_in(&layers, &root).unwrap(), None);
+        fs::write(&file, vec![b' '; 256 * 1024 + 1]).unwrap();
+        assert!(layers.validate_generation().is_err());
+        assert!(language_in(&layers, &root).is_err());
+        drop(layers);
+        drop(scope);
+        let scope = installed_content_core::content::Generation::enter();
+        let layers = installed_content_core::ResolvedLayers::default();
+        assert!(language_in(&layers, &root).unwrap_err().to_string().contains("size limit"));
+        drop(layers);
+        drop(scope);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn map_options_read_as_the_game_reads_them_and_default_to_its_constructor() {

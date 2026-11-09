@@ -84,7 +84,7 @@ mod tests {
             mips: vec![vec![dds::MipLevel {
                 width: 2,
                 height: 1,
-                data: vec![0, 248, 224, 7, 4, 0, 0, 0],
+                data: (vec![0, 248, 224, 7, 4, 0, 0, 0]).into(),
             }]],
         };
         let result = rgba8(&texture).unwrap();
@@ -107,7 +107,7 @@ mod tests {
                 mips: vec![vec![dds::MipLevel {
                     width: 4,
                     height: 4,
-                    data: vec![0; format.level_bytes(4, 4).unwrap()],
+                    data: (vec![0; format.level_bytes(4, 4).unwrap()]).into(),
                 }]],
             };
             assert!(rgba8(&texture).is_err(), "{format:?}");

@@ -32,7 +32,8 @@ pub fn read_with(
 ) -> io::Result<Content> {
     let database = crate::movement::terrain::TerrainDatabase::read(layers)?;
     let ordinal = |name: &[u8]| database.ordinal(name);
-    let settings = settings(&layers.read(super::PATH)?, ordinal)
+    let document = super::read_weather(layers)?;
+    let settings = settings_from(&document, ordinal)
         .map_err(|error| invalid(format!("{}: {error}", super::PATH)))?;
     let files = crate::terrain::read_default_map(layers)?;
     let path = files.file("definitions")?;
@@ -60,8 +61,13 @@ pub fn read_with(
 /// `temperature` (token 0x2F01) selects kind 1's list. A terrain modifier starts at terrain -1 and
 /// value zero; `type` stores the found terrain's ordinal, or the null terrain's zero when none
 /// matches. `value` reads fixed5 and remains unchanged when conversion fails.
+#[cfg(test)]
 pub(crate) fn settings(bytes: &[u8], ordinal: impl Fn(&[u8]) -> i32) -> io::Result<Settings> {
     let document = super::parse_weather(bytes)?;
+    settings_from(&document, ordinal)
+}
+
+fn settings_from(document: &crate::parser::native::Read, ordinal: impl Fn(&[u8]) -> i32) -> io::Result<Settings> {
     let mut settings = Settings::default();
     for item in &document.items {
         if item.keyword_is("terrain_modifiers") {

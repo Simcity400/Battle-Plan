@@ -668,11 +668,11 @@ fn read_databases(
 type ParsedFile =
     Result<(Definitions, Vec<crate::Diagnostic>), (crate::DiagnosticKind, io::Error)>;
 
-fn read_files(
+fn read_files<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Sync>(
     paths: &[(usize, ScriptPath)],
     names: &KeyNames,
     workers: usize,
-    mut read: impl FnMut(&ScriptPath) -> io::Result<Vec<u8>>,
+    mut read: impl FnMut(&ScriptPath) -> io::Result<B>,
     parser: impl Fn(&[u8], Database, &KeyNames) -> ParsedFile + Sync,
 ) -> io::Result<(Focuses, Vec<crate::Diagnostic>)> {
     let mut result = Focuses::default();
@@ -687,7 +687,7 @@ fn read_files(
             .collect::<io::Result<Vec<_>>>()?;
         let database_of =
             |path: &ScriptPath| focus_database(path.as_bytes()).unwrap_or(Database::Continuous);
-        let parse_one = |(path, bytes): &(&ScriptPath, Vec<u8>)| {
+        let parse_one = |(path, bytes): &(&ScriptPath, B)| {
             parser(bytes, database_of(path), names)
         };
         let parsed = if files.len() == 1 {

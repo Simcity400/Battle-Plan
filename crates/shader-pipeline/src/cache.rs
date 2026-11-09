@@ -528,7 +528,7 @@ pub(crate) mod tests {
         let compiler = Arc::new(Count(AtomicUsize::new(0)));
         let cache = Arc::new(Cache::new(None, compiler.clone()));
         let source =
-            installed_content_core::pdxshader::program::read_with(b"missing.lua", &|_| None).unwrap();
+            installed_content_core::pdxshader::program::read_with::<Vec<u8>>(b"missing.lua", &|_| None).unwrap();
         assert_eq!(source.dependencies, [b"missing.shader"]);
         assert!(source.warnings[0].contains("empty technique record"));
         let effect = super::super::library::Effect::new(Arc::new(source), vec![], cache.clone());

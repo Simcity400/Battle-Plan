@@ -630,6 +630,21 @@ pub fn read_directories<N: crate::DiagnosticMessage>(
     layers: &ResolvedLayers,
     directories: &[&str],
 ) -> io::Result<(Database, Vec<N>)> {
+    let mut parameters = Vec::new();
+    for directory in directories {
+        parameters.extend_from_slice(&(directory.len() as u64).to_le_bytes());
+        parameters.extend_from_slice(directory.as_bytes());
+    }
+    let product = layers.recorded_product("division name groups", 1, &parameters, |layers| {
+        read_name_directories(layers, directories)
+    })?;
+    Ok((product.0.clone(), product.1.iter().cloned().map(N::from_diagnostic).collect()))
+}
+
+fn read_name_directories(
+    layers: &ResolvedLayers,
+    directories: &[&str],
+) -> io::Result<(Database, Vec<crate::Diagnostic>)> {
     // List direct `.txt` files in each directory's loader order.
     let mut paths = Vec::new();
     for directory in directories {
@@ -654,7 +669,7 @@ pub fn read_directories<N: crate::DiagnosticMessage>(
     }
     Ok((
         database,
-        warnings.into_iter().map(N::from_diagnostic).collect(),
+        warnings,
     ))
 }
 

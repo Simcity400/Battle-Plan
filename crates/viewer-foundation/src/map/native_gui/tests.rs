@@ -3536,7 +3536,7 @@ Effect Up { VertexShader = V PixelShader = P }
         mips: vec![vec![dds::MipLevel {
             width: 2,
             height: 1,
-            data: [0x0821_u16; 2].map(u16::to_le_bytes).concat(),
+            data: ([0x0821_u16; 2].map(u16::to_le_bytes).concat()).into(),
         }]],
     };
     let filler = dds::Texture::from_rgba8(installed_content_image::Rgba8Image {
@@ -4206,7 +4206,7 @@ Effect Up { VertexShader = V PixelShader = P }
     );
     let mut absent = batch.quads[0].clone();
     let payload = Arc::make_mut(absent.exact.as_mut().unwrap().native.as_mut().unwrap());
-    let empty = installed_content_core::pdxshader::program::read_with(b"absent.lua", &|_| None).unwrap();
+    let empty = installed_content_core::pdxshader::program::read_with::<Vec<u8>>(b"absent.lua", &|_| None).unwrap();
     payload.effect.asset = library::Effect::from_compiled(Arc::new(empty), vec![], vec![]);
     payload.effect.technique = "Up".into();
     absent.layer = 3;

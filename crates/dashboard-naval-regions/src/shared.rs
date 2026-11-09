@@ -45,7 +45,7 @@ pub struct Labels {
 }
 pub fn labels(q: &Query<'_>) -> Result<Arc<Labels>, String> {
     let options = q.content.ok_or("Game folders are not chosen")?;
-    let key = content::localisation_key(options).map_err(|e| e.to_string())?;
+    let key = content::localisation_key(q.source, options).map_err(|e| e.to_string())?;
     q.source
         .state::<KeyedResults<content::LocalisationKey, Labels>>()
         .lock()

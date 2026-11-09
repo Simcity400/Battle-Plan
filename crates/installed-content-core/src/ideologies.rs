@@ -385,6 +385,10 @@ pub fn parse(input: &[u8]) -> Vec<Ideology> {
 /// Every ideology group in file order: one reader per enumerated file.
 /// The first file defining a group owns it.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
+    layers.recorded_product("ideologies", 1, &[], read_ideologies).map(|ideologies| ideologies.as_ref().clone())
+}
+
+fn read_ideologies(layers: &ResolvedLayers) -> io::Result<(Ideologies, Vec<crate::Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Ideologies::default();
     for listed in script_files::paths(layers, "common/ideologies/", None)? {

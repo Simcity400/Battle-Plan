@@ -48,7 +48,7 @@ fn verified_prefix_retains_only_the_header_and_checks_the_remaining_payload() {
     let layers = ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
     assert_eq!(
         layers.read_prefix("map/synthetic.bin", 6).unwrap(),
-        (b"header".to_vec(), bytes.len() as u64)
+        (Bytes::from(b"header".as_slice()), bytes.len() as u64)
     );
     *bytes.last_mut().unwrap() = 7;
     fs::write(path, bytes).unwrap();
@@ -273,10 +273,9 @@ fn tracing_scopes_and_named_readers_isolate_lazy_caches_while_retained_clones_sh
     original.store(7, Ordering::Relaxed);
     let traced = layers.with_read_trace(Arc::new(|_| {}));
     assert!(!Arc::ptr_eq(&original, &traced.derived::<AtomicUsize>()));
-    assert!(!Arc::ptr_eq(&layers.key_names, &traced.key_names));
     assert!(!Arc::ptr_eq(
-        &layers.faction_templates,
-        &traced.faction_templates
+        &layers.derived::<RetainedProducts>(),
+        &traced.derived::<RetainedProducts>()
     ));
     let a = traced.with_read_purpose("a");
     let b = traced.with_read_purpose("b");
@@ -284,7 +283,7 @@ fn tracing_scopes_and_named_readers_isolate_lazy_caches_while_retained_clones_sh
     cache.store(11, Ordering::Relaxed);
     assert!(Arc::ptr_eq(&cache, &a.clone().derived::<AtomicUsize>()));
     assert!(!Arc::ptr_eq(&cache, &b.derived::<AtomicUsize>()));
-    assert!(!Arc::ptr_eq(&a.key_names, &b.key_names));
+    assert!(!Arc::ptr_eq(&a.derived::<RetainedProducts>(), &b.derived::<RetainedProducts>()));
     assert_eq!(b.derived::<AtomicUsize>().load(Ordering::Relaxed), 0);
     assert_eq!(original.load(Ordering::Relaxed), 7);
 }
@@ -1260,6 +1259,9 @@ fn remote_mod_ids_take_precedence_over_local_descriptor_names() {
 /// consults the covered inventory.
 fn folder_layer(id: &str, root: &Path, replace_paths: Vec<String>) -> ResolvedLayer {
     ResolvedLayer {
+        content_digest: [0; 32],
+        inventory_witnesses: Default::default(),
+        inventory_paths: Default::default(),
         coverage: CoveragePolicy::default(),
         role: LayerRole::Mod,
         facts: None,
@@ -1354,15 +1356,11 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
             folder_layer("over", &over, Vec::new()),
         ],
         coverage: CoveragePolicy::default(),
-        effective: BTreeMap::new(),
-        uncovered_memo: Default::default(),
+        effective: Arc::new(BTreeMap::new()),
         uncovered_reads: Default::default(),
-        texture_index: Default::default(),
-        descriptor_roster: Default::default(),
-        recorded_descriptor_roster: Default::default(),
-        key_names: Default::default(),
-        traced_key_names: Default::default(),
-        faction_templates: Default::default(),
+        context: [0; 32],
+        recorded_projection: Default::default(),
+        generation: Default::default(),
         derived: Default::default(),
         read_trace: None,
         above_mods: 0,
@@ -1384,15 +1382,11 @@ fn uncovered_reads_follow_load_order_replacement_and_folder_case() {
             folder_layer("over", &root.join("empty"), vec!["gfx/world".into()]),
         ],
         coverage: CoveragePolicy::default(),
-        effective: BTreeMap::new(),
-        uncovered_memo: Default::default(),
+        effective: Arc::new(BTreeMap::new()),
         uncovered_reads: Default::default(),
-        texture_index: Default::default(),
-        descriptor_roster: Default::default(),
-        recorded_descriptor_roster: Default::default(),
-        key_names: Default::default(),
-        traced_key_names: Default::default(),
-        faction_templates: Default::default(),
+        context: [0; 32],
+        recorded_projection: Default::default(),
+        generation: Default::default(),
         derived: Default::default(),
         read_trace: None,
         above_mods: 0,
@@ -1564,6 +1558,9 @@ fn raw_zip(members: &[(&[u8], u8, &[u8])]) -> Vec<u8> {
 /// An archive layer as `gather` resolves one: inventoried and hashed.
 fn archive_layer(id: &str, path: &Path, replace_paths: &[&[u8]]) -> ResolvedLayer {
     let mut layer = ResolvedLayer {
+        content_digest: [0; 32],
+        inventory_witnesses: Default::default(),
+        inventory_paths: Default::default(),
         coverage: CoveragePolicy::default(),
         role: LayerRole::Mod,
         facts: None,
@@ -2241,6 +2238,9 @@ fn a_cache_written_by_an_earlier_digest_scheme_is_not_served() {
     fs::write(&path, flagged_encrypted(true)).unwrap();
     let layer = |cache: &mut HashCache| {
         let mut layer = ResolvedLayer {
+            content_digest: [0; 32],
+            inventory_witnesses: Default::default(),
+            inventory_paths: Default::default(),
             coverage: CoveragePolicy::default(),
             role: LayerRole::Mod,
             facts: None,
@@ -2562,6 +2562,7 @@ fn a_visual_mods_symbolic_links_are_listed_as_files_and_never_entered() {
             CoveragePolicy::default(),
             true,
             &kind,
+            &mut BTreeSet::new(),
         )?;
         Ok(files
             .into_keys()
@@ -3919,7 +3920,7 @@ fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_pa
     assert_eq!(traced.read("map/read.txt").unwrap(), b"full evidence");
     assert_eq!(
         traced.read_prefix("map/read.txt", 0).unwrap(),
-        (Vec::new(), 13)
+        (Bytes::default(), 13)
     );
     for _ in 0..2 {
         assert_eq!(
@@ -3951,7 +3952,7 @@ fn successful_traced_reads_own_full_evidence_through_zero_prefix_and_memoized_pa
         archive_layers.with_read_trace(Arc::new(move |read| log.lock().unwrap().push(read)));
     assert_eq!(
         traced.read_prefix("common/one.txt", 0).unwrap(),
-        (Vec::new(), 6)
+        (Bytes::default(), 6)
     );
     assert_eq!(
         reads.lock().unwrap()[0].outcome,

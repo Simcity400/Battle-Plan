@@ -436,7 +436,7 @@ impl Pack {
     }
 
     /// The bytes of a carried file, checked against its recorded digest.
-    pub(super) fn read(&self, file: u32) -> io::Result<Vec<u8>> {
+    pub(super) fn read_payload(&self, file: u32) -> io::Result<(Vec<u8>, super::ReadPayload)> {
         let entry = *self
             .files
             .get(file as usize)
@@ -459,7 +459,7 @@ impl Pack {
         if digest != entry.digest {
             return Err(invalid("a recorded game fact does not match its digest; the recording is damaged"));
         }
-        Ok(bytes)
+        Ok((bytes, super::ReadPayload { length: entry.length, digest }))
     }
 
     fn chunk(&self, index: usize, chunk: Chunk) -> io::Result<Arc<Vec<u8>>> {

@@ -4,7 +4,7 @@
 //! and conditional `if` blocks are campaign history the replay already carries,
 //! so they are listed by key and never applied.
 
-use std::{collections::BTreeMap, io};
+use std::{collections::BTreeMap, io, sync::Arc};
 
 use crate::{
     ResolvedLayers,
@@ -733,9 +733,9 @@ fn read_resources(bytes: &[u8], path: &str, resources: &mut Resources) {
 /// refuses the whole inventory ([`read`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct States {
-    definitions: BTreeMap<u32, StateDefinition>,
-    sources: BTreeMap<u32, script_files::ScriptPath>,
-    diagnostics: BTreeMap<u32, Vec<String>>,
+    definitions: Arc<BTreeMap<u32, StateDefinition>>,
+    sources: Arc<BTreeMap<u32, script_files::ScriptPath>>,
+    diagnostics: Arc<BTreeMap<u32, Vec<String>>>,
 }
 
 impl States {
@@ -787,10 +787,17 @@ pub fn read_with_diagnostics(
     defines: &Defines,
     provinces: &BTreeMap<u32, ProvinceDefinition>,
 ) -> io::Result<(States, Vec<Diagnostic>)> {
+    let maximum = defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?;
+    let counted = province_count(provinces);
+    let parameters = [maximum.to_le_bytes(), counted.to_le_bytes()].concat();
+    layers.recorded_product("state templates", 1, &parameters, |layers| {
+        read_templates(layers, maximum, counted)
+    }).map(|value| value.as_ref().clone())
+}
+
+fn read_templates(layers: &ResolvedLayers, max_building_levels: i32, counted: u32) -> io::Result<(States, Vec<Diagnostic>)> {
     let resources = resources(layers)?;
     let names = layers.key_names()?;
-    let max_building_levels = defines.int32("NBuildings", "MAX_BUILDING_LEVELS")?;
-    let counted = province_count(provinces);
     let paths = script_files::paths(layers, DIRECTORY, Some(".txt"))?;
     // Each file reads and parses on its own; they merge below in listed order.
     let parsed = installed_content_core::parallel::map(&paths, |listed| {
@@ -834,9 +841,9 @@ pub fn read_with_diagnostics(
                 )));
                 continue;
             }
-            states.sources.insert(id, listed.clone());
-            states.diagnostics.insert(id, diagnostics);
-            states.definitions.insert(id, state);
+            Arc::make_mut(&mut states.sources).insert(id, listed.clone());
+            Arc::make_mut(&mut states.diagnostics).insert(id, diagnostics);
+            Arc::make_mut(&mut states.definitions).insert(id, state);
         }
     }
     Ok((states, conflicts))

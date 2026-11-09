@@ -686,7 +686,7 @@ fn texture(seed: u32) -> dds::Texture {
                     dds::MipLevel {
                         width: size,
                         height: size,
-                        data: (0..size * size)
+                        data: ((0..size * size)
                             .flat_map(|p| {
                                 [
                                     ((p % size * 17 + seed * 23) % 256) as u8,
@@ -695,7 +695,7 @@ fn texture(seed: u32) -> dds::Texture {
                                     (64 + (p + seed * 11) % 192) as u8,
                                 ]
                             })
-                            .collect(),
+                            .collect::<Vec<_>>()).into(),
                     }
                 })
                 .collect(),

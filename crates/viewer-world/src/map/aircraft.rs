@@ -822,10 +822,7 @@ fn scenario_source(
 ) -> Result<crate::map::mesh_pose::Source, String> {
     let unreadable =
         |error: io::Error| format!("its mesh file {} does not read: {error}", definition.file);
-    let bytes = layers
-        .read_uncovered(&definition.file)
-        .map_err(unreadable)?;
-    let tree = mesh::parse(&bytes).map_err(unreadable)?;
+    let tree = mesh::parse_in(layers, &definition.file).map_err(unreadable)?;
     let skeleton = mesh::native_skeleton(&tree, definition.scale).map_err(unreadable)?;
     Ok(crate::map::mesh_pose::Source {
         pdxmesh: true,
@@ -1169,9 +1166,7 @@ fn scenario_flown(
     // refuses this rig alone, as the plane library refuses an entity
     // it cannot bake: the map opens and the scenario is not flown.
     let loaded = scenario_source(layers, descriptors, entity, definition).and_then(|source| {
-        let anim = layers
-            .read_uncovered(&animation.file)
-            .and_then(|bytes| mesh::read_animation(&bytes))
+        let anim = mesh::read_animation_in(layers, &animation.file)
             .map_err(|error| {
                 format!(
                     "its animation file {} does not read: {error}",

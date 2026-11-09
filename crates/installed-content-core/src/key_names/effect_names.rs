@@ -63,13 +63,14 @@ impl EffectNames {
                 .iter()
                 .map(|category| category.name.as_slice()),
         );
-        let database =
-            equipment::Database::load_with_names(layers, &names.at(super::Point::BeforeBuildings))?;
+        let database = layers.product("equipment database", 1, &[], |layers| {
+            equipment::Database::load_with_names(layers, &names.at(super::Point::BeforeBuildings))
+        })?;
         result.equipment = crate::technology::equipment_pool_roster(&database);
         result.equipment_upgrades = token_names(database.registered_upgrades());
         result.equipment_gap = database.lost.clone();
         result.equipment_upgrades_gap = database.lost.clone();
-        result.equipment_database = Some(Arc::new(database));
+        result.equipment_database = Some(database);
         Ok(result)
     }
 }

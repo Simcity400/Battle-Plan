@@ -149,7 +149,11 @@ impl Drop for ReleaseAhead<'_> {
                 .content
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            if cache.ahead.as_ref().is_some_and(|ahead| ahead.owner == owner) {
+            if cache
+                .ahead
+                .as_ref()
+                .is_some_and(|ahead| ahead.owner == owner)
+            {
                 cache.ahead = None;
             }
         }
@@ -612,31 +616,68 @@ impl Source {
     /// The recording's verified game content for the configured folders,
     /// resolved once and reused until the folders change, and while work holds it after.
     pub fn content(&self, options: &ResolveOptions) -> io::Result<Arc<ResolvedContent>> {
-        let mut cache = self
-            .content
-            .lock()
-            .map_err(|error| io::Error::other(error.to_string()))?;
-        let content = match cache.find(options) {
-            Some(content) => content,
-            None => match cache.ahead(options, true) {
-                Some(resolved) => resolved?,
-                None => {
-                    let _memory = engine_allocation::labels::enter(
-                        engine_allocation::labels::Owner::RUN,
-                        engine_allocation::labels::Kind::Content,
-                    );
-                    Arc::new(self.play(options)?)
+        loop {
+            let (content, rebind) = {
+                let mut cache = self.content.lock().map_err(|error| io::Error::other(error.to_string()))?;
+                match cache.find(options) {
+                    Some(content) => {
+                        let rebind = !cache.bound.as_ref().is_some_and(|(_, bound)| Arc::ptr_eq(bound, &content));
+                        (content, rebind)
+                    }
+                    None => {
+                        let content = match cache.ahead(options, true) {
+                            Some(resolved) => resolved?,
+                            None => {
+                                let _memory = engine_allocation::labels::enter(
+                                    engine_allocation::labels::Owner::RUN,
+                                    engine_allocation::labels::Kind::Content,
+                                );
+                                Arc::new(self.play(options)?)
+                            }
+                        };
+                        cache.bind(options, &content);
+                        (content, false)
+                    }
                 }
-            },
-        };
-        if !cache
-            .bound
-            .as_ref()
-            .is_some_and(|(_, bound)| Arc::ptr_eq(bound, &content))
-        {
-            cache.bind(options, &content);
+            };
+            if content.layers.admit_generation().is_err() {
+                return self.refresh_content(options, &content);
+            }
+            if !rebind { return Ok(content); }
+            let mut cache = self.content.lock().map_err(|error| io::Error::other(error.to_string()))?;
+            if !cache.find(options).is_some_and(|current| Arc::ptr_eq(&current, &content)) {
+                continue;
+            }
+            if !cache.bound.as_ref().is_some_and(|(_, bound)| Arc::ptr_eq(bound, &content)) {
+                cache.bind(options, &content);
+            }
+            return Ok(content);
         }
-        Ok(content)
+    }
+
+    pub fn refresh_content(
+        &self,
+        options: &ResolveOptions,
+        expected: &Arc<ResolvedContent>,
+    ) -> io::Result<Arc<ResolvedContent>> {
+        let mut expected = Arc::clone(expected);
+        loop {
+            let mut cache = self.content.lock().map_err(|error| io::Error::other(error.to_string()))?;
+            if let Some(current) = cache.find(options)
+                && !Arc::ptr_eq(&current, &expected)
+            {
+                drop(cache);
+                if current.layers.admit_generation().is_ok() { return self.content(options); }
+                expected = current;
+                continue;
+            }
+            let _generation = installed_content_core::content::Generation::enter();
+            let current = Arc::new(self.play(options)?);
+            cache.bind(options, &current);
+            drop(cache);
+            current.layers.admit_generation()?;
+            return Ok(current);
+        }
     }
 
     /// Runs `work`, a preparation, while these folders' content resolves on a thread beside it at
@@ -675,27 +716,30 @@ impl Source {
                 // Not started, it is resolved when asked for.
                 let handle = std::thread::Builder::new()
                     .name("content resolve".into())
-                    .spawn_scoped_carried(scope, move || {
-                        caller.enter();
-                        let _cpu = cpu.enter("content resolve");
-                        let _memory = engine_allocation::labels::enter(
-                            engine_allocation::labels::Owner::RUN,
-                            engine_allocation::labels::Kind::Content,
-                        );
-                        let resolved = if cancelled.load(Ordering::Acquire)
-                            || finished.load(Ordering::Acquire)
-                        {
-                            Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"))
-                        } else {
-                            self.play(options)
-                        };
-                        // Stopped as the preparation ended: whoever asks still resolves. A
-                        // cancelled preparation's waiters are told so instead of hashing again.
-                        let stopped = matches!(&resolved, Err(error)
+                    .spawn_scoped_carried(
+                        scope,
+                        installed_content_core::content::carry_generation(move || {
+                            caller.enter();
+                            let _cpu = cpu.enter("content resolve");
+                            let _memory = engine_allocation::labels::enter(
+                                engine_allocation::labels::Owner::RUN,
+                                engine_allocation::labels::Kind::Content,
+                            );
+                            let resolved = if cancelled.load(Ordering::Acquire)
+                                || finished.load(Ordering::Acquire)
+                            {
+                                Err(io::Error::new(io::ErrorKind::Interrupted, "stopped"))
+                            } else {
+                                self.play(options)
+                            };
+                            // Stopped as the preparation ended: whoever asks still resolves. A
+                            // cancelled preparation's waiters are told so instead of hashing again.
+                            let stopped = matches!(&resolved, Err(error)
                             if error.kind() == io::ErrorKind::Interrupted
                                 && !cancelled.load(Ordering::Acquire));
-                        let _ = sender.send((!stopped).then_some(resolved));
-                    })
+                            let _ = sender.send((!stopped).then_some(resolved));
+                        }),
+                    )
                     .ok()?;
                 let owner = OWNERS.fetch_add(1, Ordering::Relaxed);
                 cache.ahead = Some(ContentAhead {
@@ -827,17 +871,20 @@ impl Source {
             return;
         }
         let admitted = &content.presentation;
-        let mount = admitted.binding().mount.get_or_mount(admitted.cancel(), || {
-            let recorded = self.content(&content.options)?;
-            Presented::mount(
-                &recorded,
-                &content.options,
-                &self.replay,
-                admitted.identity(),
-                admitted.cancel(),
-            )
-            .map(Arc::new)
-        });
+        let mount = admitted
+            .binding()
+            .mount
+            .get_or_mount(admitted.cancel(), || {
+                let recorded = self.content(&content.options)?;
+                Presented::mount(
+                    &recorded,
+                    &content.options,
+                    &self.replay,
+                    admitted.identity(),
+                    admitted.cancel(),
+                )
+                .map(Arc::new)
+            });
         content.presentation.set_mount(&mount);
     }
 
@@ -849,7 +896,10 @@ impl Source {
             return self.recorded_presented(&content.options);
         }
         content.presentation.mount().unwrap_or_else(|| {
-            debug_assert!(false, "work showing visual mods reads art its entry did not resolve");
+            debug_assert!(
+                false,
+                "work showing visual mods reads art its entry did not resolve"
+            );
             Err(io::Error::other(
                 "The selected visual mods were not prepared for this work",
             ))
@@ -985,7 +1035,8 @@ impl Source {
         }
         // A save adds pages to the runs it continues as well as new runs, and timelines to the
         // ones read before; a changed join takes blocks away.
-        let held: std::collections::HashSet<&replay::campaign::BlockIndex> = new.index.iter().collect();
+        let held: std::collections::HashSet<&replay::campaign::BlockIndex> =
+            new.index.iter().collect();
         if old.index.iter().any(|block| !held.contains(block)) {
             return false;
         }

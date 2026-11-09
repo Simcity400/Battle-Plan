@@ -17,7 +17,7 @@ use crate::{
     ResolvedLayers,
     crt::{self, Scanned},
     fields::{block, invalid},
-    image::{IndexedImage, bmp},
+    image::IndexedImage,
     parser::native::{self, Shape},
 };
 
@@ -241,8 +241,7 @@ pub fn read(layers: &ResolvedLayers) -> io::Result<(Cities, IndexedImage)> {
     let cities = parse(&layers.read("map/cities.txt")?)
         .map_err(|error| invalid(format!("map/cities.txt: {error}")))?;
     let path = cities.types_source.clone();
-    let image = bmp::decode_indexed(&layers.read(&path)?)
-        .map_err(|error| invalid(format!("{path}: {error}")))?;
+    let image = crate::terrain::read_indexed_image(layers, &path)?;
     Ok((cities, image))
 }
 

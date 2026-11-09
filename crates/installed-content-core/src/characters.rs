@@ -774,8 +774,9 @@ pub struct Characters {
 /// whose `allowed` holds, and builds their advisors from those same templates.
 /// When alternatives disagree, a held role therefore belongs to the recorded
 /// character's template.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, replay_spool::Spooled,
+)]
 pub struct BuiltTemplate {
     /// The template tag as lexer-token text.
     pub tag: String,
@@ -1475,9 +1476,19 @@ pub fn read(
     for listed in paths(layers)? {
         let path = listed.to_string();
         result.next_file();
-        let input = listed.read(layers)?;
-        match parse_file(&input, &names) {
-            Ok((mut file, stop, roles)) => {
+        let parsed =
+            layers.recorded_product("character file templates", 1, listed.as_bytes(), |layers| {
+                let input = listed.read(layers)?;
+                Ok(parse_file(&input, &names)
+                    .map(|(mut file, stop, roles)| {
+                        file.place(&listed, &input, roles);
+                        (file, stop)
+                    })
+                    .map_err(|error| error.to_string()))
+            })?;
+        match parsed.as_ref() {
+            Ok((file, stop)) => {
+                let mut file = file.clone();
                 warnings.extend(
                     std::mem::take(&mut file.notes)
                         .into_iter()
@@ -1485,9 +1496,8 @@ pub fn read(
                 );
                 result.register(&file);
                 if let Some(cause) = stop {
-                    result.gap(&path, &cause);
+                    result.gap(&path, cause);
                 }
-                file.place(&listed, &input, roles);
                 result.merge(file);
             }
             Err(error) => {
@@ -1649,10 +1659,7 @@ fn index_lines(
 
 /// The templates of one characters file, in database order. Only `characters`
 /// roots are read; others are reported.
-pub fn parse_leader_templates(
-    path: &ScriptPath,
-    input: &[u8],
-) -> io::Result<Vec<LeaderTemplate>> {
+pub fn parse_leader_templates(path: &ScriptPath, input: &[u8]) -> io::Result<Vec<LeaderTemplate>> {
     parse_visibility_templates(path, input, &UNIT_LEADER_ROLES)
 }
 fn parse_visibility_templates(
@@ -1772,6 +1779,28 @@ fn visibility_templates(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hard_character_reads_refuse_the_catalogue_with_or_without_cached_names() {
+        engine_executable::executable_tables::initialize_for_tests()
+            .expect("BATTLE_PLAN_GAME_DIR must name the supported installation for runtime table tests");
+        for cached_names in [false, true] {
+            let root = std::env::temp_dir().join(format!(
+                "characters-hard-read-{}-{cached_names}", std::process::id()
+            ));
+            std::fs::create_dir_all(root.join("common/characters")).unwrap();
+            let path = root.join("common/characters/a.txt");
+            std::fs::write(&path, b"characters = { original = { name = original } }").unwrap();
+            let layers = crate::ResolvedLayers::from_folders(&[(&root, &[])]).unwrap();
+            if cached_names {
+                layers.key_names().unwrap();
+            }
+            std::fs::remove_file(&path).unwrap();
+            std::fs::create_dir(&path).unwrap();
+            assert!(super::read(&layers, super::Characters::default()).is_err());
+            std::fs::remove_dir_all(root).unwrap();
+        }
+    }
+
     #[test]
     fn scientist_visible_sources_include_effect_roles_and_append_repeated_visible_blocks() {
         let templates = super::parse_scientist_visibility_templates(

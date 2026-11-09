@@ -35,7 +35,7 @@ use crate::{
     ResolvedLayers,
     crt::{Scanned, scan_i32},
     fixed5::script_fixed5,
-    key_names::{KeyNames, Point},
+    key_names::KeyNames,
     parser::{
         Item, Value, c_string,
         native::{self, Field, Kind, Shape},
@@ -857,8 +857,8 @@ impl Database {
     /// Reads every equipment file in the loader's order ([`files`]), then
     /// finalizes.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
-        let names = layers.key_names()?.at(Point::BeforeBuildings);
-        Self::load_with_names(layers, &names)
+        layers.key_names()?.equipment_database().map(|database| database.as_ref().clone())
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "key names have no equipment database"))
     }
 
     /// The same loader with names already resolved by the caller, for

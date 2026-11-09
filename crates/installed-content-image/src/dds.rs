@@ -81,7 +81,7 @@ pub struct MipLevel {
     pub width: u32,
     pub height: u32,
     /// Block bytes for a compressed format, otherwise its texels ([`TextureFormat`]).
-    pub data: Vec<u8>,
+    pub data: crate::Bytes,
 }
 
 /// A decoded DDS surface: one face for a plain texture, six for a cube map.
@@ -99,7 +99,7 @@ pub struct Texture {
 impl Texture {
     /// Wraps an already decoded image as a single-face, single-mip texture, so
     /// a `.tga` page and a `.dds` page reach the renderer in one shape.
-    pub fn from_rgba8(image: Rgba8Image) -> Self {
+    pub fn from_rgba8<P: Into<crate::Bytes>>(image: Rgba8Image<P>) -> Self {
         Self {
             format: TextureFormat::Rgba8,
             width: image.width,
@@ -108,7 +108,7 @@ impl Texture {
             mips: vec![vec![MipLevel {
                 width: image.width,
                 height: image.height,
-                data: image.pixels,
+                data: (image.pixels).into(),
             }]],
         }
     }

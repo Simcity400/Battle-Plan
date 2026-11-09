@@ -197,7 +197,7 @@ pub fn decode_indexed(input: &[u8]) -> io::Result<IndexedImage> {
     Ok(IndexedImage {
         width: header.width,
         height: header.height,
-        indices,
+        indices: indices.into(),
         palette,
     })
 }

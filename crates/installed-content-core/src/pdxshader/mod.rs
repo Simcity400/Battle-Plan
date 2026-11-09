@@ -367,11 +367,14 @@ pub fn load(layers: &ResolvedLayers, effect: &[u8]) -> Option<Effect> {
 
 /// [`load`] over `read`, a path's contents by its bytes when some layer holds it. The paths kept
 /// in the [`Effect`] are text for messages.
-pub fn load_with(effect: &[u8], read: &dyn Fn(&[u8]) -> Option<Vec<u8>>) -> Option<Effect> {
+pub fn load_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
+    effect: &[u8],
+    read: &dyn Fn(&[u8]) -> Option<B>,
+) -> Option<Effect> {
     let file = effect_path(effect);
     let path = String::from_utf8_lossy(&file).into_owned();
-    let bytes = read(&file)?;
-    let root = read_file(&bytes);
+    let bytes: crate::content::Bytes = read(&file)?.into();
+    let root = read_file(&bytes).ok()?;
     let mut includes = Vec::new();
     let mut files = Vec::new();
     let mut visited = BTreeSet::new();
@@ -388,9 +391,12 @@ pub fn load_with(effect: &[u8], read: &dyn Fn(&[u8]) -> Option<Vec<u8>>) -> Opti
                     }
                     let file = [b"gfx/FX/".as_slice(), &name].concat();
                     let path = String::from_utf8_lossy(&file).into_owned();
-                    let bytes = read(&file);
+                    let bytes: Option<crate::content::Bytes> = read(&file).map(Into::into);
                     let identity = bytes.as_deref().map(sha256);
-                    let file = bytes.map(|bytes| read_file(&bytes)).unwrap_or_default();
+                    let file = match bytes {
+                        Some(bytes) => read_file(&bytes).ok()?,
+                        None => File::default(),
+                    };
                     (file, path, identity)
                 }
             };
@@ -427,7 +433,15 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 }
 
 /// One shader file's declarations.
-fn read_file(bytes: &[u8]) -> File {
+fn read_file(bytes: impl Into<crate::content::Bytes>) -> std::io::Result<File> {
+    let bytes = bytes.into();
+    crate::content::Generation::derive(&bytes, "shader file grammar", 1, &[], || {
+        crate::content::io_counts::parse("shader file grammar", &bytes);
+        Ok(parse_file(&bytes))
+    })
+}
+
+fn parse_file(bytes: &[u8]) -> File {
     let mut reader = Reader::new(native::lex_effect(bytes, native::Mode::KeepMark), 0);
     let mut file = File::default();
     while reader.next_key() {
@@ -1102,12 +1116,12 @@ Effect = Below
             .expect("BATTLE_PLAN_GAME_DIR must select the supported installation for runtime table tests");
         for tail in [&b""[..], b"\xff"] {
             let text = [b"VertexStruct VS { float2 a : TEXCOORD0 ".as_slice(), tail].concat();
-            let file = read_file(&text);
+            let file = read_file(&text).unwrap();
             let members = &file.stages[0].vertex_structs[0].members;
             assert_eq!(members.len(), 1, "{tail:?}");
             assert_eq!(members[0].kind, b"float2");
             let text = [b"ConstantBuffer( 1, 2 ) { float4 x ".as_slice(), tail].concat();
-            let file = read_file(&text);
+            let file = read_file(&text).unwrap();
             let buffer = &file.stages[0].constant_buffers[0];
             assert_eq!(buffer.members.len(), 1, "{tail:?}");
             assert_eq!(buffer.members[0].1, b"x");
@@ -1127,7 +1141,7 @@ Effect = Below
                     BlendState \"multi\nline\" { BlendEnable = yes }\n\
                     DepthStencilState \"a\0b\" { }\n\
                     Effect \"Up\nTwo\" { BlendState = \"multi\nline\" }\n";
-        let file = read_file(text.as_bytes());
+        let file = read_file(text.as_bytes()).unwrap();
         assert_eq!(file.blend_states[0].0, b"multi\nline");
         assert_eq!(file.depth_stencil_states[0].0, b"a");
         assert_eq!(file.techniques[0].name, b"Up\nTwo");

@@ -33,6 +33,13 @@ use crate::parser::{self, Document};
 pub use crate::script_files::ScriptPath;
 
 pub mod facts;
+mod changes;
+pub mod graph;
+pub use installed_content_image::Bytes;
+pub(crate) mod generation;
+pub use generation::Generation;
+pub use generation::{Loading, carry as carry_generation};
+pub mod io_counts;
 mod physfs_zip;
 pub mod proof;
 pub mod visual;
@@ -544,6 +551,9 @@ impl Facts {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedLayer {
+    content_digest: [u8; 32],
+    inventory_witnesses: Arc<generation::Witnesses>,
+    inventory_paths: Arc<BTreeSet<LayerPath>>,
     coverage: CoveragePolicy,
     pub role: LayerRole,
     /// For playback, the recording's facts of this layer: every covered path that is not art is
@@ -642,6 +652,7 @@ pub struct ContentRead {
 struct ReadTrace {
     callback: std::sync::Arc<dyn Fn(ContentRead) + Send + Sync>,
     purpose: String,
+    product: Option<Arc<graph::Node>>,
 }
 
 #[derive(Debug)]
@@ -791,12 +802,16 @@ impl ReadTrace {
                 callback(read)
             }),
             purpose: self.purpose.clone(),
+            product: self.product.clone(),
         }
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ResolvedLayers {
+    context: [u8; 32],
+    recorded_projection: Arc<std::sync::OnceLock<Result<Arc<ResolvedLayers>, Arc<io::Error>>>>,
+    generation: Arc<graph::Graph>,
     read_trace: Option<ReadTrace>,
     coverage: CoveragePolicy,
     pub layers: Vec<ResolvedLayer>,
@@ -812,39 +827,26 @@ pub struct ResolvedLayers {
     /// Whether a visual mod's `common/defines` shows through ([`Self::overlay_sees`]).
     defines_visible: bool,
     overlay_reads: OverlayReads,
-    effective: BTreeMap<LayerPath, EffectiveFile>,
-    /// Where uncovered paths resolved, so repeats skip the folder layers' failed filesystem
-    /// probes. Each entry records the layer roster it was resolved against, so layer push/pop
-    /// (as in the fallback tests) misses instead of answering stale. Uncovered folder files are
-    /// assumed stable during one load; a hit the filesystem no longer reproduces falls back to a
-    /// fresh scan rather than failing. Every answer it gives, hit or miss, first passes the
-    /// verification the scan applies ([`ResolvedLayers::verify_passed`], and the hit layer's own
-    /// lookup for an archive hit): it never skips an archive's.
-    uncovered_memo: std::sync::Arc<std::sync::Mutex<UncoveredMemo>>,
+    effective: Arc<BTreeMap<LayerPath, EffectiveFile>>,
     /// Ordinary successful uncovered reads and explicit uncovered attempts.
     /// `None` keeps readers strict until their reporting boundary opts in.
     uncovered_reads: std::sync::Arc<std::sync::Mutex<Option<BTreeSet<LayerPath>>>>,
-    /// The `gfx/models` texture index and the `gfx` descriptor roster, each
-    /// built once per layer roster and shared by every model library.
-    texture_index: Memo<crate::mesh::TextureIndex>,
-    descriptor_roster: Memo<crate::mesh::Roster>,
-    /// The recorded stack's roster below this presentation stack's visual mods, built once
-    /// per roster ([`Self::recorded_descriptor_roster`]).
-    recorded_descriptor_roster: Memo<crate::mesh::Roster>,
-    /// The content names every trigger body is read against, built once per
-    /// layer roster and shared by every content reader.
-    key_names: Memo<crate::key_names::KeyNames>,
-    /// The content names one traced reader of this stack computed, with the reads that traced,
-    /// shared by every traced reader of the stack ([`Self::key_names`]).
-    traced_key_names: std::sync::Arc<std::sync::Mutex<Option<TracedKeyNames>>>,
-    /// Faction definitions and read failures shared by every naming consumer. A
-    /// transient I/O failure also stays cached until the layer roster changes.
-    faction_templates: Memo<Result<std::sync::Arc<crate::faction_templates::Catalog>, String>>,
     derived: std::sync::Arc<std::sync::Mutex<Derived>>,
 }
 
 #[derive(Default)]
+struct RetainedProducts {
+    values: std::sync::Mutex<
+        BTreeMap<
+            (&'static str, u32, Vec<u8>),
+            Arc<std::sync::Mutex<Option<Arc<graph::Product>>>>,
+        >,
+    >,
+}
+
+#[derive(Default)]
 struct Derived {
+    context: Option<[u8; 32]>,
     roster: Vec<String>,
     values: std::collections::HashMap<
         std::any::TypeId,
@@ -862,36 +864,6 @@ impl std::fmt::Debug for Derived {
     }
 }
 
-type Memo<T> = std::sync::Arc<
-    std::sync::Mutex<Option<(Vec<String>, std::sync::Arc<T>, diagnostics::Diagnostics)>>,
->;
-
-/// Content names read under a read trace, for a layer roster, with every read that traced.
-#[derive(Debug)]
-struct TracedKeyNames {
-    roster: Vec<String>,
-    names: std::sync::Arc<crate::key_names::KeyNames>,
-    reads: Vec<(LayerPath, Option<usize>, ReadOutcome)>,
-    diagnostics: diagnostics::Diagnostics,
-}
-
-/// Memoized uncovered resolutions with the roster they were resolved against.
-#[derive(Debug, Default)]
-struct UncoveredMemo {
-    layers: Vec<String>,
-    hits: BTreeMap<LayerPath, Option<UncoveredHit>>,
-}
-
-/// Where one uncovered path resolved: a folder file, or an archive layer, which answers it again
-/// through its one verified lookup ([`ResolvedLayer::archive_open_observed`]).
-#[derive(Clone, Debug)]
-enum UncoveredHit {
-    /// The folder layer at the index, and the opened file's real relative path.
-    Folder(usize, LayerPath),
-    /// The archive layer at the index.
-    Archive(usize),
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct EffectiveFile {
     layer: usize,
@@ -905,6 +877,24 @@ struct RecordedHit {
     folder: Option<File>,
     /// A played-back layer's carried fact, by its file in the pack.
     fact: Option<u32>,
+}
+
+struct ResolvedFile {
+    layer: usize,
+    path: LayerPath,
+    folder: std::sync::Mutex<Option<File>>,
+    fact: Option<u32>,
+}
+
+impl From<RecordedHit> for ResolvedFile {
+    fn from(hit: RecordedHit) -> Self {
+        Self {
+            layer: hit.layer,
+            path: hit.path,
+            folder: std::sync::Mutex::new(hit.folder),
+            fact: hit.fact,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -1171,7 +1161,7 @@ fn text_path(path: &Path) -> io::Result<&str> {
 }
 
 fn read_document(path: &Path) -> io::Result<Document> {
-    parser::parse(&fs::read(path)?).map_err(|error| invalid(format!("{}: {error}", path.display())))
+    generation::document(path)
 }
 
 fn scalar(document: &Document, key: &[u8]) -> io::Result<Option<String>> {
@@ -1213,9 +1203,9 @@ fn descriptor_layer(
     is_mod: bool,
     coverage: CoveragePolicy,
 ) -> io::Result<(ResolvedLayer, Document)> {
-    let descriptor_bytes = fs::read(&path)?;
-    let document = parser::parse(&descriptor_bytes)?;
-    let descriptor_hash = Sha256::digest(&descriptor_bytes).into();
+    let descriptor_bytes = generation::metadata(&path)?;
+    let document = generation::document(&path)?;
+    let descriptor_hash = descriptor_bytes.digest();
     let folder = scalar(&document, b"path")?;
     let archive = scalar(&document, b"archive")?;
     let source = match (folder, archive) {
@@ -1251,8 +1241,15 @@ fn descriptor_layer(
         .transpose()?;
     Ok((
         ResolvedLayer {
+            content_digest: [0; 32],
+            inventory_witnesses: Default::default(),
+            inventory_paths: Default::default(),
             coverage,
-            role: if is_mod { LayerRole::Mod } else { LayerRole::Dlc },
+            role: if is_mod {
+                LayerRole::Mod
+            } else {
+                LayerRole::Dlc
+            },
             facts: None,
             id,
             source,
@@ -1336,6 +1333,7 @@ fn update_value(hash: &mut Sha256, value: &parser::Value) -> io::Result<()> {
 }
 
 fn directory_entries(path: &Path) -> io::Result<Vec<fs::DirEntry>> {
+    generation::listing(path)?;
     let mut entries = fs::read_dir(path)?.collect::<io::Result<Vec<_>>>()?;
     entries.sort_by_key(|entry| entry.file_name());
     Ok(entries)
@@ -1352,8 +1350,17 @@ fn collect_folder(
     files: &mut BTreeMap<LayerPath, Member>,
     coverage: CoveragePolicy,
     overlay: bool,
+    inventory_paths: &mut BTreeSet<LayerPath>,
 ) -> io::Result<()> {
-    collect_folder_with(root, path, files, coverage, overlay, &entry_kind)
+    collect_folder_with(
+        root,
+        path,
+        files,
+        coverage,
+        overlay,
+        &entry_kind,
+        inventory_paths,
+    )
 }
 
 /// [`collect_folder`], `kind` naming each entry. A visual mod's symbolic link to a folder is
@@ -1365,6 +1372,7 @@ fn collect_folder_with(
     coverage: CoveragePolicy,
     overlay: bool,
     kind: &dyn Fn(&fs::DirEntry) -> io::Result<Listed>,
+    inventory_paths: &mut BTreeSet<LayerPath>,
 ) -> io::Result<()> {
     let names_folder = |link: &Path| fs::metadata(link).is_ok_and(|metadata| metadata.is_dir());
     let refused = |link: &Path| {
@@ -1388,6 +1396,7 @@ fn collect_folder_with(
         Ok(listed)
     };
     walk_folder(root, path, overlay, &checked, &mut |relative, entry| {
+        inventory_paths.insert(relative.clone());
         if coverage.covered_path(&relative) {
             let metadata = entry.metadata()?;
             // Only hashed files need one; a file the listing cannot stamp is stamped by its probe.
@@ -1488,6 +1497,9 @@ fn walk_folder(
             start => start?,
         }
     };
+    if overlay && let Some(graph) = generation::current() {
+        graph.changes.watch_root(&start, true);
+    }
     walk_below(root, directory, &mut vec![start], overlay, kind, visit)
 }
 
@@ -1539,6 +1551,9 @@ fn walk_below(
                         full_path.display(),
                         target.display()
                     )));
+                }
+                if let Some(graph) = generation::current() {
+                    graph.changes.watch_root(&target, true);
                 }
                 target
             }
@@ -1626,7 +1641,7 @@ impl ResolvedLayer {
         }) else {
             return Ok(None);
         };
-        let bytes = fs::read(descriptor)?;
+        let bytes = generation::metadata(descriptor)?;
         let actual: [u8; 32] = Sha256::digest(&bytes).into();
         if self.descriptor_hash.map(|parsed| parsed.bytes) != Some(actual) {
             return Err(invalid(format!(
@@ -1658,11 +1673,17 @@ impl ResolvedLayer {
     }
 
     fn inventory(&mut self) -> io::Result<()> {
+        let _collection = generation::Collect::enter(Arc::clone(&self.inventory_witnesses));
         if let LayerSource::Folder(root) = &mut self.source {
+            if let Some(graph) = generation::current() {
+                graph.changes.watch_root(root, true);
+                graph.witnesses.directory(root)?;
+            }
             *root = fs::canonicalize(&*root)?;
         }
         match &self.source {
             LayerSource::Folder(root) => {
+                self.inventory_witnesses.directory(root)?;
                 let listed_as_game = self.listed_as_game();
                 // `gfx` holds the descriptors and the covered `gfx/*` roots.
                 let walked = self
@@ -1678,11 +1699,13 @@ impl ResolvedLayer {
                             std::sync::Arc::make_mut(&mut self.files),
                             self.coverage,
                             listed_as_game,
+                            Arc::make_mut(&mut self.inventory_paths),
                         )?;
                     }
                 }
             }
             LayerSource::Archive(path) => {
+                self.inventory_witnesses.file(path, &File::open(path)?)?;
                 let stamp = Stamp::read(path)?;
                 let mut archive = physfs_zip::Archive::open(path)?;
                 let mounted = archive.mount()?;
@@ -1765,6 +1788,7 @@ impl ResolvedLayer {
                 }
             }
             LayerSource::Archive(path) => {
+                self.inventory_witnesses.file(path, &File::open(path)?)?;
                 let stamp = Stamp::read(path)?;
                 if self.archive_stamp.as_ref() != Some(&stamp) {
                     return Err(invalid("archive changed since inventory"));
@@ -1874,18 +1898,7 @@ impl ResolvedLayer {
         Ok(Some((real, file)))
     }
 
-    /// Reads and verifies the real spelling through the handle that resolved it.
-    fn folder_read(
-        &self,
-        real: &[u8],
-        file: impl Read,
-        observed: &ReadObservation,
-    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
-        #[cfg(test)]
-        tests::LOADS.with(|loads| loads.set(loads.get() + 1));
-        self.folder_read_from(real, file, observed)
-    }
-
+    #[cfg(test)]
     fn folder_read_from(
         &self,
         real: &[u8],
@@ -1905,25 +1918,15 @@ impl ResolvedLayer {
         if self.coverage.covered_path(real) {
             let length = bytes.len() as u64;
             let digest = payload_digest(&bytes);
+            io_counts::layer_digest(self, real, digest, length);
             observed
                 .hashed(bytes, length, digest)
                 .verified(self.verify(real, &digest))
         } else {
+            io_counts::layer_bytes(self, real, &bytes);
             let result = observed.bytes((), &bytes);
             Ok(result.map(|()| bytes))
         }
-    }
-
-    fn folder_open(
-        &self,
-        relative: &[u8],
-        observed: &ReadObservation,
-    ) -> ObservedResult<Option<(LayerPath, ReadSuccess<Vec<u8>>)>> {
-        let Some((real, file)) = self.folder_lookup(relative)? else {
-            return Ok(None);
-        };
-        let bytes = self.folder_read(&real, file, observed)?;
-        Ok(Some((real, bytes)))
     }
 
     fn verify(&self, relative: &[u8], digest: &[u8; 32]) -> io::Result<()> {
@@ -2033,6 +2036,16 @@ impl ResolvedLayer {
             };
             let record = record.verified(self.verify(&entry.name, &digest))?;
             if password.is_none() {
+                match &record {
+                    ReadSuccess::Untraced((digest, Some(bytes), _))
+                    | ReadSuccess::Traced {
+                        value: (digest, Some(bytes), _),
+                        ..
+                    } => {
+                        io_counts::layer_digest(self, &entry.name, *digest, bytes.len() as u64);
+                    }
+                    _ => {}
+                }
                 return Ok(match record {
                     ReadSuccess::Untraced((_, bytes, _)) => bytes.map(ReadSuccess::Untraced),
                     ReadSuccess::Traced {
@@ -2042,17 +2055,24 @@ impl ResolvedLayer {
                 });
             }
         }
+        #[cfg(test)]
+        tests::LOADS.with(|loads| loads.set(loads.get() + 1));
         let bytes = archive
             .read_observed(entry, password, observed.enabled)
             .map_err(|failure| failure.context(context))?;
-        Ok(bytes.map(|bytes| observed.bytes((), &bytes).map(|()| bytes)))
+        Ok(bytes.map(|bytes| {
+            io_counts::layer_bytes(self, &entry.name, &bytes);
+            observed.bytes((), &bytes).map(|()| bytes)
+        }))
     }
 
     fn archive_exists(&self, request: &[u8]) -> io::Result<bool> {
         let (mut archive, mounted) = self.verified_archive()?;
         match mounted.lookup(request) {
             Some((entry, _)) if entry.symlink => Err(unfollowed_link(request)),
-            Some((entry, _)) if self.fact_path(&entry.name) => Err(fact_alias(request, &entry.name)),
+            Some((entry, _)) if self.fact_path(&entry.name) => {
+                Err(fact_alias(request, &entry.name))
+            }
             Some((entry, password)) => archive.opens(entry, password),
             None => Ok(false),
         }
@@ -2112,12 +2132,16 @@ fn lists_facts(prefix: &[u8], suffixes: &[String]) -> bool {
     let lower = prefix.to_ascii_lowercase();
     fact_class(&lower)
         || lower.is_empty()
-        || ((lower == b"gfx" || below(&lower, b"gfx") || lower == b"gfx/" || lower.starts_with(b"gfx/"))
-            && (suffixes.is_empty() || suffixes.iter().any(|suffix| {
-                [".gfx", ".asset", ".txt"]
-                    .iter()
-                    .any(|fact| fact.ends_with(suffix.as_str()) || suffix.ends_with(fact))
-            })))
+        || ((lower == b"gfx"
+            || below(&lower, b"gfx")
+            || lower == b"gfx/"
+            || lower.starts_with(b"gfx/"))
+            && (suffixes.is_empty()
+                || suffixes.iter().any(|suffix| {
+                    [".gfx", ".asset", ".txt"]
+                        .iter()
+                        .any(|fact| fact.ends_with(suffix.as_str()) || suffix.ends_with(fact))
+                })))
 }
 
 /// A fact the recording's content identity, made under an older coverage policy, never hashed,
@@ -2166,7 +2190,7 @@ fn folder_text(relative: &[u8]) -> io::Result<&str> {
 /// A file the game requests by a literal path, opened as [`ResolvedLayers::read_path`] opens it:
 /// `None` when no layer holds it (the requester passes a missing file), an error when the open
 /// fails otherwise (a verification failure included).
-pub(crate) fn open_request(layers: &ResolvedLayers, path: &[u8]) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn open_request(layers: &ResolvedLayers, path: &[u8]) -> io::Result<Option<Bytes>> {
     match layers.read_path(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -2192,13 +2216,13 @@ impl ResolvedLayers {
             read_trace: Some(ReadTrace {
                 callback: trace,
                 purpose: String::new(),
+                product: self
+                    .read_trace
+                    .as_ref()
+                    .and_then(|trace| trace.product.clone()),
             }),
             derived: Default::default(),
-            key_names: Default::default(),
-            texture_index: Default::default(),
-            descriptor_roster: Default::default(),
-            recorded_descriptor_roster: Default::default(),
-            faction_templates: Default::default(),
+
             ..self.clone()
         }
     }
@@ -2282,13 +2306,16 @@ impl ResolvedLayers {
     /// Consumer caches belong to this resolved stack and are shared by its clones.
     /// A changed mount roster starts fresh; successful reads retain their diagnostics.
     pub fn derived<T: Default + Send + Sync + 'static>(&self) -> std::sync::Arc<T> {
-        let roster: Vec<_> = self.layers.iter().map(|layer| layer.id.clone()).collect();
         let mut derived = self
             .derived
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if derived.roster != roster {
-            derived.roster = roster;
+        if derived.context != Some(self.context)
+            || derived.roster.len() != self.layers.len()
+            || !derived.roster.iter().eq(self.layers.iter().map(|layer| &layer.id))
+        {
+            derived.context = Some(self.context);
+            derived.roster = self.layers.iter().map(|layer| layer.id.clone()).collect();
             derived.values.clear();
         }
         std::sync::Arc::clone(
@@ -2300,13 +2327,340 @@ impl ResolvedLayers {
         .downcast::<T>()
         .expect("cache type owns its entry")
     }
+
+    pub fn product<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        self.product_at(
+            graph::Key {
+                context: self.product_context(),
+                parser,
+                schema,
+                parameters: parameters.to_vec(),
+            },
+            None,
+            build,
+        )
+    }
+
+    pub(crate) fn file_product<T: Send + Sync + 'static>(
+        &self,
+        path: &[u8],
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        build: impl FnOnce(&Bytes) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let normalized = sanitize(path).ok_or_else(|| not_found(path))?;
+        let path = normalized.as_slice();
+        let resolved = match self.resolved_file(path, true) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.note_uncovered_attempt(path, None);
+                self.trace_read(path, None, ReadFailure::from(io::Error::new(error.kind(), error.to_string())).outcome());
+                return Err(error);
+            }
+        };
+        let Some(file) = resolved.as_ref().as_ref() else {
+            self.note_uncovered_attempt(path, None);
+            let error = not_found(path);
+            self.trace_read(path, None, ReadFailure::from(io::Error::new(error.kind(), error.to_string())).outcome());
+            return Err(error);
+        };
+        let mut key_parameters = (file.path.len() as u64).to_le_bytes().to_vec();
+        key_parameters.extend_from_slice(&file.path);
+        key_parameters.push(u8::from(file.fact.is_some()));
+        if let Some(fact) = file.fact {
+            key_parameters.extend_from_slice(&fact.to_le_bytes());
+        }
+        key_parameters.extend_from_slice(parameters);
+        let product = self.product_at(
+            graph::Key {
+                context: self.layer_context(file.layer),
+                parser,
+                schema,
+                parameters: key_parameters,
+            },
+            Some(file.layer),
+            |reader| build(&reader.shared_read_in(path, true, Some(file))?),
+        );
+        file.folder
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take();
+        product
+    }
+
+    fn product_at<T: Send + Sync + 'static>(
+        &self,
+        key: graph::Key,
+        file_layer: Option<usize>,
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let (product, built) = self.product_entry(key, file_layer, build)?;
+        self.credit_product(&product, built, file_layer);
+        product.value()
+    }
+
+    fn credit_product(&self, product: &graph::Product, built: bool, file_layer: Option<usize>) {
+        if !built {
+            for read in &product.reads {
+                self.trace_read(&read.path, file_layer.or(read.layer), read.outcome.clone());
+            }
+        }
+        if built {
+            product.diagnostics.credit();
+        } else {
+            product.diagnostics.credit_to(self);
+        }
+    }
+
+    fn product_entry<T: Send + Sync + 'static>(
+        &self,
+        key: graph::Key,
+        file_layer: Option<usize>,
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<(Arc<graph::Product>, bool)> {
+        self.product_entry_with_retry(key, file_layer, true, build)
+    }
+
+    fn product_entry_with_retry<T: Send + Sync + 'static>(
+        &self,
+        key: graph::Key,
+        file_layer: Option<usize>,
+        retry_errors: bool,
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<(Arc<graph::Product>, bool)> {
+        let parent = self
+            .read_trace
+            .as_ref()
+            .and_then(|trace| trace.product.as_ref());
+        let (product, built) = self.generation.product_with_retry(key, parent, retry_errors, |node| {
+            let reads = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let kept = Arc::clone(&reads);
+            let original = self.read_trace.clone();
+            let mut reader = self.clone();
+            reader.read_trace = Some(ReadTrace {
+                callback: Arc::new(move |read: ContentRead| {
+                    let mut witness = read.clone();
+                    if file_layer.is_some() {
+                        witness.layer = None;
+                    }
+                    kept.lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .push(witness);
+                    if let Some(trace) = &original {
+                        (trace.callback)(read);
+                    }
+                }),
+                purpose: self
+                    .read_trace
+                    .as_ref()
+                    .map_or_else(String::new, |trace| trace.purpose.clone()),
+                product: Some(Arc::clone(node)),
+            });
+            let (value, diagnostics) = diagnostics::capture(|| build(&reader));
+            let reads =
+                std::mem::take(&mut *reads.lock().unwrap_or_else(|error| error.into_inner()));
+            (value, reads, diagnostics)
+        })?;
+        Ok((product, built))
+    }
+
+    pub(crate) fn retained_product<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        self.retained_product_with_errors(parser, schema, parameters, false, build)
+    }
+
+    fn retained_product_with_errors<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        cache_errors: bool,
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let cache = self.derived::<RetainedProducts>();
+        let cell = Arc::clone(
+            cache.values.lock().unwrap_or_else(|error| error.into_inner())
+                .entry((parser, schema, parameters.to_vec())).or_default(),
+        );
+        let mut kept = cell.lock().unwrap_or_else(|error| error.into_inner());
+        let (product, built) = match kept.as_ref() {
+            Some(product) => (Arc::clone(product), false),
+            None => {
+                let (product, built) = self.product_entry_with_retry(
+                    graph::Key {
+                        context: self.context,
+                        parser,
+                        schema,
+                        parameters: parameters.to_vec(),
+                    },
+                    None,
+                    !cache_errors,
+                    build,
+                )?;
+                if cache_errors || product.successful() {
+                    *kept = Some(Arc::clone(&product));
+                }
+                (product, built)
+            }
+        };
+        drop(kept);
+        if let Some(parent) = self.read_trace.as_ref().and_then(|trace| trace.product.as_ref()) {
+            self.generation.depends(parent, &product)?;
+        }
+        self.credit_product(&product, built, None);
+        product.value()
+    }
+
+    pub(crate) fn retained_recorded_product<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let reader = self.project_recorded()?.unwrap_or_else(|| self.clone());
+        reader.retained_product(parser, schema, parameters, build)
+    }
+
+    pub fn recorded_product<T: Send + Sync + 'static>(
+        &self,
+        parser: &'static str,
+        schema: u32,
+        parameters: &[u8],
+        build: impl FnOnce(&Self) -> io::Result<T>,
+    ) -> io::Result<Arc<T>> {
+        let reader = if self.shows_visual_mods() {
+            self.project_recorded()?.ok_or_else(|| {
+                invalid("the recorded content stack cannot be projected below the visual mods")
+            })?
+        } else {
+            self.clone()
+        };
+        reader.product(parser, schema, parameters, build)
+    }
+
+    pub(crate) fn reads_visual_defines(&self) -> bool {
+        self.defines_visible
+    }
+
+    pub fn product_counts(&self) -> Vec<graph::ProductCount> {
+        self.generation.counts()
+    }
+
+    pub fn content_counts(&self) -> graph::Counts {
+        self.generation.snapshot()
+    }
+
+    pub fn generation_is_current(&self) -> bool {
+        !self
+            .generation
+            .stale
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn validate_generation(&self) -> io::Result<()> {
+        self.validate_generation_in(true)
+    }
+
+    pub fn admit_generation(&self) -> io::Result<()> {
+        self.validate_generation_in(false)
+    }
+
+    pub fn with_file_witness<T>(&self, path: &Path, read: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        if let Some(parent) = path.parent() {
+            self.generation.changes.watch_root(parent, false);
+        }
+        self.generation.witnesses.directory(path)?;
+        let value = read()?;
+        match path.canonicalize() {
+            Ok(actual) => {
+                if let Some(parent) = actual.parent() {
+                    self.generation.changes.watch_root(parent, false);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => self.generation.changes.unwatchable(path, &error),
+        }
+        if let Err(error) = self.generation.witnesses.validate_path(path) {
+            self.generation.stale.store(true, std::sync::atomic::Ordering::Release);
+            return Err(error);
+        }
+        Ok(value)
+    }
+
+    fn validate_generation_in(&self, force: bool) -> io::Result<()> {
+        if !self.generation_is_current() {
+            return Err(invalid("content generation needs to be refreshed"));
+        }
+        let result = self.generation.changes.validate(force, || {
+            self.generation.witnesses.validate()?;
+            let inventories: Vec<_> = self.generation.inventories
+                .lock().unwrap_or_else(|error| error.into_inner())
+                .iter().filter_map(std::sync::Weak::upgrade).collect();
+            for inventory in inventories {
+                inventory.validate()?;
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            self.generation
+                .stale
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
+        result
+    }
+
+    pub fn enter_generation(&self) -> Generation {
+        Generation::attach(Arc::clone(&self.generation))
+    }
+
+    pub fn loading(&self) -> Loading {
+        Loading::new(Arc::clone(&self.generation))
+    }
+
+    fn watch_directory(&self, layer: &ResolvedLayer, relative: &[u8]) -> io::Result<()> {
+        if let LayerSource::Folder(root) = &layer.source {
+            if let Ok(relative) = std::str::from_utf8(relative) {
+                let parent = Path::new(relative)
+                    .parent()
+                    .unwrap_or_else(|| Path::new(""));
+                self.generation
+                    .witnesses
+                    .adopt(&root.join(parent), &layer.inventory_witnesses)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn product_context(&self) -> [u8; 32] {
+        self.context
+    }
+
     /// The language whose text a played-back recording carries, without its `l_`; `None` for
     /// content read from an installation.
     pub fn recorded_language(&self) -> Option<&str> {
         self.layers
             .iter()
             .find_map(|layer| layer.facts.as_ref())
-            .filter(|facts| facts.pack.layers.iter().any(|layer| layer.withheld().is_none()))
+            .filter(|facts| {
+                facts
+                    .pack
+                    .layers
+                    .iter()
+                    .any(|layer| layer.withheld().is_none())
+            })
             .map(|facts| facts.pack.language_name())
     }
 
@@ -2327,6 +2681,7 @@ impl ResolvedLayers {
             .first()
             .ok_or_else(|| invalid("Content source audit: no recorded base game layer"))?;
         let mut base = Self {
+            generation: Arc::clone(&self.generation),
             coverage: self.coverage,
             layers: vec![layer.clone()],
             ..Self::default()
@@ -2336,7 +2691,56 @@ impl ResolvedLayers {
     }
 
     fn finish(&mut self) -> io::Result<()> {
-        self.effective.clear();
+        for layer in &self.layers {
+            self.generation.inventory(&layer.inventory_witnesses);
+            match &layer.source {
+                LayerSource::Folder(root) => self.generation.changes.watch_root(root, true),
+                LayerSource::Archive(path) => {
+                    if let Some(parent) = path.parent() { self.generation.changes.watch_root(parent, true); }
+                }
+            }
+            if let Some(path) = &layer.descriptor {
+                if let Some(parent) = path.parent() { self.generation.changes.watch_root(parent, true); }
+            }
+        }
+        fn field(hash: &mut Sha256, value: &[u8]) {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value);
+        }
+        let mut context = Sha256::new();
+        context.update(b"content-generation-stack/v2");
+        context.update(self.coverage.0.to_le_bytes());
+        context.update([u8::from(self.defines_visible)]);
+        for layer in &mut self.layers {
+            let mut hash = Sha256::new();
+            hash.update(b"resolved-layer-content/v2");
+            field(&mut hash, layer.id.as_bytes());
+            field(&mut hash, format!("{:?}", layer.source).as_bytes());
+            if let Some(facts) = &layer.facts {
+                hash.update(facts.layer().hash);
+            }
+            for (path, digest) in layer.hashes.iter() {
+                field(&mut hash, path);
+                hash.update(digest);
+            }
+            for (path, member) in layer.files.iter() {
+                field(&mut hash, path);
+                hash.update(member.size.to_le_bytes());
+            }
+            layer.content_digest = hash.finalize().into();
+            context.update([layer.role.byte()]);
+            context.update(layer.content_digest);
+            for path in &layer.replace_paths {
+                field(&mut context, path);
+            }
+        }
+        let context = context.finalize().into();
+        if self.context != context {
+            self.derived = Default::default();
+            self.recorded_projection = Default::default();
+        }
+        self.context = context;
+        let mut effective = BTreeMap::new();
         for (index, layer) in self.layers.iter().enumerate() {
             if layer.coverage != self.coverage {
                 return Err(invalid("content layers use different coverage policies"));
@@ -2355,7 +2759,6 @@ impl ResolvedLayers {
             };
             // Played back, a layer's installed art is listed as it is now, whatever its spellings.
             let all = |_: &[u8]| true;
-            let mut effective = std::mem::take(&mut self.effective);
             apply_overlay(
                 &mut effective,
                 index,
@@ -2373,8 +2776,8 @@ impl ResolvedLayers {
                     None
                 },
             )?;
-            self.effective = effective;
         }
+        self.effective = Arc::new(effective);
         Ok(())
     }
 
@@ -2397,6 +2800,9 @@ impl ResolvedLayers {
         for (index, (root, replace_paths)) in folders.iter().enumerate() {
             let root = fs::canonicalize(root)?;
             let mut layer = ResolvedLayer {
+                content_digest: [0; 32],
+                inventory_witnesses: Default::default(),
+                inventory_paths: Default::default(),
                 coverage: CoveragePolicy::default(),
                 role: LayerRole::Mod,
                 facts: None,
@@ -2422,6 +2828,7 @@ impl ResolvedLayers {
                     std::sync::Arc::make_mut(&mut layer.files),
                     layer.coverage,
                     false,
+                    Arc::make_mut(&mut layer.inventory_paths),
                 )?;
             }
             layer.finish_inventory()?;
@@ -2456,6 +2863,9 @@ impl ResolvedLayers {
         };
         for (index, (root, replace_paths)) in folders.iter().enumerate() {
             let mut layer = ResolvedLayer {
+                content_digest: [0; 32],
+                inventory_witnesses: Default::default(),
+                inventory_paths: Default::default(),
                 coverage: layers.coverage,
                 role: LayerRole::Mod,
                 facts: None,
@@ -2560,6 +2970,14 @@ impl ResolvedLayers {
     /// makes each invalid byte `?`, which [`folder_file`] cannot open): a folder layer's
     /// index holds only its files' UTF-8 names.
     pub fn listed_layer_paths(&self, prefix: &[u8]) -> io::Result<BTreeSet<LayerPath>> {
+        self.product("covered file listing", 1, prefix, |reader| {
+            reader.watch_listing(prefix);
+            reader.listed_layer_paths_uncached(prefix)
+        })
+        .map(|paths| paths.as_ref().clone())
+    }
+
+    fn listed_layer_paths_uncached(&self, prefix: &[u8]) -> io::Result<BTreeSet<LayerPath>> {
         self.refuse_listing(prefix, &[])?;
         let prefix = prefix.to_ascii_lowercase();
         let mut listed = BTreeSet::new();
@@ -2619,27 +3037,57 @@ impl ResolvedLayers {
         prefix: &[u8],
         extensions: &[String],
     ) -> io::Result<Vec<ScriptPath>> {
+        let mut parameters = Vec::new();
+        for part in
+            std::iter::once(prefix).chain(extensions.iter().map(|extension| extension.as_bytes()))
+        {
+            parameters.extend_from_slice(&(part.len() as u64).to_le_bytes());
+            parameters.extend_from_slice(part);
+        }
+        self.product("descriptor file listing", 1, &parameters, |reader| {
+            reader.listed_with_suffixes_uncached(prefix, extensions)
+        })
+        .map(|paths| paths.as_ref().clone())
+    }
+
+    fn watch_listing(&self, prefix: &[u8]) {
+        for layer in &self.layers {
+            if let LayerSource::Folder(root) = &layer.source {
+                self.generation
+                    .witnesses
+                    .inherit_listing(root, prefix, &layer.inventory_witnesses);
+            }
+        }
+    }
+
+    fn listed_with_suffixes_uncached(
+        &self,
+        prefix: &[u8],
+        extensions: &[String],
+    ) -> io::Result<Vec<ScriptPath>> {
         let prefix = normalize_path(prefix)?.to_ascii_lowercase();
+        self.watch_listing(&prefix);
+        let _collection = generation::Collect::enter(Arc::clone(&self.generation.witnesses));
         let mut listings = Vec::with_capacity(self.layers.len());
-        for (index, layer) in self.layers.iter().enumerate() {
-            listings.push(listed_files(index, layer, &prefix, extensions)?);
+        for layer in &self.layers {
+            listings.push(listed_files(layer, &prefix, extensions)?);
         }
         // Folder lookup ignores case and retains the inventory's first spelling.
-        let folded: Vec<BTreeMap<LayerPath, &UncoveredHit>> = self
+        let folded: Vec<BTreeMap<LayerPath, &LayerPath>> = self
             .layers
             .iter()
             .zip(&listings)
             .map(|(layer, listing)| {
                 let mut folded = BTreeMap::new();
                 if !layer.exact_names() {
-                    for (path, hit) in listing {
-                        folded.entry(path.to_ascii_lowercase()).or_insert(hit);
+                    for path in listing {
+                        folded.entry(path.to_ascii_lowercase()).or_insert(path);
                     }
                 }
                 folded
             })
             .collect();
-        let answer = |name: &LayerPath| -> Option<(usize, &UncoveredHit)> {
+        let answer = |name: &LayerPath| -> Option<usize> {
             let lower = name.to_ascii_lowercase();
             for (index, layer) in self.layers.iter().enumerate().rev() {
                 if self.hides(layer, &lower) {
@@ -2650,8 +3098,8 @@ impl ResolvedLayers {
                 } else {
                     folded[index].get(&lower).copied()
                 };
-                if let Some(hit) = hit {
-                    return Some((index, hit));
+                if hit.is_some() {
+                    return Some(index);
                 }
                 if layer
                     .replace_paths
@@ -2665,9 +3113,9 @@ impl ResolvedLayers {
         };
         let mut seen = BTreeSet::new();
         let mut hidden: Vec<(LayerPath, bool)> = Vec::new();
-        let mut files: Vec<(usize, LayerPath, UncoveredHit)> = Vec::new();
+        let mut files: Vec<(usize, LayerPath)> = Vec::new();
         for (index, layer) in self.layers.iter().enumerate().rev() {
-            for path in listings[index].keys() {
+            for path in &listings[index] {
                 let lower = path.to_ascii_lowercase();
                 if self.hides(layer, &lower)
                     || hidden.iter().any(|(root, overlay)| {
@@ -2677,10 +3125,10 @@ impl ResolvedLayers {
                 {
                     continue;
                 }
-                let (answering, hit) = answer(path).ok_or_else(|| {
+                let answering = answer(path).ok_or_else(|| {
                     invalid(format!("listed file {} answers no lookup", display(path)))
                 })?;
-                files.push((answering, path.clone(), hit.clone()));
+                files.push((answering, path.clone()));
             }
             hidden.extend(
                 layer
@@ -2690,19 +3138,9 @@ impl ResolvedLayers {
             );
         }
         files.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        let mut memo = self
-            .uncovered_memo
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for (_, path, hit) in &files {
-            if !self.covered_path(path) {
-                memo.insert(roster.clone(), path.clone(), Some(hit.clone()));
-            }
-        }
         Ok(files
             .into_iter()
-            .map(|(_, path, _)| ScriptPath::new(path))
+            .map(|(_, path)| ScriptPath::new(path))
             .collect())
     }
 
@@ -2724,12 +3162,17 @@ impl ResolvedLayers {
 
     /// The engine's `gfx/models` texture index.
     pub fn texture_index(&self) -> io::Result<std::sync::Arc<crate::mesh::TextureIndex>> {
-        self.memoized(&self.texture_index, crate::mesh::TextureIndex::read)
+        self.retained_product(
+            "model texture index",
+            1,
+            &[],
+            crate::mesh::TextureIndex::read,
+        )
     }
 
     /// Every descriptor below `gfx`, as [`crate::mesh::Roster`] reads it.
     pub fn descriptor_roster(&self) -> io::Result<std::sync::Arc<crate::mesh::Roster>> {
-        self.memoized(&self.descriptor_roster, crate::mesh::Roster::read)
+        self.retained_product("model descriptor roster", 1, &[], crate::mesh::Roster::read)
     }
 
     /// The descriptor roster of the recorded stack below this stack's visual mods, built once
@@ -2740,145 +3183,39 @@ impl ResolvedLayers {
         let Some(recorded) = self.without_overlays() else {
             return Ok(None);
         };
-        self.memoized(&self.recorded_descriptor_roster, |_| {
-            crate::mesh::Roster::read(&recorded)
-        })
-        .map(Some)
+        recorded.descriptor_roster().map(Some)
     }
 
     /// The content names trigger bodies are read against
     /// ([`crate::key_names::KeyNames::read`]).
-    pub fn key_names(&self) -> io::Result<std::sync::Arc<crate::key_names::KeyNames>> {
-        let Some(trace) = &self.read_trace else {
-            return self.memoized(&self.key_names, crate::key_names::KeyNames::read);
-        };
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        let mut own = self
-            .key_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached, names, diagnostics)) = own.as_ref()
-            && *cached == roster
-        {
-            diagnostics.credit();
-            return Ok(std::sync::Arc::clone(names));
-        }
-        // Every traced reader of the stack shares one read of the names; each traces its reads
-        // under its own purpose, as reading them again would.
-        let mut shared = self
-            .traced_key_names
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let (names, diagnostics) = match shared.as_ref().filter(|held| held.roster == roster) {
-            Some(held) => {
-                for (path, layer, outcome) in &held.reads {
-                    self.trace_read(path, *layer, outcome.clone());
-                }
-                held.diagnostics.credit();
-                (std::sync::Arc::clone(&held.names), held.diagnostics.clone())
-            }
-            None => {
-                let reads = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-                let kept = std::sync::Arc::clone(&reads);
-                let callback = trace.callback.clone();
-                let mut reader =
-                    self.with_read_trace(std::sync::Arc::new(move |read: ContentRead| {
-                        kept.lock()
-                            .unwrap_or_else(|poisoned| poisoned.into_inner())
-                            .push((read.path.clone(), read.layer, read.outcome.clone()));
-                        callback(read);
-                    }));
-                reader.read_trace.as_mut().expect("traced clone").purpose = trace.purpose.clone();
-                let (names, diagnostics) =
-                    diagnostics::capture(|| crate::key_names::KeyNames::read(&reader));
-                diagnostics.credit();
-                let names = std::sync::Arc::new(names?);
-                drop(reader);
-                let reads = std::mem::take(
-                    &mut *reads
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
-                );
-                // A read that met a failure stays this reader's: a later one may read it whole.
-                let failed = names.template_columns.as_ref().is_some_and(Result::is_err)
-                    || reads
-                        .iter()
-                        .any(|(_, _, outcome)| matches!(outcome, ReadOutcome::Error { .. }));
-                if !failed {
-                    *shared = Some(TracedKeyNames {
-                        roster: roster.clone(),
-                        names: std::sync::Arc::clone(&names),
-                        reads,
-                        diagnostics: diagnostics.clone(),
-                    });
-                }
-                (names, diagnostics)
-            }
-        };
-        *own = Some((roster, std::sync::Arc::clone(&names), diagnostics));
-        Ok(names)
+    pub fn key_names(&self) -> io::Result<Arc<crate::key_names::KeyNames>> {
+        self.retained_recorded_product("key names", 1, &[], crate::key_names::KeyNames::read)
     }
 
     /// Faction templates read once per layer roster, including an unreadable result.
-    pub fn faction_templates(
-        &self,
-    ) -> Result<std::sync::Arc<crate::faction_templates::Catalog>, String> {
-        self.memoized(&self.faction_templates, |layers| {
-            Ok(crate::faction_templates::read(layers)
-                .map(std::sync::Arc::new)
-                .map_err(|error| format!("Faction templates are unreadable: {error}")))
-        })
-        .expect("the template read result is cached even when reading fails")
-        .as_ref()
-        .clone()
+    pub fn faction_templates(&self) -> Result<Arc<crate::faction_templates::Catalog>, String> {
+        self.retained_product_with_errors("faction templates", 1, &[], true, crate::faction_templates::read)
+            .map_err(|error| format!("Faction templates are unreadable: {error}"))
     }
 
-    /// Whether these layers' faction templates have been read, so their diagnostics are reported
-    /// ([`Self::faction_template_diagnostics`]).
     pub fn faction_templates_read(&self) -> bool {
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        self.faction_templates
+        self.faction_templates_product().is_some()
+    }
+
+    pub fn faction_template_diagnostics(&self) -> Vec<String> {
+        self.faction_templates_product()
+            .and_then(|product| product.value::<crate::faction_templates::Catalog>().ok())
+            .map_or_else(Vec::new, |templates| templates.warnings.clone())
+    }
+
+    fn faction_templates_product(&self) -> Option<Arc<graph::Product>> {
+        self.derived::<RetainedProducts>()
+            .values
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .as_ref()
-            .is_some_and(|(cached, _, _)| *cached == roster)
-    }
-
-    /// Diagnostics from an already-used template reader; this never loads content.
-    pub fn faction_template_diagnostics(&self) -> Vec<String> {
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        let memo = self
-            .faction_templates
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        match memo.as_ref() {
-            Some((cached, result, _)) if *cached == roster => result
-                .as_ref()
-                .as_ref()
-                .map(|templates| templates.warnings.clone())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        }
-    }
-
-    fn memoized<T>(
-        &self,
-        memo: &Memo<T>,
-        build: impl FnOnce(&Self) -> io::Result<T>,
-    ) -> io::Result<std::sync::Arc<T>> {
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        let mut memo = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((cached, value, diagnostics)) = memo.as_ref()
-            && *cached == roster
-        {
-            diagnostics.credit();
-            return Ok(std::sync::Arc::clone(value));
-        }
-        let (value, diagnostics) = diagnostics::capture(|| build(self));
-        diagnostics.credit();
-        let value = std::sync::Arc::new(value?);
-        *memo = Some((roster, std::sync::Arc::clone(&value), diagnostics));
-        Ok(value)
+            .get(&("faction templates", 1, Vec::new()))?
+            .lock().unwrap_or_else(|error| error.into_inner())
+            .clone()
     }
 
     /// Whether a read of `relative` opens a file the store key stamps
@@ -2930,60 +3267,15 @@ impl ResolvedLayers {
         let Some(relative) = sanitize(relative.as_bytes()) else {
             return Ok(false);
         };
-        if self.covered_path(&relative) {
-            let hit = self.lookup_path(&relative)?;
-            observed.layer = hit.as_ref().map(|hit| hit.layer);
-            if let Some(hit) = &hit
-                && hit.folder.is_none()
-                && hit.fact.is_none()
-                && self.layers[hit.layer].reaches_link(&hit.path)
-            {
-                return Err(unfollowed_link(&relative).into());
-            }
-            return Ok(hit.is_some());
+        let hit = self.resolved_file(&relative, !self.covered_path(&relative))?;
+        observed.layer = hit.as_ref().as_ref().map(|hit| hit.layer);
+        if let Some(hit) = hit.as_ref()
+            && hit.fact.is_none()
+            && self.layers[hit.layer].reaches_link(&hit.path)
+        {
+            return Err(unfollowed_link(&relative).into());
         }
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        let memo = self
-            .uncovered_memo
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&roster, &relative);
-        if let Some(hit) = memo {
-            let answered = hit.as_ref().map(|hit| match hit {
-                UncoveredHit::Folder(i, _) | UncoveredHit::Archive(i) => *i,
-            });
-            self.verify_passed(&relative, answered, observed)?;
-            match hit {
-                None => {
-                    observed.layer = None;
-                    return Ok(false);
-                }
-                Some(UncoveredHit::Folder(index, path)) => {
-                    if self.layers[index].folder_lookup(&path)?.is_some() {
-                        observed.layer = Some(index);
-                        return Ok(true);
-                    }
-                }
-                Some(UncoveredHit::Archive(index)) => {
-                    let present = self.layers[index].archive_exists(&relative)?;
-                    observed.layer = present.then_some(index);
-                    return Ok(present);
-                }
-            }
-        }
-        let found = self.scan_uncovered_with(&relative, false, observed)?;
-        observed.layer = found.as_ref().map(|(_, hit, _)| match hit {
-            UncoveredHit::Folder(index, _) | UncoveredHit::Archive(index) => *index,
-        });
-        self.uncovered_memo
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
-                roster,
-                relative,
-                found.as_ref().map(|(_, hit, _)| hit.clone()),
-            );
-        Ok(found.is_some())
+        Ok(hit.is_some())
     }
 
     /// Load-order position of the layer an effective covered path comes from.
@@ -2993,155 +3285,273 @@ impl ResolvedLayers {
             .map(|file| file.layer)
     }
 
-    /// [`Self::read_path`] of a text path.
-    pub fn read(&self, relative: &str) -> io::Result<Vec<u8>> {
+    pub fn read(&self, relative: &str) -> io::Result<Bytes> {
         self.read_path(relative.as_bytes())
     }
 
-    /// Retain only a prefix while verifying the complete covered payload. Folder
-    /// assets stream through a fixed buffer; archive assets share their
-    /// normal reader. The returned length is the verified payload's full length.
-    pub fn read_prefix(&self, relative: &str, limit: usize) -> io::Result<(Vec<u8>, u64)> {
-        let mut observed = self.observation();
-        let result = self.read_prefix_observed(relative, limit, &mut observed);
-        self.finish_read(relative.as_bytes(), observed, result)
+    pub fn read_prefix(&self, relative: &str, limit: usize) -> io::Result<(Bytes, u64)> {
+        let bytes = self.read_path(relative.as_bytes())?;
+        Ok((bytes.prefix(limit), bytes.len() as u64))
     }
 
-    fn read_prefix_observed(
-        &self,
-        relative: &str,
-        limit: usize,
-        observed: &mut ReadObservation,
-    ) -> ObservedResult<ReadSuccess<(Vec<u8>, u64)>> {
-        let path = sanitize(relative.as_bytes()).ok_or_else(|| not_found(relative.as_bytes()))?;
-        if self.covered_path(&path)
-            && let Some(mut hit) = self.lookup_path(&path)?
-            && let Some(mut file) = hit.folder.take()
-        {
-            self.verify_passed(&path, Some(hit.layer), observed)?;
-            observed.at(hit.layer);
-            let mut digest = Sha256::new();
-            let mut prefix = Vec::new();
-            let mut length = 0;
-            let mut buffer = [0; 64 * 1024];
-            loop {
-                let count = match file.read(&mut buffer) {
-                    Ok(count) => count,
-                    Err(error) => {
-                        return Err(ReadFailure {
-                            error,
-                            payload: observed.enabled.then(|| ReadPayload {
-                                length,
-                                digest: digest.finalize().into(),
-                            }),
-                        });
-                    }
-                };
-                if count == 0 {
-                    break;
-                }
-                digest.update(&buffer[..count]);
-                length += count as u64;
-                let kept = count.min(limit.saturating_sub(prefix.len()));
-                prefix.extend_from_slice(&buffer[..kept]);
-            }
-            let digest: [u8; 32] = digest.finalize().into();
-            let result = observed
-                .hashed((prefix, length), length, digest)
-                .verified(self.layers[hit.layer].verify(&hit.path, &digest))?;
-            self.note_overlay(hit.layer, &hit.path);
-            return Ok(result);
-        }
-        self.read_path_untraced(relative.as_bytes(), observed)
-            .map(|bytes| {
-                bytes.map(|mut bytes| {
-                    let length = bytes.len() as u64;
-                    bytes.truncate(limit);
-                    (bytes, length)
-                })
-            })
+    pub fn read_path(&self, relative: &[u8]) -> io::Result<Bytes> {
+        self.shared_read(relative, false)
     }
 
-    /// A file by its path's bytes, sanitized and resolved by [`Self::lookup_path`].
-    /// Covered bytes are verified. Uncovered reads require a reporting consumer
-    /// to retain the shared diagnostics from [`Self::report_uncovered_reads`].
-    pub fn read_path(&self, relative: &[u8]) -> io::Result<Vec<u8>> {
-        let mut observed = self.observation();
-        let result = self.read_path_untraced(relative, &mut observed);
-        self.finish_read(relative, observed, result)
+    pub fn read_paths<P: AsRef<[u8]> + Sync>(&self, paths: &[P]) -> Vec<io::Result<Bytes>> {
+        crate::parallel::map(paths, |path| self.read_path(path.as_ref()))
     }
 
-    fn read_path_untraced(
+    fn resolved_file(
         &self,
         relative: &[u8],
-        observed: &mut ReadObservation,
-    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
-        let Some(relative) = sanitize(relative) else {
-            return Err(not_found(relative).into());
-        };
-        match self.lookup_path(&relative)? {
-            Some(file) => {
-                observed.layer = Some(file.layer);
-                self.verify_passed(&relative, Some(file.layer), observed)?;
-                observed.at(file.layer);
-                let layer = &self.layers[file.layer];
-                let path = layer.record_name(&file.path);
-                // A visual mod's bytes are reported as its own, never as recorded content.
-                let uncovered = !self.covered_path(path) && layer.overlay.is_none();
-                if uncovered
-                    && self
-                        .uncovered_reads
-                        .lock()
-                        .unwrap_or_else(|error| error.into_inner())
-                        .is_none()
-                {
-                    return Err(invalid(format!(
-                        "content file is outside recorded coverage policy {} and this reader does not report uncovered reads: {}",
-                        self.coverage.0,
-                        display(path)
-                    )).into());
-                }
-                let bytes = match (file.fact, file.folder) {
-                    (Some(fact), _) => layer
-                        .facts
-                        .as_ref()
-                        .expect("a fact hit is a played-back layer's")
-                        .pack
-                        .read(fact)
-                        .map(|bytes| observed.bytes((), &bytes).map(|()| bytes))
-                        .map_err(ReadFailure::from),
-                    (None, Some(handle)) => layer.folder_read(&file.path, handle, observed),
-                    (None, None) => layer
-                        .archive_open_observed(&file.path, observed)?
-                        .ok_or_else(|| ReadFailure::from(changed(&relative))),
-                }?;
-                self.note_overlay(file.layer, path);
-                if uncovered
-                    && let Some(paths) = self
-                        .uncovered_reads
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner())
-                        .as_mut()
-                {
-                    paths.insert(path.to_vec());
-                    diagnostics::Diagnostics::uncovered(self.coverage.0, path);
-                }
-                return Ok(bytes);
-            }
-            None => {
-                self.verify_passed(&relative, None, observed)?;
-                observed.layer = None;
-            }
-        }
-        Err(not_found(&relative).into())
+        uncovered: bool,
+    ) -> io::Result<Arc<Option<ResolvedFile>>> {
+        let path = sanitize(relative).ok_or_else(|| not_found(relative))?;
+        let mut parameters = vec![u8::from(uncovered)];
+        parameters.extend_from_slice(&path);
+        self.product("effective file resolution", 1, &parameters, |reader| {
+            let mut observed = reader.observation();
+            let hit = if uncovered && !reader.covered_path(&path) {
+                reader
+                    .scan_uncovered(&path, &mut observed)
+                    .map_err(|failure| failure.error)?
+            } else {
+                reader.lookup_path(&path)?
+            };
+            reader
+                .verify_passed(&path, hit.as_ref().map(|hit| hit.layer), &mut observed)
+                .map_err(|failure| failure.error)?;
+            Ok(hit.map(ResolvedFile::from))
+        })
     }
 
-    /// Every path read as [`Self::read_path`] reads it, each result in its path's place. The
-    /// reads are independent (each resolves, verifies and reports as it would alone), so they
-    /// run on the machine's threads: a stack's every lookup probes each layer above the one
-    /// that answers, and a bulk reader spends its time in those probes.
-    pub fn read_paths<P: AsRef<[u8]> + Sync>(&self, paths: &[P]) -> Vec<io::Result<Vec<u8>>> {
-        crate::parallel::map(paths, |path| self.read_path(path.as_ref()))
+    fn shared_read(&self, relative: &[u8], explicit_uncovered: bool) -> io::Result<Bytes> {
+        self.shared_read_in(relative, explicit_uncovered, None)
+    }
+
+    fn shared_read_in(
+        &self,
+        relative: &[u8],
+        explicit_uncovered: bool,
+        file: Option<&ResolvedFile>,
+    ) -> io::Result<Bytes> {
+        let path = sanitize(relative).ok_or_else(|| not_found(relative))?;
+        let mut observed = self.observation();
+        let result = (|| -> ObservedResult<ReadSuccess<Bytes>> {
+            let resolved;
+            let file = match file {
+                Some(file) => file,
+                None => {
+                    resolved = self.resolved_file(&path, explicit_uncovered)?;
+                    let Some(file) = resolved.as_ref() else {
+                        return Err(not_found(&path).into());
+                    };
+                    file
+                }
+            };
+            observed.at(file.layer);
+            let layer = &self.layers[file.layer];
+            let real = layer.record_name(&file.path);
+            let uncovered = !self.covered_path(real) && layer.overlay.is_none();
+            if uncovered
+                && !explicit_uncovered
+                && self
+                    .uncovered_reads
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .is_none()
+            {
+                return Err(invalid(format!(
+                    "content file is outside recorded coverage policy {} and this reader does not report uncovered reads: {}",
+                    self.coverage.0, display(real),
+                )).into());
+            }
+            let key = graph::Key {
+                context: self.layer_context(file.layer),
+                parser: "resolved bytes",
+                schema: 1,
+                parameters: file.path.clone(),
+            };
+            let parent = self
+                .read_trace
+                .as_ref()
+                .and_then(|trace| trace.product.as_ref());
+            let (product, _) = self.generation.product(key, parent, |node| {
+                let ((result, reads), diagnostics) = diagnostics::capture(|| {
+                    let raw = self.load_resolved(
+                        file,
+                        node,
+                        &mut ReadObservation {
+                            enabled: true,
+                            layer: Some(file.layer),
+                        },
+                    );
+                    let (result, outcome) = match raw {
+                        Ok(ReadSuccess::Traced { value, payload }) => {
+                            let outcome = ReadOutcome::Bytes {
+                                length: payload.length,
+                                digest: payload.digest,
+                            };
+                            (Ok(value), outcome)
+                        }
+                        Ok(ReadSuccess::Untraced(value)) => {
+                            let bytes = value;
+                            let outcome = ReadOutcome::Bytes {
+                                length: bytes.len() as u64,
+                                digest: bytes.digest(),
+                            };
+                            (Ok(bytes), outcome)
+                        }
+                        Err(failure) => {
+                            let outcome = failure.outcome();
+                            (Err(failure.error), outcome)
+                        }
+                    };
+                    (
+                        result,
+                        vec![ContentRead {
+                            path: real.to_vec(),
+                            purpose: String::new(),
+                            layer: None,
+                            outcome,
+                        }],
+                    )
+                });
+                (result, reads, diagnostics)
+            })?;
+            // A second resolving stack does not retain a redundant open handle.
+            file.folder
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .take();
+            product.diagnostics.credit();
+            let bytes = product.value::<Bytes>().map_err(|error| ReadFailure {
+                error,
+                payload: product.reads.first().and_then(|read| match &read.outcome {
+                    ReadOutcome::Error { payload, .. } => payload.clone(),
+                    _ => None,
+                }),
+            })?;
+            if file.fact.is_none() && self.covered_path(real) {
+                layer.verify(real, &bytes.digest())?;
+            }
+            self.note_overlay(file.layer, real);
+            if uncovered
+                || (explicit_uncovered && !self.covered_path(&path) && layer.overlay.is_none())
+            {
+                diagnostics::Diagnostics::uncovered(self.coverage.0, &path);
+                if let Some(paths) = self
+                    .uncovered_reads
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .as_mut()
+                {
+                    paths.insert(path.clone());
+                }
+            }
+            Ok(ReadSuccess::Traced {
+                value: bytes.as_ref().clone().with_origin(
+                    product.request(),
+                    Arc::clone(&self.generation) as Arc<dyn std::any::Any + Send + Sync>,
+                ),
+                payload: ReadPayload {
+                    length: bytes.len() as u64,
+                    digest: bytes.digest(),
+                },
+            })
+        })();
+        if explicit_uncovered {
+            self.note_uncovered_attempt(&path, observed.layer);
+        }
+        self.finish_read(&path, observed, result)
+    }
+
+    fn note_uncovered_attempt(&self, path: &[u8], layer: Option<usize>) {
+        if !self.covered_path(path) && layer.is_none_or(|index| self.layers[index].overlay.is_none()) {
+            diagnostics::Diagnostics::uncovered(self.coverage.0, path);
+            if let Some(paths) = self.uncovered_reads.lock().unwrap_or_else(|error| error.into_inner()).as_mut() {
+                paths.insert(path.to_vec());
+            }
+        }
+    }
+
+    fn load_resolved(
+        &self,
+        file: &ResolvedFile,
+        node: &Arc<graph::Node>,
+        observed: &mut ReadObservation,
+    ) -> ObservedResult<ReadSuccess<Bytes>> {
+        let layer = &self.layers[file.layer];
+        if let Some(fact) = file.fact {
+            #[cfg(test)]
+            tests::LOADS.with(|loads| loads.set(loads.get() + 1));
+            let (bytes, payload) = layer
+                .facts
+                .as_ref()
+                .expect("a fact hit is a played-back layer's")
+                .pack
+                .read_payload(fact)?;
+            io_counts::layer_digest(layer, &file.path, payload.digest, payload.length);
+            return Ok(observed.hashed(
+                Bytes::verified(bytes, payload.digest),
+                payload.length,
+                payload.digest,
+            ));
+        }
+        match &layer.source {
+            LayerSource::Folder(root) => {
+                let handle = file
+                    .folder
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .take();
+                let handle = match handle {
+                    Some(handle) => {
+                        self.witness_file(layer, &file.path, &handle)?;
+                        handle
+                    }
+                    None => {
+                        let Some((real, handle)) = layer.folder_lookup(&file.path)? else {
+                            return Err(changed(&file.path).into());
+                        };
+                        self.witness_file(layer, &real, &handle)?;
+                        handle
+                    }
+                };
+                let bytes = generation::source(
+                    &self.generation,
+                    &root.join(folder_text(&file.path)?),
+                    Some(handle),
+                    Some(node),
+                )?;
+                if self.covered_path(&file.path) {
+                    layer.verify(&file.path, &bytes.digest())?;
+                }
+                Ok(observed.hashed(bytes.clone(), bytes.len() as u64, bytes.digest()))
+            }
+            LayerSource::Archive(path) => {
+                let archive = File::open(path)?;
+                self.generation.witnesses.file(path, &archive)?;
+                layer
+                    .archive_open_observed(&file.path, observed)?
+                    .map(|bytes| bytes.map(Bytes::from))
+                    .ok_or_else(|| changed(&file.path).into())
+            }
+        }
+    }
+
+    fn witness_file(&self, layer: &ResolvedLayer, path: &[u8], file: &File) -> io::Result<()> {
+        if let LayerSource::Folder(root) = &layer.source {
+            let relative = std::str::from_utf8(path)
+                .map_err(|_| invalid("folder content path is not UTF-8"))?;
+            self.generation.witnesses.file(&root.join(relative), file)?;
+        }
+        Ok(())
+    }
+
+    fn layer_context(&self, index: usize) -> [u8; 32] {
+        self.layers[index].content_digest
     }
 
     /// Opt into ordinary uncovered reads and retain this handle at the reporting
@@ -3303,16 +3713,10 @@ impl ResolvedLayers {
         let Some(relative) = sanitize(relative.as_ref()) else {
             return false;
         };
-        let layer = if self.covered_path(&relative) {
-            self.lookup_path(&relative)
-                .ok()
-                .flatten()
-                .map(|hit| hit.layer)
-        } else {
-            self.uncovered_answer(&relative, &mut ReadObservation::default())
-                .ok()
-                .map(|(_, layer)| layer)
-        };
+        let layer = self
+            .resolved_file(&relative, !self.covered_path(&relative))
+            .ok()
+            .and_then(|hit| hit.as_ref().as_ref().map(|hit| hit.layer));
         layer.is_some_and(|layer| self.layers[layer].overlay.is_some())
     }
 
@@ -3334,8 +3738,27 @@ impl ResolvedLayers {
     /// are its own: a presentation [`visual::apply`] mounts on it reports apart from the stack it
     /// came from and from any other presentation of it.
     pub fn with_own_overlay_diagnostics(&self) -> ResolvedLayers {
-        ResolvedLayers {
-            overlay_reads: OverlayReads::default(),
+        let enabled = self.uncovered_reads.lock().unwrap_or_else(|error| error.into_inner()).is_some();
+        self.with_reporting(
+            OverlayReads::default(),
+            Arc::new(std::sync::Mutex::new(enabled.then(BTreeSet::new))),
+        )
+    }
+
+    fn with_reporting(
+        &self,
+        overlays: OverlayReads,
+        paths: Arc<std::sync::Mutex<Option<BTreeSet<LayerPath>>>>,
+    ) -> Self {
+        Self {
+            overlay_reads: Arc::clone(&overlays),
+            uncovered_reads: Arc::clone(&paths),
+            presentation: self.presentation.as_ref().map(|layers| {
+                Arc::new(layers.with_reporting(Arc::clone(&overlays), Arc::clone(&paths)))
+            }),
+            presentation_defines: self.presentation_defines.as_ref().map(|layers| {
+                Arc::new(layers.with_reporting(Arc::clone(&overlays), Arc::clone(&paths)))
+            }),
             ..self.clone()
         }
     }
@@ -3371,30 +3794,48 @@ impl ResolvedLayers {
     /// stack's fallback reports its reads to the same trace and purpose, each at the layer's
     /// index in this stack.
     pub fn without_overlays(&self) -> Option<ResolvedLayers> {
+        self.project_recorded().ok().flatten()
+    }
+
+    fn project_recorded(&self) -> io::Result<Option<ResolvedLayers>> {
         if self.layers.iter().all(|layer| layer.overlay.is_none()) {
-            return None;
+            return Ok(None);
         }
-        let kept: Vec<usize> = self
+        let projection = self.recorded_projection.get_or_init(|| {
+            let mut recorded = ResolvedLayers {
+                generation: Arc::clone(&self.generation),
+                coverage: self.coverage,
+                layers: self
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.overlay.is_none())
+                    .cloned()
+                    .collect(),
+                above_mods: self.above_mods,
+                overlay_reads: self.overlay_reads.clone(),
+                uncovered_reads: self.uncovered_reads.clone(),
+                ..ResolvedLayers::default()
+            };
+            recorded
+                .finish()
+                .map(|()| Arc::new(recorded))
+                .map_err(Arc::new)
+        });
+        let mut recorded = projection
+            .as_ref()
+            .map_err(|error| io::Error::new(error.kind(), Arc::clone(error)))?
+            .as_ref()
+            .clone();
+        let kept = self
             .layers
             .iter()
             .enumerate()
-            .filter(|(_, layer)| layer.overlay.is_none())
-            .map(|(index, _)| index)
+            .filter_map(|(index, layer)| layer.overlay.is_none().then_some(index))
             .collect();
-        let mut recorded = ResolvedLayers {
-            coverage: self.coverage,
-            layers: kept
-                .iter()
-                .map(|&index| self.layers[index].clone())
-                .collect(),
-            read_trace: self.read_trace.as_ref().map(|trace| trace.for_layers(kept)),
-            above_mods: self.above_mods,
-            overlay_reads: self.overlay_reads.clone(),
-            uncovered_reads: self.uncovered_reads.clone(),
-            ..ResolvedLayers::default()
-        };
-        recorded.finish().ok()?;
-        Some(recorded)
+        recorded.overlay_reads = Arc::clone(&self.overlay_reads);
+        recorded.uncovered_reads = Arc::clone(&self.uncovered_reads);
+        recorded.read_trace = self.read_trace.as_ref().map(|trace| trace.for_layers(kept));
+        Ok(Some(recorded))
     }
 
     /// Whether a visual mod's file at `lower` (an ASCII-lowercase path) is part of the
@@ -3457,6 +3898,7 @@ impl ResolvedLayers {
     /// [`Self::presentation_defines`]; its memos and derived caches are its own.
     fn with_defines(&self) -> io::Result<ResolvedLayers> {
         let mut stack = ResolvedLayers {
+            generation: Arc::clone(&self.generation),
             coverage: self.coverage,
             layers: self.layers.clone(),
             above_mods: self.above_mods,
@@ -3474,6 +3916,7 @@ impl ResolvedLayers {
         let at = layers.len().saturating_sub(self.above_mods);
         layers.splice(at..at, overlays);
         let mut presentation = ResolvedLayers {
+            generation: Arc::clone(&self.generation),
             coverage: self.coverage,
             layers,
             above_mods: self.above_mods,
@@ -3525,6 +3968,7 @@ impl ResolvedLayers {
             }
             let hit = match &layer.source {
                 LayerSource::Folder(_) => {
+                    self.watch_directory(layer, relative)?;
                     layer
                         .folder_lookup(relative)?
                         .map(|(path, handle)| RecordedHit {
@@ -3568,157 +4012,48 @@ impl ResolvedLayers {
     /// must state that limitation. A covered path is passed straight to
     /// [`ResolvedLayers::read`], which does verify it. A folder alias whose real
     /// path is covered is verified too, on every read including memoized hits.
-    pub fn read_uncovered(&self, relative: &str) -> io::Result<Vec<u8>> {
+    pub fn read_uncovered(&self, relative: &str) -> io::Result<Bytes> {
         self.read_uncovered_path(relative.as_bytes())
     }
 
-    /// [`Self::read_uncovered`] by a path's bytes, looked up as [`Self::read_path`] looks up.
-    pub fn read_uncovered_path(&self, relative: &[u8]) -> io::Result<Vec<u8>> {
-        let mut observed = self.observation();
-        let result = self.read_uncovered_observed(relative, &mut observed);
-        self.finish_read(relative, observed, result)
+    pub fn read_uncovered_path(&self, relative: &[u8]) -> io::Result<Bytes> {
+        self.shared_read(relative, true)
     }
 
-    fn read_uncovered_observed(
-        &self,
-        relative: &[u8],
-        observed: &mut ReadObservation,
-    ) -> ObservedResult<ReadSuccess<Vec<u8>>> {
-        let Some(relative) = sanitize(relative) else {
-            return Err(not_found(relative).into());
-        };
-        if self.covered_path(&relative) {
-            return self.read_path_untraced(&relative, observed);
-        }
-        // A file a visual mod answered is counted as that mod's; every other attempt, missing
-        // or failed included, is an uncovered recorded read.
-        let answer = self.uncovered_answer(&relative, observed);
-        match &answer {
-            Ok((_, layer)) if self.layers[*layer].overlay.is_some() => {
-                self.note_overlay(*layer, &relative)
-            }
-            _ => {
-                diagnostics::Diagnostics::uncovered(self.coverage.0, &relative);
-                if let Some(paths) = self
-                    .uncovered_reads
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .as_mut()
-                {
-                    paths.insert(relative.clone());
-                }
-            }
-        }
-        answer.map(|(bytes, _)| bytes)
-    }
-
-    /// [`Self::read_uncovered_path`]'s lookup of an uncovered path: its bytes and the layer that
-    /// answered.
-    fn uncovered_answer(
-        &self,
-        relative: &[u8],
-        observed: &mut ReadObservation,
-    ) -> ObservedResult<(ReadSuccess<Vec<u8>>, usize)> {
-        let relative = relative.to_vec();
-        let roster: Vec<String> = self.layers.iter().map(|layer| layer.id.clone()).collect();
-        if let Some(memo) = self
-            .uncovered_memo
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .get(&roster, &relative)
-        {
-            // Every memoized answer passes the verification the scan applies to the layers it
-            // passes; a stale hit falls back to a fresh scan below, which refreshes the memo.
-            match memo {
-                Some(hit) => {
-                    let (UncoveredHit::Folder(layer, _) | UncoveredHit::Archive(layer)) = hit;
-                    self.verify_passed(&relative, Some(layer), observed)?;
-                    if let Some(bytes) = self.read_hit(&hit, &relative, observed)? {
-                        return Ok((bytes, layer));
-                    }
-                }
-                None => {
-                    self.verify_passed(&relative, None, observed)?;
-                    observed.layer = None;
-                    return Err(not_found(&relative).into());
-                }
-            }
-        }
-        let found = self.scan_uncovered(&relative, observed)?;
-        self.uncovered_memo
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(
-                roster,
-                relative.clone(),
-                found.as_ref().map(|(_, hit, _)| hit.clone()),
-            );
-        match found {
-            Some((layer, _, bytes)) => Ok((bytes, layer)),
-            None => {
-                observed.layer = None;
-                Err(not_found(&relative).into())
-            }
-        }
-    }
-
-    /// The layer scan behind [`ResolvedLayers::read_uncovered`], returning the
-    /// hit alongside its bytes: folders use their Windows open and real-path verification,
-    /// archive lookup is exact (or a `$` password, [`physfs_zip::Mounted::lookup`]), a layer
-    /// whose open fails is passed as [`Self::read_path`] passes it, hard errors abort, and
-    /// `replace_path` stops the scan.
     fn scan_uncovered(
         &self,
         relative: &[u8],
         observed: &mut ReadObservation,
-    ) -> ObservedResult<Option<(usize, UncoveredHit, ReadSuccess<Vec<u8>>)>> {
-        self.scan_uncovered_with(relative, true, observed)
-    }
-
-    fn scan_uncovered_with(
-        &self,
-        relative: &[u8],
-        load: bool,
-        observed: &mut ReadObservation,
-    ) -> ObservedResult<Option<(usize, UncoveredHit, ReadSuccess<Vec<u8>>)>> {
+    ) -> ObservedResult<Option<RecordedHit>> {
         let lower = relative.to_ascii_lowercase();
         for (index, layer) in self.layers.iter().enumerate().rev() {
             if self.hides(layer, &lower) {
                 continue;
             }
             match &layer.source {
-                // A path that is not UTF-8 opens no folder file (see `read_path`).
                 LayerSource::Folder(_) => {
-                    if let Some((real, handle)) = layer.folder_lookup(relative)? {
-                        let bytes = if load {
-                            observed.at(index);
-                            layer.folder_read(&real, handle, observed)?
-                        } else {
-                            ReadSuccess::Untraced(Vec::new())
-                        };
-                        return Ok(Some((index, UncoveredHit::Folder(index, real), bytes)));
+                    self.watch_directory(layer, relative)?;
+                    if let Some((path, file)) = layer.folder_lookup(relative)? {
+                        return Ok(Some(RecordedHit {
+                            layer: index,
+                            path,
+                            folder: Some(file),
+                            fact: None,
+                        }));
                     }
                 }
-                // ZIP lookup is exact, by the record's name (or up to a `$`), through the
-                // layer's one verified lookup, as it is for covered paths.
-                LayerSource::Archive(_) => {
-                    let opened = if load {
-                        observed.at(index);
-                        layer.archive_open_observed(relative, observed)?
-                    } else {
-                        layer
-                            .archive_exists(relative)?
-                            .then(|| ReadSuccess::Untraced(Vec::new()))
-                    };
-                    if let Some(bytes) = opened {
-                        return Ok(Some((index, UncoveredHit::Archive(index), bytes)));
-                    }
+                LayerSource::Archive(_) if layer.archive_exists(relative)? => {
+                    return Ok(Some(RecordedHit {
+                        layer: index,
+                        path: relative.to_vec(),
+                        folder: None,
+                        fact: None,
+                    }));
                 }
+                LayerSource::Archive(_) => {}
             }
-            if !load {
-                observed.at(index);
-                layer.verify_miss(relative, observed)?;
-            }
+            observed.at(index);
+            layer.verify_miss(relative, observed)?;
             if layer
                 .replace_paths
                 .iter()
@@ -3733,50 +4068,13 @@ impl ResolvedLayers {
     /// Whether an uncovered path resolves from the base game layer, with no
     /// DLC, mod, `replace_path` or visual mod in its place.
     pub fn uncovered_from_base(&self, relative: &str) -> io::Result<bool> {
-        let Some(relative) = sanitize(relative.as_bytes()) else {
-            return Ok(false);
-        };
-        Ok(matches!(
-            self.scan_uncovered(&relative, &mut ReadObservation::default())
-                .map_err(|failure| failure.error)?,
-            Some((0, _, _))
-        ))
+        Ok(self
+            .resolved_file(relative.as_bytes(), true)?
+            .as_ref()
+            .as_ref()
+            .is_some_and(|file| file.layer == 0))
     }
 
-    /// Reads a memoized hit of `relative`: a folder file by its real spelling (verified if covered),
-    /// an archive layer through its one verified lookup ([`ResolvedLayer::archive_open_observed`]).
-    /// `Ok(None)` means the hit is stale and the caller rescans; `Err` is a hard error, which
-    /// aborts exactly like the scan.
-    fn read_hit(
-        &self,
-        hit: &UncoveredHit,
-        relative: &[u8],
-        observed: &mut ReadObservation,
-    ) -> ObservedResult<Option<ReadSuccess<Vec<u8>>>> {
-        match hit {
-            UncoveredHit::Folder(index, path) => match self.layers.get(*index) {
-                Some(layer) if matches!(layer.source, LayerSource::Folder(_)) => {
-                    observed.at(*index);
-                    Ok(layer.folder_open(path, observed)?.map(|(_, bytes)| bytes))
-                }
-                _ => Ok(None),
-            },
-            UncoveredHit::Archive(index) => match self.layers.get(*index) {
-                Some(layer) if matches!(layer.source, LayerSource::Archive(_)) => {
-                    observed.at(*index);
-                    layer.archive_open_observed(relative, observed)
-                }
-                // The layer at this index is no longer an archive: stale.
-                _ => Ok(None),
-            },
-        }
-    }
-
-    /// Verifies, as the scan finds them answering nothing, the layers a lookup of `relative`
-    /// passes before the one that `answered` it (every layer the scan reaches, down to a
-    /// `replace_path`, for a miss): the check every memoized answer goes through, so it
-    /// never skips a layer the scan would verify
-    /// ([`ResolvedLayer::verify_miss`]).
     fn verify_passed(
         &self,
         relative: &[u8],
@@ -3802,22 +4100,6 @@ impl ResolvedLayers {
             }
         }
         Ok(())
-    }
-}
-
-impl UncoveredMemo {
-    fn get(&self, roster: &[String], relative: &[u8]) -> Option<Option<UncoveredHit>> {
-        (self.layers == roster)
-            .then(|| self.hits.get(relative).cloned())
-            .flatten()
-    }
-
-    fn insert(&mut self, roster: Vec<String>, relative: LayerPath, hit: Option<UncoveredHit>) {
-        if self.layers != roster {
-            self.layers = roster;
-            self.hits.clear();
-        }
-        self.hits.insert(relative, hit);
     }
 }
 
@@ -3862,11 +4144,13 @@ fn folder_file(root: &Path, relative: &str) -> io::Result<(File, PathBuf)> {
         let error = io::Error::last_os_error();
         // A missing file is a miss either way: only another failure (a directory's is access
         // denied) needs the stat that tells a directory, which a lookup passes over.
-        return Err(if error.kind() != io::ErrorKind::NotFound && path.is_dir() {
-            not_found(relative.as_bytes())
-        } else {
-            error
-        });
+        return Err(
+            if error.kind() != io::ErrorKind::NotFound && path.is_dir() {
+                not_found(relative.as_bytes())
+            } else {
+                error
+            },
+        );
     }
     // The successful handle is owned and closed by File, including on identity failures.
     let file = unsafe { File::from_raw_handle(handle) };
@@ -3942,15 +4226,14 @@ fn folded_path(root: &Path, relative: &str) -> io::Result<Option<PathBuf>> {
 /// links and case-ambiguous names are refused; a visual mod's are listed as the
 /// game lists them ([`walk_folder`]).
 fn listed_files(
-    index: usize,
     layer: &ResolvedLayer,
     prefix: &[u8],
     extensions: &[String],
-) -> io::Result<BTreeMap<LayerPath, UncoveredHit>> {
-    let mut paths = BTreeMap::new();
+) -> io::Result<BTreeSet<LayerPath>> {
+    let mut paths = BTreeSet::new();
     let mut folded = BTreeSet::new();
     let overlay = layer.listed_as_game();
-    let mut admit = |relative: LayerPath, hit: UncoveredHit| -> io::Result<()> {
+    let mut admit = |relative: LayerPath| -> io::Result<()> {
         let lower = relative.to_ascii_lowercase();
         if below(&lower, prefix) && extensions.iter().any(|e| lower.ends_with(e.as_bytes())) {
             // A visual mod's case variants are listed as the game lists them (`collect_folder`).
@@ -3960,11 +4243,10 @@ fn listed_files(
                     display(&relative)
                 )));
             }
-            paths.insert(relative, hit);
+            paths.insert(relative);
         }
         Ok(())
     };
-    // A carried fact's hit is never memoized (it is covered); it only marks the answering layer.
     // A layer that cannot list the facts asked for refuses the whole listing by name.
     if let Some(refusal) = layer.fact_listing_refusal(prefix, extensions) {
         return Err(refusal);
@@ -3973,7 +4255,7 @@ fn listed_files(
         && let Ok(carried) = facts.layer().paths()
     {
         for path in carried {
-            admit(path.clone(), UncoveredHit::Folder(index, path.clone()))?;
+            admit(path.clone())?;
         }
     }
     match &layer.source {
@@ -3984,12 +4266,31 @@ fn listed_files(
             if !directory.is_dir() {
                 return Ok(paths);
             }
-            walk_folder(root, &directory, overlay, &entry_kind, &mut |relative, _| {
-                if layer.fact_path(&relative) {
-                    return Ok(());
+            let covered_inventory = layer
+                .coverage
+                .roots()
+                .chain(std::iter::once(DESCRIPTOR_ROOT))
+                .any(|known| below(prefix, known.as_bytes()));
+            if covered_inventory {
+                for relative in layer.inventory_paths.iter() {
+                    if !layer.fact_path(relative) {
+                        admit(relative.clone())?;
+                    }
                 }
-                admit(relative.clone(), UncoveredHit::Folder(index, relative))
-            })?;
+            } else {
+                walk_folder(
+                    root,
+                    &directory,
+                    overlay,
+                    &entry_kind,
+                    &mut |relative, _| {
+                        if layer.fact_path(&relative) {
+                            return Ok(());
+                        }
+                        admit(relative)
+                    },
+                )?;
+            }
         }
         LayerSource::Archive(_) => {
             let entries = match layer.verified_archive() {
@@ -4000,7 +4301,7 @@ fn listed_files(
             };
             for entry in entries {
                 if !entry.directory && !layer.fact_path(&entry.name) {
-                    admit(entry.name, UncoveredHit::Archive(index))?;
+                    admit(entry.name)?;
                 }
             }
         }
@@ -4218,7 +4519,14 @@ impl HashCache<'_> {
                 read: false,
             });
         }
-        let (hash, size) = digest_reader(&mut File::open(path)?)?;
+        let (hash, size) = if generation::current().is_some() {
+            let bytes = generation::metadata(path)?;
+            (bytes.digest(), bytes.len() as u64)
+        } else {
+            let (hash, size) = digest_reader(&mut File::open(path)?)?;
+            io_counts::external_digest(path, hash, size);
+            (hash, size)
+        };
         if size != stamp.size || Stamp::read(path)? != stamp {
             return Err(invalid(format!(
                 "content file changed while hashing: {}",
@@ -4555,13 +4863,16 @@ fn builtin_layer(
     let descriptor_hash = descriptor
         .as_ref()
         .map(|path| {
-            fs::read(path).map(|bytes| DescriptorHash {
-                bytes: Sha256::digest(bytes).into(),
+            generation::metadata(path).map(|bytes| DescriptorHash {
+                bytes: bytes.digest(),
                 portable: None,
             })
         })
         .transpose()?;
     Ok(ResolvedLayer {
+        content_digest: [0; 32],
+        inventory_witnesses: Default::default(),
+        inventory_paths: Default::default(),
         coverage,
         role,
         facts: None,
@@ -4667,10 +4978,14 @@ pub fn playback(
     facts: Result<Arc<facts::Pack>, String>,
     options: &ResolveOptions,
 ) -> io::Result<ResolvedContent> {
+    let _generation = Generation::inherit();
     identity.validate()?;
     let coverage = CoveragePolicy::recorded(identity.coverage_policy)?;
-    let game_dir = fs::canonicalize(&options.game_dir).ok();
-    let user_dir = fs::canonicalize(&options.user_dir).ok();
+    let graph = generation::current().expect("playback generation in scope");
+    graph.changes.watch_root(&options.game_dir, true);
+    graph.changes.watch_root(&options.user_dir, false);
+    let game_dir = graph.witnesses.root(&options.game_dir);
+    let user_dir = graph.witnesses.root(&options.user_dir);
     let missing = options.cache_dir.join("art-not-installed");
     let pack = facts
         .and_then(|pack| match pack.binding_differs(identity) {
@@ -4699,6 +5014,9 @@ pub fn playback(
             _ => Err("the game and user folders are not set".to_owned()),
         };
         let mut layer = ResolvedLayer {
+            content_digest: [0; 32],
+            inventory_witnesses: Default::default(),
+            inventory_paths: Default::default(),
             coverage,
             role: recorded.role,
             facts: Some(Facts {
@@ -4757,7 +5075,9 @@ pub fn playback(
     }
     // Work on the recording reads its own tables, never the installed executable's.
     if let Err(reason) = pack.tables() {
-        notes.push(format!("The game's executable tables are withheld: {reason}"));
+        notes.push(format!(
+            "The game's executable tables are withheld: {reason}"
+        ));
     }
     Ok(ResolvedContent {
         layers,
@@ -4951,6 +5271,9 @@ fn gather_selected(
             );
         }
         let mut vanilla = ResolvedLayer {
+            content_digest: [0; 32],
+            inventory_witnesses: Default::default(),
+            inventory_paths: Default::default(),
             coverage,
             role: LayerRole::Vanilla,
             facts: None,
@@ -4969,17 +5292,13 @@ fn gather_selected(
         vanilla.hash(&mut cache, &mut stats)?;
         let mut vanilla_files = (*vanilla.hashes).clone();
         let mut layers = ResolvedLayers {
+            context: [0; 32],
+            recorded_projection: Default::default(),
+            generation: Default::default(),
             coverage,
             layers: vec![vanilla],
-            effective: BTreeMap::new(),
-            uncovered_memo: Default::default(),
+            effective: Arc::new(BTreeMap::new()),
             uncovered_reads: Default::default(),
-            texture_index: Default::default(),
-            descriptor_roster: Default::default(),
-            recorded_descriptor_roster: Default::default(),
-            key_names: Default::default(),
-            traced_key_names: Default::default(),
-            faction_templates: Default::default(),
             derived: Default::default(),
             read_trace: None,
             above_mods: 0,

@@ -54,7 +54,7 @@ pub struct Leaders<N = String> {
     /// the reading goes on as the game's does.
     pub misreads: Vec<N>,
     /// The files as read, for [`Self::reread`].
-    files: Vec<(String, Vec<u8>)>,
+    files: Vec<(String, crate::content::Bytes)>,
     names: Arc<KeyNames>,
 }
 
@@ -102,12 +102,14 @@ impl<N: crate::DiagnosticMessage> Leaders<N> {
     }
 
     /// The loader's two passes over the files in order.
-    fn read_files(
-        files: Vec<(String, Vec<u8>)>,
+    fn read_files<B: Into<crate::content::Bytes>>(
+        files: Vec<(String, B)>,
         terrain: &dyn Fn(&str) -> Option<String>,
         registry: Registry<'_>,
         names: Arc<KeyNames>,
     ) -> Self {
+        let files: Vec<(String, crate::content::Bytes)> = files.into_iter()
+            .map(|(path, bytes)| (path, bytes.into())).collect();
         let mut leaders = Self {
             names,
             ..Self::default()
@@ -273,7 +275,7 @@ impl Leaders<String> {
 
 /// The content stack's `common/unit_leader` files: the folder's own
 /// `.txt` files ([`script_files::paths`]), with their bytes; each path as text, for messages.
-fn files(layers: &ResolvedLayers) -> io::Result<Vec<(String, Vec<u8>)>> {
+fn files(layers: &ResolvedLayers) -> io::Result<Vec<(String, crate::content::Bytes)>> {
     script_files::paths(layers, DIRECTORY, Some(".txt"))?
         .into_iter()
         .map(|path| {
@@ -852,11 +854,13 @@ impl Traits {
     /// The name pass alone over the content stack's files: every
     /// registered trait, its effects unread.
     pub fn registered(layers: &ResolvedLayers) -> io::Result<Self> {
-        let mut traits = Self::default();
-        for (path, bytes) in files(layers)? {
-            traits.register(&bytes, &path);
-        }
-        Ok(traits)
+        layers.recorded_product("registered unit leader traits", 1, &[], |layers| {
+            let mut traits = Self::default();
+            for (path, bytes) in files(layers)? {
+                traits.register(&bytes, &path);
+            }
+            Ok(traits)
+        }).map(|traits| traits.as_ref().clone())
     }
 
     /// Whether a trait of this name, in any case, is registered.

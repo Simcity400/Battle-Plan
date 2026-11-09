@@ -65,7 +65,7 @@ pub struct Labels {
 /// Successes and named failures share the same recorded-content/language binding.
 pub fn labels(query: &Query<'_>) -> Result<Arc<Labels>, String> {
     let options = query.content.ok_or("Game folders are not chosen")?;
-    let key = content::localisation_key(options).map_err(|error| error.to_string())?;
+    let key = content::localisation_key(query.source, options).map_err(|error| error.to_string())?;
     query
         .source
         .state::<KeyedResults<content::LocalisationKey, Labels>>()

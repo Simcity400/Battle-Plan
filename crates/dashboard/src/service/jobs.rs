@@ -1167,9 +1167,9 @@ impl Inner {
             return;
         };
         let warming = Arc::clone(source);
-        job_priority::spawn(move || {
+        job_priority::spawn(installed_content_core::content::carry_generation(move || {
             warming.in_scope(|| dashboard_base::content::warm(&warming, &content));
-        });
+        }));
     }
 
     /// Reads the game's own settings from the user folder configured now into the map settings,

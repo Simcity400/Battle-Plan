@@ -28,7 +28,7 @@ impl super::ReplyWarnings for DiagnosticReply {
 
 #[derive(Default)]
 struct DiagnosticCache<const INDEX: usize> {
-    value: crate::catalogue::CachedResult<Vec<u8>>,
+    value: crate::catalogue::CachedResult<installed_content_core::content::Bytes>,
     loads: std::sync::atomic::AtomicUsize,
 }
 

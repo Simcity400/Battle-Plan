@@ -19,7 +19,7 @@
 //! `naval_production`, `general_production` and `rocket_production`, which
 //! decide the stored factory groups its levels count in.
 
-use crate::key_names::{KeyNames, Point};
+use crate::key_names::KeyNames;
 use std::{
     collections::{BTreeMap, BTreeSet, btree_map::Entry},
     io,
@@ -933,7 +933,8 @@ fn resolve(buildings: &mut Buildings) {
 /// Reads direct `common/buildings/*.txt` children in filename order;
 /// nested files do not load.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Buildings> {
-    read_with(layers, &layers.key_names()?.at(Point::BeforeBuildings))
+    layers.key_names()?.buildings.as_ref().map(|buildings| buildings.as_ref().clone())
+        .ok_or_else(|| invalid("no common/buildings file declares any building"))
 }
 
 /// [`read`], the triggers read against `names`, which

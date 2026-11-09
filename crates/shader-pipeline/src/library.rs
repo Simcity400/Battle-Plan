@@ -670,7 +670,7 @@ mod tests {
     /// A variant keeps the library's globals: deriving a caller set equals loading it.
     #[test]
     fn variants_keep_the_globals() {
-        let source = Arc::new(program::read_with(b"gfx/FX/v.lua", &|_| None).unwrap());
+        let source = Arc::new(program::read_with::<Vec<u8>>(b"gfx/FX/v.lua", &|_| None).unwrap());
         let cache = Arc::new(cache::Cache::new(
             None,
             Arc::new(cache::tests::Count::default()),

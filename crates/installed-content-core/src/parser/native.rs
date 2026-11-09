@@ -850,6 +850,7 @@ fn read_scoped<S: Copy>(
     scope: Option<u32>,
     dispatch: &mut dyn FnMut(S, &Field<'_>) -> Shape<S>,
 ) -> Read {
+    crate::content::io_counts::parse(std::any::type_name::<S>(), bytes);
     let mut reader = Reader::new(lex(bytes, mode));
     reader.names = names;
     reader.effect_scope = scope;

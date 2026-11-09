@@ -48,13 +48,13 @@ pub(crate) fn decode_wave(bytes: Vec<u8>) -> Result<Pcm, String> {
 
 /// Decodes only the first audio packet: whether the track opens and decodes,
 /// without paying for the whole stream.
-pub fn probe(bytes: Vec<u8>) -> Result<(), String> {
+pub fn probe<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: B) -> Result<(), String> {
     read(bytes, Container::Ogg, true).map(drop)
 }
 
 /// Opens an Ogg Vorbis track to decode packet by packet ([`Stream::decode_next`]),
 /// so a player holds only what it has not yet played.
-pub fn open(bytes: Vec<u8>) -> Result<Stream, String> {
+pub fn open<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: B) -> Result<Stream, String> {
     guarded(Container::Ogg, || Stream::open(bytes, Container::Ogg))
 }
 
@@ -78,13 +78,13 @@ pub struct Stream {
 }
 
 impl Stream {
-    fn open(bytes: Vec<u8>, container: Container) -> Result<Self, String> {
+    fn open<B: AsRef<[u8]> + Send + Sync + 'static>(bytes: B, container: Container) -> Result<Self, String> {
         let name = container.name();
         let (magic, extension): (&[u8], _) = match container {
             Container::Ogg => (b"OggS", "ogg"),
             Container::Wave => (b"RIFF", "wav"),
         };
-        if !bytes.starts_with(magic) {
+        if !bytes.as_ref().starts_with(magic) {
             return Err(container.refusal().into());
         }
         let source =
@@ -188,7 +188,7 @@ fn guarded<T>(
 }
 
 /// Decodes a whole stream (or only its first packet).
-fn read(bytes: Vec<u8>, container: Container, first_only: bool) -> Result<Pcm, String> {
+fn read<B: AsRef<[u8]> + Send + Sync + std::panic::UnwindSafe + 'static>(bytes: B, container: Container, first_only: bool) -> Result<Pcm, String> {
     let mut stream = guarded(container, || Stream::open(bytes, container))?;
     let mut samples = Vec::new();
     let mut spec = None;

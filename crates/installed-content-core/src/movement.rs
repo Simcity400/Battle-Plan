@@ -219,7 +219,7 @@ impl MovementMap {
         terrain: Option<&crate::terrain::TerrainDefinitions>,
     ) -> io::Result<Self> {
         let default_map = crate::terrain::read_default_map(layers)?;
-        let file = |key: &str| -> io::Result<(String, Vec<u8>)> {
+        let file = |key: &str| -> io::Result<(String, crate::content::Bytes)> {
             let path = default_map.file(key)?;
             let bytes = layers.read(&path).map_err(context(&path))?;
             Ok((path, bytes))

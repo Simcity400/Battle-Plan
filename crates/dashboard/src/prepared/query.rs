@@ -207,11 +207,11 @@ struct ReplyPresentation {
     force_pow2_textures: Option<Result<bool, String>>,
 }
 
-fn reply_presentation(content: Option<&ContentOptions>) -> ReplyPresentation {
+fn reply_presentation(source: &Source, content: Option<&ContentOptions>) -> ReplyPresentation {
     ReplyPresentation {
         content: content.map(dashboard_base::catalogue::binding),
         localisation: content.map(|options| {
-            dashboard_base::content::localisation_key(options).map_err(|error| error.to_string())
+            dashboard_base::content::localisation_key(source, options).map_err(|error| error.to_string())
         }),
         force_pow2_textures: content.map(|options| {
             installed_content_settings::settings::read_keys(&options.options.user_dir)
@@ -5048,7 +5048,7 @@ fn answer(
                 gates::identities_section(branch),
                 published.identities(branch),
             ));
-            (pages, reply_presentation(content))
+            (pages, reply_presentation(source, content))
         };
         dashboard_base::prepared::query::observations::scope(source, product, Some(&key))
             .continue_entry(

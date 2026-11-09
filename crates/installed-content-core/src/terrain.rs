@@ -28,7 +28,7 @@ use crate::{
     fields::invalid,
     gui::native::resources,
     image::{
-        IndexedImage, Rgba8Image, bmp,
+        IndexedImage, SharedRgba8Image as Rgba8Image, bmp,
         dds::{Texture, TextureFormat},
         native::Decode,
     },
@@ -659,6 +659,11 @@ pub fn definition_paths(
 /// Reads the terrain database from every `common/terrain/*.txt` file in
 /// native load order ([`definition_paths`]).
 pub fn read_definitions(layers: &ResolvedLayers) -> io::Result<TerrainDefinitions> {
+    layers.recorded_product("terrain database", 1, &[], read_terrain_definitions)
+        .map(|definitions| definitions.as_ref().clone())
+}
+
+fn read_terrain_definitions(layers: &ResolvedLayers) -> io::Result<TerrainDefinitions> {
     let files = definition_paths(layers)?;
     if files.is_empty() {
         return Err(invalid("content has no common/terrain/*.txt file"));
@@ -709,8 +714,10 @@ impl DefaultMap {
 
 /// Reads and parses `map/default.map`.
 pub fn read_default_map(layers: &ResolvedLayers) -> io::Result<DefaultMap> {
-    parse_default_map(&layers.read("map/default.map")?)
-        .map_err(|error| invalid(format!("map/default.map: {error}")))
+    layers.recorded_product("default map", 1, &[], |layers| {
+        parse_default_map(&layers.read("map/default.map")?)
+            .map_err(|error| invalid(format!("map/default.map: {error}")))
+    }).map(|map| map.as_ref().clone())
 }
 
 /// Decodes the bitmaps `map/default.map` names, plus `map/world_normal.bmp`.
@@ -721,8 +728,7 @@ pub fn read_map_images(
 ) -> io::Result<MapImages> {
     let indexed = |name: &str| -> io::Result<IndexedImage> {
         let path = format!("map/{name}");
-        bmp::decode_indexed(&layers.read(&path)?)
-            .map_err(|error| invalid(format!("{path}: {error}")))
+        read_indexed_image(layers, &path)
     };
     Ok(MapImages {
         terrain: indexed(&map.terrain)?,
@@ -731,6 +737,13 @@ pub fn read_map_images(
         trees: indexed(&map.tree_definition)?,
         world_normal: read_world_normal(layers, decode)?,
     })
+}
+
+pub fn read_indexed_image(layers: &ResolvedLayers, path: &str) -> io::Result<IndexedImage> {
+    layers.recorded_product("palette bitmap decoding", 1, path.as_bytes(), |layers| {
+        bmp::decode_indexed(&layers.read(path)?)
+            .map_err(|error| invalid(format!("{path}: {error}")))
+    }).map(|image| image.as_ref().clone())
 }
 
 /// `map/world_normal.bmp`, the height-normal texture, follows ordinary
@@ -744,8 +757,8 @@ pub fn read_world_normal(layers: &ResolvedLayers, decode: Decode) -> io::Result<
     world_normal(&|path| layers.read_uncovered_path(path), decode)
 }
 
-fn world_normal(
-    read: &dyn Fn(&[u8]) -> io::Result<Vec<u8>>,
+fn world_normal<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
     decode: Decode,
 ) -> io::Result<Rgba8Image> {
     let texture = resources::texture(b"map/world_normal.bmp", read, decode)?

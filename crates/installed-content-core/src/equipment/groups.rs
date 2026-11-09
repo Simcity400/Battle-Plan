@@ -87,6 +87,10 @@ impl Groups {
     /// Direct `.txt` files in [`GROUPS_DIRECTORY`] in filename byte order,
     /// without recursion.
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
+        layers.recorded_product("equipment groups", 1, &[], Self::read).map(|groups| groups.as_ref().clone())
+    }
+
+    fn read(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut groups = Self::default();
         for path in crate::script_files::paths(layers, GROUPS_DIRECTORY, Some(".txt"))? {
             groups.read_file(&path.read(layers)?, &path.text());

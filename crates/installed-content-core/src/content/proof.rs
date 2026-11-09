@@ -237,6 +237,9 @@ pub fn assemble(
         }
     };
     let placeholder = |role: LayerRole, id: &str| ResolvedLayer {
+        content_digest: [0; 32],
+        inventory_witnesses: Default::default(),
+        inventory_paths: Default::default(),
         coverage,
         role,
         facts: None,

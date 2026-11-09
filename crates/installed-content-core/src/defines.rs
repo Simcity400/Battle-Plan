@@ -106,23 +106,20 @@ impl std::fmt::Debug for Defines {
 
 /// Runs every define script of the stack in load order.
 pub fn read(layers: &ResolvedLayers) -> io::Result<Defines> {
-    #[derive(Default)]
-    struct Shared(std::sync::Mutex<Option<Defines>>);
-    let shared = layers.derived::<Shared>();
-    let mut slot = shared.0.lock().unwrap_or_else(|error| error.into_inner());
-    if let Some(defines) = &*slot {
+    let read = |layers: &ResolvedLayers| {
+        let mut defines = Defines::new()?;
         for path in script_paths(layers)? {
-            path.read(layers)?;
+            defines.load(&path.text(), &path.read(layers)?)?;
         }
-        return Ok(defines.clone());
-    }
-    let mut defines = Defines::new()?;
-    for path in script_paths(layers)? {
-        defines.load(&path.text(), &path.read(layers)?)?;
-    }
-    defines.sealed = true;
-    *slot = Some(defines.clone());
-    Ok(defines)
+        defines.sealed = true;
+        Ok(defines)
+    };
+    let defines = if layers.reads_visual_defines() {
+        layers.retained_product("defines Lua 5.1", 1, &[], read)
+    } else {
+        layers.retained_recorded_product("defines Lua 5.1", 1, &[], read)
+    };
+    defines.map(|defines| defines.as_ref().clone())
 }
 
 /// Define scripts in recursive load order: each directory's names ending

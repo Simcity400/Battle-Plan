@@ -826,7 +826,7 @@ mod identity_tests {
         let heightmap = Arc::new(installed_content_image::IndexedImage {
             width: 1,
             height: 1,
-            indices: vec![0],
+            indices: vec![0].into(),
             palette: [[0; 4]; 256],
         });
         let areas = NameAreaKey {

@@ -612,7 +612,7 @@ impl PendingLoad for LazyFlags {
                 state.pages[page as usize],
                 [at[0], at[1], pages.cell[0], pages.cell[1]],
                 |texture| {
-                    pages.blit(&mut texture.mips[0][0].data, at, &image.pixels);
+                    pages.blit(texture.mips[0][0].data.make_mut(), at, &image.pixels);
                 },
             );
             state.cells.insert(key.clone(), Some(cell));
@@ -925,10 +925,10 @@ mod tests {
             height: 1,
             pixels: vec![0; 8],
         }));
-        textures.modify(id, [0, 0, 1, 1], |image| image.mips[0][0].data[0] = 1);
+        textures.modify(id, [0, 0, 1, 1], |image| image.mips[0][0].data.make_mut()[0] = 1);
         let first = textures.snapshot().pop().unwrap().1;
-        textures.modify(id, [1, 0, 1, 1], |image| image.mips[0][0].data[4] = 2);
-        textures.modify(id, [0, 0, 1, 1], |image| image.mips[0][0].data[0] = 3);
+        textures.modify(id, [1, 0, 1, 1], |image| image.mips[0][0].data.make_mut()[4] = 2);
+        textures.modify(id, [0, 0, 1, 1], |image| image.mips[0][0].data.make_mut()[0] = 3);
         let latest = textures.snapshot().pop().unwrap().1;
         let changed: Vec<_> = latest
             .cells

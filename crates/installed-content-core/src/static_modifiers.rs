@@ -217,14 +217,12 @@ pub struct Identifiers {
 }
 
 pub fn read_identifiers(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Identifiers> {
-    let files = layer_files(layers)?;
-    let key_names = layers.key_names()?.at(Point::StaticModifiers);
-    let (identifiers, notes) = resolve_with(
+    let files = parsed_files(layers)?;
+    let (identifiers, notes) = resolve_parsed(
         files
             .iter()
-            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+            .map(|(path, file)| (path.as_str(), file)),
         names,
-        Some(&key_names),
         None,
         |name, items| {
             // Preserve the same unsupported-content contract as read_blocks.
@@ -238,39 +236,40 @@ pub fn read_identifiers(layers: &ResolvedLayers, names: &[&str]) -> io::Result<I
 /// Reads each request, in request order, from the effective definitions of
 /// the content stack.
 pub fn read(layers: &ResolvedLayers, requests: &[Request<'_>]) -> io::Result<Values> {
-    let files = layer_files(layers)?;
-    let key_names = layers.key_names()?.at(Point::StaticModifiers);
-    Ok(resolve(
-        files
-            .iter()
-            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
-        requests,
-        Some(&key_names),
-    ))
+    let names: Vec<_> = requests.iter().map(|request| request.modifier).collect();
+    Ok(values(read_blocks(layers, &names)?, requests))
 }
 
 /// Reads full static-modifier accumulators for description formatting.
 /// Definitions and stopped files follow the same precedence and refusal
 /// rules as [`read`].
 pub fn read_blocks(layers: &ResolvedLayers, names: &[&str]) -> io::Result<Blocks> {
-    let files = layer_files(layers)?;
-    let key_names = layers.key_names()?.at(Point::StaticModifiers);
-    Ok(resolve_blocks(
+    let files = parsed_files(layers)?;
+    let (blocks, notes) = resolve_parsed(
         files
             .iter()
-            .map(|(path, bytes)| (path.as_str(), bytes.as_slice())),
+            .map(|(path, file)| (path.as_str(), file)),
         names,
-        Some(&key_names),
-    ))
+        modifiers::Modifiers::default(),
+        |_, items| stored_block(items),
+    );
+    Ok(Blocks { blocks, notes })
 }
 
-fn layer_files(layers: &ResolvedLayers) -> io::Result<Vec<(String, Vec<u8>)>> {
-    let mut files = Vec::new();
-    for path in layers.directory_files(DIRECTORY, ".txt")? {
-        let bytes = path.read_uncovered(layers)?;
-        files.push((path.to_string(), bytes));
-    }
-    Ok(files)
+fn parsed_files(layers: &ResolvedLayers) -> io::Result<std::sync::Arc<Vec<(String, File)>>> {
+    layers.recorded_product("static modifier definitions", 1, &[], |layers| {
+        let key_names = layers.key_names()?.at(Point::StaticModifiers);
+        layers.directory_files(DIRECTORY, ".txt")?.into_iter().map(|path| {
+            let bytes = path.read_uncovered(layers)?;
+            Ok((path.to_string(), read_file(&bytes, Some(&key_names))))
+        }).collect()
+    })
+}
+
+fn layer_files(layers: &ResolvedLayers) -> io::Result<Vec<(String, crate::content::Bytes)>> {
+    layers.directory_files(DIRECTORY, ".txt")?.into_iter().map(|path| {
+        path.read_uncovered(layers).map(|bytes| (path.to_string(), bytes))
+    }).collect()
 }
 
 /// One file: its definitions up to the stop, and the stop.
@@ -341,6 +340,7 @@ fn read_file_with_registry(
 }
 
 /// [`read`] over files already in native order.
+#[cfg(test)]
 fn resolve<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     requests: &[Request<'_>],
@@ -349,7 +349,10 @@ fn resolve<'a>(
     // One block lookup establishes the file and bucket precedence;
     // scalar callers select their key from that block.
     let names: Vec<_> = requests.iter().map(|request| request.modifier).collect();
-    let Blocks { blocks, notes } = resolve_blocks(files, &names, key_names);
+    values(resolve_blocks(files, &names, key_names), requests)
+}
+
+fn values(Blocks { blocks, notes }: Blocks, requests: &[Request<'_>]) -> Values {
     let values = blocks
         .into_iter()
         .zip(requests)
@@ -375,6 +378,7 @@ fn resolve<'a>(
 /// Each definition is inserted at the front of its hash bucket; lookup
 /// finds the first exact name. A later file can replace a stopped file's
 /// unknown definition, while a stop shadows every earlier candidate.
+#[cfg(test)]
 fn resolve_blocks<'a>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     names: &[&str],
@@ -390,6 +394,7 @@ fn resolve_blocks<'a>(
     Blocks { blocks, notes }
 }
 
+#[cfg(test)]
 fn resolve_with<'a, T: Clone>(
     files: impl IntoIterator<Item = (&'a str, &'a [u8])>,
     names: &[&str],

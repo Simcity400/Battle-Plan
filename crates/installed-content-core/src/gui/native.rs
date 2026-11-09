@@ -2123,6 +2123,21 @@ pub fn read_layers_at(layers: &ResolvedLayers, viewport: [i32; 2]) -> io::Result
 }
 
 fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::Result<Guis> {
+    let definitions = layers.product("GUI definitions before inheritance", 1, &[], read_layer_definitions)?;
+    let mut files = definitions.as_ref().clone();
+    if let Some((path, gui)) = files.first_mut()
+        && path == LOAD_SCREEN
+    {
+        inherit::pass(&mut [gui], viewport);
+    }
+    inherit::pass(
+        &mut files.iter_mut().map(|(_, gui)| gui).collect::<Vec<_>>(),
+        viewport,
+    );
+    Ok(Guis::new(files))
+}
+
+fn read_layer_definitions(layers: &ResolvedLayers) -> io::Result<Vec<(String, Gui)>> {
     let mut context = Context::new();
     let mut files: Vec<(String, Gui)> = Vec::new();
     // The layers' own bytes, as the game's enumeration returns them; each file is read by them
@@ -2133,10 +2148,7 @@ fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::
     // any case, archive lookup uses exact bytes. A missing file is passed.
     if let Some(bytes) = crate::content::open_request(layers, LOAD_SCREEN.as_bytes())? {
         files.push((LOAD_SCREEN.to_owned(), context.read(&bytes)));
-        inherit::pass(
-            &mut files.iter_mut().map(|(_, gui)| gui).collect::<Vec<_>>(),
-            viewport,
-        );
+
     }
     // The main pass drops exactly this name.
     let paths: Vec<Vec<u8>> =
@@ -2153,11 +2165,7 @@ fn read_layers_with(layers: &ResolvedLayers, viewport: Option<[i32; 2]>) -> io::
     for (path, gui) in paths.iter().zip(context.read_all(&texts)) {
         files.push((label(path), gui));
     }
-    inherit::pass(
-        &mut files.iter_mut().map(|(_, gui)| gui).collect::<Vec<_>>(),
-        viewport,
-    );
-    Ok(Guis::new(files))
+    Ok(files)
 }
 
 /// Every `.gui` file the game reads, in its load order.

@@ -472,7 +472,7 @@ fn the_geometry_builder_bakes_the_mesh_scale_and_ranges_every_lod() {
         uv1: None,
         uv2: None,
         uv3: None,
-        indices: vec![0, 1, 2],
+        indices: vec![0, 1, 2].into(),
         bounds: None,
         material: None,
         skin: None,
@@ -500,12 +500,12 @@ fn the_geometry_builder_bakes_the_mesh_scale_and_ranges_every_lod() {
         tint: Rgba8Image {
             width: 1,
             height: 1,
-            pixels: vec![0; 4],
+            pixels: vec![0; 4].into(),
         },
         season: Rgba8Image {
             width: 1,
             height: 1,
-            pixels: vec![0; 4],
+            pixels: vec![0; 4].into(),
         },
         mask: TreeMask {
             width: 1,
@@ -626,7 +626,7 @@ fn the_tree_mask_box_filters_the_river_pixels() {
     let mask = tree_mask(&IndexedImage {
         width: 4,
         height: 4,
-        indices,
+        indices: indices.into(),
         palette: [[0; 4]; 256],
     })
     .unwrap();
@@ -645,7 +645,7 @@ fn a_river_bitmap_that_is_not_a_bitmap_is_refused() {
         tree_mask(&IndexedImage {
             width: 4,
             height: 4,
-            indices: vec![254; 9],
+            indices: vec![254; 9].into(),
             palette: [[0; 4]; 256],
         })
         .is_err()
@@ -661,7 +661,7 @@ fn empty_texture() -> dds::Texture {
         mips: vec![vec![dds::MipLevel {
             width: 1,
             height: 1,
-            data: vec![0; 4],
+            data: (vec![0; 4]).into(),
         }]],
     }
 }

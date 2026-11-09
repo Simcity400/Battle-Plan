@@ -22,6 +22,10 @@ use crate::{
 /// each definition's authored group, `is_artillery_brigade` and support
 /// category bit.
 pub fn sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
+    layers.recorded_product("sub-unit database", 1, &[], read_sub_units).map(|units| units.as_ref().clone())
+}
+
+fn read_sub_units(layers: &ResolvedLayers) -> io::Result<SubUnits> {
     let mut indices = SubUnits::default();
     for path in sub_unit_files(layers)? {
         indices.read(&path.read(layers)?, &path.text());

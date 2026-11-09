@@ -13,7 +13,7 @@ fn heightmap(byte: u8) -> Arc<IndexedImage> {
     Arc::new(IndexedImage {
         width: 32,
         height: 32,
-        indices: vec![byte; 1024],
+        indices: vec![byte; 1024].into(),
         palette: [[0; 4]; 256],
     })
 }
@@ -98,7 +98,7 @@ fn anchor_slots_fold_ascii_case_and_skip_ambiguous_slots() {
     let rivers = installed_content_image::IndexedImage {
         width: 32,
         height: 32,
-        indices: vec![255; 1024],
+        indices: vec![255; 1024].into(),
         palette: [[0; 4]; 256],
     };
     let types = installed_content_core::buildings::parse(
@@ -683,7 +683,7 @@ fn construction_keeps_immutable_heights_and_rejects_a_different_height_owner() {
     let rivers = installed_content_image::IndexedImage {
         width: 32,
         height: 32,
-        indices: vec![255; 1024],
+        indices: vec![255; 1024].into(),
         palette: [[0; 4]; 256],
     };
     let types = Buildings::default();

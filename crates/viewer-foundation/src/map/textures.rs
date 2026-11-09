@@ -152,13 +152,13 @@ fn sixteen_bit_texels(format: dds::TextureFormat, data: &[u8]) -> Option<Vec<u8>
 
 /// Reads a file a texture load asks for, by its path's bytes: `ResolvedLayers::read_path` for
 /// covered content, `read_uncovered_path` otherwise.
-pub type Read<'a> = &'a dyn Fn(&[u8]) -> io::Result<Vec<u8>>;
+pub type Read<'a, B = installed_content_core::content::Bytes> = &'a dyn Fn(&[u8]) -> io::Result<B>;
 
 /// Resolve texture stems in DDS, TGA, then authored-path order. Refuse files past 16 MiB. Decode
 /// block-rounded extents, retained mips and cube faces through resources::texture. File textures pad
 /// only under the client force_pow2_textures setting; generated textures retain dimensions. Missing
 /// names return NotFound.
-pub fn load_file(name: &str, read: Read<'_>, decode: Decode) -> io::Result<dds::Texture> {
+pub fn load_file<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<dds::Texture> {
     match resources::texture(name.as_bytes(), read, decode)? {
         Ok(texture) => Ok(texture.image),
         Err(NoTexture::Missing(tried)) => Err(io::Error::new(
@@ -171,7 +171,7 @@ pub fn load_file(name: &str, read: Read<'_>, decode: Decode) -> io::Result<dds::
 
 /// [`load_file`] of an image the map reads as straight RGBA rows (a bitmap or a Targa): the game
 /// loads it as `B8G8R8A8` or `B8G8R8X8`, never as blocks.
-pub fn load_image(name: &str, read: Read<'_>, decode: Decode) -> io::Result<Rgba8Image> {
+pub fn load_image<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(name: &str, read: Read<'_, B>, decode: Decode) -> io::Result<installed_content_image::SharedRgba8Image> {
     let texture = load_file(name, read, decode)?;
     if texture.format != dds::TextureFormat::Rgba8 || texture.faces != 1 {
         return Err(invalid(format!(
@@ -189,12 +189,12 @@ pub fn load_image(name: &str, read: Read<'_>, decode: Decode) -> io::Result<Rgba
 /// Heightmap sampling texture size and linear payload. Its first channel is resolved palette red.
 /// None means it matches the vertex heightmap exactly.
 pub fn sampled_heights(
-    image: &Rgba8Image,
+    image: &Rgba8Image<impl std::ops::Deref<Target = [u8]>>,
     heightmap: &IndexedImage,
 ) -> Option<([u32; 2], Vec<u8>)> {
     let texels: Vec<u8> = image.pixels.chunks_exact(4).map(|texel| texel[0]).collect();
     let size = [image.width, image.height];
-    (size != [heightmap.width, heightmap.height] || texels != heightmap.indices)
+    (size != [heightmap.width, heightmap.height] || texels.as_slice() != heightmap.indices.as_ref())
         .then_some((size, texels))
 }
 
@@ -224,9 +224,9 @@ pub fn check_upload(label: &str, texture: &dds::Texture, space: ColorSpace) -> i
 
 /// [`load_file`] of a texture uploaded in `space`, refused here when [`check_upload`] would
 /// refuse it at upload.
-pub fn load_uploadable(
+pub fn load_uploadable<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(
     name: &str,
-    read: Read<'_>,
+    read: Read<'_, B>,
     decode: Decode,
     space: ColorSpace,
 ) -> io::Result<dds::Texture> {
@@ -242,9 +242,9 @@ pub struct MapTexture {
 }
 
 /// Native file failures leave map samplers unbound; unknown or device-dependent outcomes refuse.
-pub fn load_map_texture(
+pub fn load_map_texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(
     name: &str,
-    read: Read<'_>,
+    read: Read<'_, B>,
     decode: Decode,
     space: ColorSpace,
     warnings: &mut Vec<String>,
@@ -611,8 +611,8 @@ fn unaligned_bc_keeps_authored_mips_faces_and_texels() {
                                 dds::MipLevel {
                                     width: size,
                                     height: size,
-                                    data: block((face + level) % 2 == 0)
-                                        .repeat(size.div_ceil(4).pow(2) as usize),
+                                    data: (block((face + level) % 2 == 0)
+                                        .repeat(size.div_ceil(4).pow(2) as usize)).into(),
                                 }
                             })
                             .collect()

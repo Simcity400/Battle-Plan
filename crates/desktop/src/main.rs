@@ -250,6 +250,9 @@ fn main() {
             app.state::<preparation::PreparationMonitor>()
                 .start(app.handle())?;
             native::start_gamepad(app.handle().clone());
+            if let Some(window) = app.get_webview_window("main") {
+                app.state::<NativeHost>().ensure_started(&window)?;
+            }
             Ok(())
         })
         .manage(NativeHost::default())

@@ -11,11 +11,11 @@ use std::{borrow::Cow, fmt, io};
 
 /// Archive paths need not be UTF-8; use raw bytes for lookup and lossy text only for messages.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ScriptPath(LayerPath);
+pub struct ScriptPath(std::sync::Arc<LayerPath>);
 
 impl ScriptPath {
     pub fn new(path: LayerPath) -> Self {
-        Self(path)
+        Self(std::sync::Arc::new(path))
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -37,12 +37,12 @@ impl ScriptPath {
         std::str::from_utf8(&self.0[..end]).ok()
     }
 
-    pub fn read(&self, layers: &ResolvedLayers) -> io::Result<Vec<u8>> {
+    pub fn read(&self, layers: &ResolvedLayers) -> io::Result<crate::content::Bytes> {
         layers.read_path(&self.0)
     }
 
     /// The file's bytes, covered or not ([`ResolvedLayers::read_uncovered_path`]).
-    pub fn read_uncovered(&self, layers: &ResolvedLayers) -> io::Result<Vec<u8>> {
+    pub fn read_uncovered(&self, layers: &ResolvedLayers) -> io::Result<crate::content::Bytes> {
         layers.read_uncovered_path(&self.0)
     }
 }
@@ -65,13 +65,13 @@ impl fmt::Debug for ScriptPath {
 
 impl PartialEq<&str> for ScriptPath {
     fn eq(&self, other: &&str) -> bool {
-        self.0 == other.as_bytes()
+        self.0.as_slice() == other.as_bytes()
     }
 }
 
 impl From<&str> for ScriptPath {
     fn from(path: &str) -> Self {
-        Self(path.as_bytes().to_vec())
+        Self::new(path.as_bytes().to_vec())
     }
 }
 
@@ -102,7 +102,7 @@ pub fn paths(
         })
         .collect();
     files.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(files.into_iter().map(|(_, path)| ScriptPath(path)).collect())
+    Ok(files.into_iter().map(|(_, path)| ScriptPath::new(path)).collect())
 }
 
 /// Whether `path` is a database file directly in `folder` (lowercase and ending in `/`), its
@@ -120,7 +120,7 @@ pub fn database_paths(layers: &ResolvedLayers, folder: &str) -> io::Result<Vec<S
     let mut paths: Vec<ScriptPath> = layers
         .paths()?
         .filter(|path| is_database_file(path, folder))
-        .map(|path| ScriptPath(path.to_vec()))
+        .map(|path| ScriptPath::new(path.to_vec()))
         .collect();
     paths.sort_by(|a, b| a.0[folder.len()..].cmp(&b.0[folder.len()..]));
     Ok(paths)

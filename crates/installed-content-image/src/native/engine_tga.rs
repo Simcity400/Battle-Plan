@@ -154,7 +154,7 @@ mod tests {
     }
 
     fn pixels(file: &[u8]) -> Vec<u8> {
-        load(file).unwrap().unwrap().0.base().data.clone()
+        load(file).unwrap().unwrap().0.base().data.to_vec()
     }
 
     /// Bottom-up rows come out top first; 16-bit channels shift left by 3 and drop the top bit.

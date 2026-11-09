@@ -399,7 +399,7 @@ mod tests {
         let reply = images(&catalogue, &params, &AtomicBool::new(false)).unwrap();
         assert!(reply.warnings.is_empty(), "{:?}", reply.warnings);
         let past_strip = from_url(reply.items[1].icon.as_deref().unwrap());
-        let expected_edge = Rgba8Image {
+        let expected_edge: Rgba8Image = Rgba8Image {
             width: 4,
             height: 4,
             pixels: (0..4)

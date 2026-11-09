@@ -74,8 +74,8 @@ impl FrameAssets {
                 .map(|e| format!("Map frame descriptor unavailable: {e}")),
         );
         let default = installed_content_core::terrain::read_default_map(layers)?;
-        let heights = installed_content_image::bmp::decode_indexed(
-            &layers.read(&format!("map/{}", default.heightmap))?,
+        let heights = installed_content_core::terrain::read_indexed_image(
+            layers, &format!("map/{}", default.heightmap),
         )?;
         let bounds = buckets([heights.width, heights.height]);
         let mut presentation = Presentation {
@@ -408,7 +408,7 @@ fn nearest_ambient_height_clamps_and_uses_bottom_up_rows() {
     let image = IndexedImage {
         width: 2,
         height: 2,
-        indices: vec![100, 200, 0, 150],
+        indices: vec![100, 200, 0, 150].into(),
         palette: [[0; 4]; 256],
     };
     assert_eq!(height(&image, [-100., 0., -100.]), 9.5);

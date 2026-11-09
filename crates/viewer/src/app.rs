@@ -1035,6 +1035,7 @@ pub struct Viewer {
     awaiting_folders: bool,
     document: Option<Document>,
     loading: Option<mpsc::Receiver<Result<LoadedReplay, String>>>,
+    startup_content: Option<installed_content_core::content::Loading>,
     error: Option<String>,
     scene: Option<Scene>,
     scene_target: Presented,
@@ -1300,9 +1301,14 @@ pub(crate) fn load_scene(
     graphics: dashboard::protocol::MapGraphics,
     workers: &viewer_foundation::parallel::Workers,
 ) -> std::io::Result<Scene> {
-    engine_executable::executable_tables::scope(document.content.tables, || {
+    let _startup = crate::perf_log::StartupSpan::new("scene");
+    let scene = engine_executable::executable_tables::scope(document.content.tables, || {
         load_scene_scoped(device, queue, document, graphics, workers)
-    })
+    });
+    if scene.is_err() {
+        document.content.release_loading();
+    }
+    scene
 }
 
 fn load_scene_scoped(
@@ -1682,6 +1688,7 @@ impl Viewer {
             options,
             document: None,
             loading: None,
+            startup_content: installed_content_core::content::Generation::loading(),
             error,
             scene: None,
             scene_target: Presented::default(),
@@ -2493,7 +2500,13 @@ impl Viewer {
         let fallbacks = Arc::clone(&self.visual_fallbacks);
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
+        let startup_content = self.startup_content.take();
         job_priority::spawn(move || {
+            let _generation = startup_content.as_ref().map_or_else(
+                installed_content_core::content::Generation::enter,
+                installed_content_core::content::Loading::enter_generation,
+            );
+            drop(startup_content);
             let initial = InitialHour {
                 branch: options.branch,
                 hour: options.hour,
@@ -2559,9 +2572,11 @@ impl Viewer {
                                 options.allow_unverified,
                                 &initial,
                                 source.replay(),
+                                source,
                                 preferences.visual_mods.as_deref(),
                                 preferences.graphics.texture_quality,
                                 recording.as_deref().zip(decisions.as_ref()),
+                                crate::document::LoadTarget::Scene,
                             ),
                         },
                         None => Document::load(
@@ -3805,7 +3820,76 @@ impl Viewer {
         }
         // The scene arrives with the document from the loading thread
         // (`load_scene`); only hour data uploads per frame from here.
-        let hour_error = self.refresh_hour(state, document, &mut laps).err();
+        // The screen-space interface's scale. A capture keeps the dump's, 1.0
+        // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
+        // the same state stay the same frame.
+        let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
+        if self.last_view.is_none() && let Some(embedded) = &self.embedded {
+            let frame = ui.ctx().input(|input| input.viewport().inner_rect).map(|rect| [
+                (rect.width() * ui.ctx().pixels_per_point()).round() as u32,
+                (rect.height() * ui.ctx().pixels_per_point()).round() as u32,
+            ]);
+            if frame.is_none() || frame != embedded.frame_size() {
+                self.rendered = None;
+                ui.ctx().request_repaint();
+                return Ok(());
+            }
+        }
+        let raster = match pinned {
+            Some(_) => Raster::direct(self.options.ui_scale.unwrap_or(1.0)),
+            None => {
+                Self::watch_monitors(&mut self.monitor_seen, ui.ctx());
+                let setting = self.ui_scale;
+                let (matched, _) = Self::match_game(&mut self.match_game, document);
+                match setting {
+                    Setting::Manual(scale) => Raster::direct(scale),
+                    Setting::MatchGame => *matched,
+                }
+            }
+        };
+        let ui_scale = raster.ui_scale;
+        self.interface_points =
+            ui_scale_points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
+        let size = ui.available_size();
+        if size.x <= 0.0 || size.y <= 0.0 {
+            self.rendered = None;
+            ui.ctx().request_repaint();
+            return Ok(());
+        }
+        // capture: `--window-dump` renders at the size it was asked for rather
+        // than at the size the panels left over, so the frame it writes does not
+        // depend on this display's scale factor or on where the warning area
+        // wrapped. Match game renders into the game's framebuffer pixel space
+        // before presenting its completed image at the desktop stretch.
+        let pixels = match pinned {
+            Some((size, _)) => size,
+            None => raster.target([
+                (size.x * ui.ctx().pixels_per_point()).round() as u32,
+                (size.y * ui.ctx().pixels_per_point()).round() as u32,
+            ]),
+        };
+        let view = hours::View {
+            camera: self.last_view.map_or_else(
+                || {
+                    let map_size = MapSize::of(&document.map);
+                    let defines = document.map_defines;
+                    match pinned {
+                        Some((size, camera)) => camera.map_or_else(
+                            || Camera::fit(map_size, defines, size),
+                            |placement| placement.on(map_size, defines),
+                        ),
+                        None => self.orbit.view(self.camera.filter(|_| self.camera_manual).map_or_else(
+                            || Camera::fit(map_size, defines, pixels),
+                            |placement| placement.on(map_size, defines),
+                        )),
+                    }
+                },
+                |view| view.camera,
+            ),
+            viewport: pixels,
+            ui_scale,
+        };
+        let hour_error = self.refresh_hour(state, document, view, &mut laps).err();
         self.hour_error(hour_error.as_ref(), ui.ctx());
         // An error view otherwise stops repainting; a paused seek away from it
         // still needs to poll the asynchronous builders until its hour arrives.
@@ -3867,40 +3951,8 @@ impl Viewer {
         laps.lap("hour_misc");
         drop(_other_cost);
         let _other_cost = replay_frame::cpu::scope("frame.camera", Some("other"));
-        // The screen-space interface's scale. A capture keeps the dump's, 1.0
-        // unless `--ui-scale` names one, so a `--window-dump` and a `--dump` of
-        // the same state stay the same frame.
-        let pinned = self.capture.as_ref().and_then(|capture| capture.pinned);
-        let raster = match pinned {
-            Some(_) => Raster::direct(self.options.ui_scale.unwrap_or(1.0)),
-            None => {
-                Self::watch_monitors(&mut self.monitor_seen, ui.ctx());
-                let setting = self.ui_scale;
-                let (matched, _) = Self::match_game(&mut self.match_game, document);
-                match setting {
-                    Setting::Manual(scale) => Raster::direct(scale),
-                    Setting::MatchGame => *matched,
-                }
-            }
-        };
-        let ui_scale = raster.ui_scale;
         // Only diagnostics and a capture's saving frame need warning text.
         let build_warnings = builds_warnings(self.diagnostics, self.capture.as_ref());
-        self.interface_points =
-            ui_scale_points(1.0, raster.screen_scale(), ui.ctx().pixels_per_point());
-        let size = ui.available_size().max(egui::vec2(1.0, 1.0));
-        // capture: `--window-dump` renders at the size it was asked for rather
-        // than at the size the panels left over, so the frame it writes does not
-        // depend on this display's scale factor or on where the warning area
-        // wrapped. Match game renders into the game's framebuffer pixel space
-        // before presenting its completed image at the desktop stretch.
-        let pixels = match pinned {
-            Some((size, _)) => size,
-            None => raster.target([
-                (size.x * ui.ctx().pixels_per_point()).round() as u32,
-                (size.y * ui.ctx().pixels_per_point()).round() as u32,
-            ]),
-        };
         let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let map_size = MapSize::of(&document.map);
         if !self.camera_manual {
@@ -5176,19 +5228,29 @@ impl Viewer {
             if self.overlay_fraction != Some(document.hour_fraction) {
                 let prepared = self.prepared_overlay.as_mut().expect("prepared above");
                 prepared.set_pressed(self.counter_view.pressed, self.counter_view.plate_hovered);
-                prepared
-                    .draw_into(
-                        &now,
-                        overlay_camera,
-                        pixels,
-                        ui_scale,
-                        &self.overlay_layers,
-                        animation_time,
-                        &overlay_workers,
-                        self.overlay.get_or_insert_with(Batch::default),
-                        &mut self.counter_report,
-                    )
-                    .map_err(|error| error.to_string())?;
+                loop {
+                    prepared
+                        .draw_into(
+                            &now,
+                            overlay_camera,
+                            pixels,
+                            ui_scale,
+                            &self.overlay_layers,
+                            animation_time,
+                            &overlay_workers,
+                            self.overlay.get_or_insert_with(Batch::default),
+                            &mut self.counter_report,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    if self.rendered.is_some() { break; }
+                    document.icons.lazy.settle();
+                    if !prepared.is_stale(&now) && !document.icons.lazy.has_pending() { break; }
+                    *prepared = now.prepare_overlay_cached(
+                        overlay_camera, pixels, ui_scale,
+                        &self.overlay_tables.as_ref().expect("parsed above").3,
+                        &self.counter_view, &overlay_workers,
+                    ).map_err(|error| error.to_string())?;
+                }
                 if self.label_report != *prepared.label_report() {
                     self.label_report.clone_from(prepared.label_report());
                 }
@@ -6239,6 +6301,18 @@ impl Viewer {
         // The water animates, so the window keeps drawing.
         ui.ctx().request_repaint();
         self.drew_frame = true;
+        if self.shown.as_ref().is_some_and(|shown| shown.epoch == self.epoch)
+            && !document.icons.lazy.busy()
+            && self.prepared_overlay.as_ref().is_some_and(|prepared| !prepared.is_stale(&now))
+        {
+            if document.content.finish_loading()
+                && let Some(source) = &self.source
+                && std::env::var_os("BATTLE_PLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")).is_some()
+                && let Ok(options) = self.config.resolve_options()
+            {
+                crate::perf_log::source_admission_probe(source, &options);
+            }
+        }
         self.drawn_at = Some(crate::perf_log::epoch_ms());
         self.drawn_options.clone_from(&self.applying_options);
         self.rendered = Some(Playhead {

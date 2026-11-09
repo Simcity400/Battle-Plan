@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn retained_upload_inputs_compare_native_and_nested_bake_float_bits() {
         let program =
-            installed_content_core::pdxshader::program::read_with(b"absent.lua", &|_| None).unwrap();
+            installed_content_core::pdxshader::program::read_with::<Vec<u8>>(b"absent.lua", &|_| None).unwrap();
         let a = draw::Quad {
             source_draws: 1,
             path: "synthetic".into(),

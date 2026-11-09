@@ -37,6 +37,7 @@ mod effect_names;
 /// Content names available at one point in database loading.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeyNames {
+    pub buildings: Option<std::sync::Arc<buildings::Buildings>>,
     /// Folded scripted-trigger names.
     pub scripted: BTreeSet<Vec<u8>>,
     /// Scripted-effect names whose definition flag is set, loaded after idea tags.
@@ -203,7 +204,7 @@ impl KeyNames {
             ..Self::default()
         };
         if layers.paths()?.any(buildings::is_building_file) {
-            let buildings = buildings::read_with(layers, &names)?;
+            let buildings = layers.product("building types", 1, &[], |layers| buildings::read_with(layers, &names))?;
             names.counts.buildings =
                 CountTriggerNames::new(&buildings, &ideologies, &Default::default()).buildings;
             for (name, building) in &buildings.types {
@@ -221,6 +222,7 @@ impl KeyNames {
                     .province_buildings
                     .insert(name.as_bytes().to_ascii_lowercase(), flag);
             }
+            names.buildings = Some(buildings);
         }
         names.effects = effect_names::EffectNames::read(layers, &names)?;
         Ok(names)

@@ -146,7 +146,9 @@ impl Registry {
     /// Reads every `interface/**/*.gfx` of the stack in the game's order
     /// ([`sprites::gfx_order`]).
     pub fn load(layers: &ResolvedLayers) -> io::Result<Self> {
-        Ok(Self::from_files(sprites::read_layers(layers)?))
+        layers.product("interface registry", 1, &[], |layers| {
+            Ok(Self::from_files(sprites::read_layers(layers)?))
+        }).map(|registry| registry.as_ref().clone())
     }
 
     /// The registry over files already read, in load order.
@@ -228,9 +230,9 @@ fn vfs_path(candidate: &[u8]) -> Vec<u8> {
 /// texture loader passes the authored name and client's `decode` state to
 /// [`native::decode_texture_image`]. Read each candidate's bytes through `read`; return
 /// `Err(io)` only for failures other than a missing file.
-pub fn texture(
+pub fn texture<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     name: &[u8],
-    read: &dyn Fn(&[u8]) -> io::Result<Vec<u8>>,
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
     decode: native::Decode,
 ) -> io::Result<Result<Texture, NoTexture>> {
     texture_within(name, read, decode, None)
@@ -238,9 +240,9 @@ pub fn texture(
 
 /// [`texture`], refusing an image past `max_texels` from its header
 /// ([`native::decode_texture_image_within`]).
-fn texture_within(
+fn texture_within<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     name: &[u8],
-    read: &dyn Fn(&[u8]) -> io::Result<Vec<u8>>,
+    read: &dyn Fn(&[u8]) -> io::Result<B>,
     decode: native::Decode,
     max_texels: Option<u64>,
 ) -> io::Result<Result<Texture, NoTexture>> {
@@ -257,8 +259,8 @@ fn texture_within(
         let bytes_path = vfs_path(candidate);
         let path = String::from_utf8_lossy(&bytes_path).into_owned();
         tried.push(String::from_utf8_lossy(candidate).into_owned());
-        let bytes = match read(&bytes_path) {
-            Ok(bytes) => bytes,
+        let bytes: crate::content::Bytes = match read(&bytes_path) {
+            Ok(bytes) => bytes.into(),
             Err(error)
                 if matches!(
                     error.kind(),
@@ -275,12 +277,16 @@ fn texture_within(
                 bytes: bytes.len(),
             }));
         }
-        let decoded = match max_texels {
-            Some(max_texels) => {
-                native::decode_texture_image_within(name, &bytes, decode, max_texels)
-            }
-            None => native::decode_texture_image(name, &bytes, decode),
-        };
+        let mut parameters = vec![u8::from(decode.force_pow2_textures),
+            u8::from(name.len() > 3 && name[name.len() - 4..].eq_ignore_ascii_case(b".tga")),
+            u8::from(max_texels.is_some())];
+        parameters.extend_from_slice(&max_texels.unwrap_or_default().to_le_bytes());
+        let decoded = crate::content::Generation::derive(&bytes, "native texture decoding", 1, &parameters, || {
+            Ok(match max_texels {
+                Some(max_texels) => native::decode_texture_image_within(name, &bytes, decode, max_texels),
+                None => native::decode_texture_image(name, &bytes, decode),
+            })
+        })?;
         return Ok(match decoded {
             Ok(image) => Ok(Texture {
                 path,

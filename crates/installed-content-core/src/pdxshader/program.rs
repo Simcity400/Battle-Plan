@@ -160,6 +160,14 @@ pub fn read_reported(layers: &ResolvedLayers, effect: &[u8]) -> Result<Program, 
 }
 
 fn read_layers(layers: &ResolvedLayers, effect: &[u8], reported: bool) -> Result<Program, String> {
+    let mut parameters = vec![u8::from(reported)];
+    parameters.extend_from_slice(effect);
+    layers.product("shader program assembly", 1, &parameters, |layers| {
+        read_layer_program(layers, effect, reported).map_err(std::io::Error::other)
+    }).map(|program| program.as_ref().clone()).map_err(|error| error.to_string())
+}
+
+fn read_layer_program(layers: &ResolvedLayers, effect: &[u8], reported: bool) -> Result<Program, String> {
     let errors = std::cell::RefCell::new(Vec::new());
     let read = |path: &[u8]| {
         if reported {
@@ -198,9 +206,9 @@ fn read_layers(layers: &ResolvedLayers, effect: &[u8], reported: bool) -> Result
 /// Resolves each complete file through the caller's recorded content stack. Missing includes
 /// contribute nothing after their diagnostic. A missing root is the empty
 /// lookup record; a present root still requires its backend header.
-pub fn read_with(
+pub fn read_with<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     effect: &[u8],
-    read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
+    read: &dyn Fn(&[u8]) -> Option<B>,
 ) -> Result<Program, String> {
     use sha2::{Digest, Sha256};
     let digest = std::cell::RefCell::new(Sha256::new());
@@ -230,13 +238,13 @@ fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn read_with_inner(
+fn read_with_inner<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
     effect: &[u8],
-    read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
+    read: &dyn Fn(&[u8]) -> Option<B>,
 ) -> Result<Program, String> {
-    fn walk(
+    fn walk<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<crate::content::Bytes>>(
         path: &[u8],
-        read: &dyn Fn(&[u8]) -> Option<Vec<u8>>,
+        read: &dyn Fn(&[u8]) -> Option<B>,
         seen: &mut BTreeSet<Vec<u8>>,
         out: &mut Vec<(Vec<u8>, File)>,
     ) -> Result<(), String> {
@@ -256,7 +264,7 @@ fn read_with_inner(
                     let Some(bytes) = read(&path) else {
                         continue;
                     };
-                    let file = parse(&lossy(&path), &bytes)?;
+                    let file = parse(&lossy(&path), bytes)?;
                     let children: Vec<_> = file
                         .includes
                         .iter()
@@ -287,7 +295,7 @@ fn read_with_inner(
                 ..Program::default()
             });
         };
-        let root = parse(&lossy(&path), &bytes)?;
+        let root = parse(&lossy(&path), bytes)?;
         let mut seen = BTreeSet::new();
         for name in &root.includes {
             walk(&include(name), read, &mut seen, &mut files)?;
@@ -324,10 +332,9 @@ fn read_with_inner(
         let header = "gfx/FX/defines_hlsl_dx11.fxh";
         program.header = Source {
             path: header.into(),
-            text: String::from_utf8(
-                read(header.as_bytes()).ok_or_else(|| format!("missing {header}"))?,
-            )
-            .map_err(|e| format!("{header}: {e}"))?,
+            text: std::str::from_utf8(
+                &read(header.as_bytes()).ok_or_else(|| format!("missing {header}"))?,
+            ).map_err(|e| format!("{header}: {e}"))?.to_owned(),
         };
         program.dependencies.push(header.into());
         Ok(program)
@@ -459,7 +466,7 @@ fn source(out: &mut String, source: &Source) {
 
 // The shared native shader reader owns token walking, defaults, malformed keys and scanners.
 // This adapter emits the backend's source spelling and records source-file identity.
-fn parse(path: &str, bytes: &[u8]) -> Result<File, String> {
+fn parse(path: &str, bytes: impl Into<crate::content::Bytes>) -> Result<File, String> {
     fn text(path: &str, bytes: &[u8]) -> Result<String, String> {
         String::from_utf8(bytes.to_vec())
             .map_err(|e| format!("{path}: non-UTF8 shader token/code: {e}"))
@@ -566,7 +573,7 @@ fn parse(path: &str, bytes: &[u8]) -> Result<File, String> {
             entries,
         })
     }
-    let file = super::read_file(bytes);
+    let file = super::read_file(bytes).map_err(|error| format!("{path}: {error}"))?;
     let [common, vertex, pixel] = file.stages;
     Ok(File {
         includes: file.includes,

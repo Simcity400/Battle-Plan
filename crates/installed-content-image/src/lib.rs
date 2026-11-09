@@ -11,6 +11,8 @@ pub mod dds;
 pub mod native;
 pub mod rgba;
 pub mod tga;
+mod bytes;
+pub use bytes::{Bytes, WeakBytes};
 
 use std::io;
 
@@ -20,13 +22,23 @@ pub(crate) fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 /// Straight 8-bit RGBA pixels, row-major from the top-left corner.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rgba8Image {
+#[derive(Clone, Debug)]
+pub struct Rgba8Image<P = Vec<u8>> {
     pub width: u32,
     pub height: u32,
     /// `width * height * 4` bytes in R, G, B, A order.
-    pub pixels: Vec<u8>,
+    pub pixels: P,
 }
+
+pub type SharedRgba8Image = Rgba8Image<Bytes>;
+
+impl<P: AsRef<[u8]>, Q: AsRef<[u8]>> PartialEq<Rgba8Image<Q>> for Rgba8Image<P> {
+    fn eq(&self, other: &Rgba8Image<Q>) -> bool {
+        self.width == other.width && self.height == other.height && self.pixels.as_ref() == other.pixels.as_ref()
+    }
+}
+
+impl<P: AsRef<[u8]>> Eq for Rgba8Image<P> {}
 
 /// Palette-indexed pixels, row-major from the top-left corner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,7 +46,7 @@ pub struct IndexedImage {
     pub width: u32,
     pub height: u32,
     /// `width * height` palette indices.
-    pub indices: Vec<u8>,
+    pub indices: Bytes,
     /// RGBA entries; entries the file does not declare are all zero.
     pub palette: [[u8; 4]; 256],
 }

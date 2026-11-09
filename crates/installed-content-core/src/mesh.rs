@@ -62,6 +62,10 @@ pub use descriptors::{
 /// The four magic bytes every PDX binary asset starts with.
 pub const MAGIC: [u8; 4] = *b"@@b@";
 
+pub fn parse_in(layers: &crate::ResolvedLayers, path: &str) -> io::Result<std::sync::Arc<Node>> {
+    layers.file_product(path.as_bytes(), "binary asset grammar", 1, &[], |bytes| parse(bytes))
+}
+
 fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message.into())
 }
@@ -699,6 +703,12 @@ fn locals_by_name(animation: &Animation, frame: u32) -> BTreeMap<&str, Transform
 /// triangle index outside the vertex streams.
 pub fn read(bytes: &[u8]) -> io::Result<Mesh> {
     read_tree(&parse(bytes)?)
+}
+
+pub fn read_animation_in(layers: &crate::ResolvedLayers, path: &str) -> io::Result<std::sync::Arc<Animation>> {
+    layers.file_product(path.as_bytes(), "skeletal animation", 1, &[], |bytes| {
+        read_animation(bytes)
+    })
 }
 
 /// Projects a parsed container, preserving `read`'s post-parse validation order.

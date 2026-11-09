@@ -250,7 +250,7 @@ pub fn texture_candidates(name: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Loads `family`'s glyphs, reading each `.fnt` by its bytes through `read`.
-pub fn load_glyphs(family: &FontFamily, read: &dyn Fn(&[u8]) -> Option<Vec<u8>>) -> GlyphSet {
+pub fn load_glyphs<B: AsRef<[u8]> + std::ops::Deref<Target = [u8]> + Into<installed_content_image::Bytes>>(family: &FontFamily, read: &dyn Fn(&[u8]) -> Option<B>) -> GlyphSet {
     let mut set = GlyphSet::default();
     for (page, entry) in family.files.iter().enumerate() {
         let mut texture = entry.clone();

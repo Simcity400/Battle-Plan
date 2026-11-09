@@ -2374,6 +2374,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "Battle Plan",
         native,
         Box::new(move |cc| {
+            let _generation = installed_content_core::content::Generation::enter();
             if let Some(state) = &cc.wgpu_render_state {
                 renderer_host::bind(state);
             }

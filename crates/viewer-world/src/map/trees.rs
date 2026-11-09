@@ -24,7 +24,7 @@ use viewer_foundation::map::textures::load_image;
 use bytemuck::{Pod, Zeroable};
 use eframe::wgpu;
 use installed_content_core::{ResolvedLayers, mesh, mesh::Descriptors};
-use installed_content_image::{IndexedImage, Rgba8Image, dds, native::Decode};
+use installed_content_image::{IndexedImage, SharedRgba8Image as Rgba8Image, dds, native::Decode};
 
 use {
     super::shadow::{BUFFER_FORMAT, DEPTH_MAP_FORMAT},

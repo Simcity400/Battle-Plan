@@ -322,6 +322,10 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<BTreeSet<Vec<u8>>> {
 /// The aliases of the content stack, listing the directory's own `.txt`
 /// files through [`script_files::paths`].
 pub fn read(layers: &ResolvedLayers) -> io::Result<TagAliases> {
+    layers.recorded_product("tag aliases", 1, &[], read_aliases).map(|aliases| aliases.as_ref().clone())
+}
+
+fn read_aliases(layers: &ResolvedLayers) -> io::Result<TagAliases> {
     let mut files = Vec::new();
     for path in script_files::paths(layers, FOLDER, Some(".txt"))? {
         files.push((path.to_string(), path.read(layers)?));

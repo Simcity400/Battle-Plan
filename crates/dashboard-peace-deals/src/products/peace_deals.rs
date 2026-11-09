@@ -380,7 +380,7 @@ fn present(
         );
         return admitted(reply);
     };
-    if let Err(error) = content::localisation_key(options) {
+    if let Err(error) = content::localisation_key(source, options) {
         reply
             .warnings
             .push(format!("Peace action names are unavailable: {error}"));

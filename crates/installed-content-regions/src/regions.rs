@@ -260,6 +260,10 @@ impl StrategicRegion {
 
 /// Reads every region of the stack's `map/strategicregions` files.
 pub fn read(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
+    layers.recorded_product("strategic regions", 1, &[], read_regions).map(|regions| regions.as_ref().clone())
+}
+
+fn read_regions(layers: &ResolvedLayers) -> io::Result<StrategicRegions> {
     let mut database = StrategicRegions::default();
     let mut sources: BTreeMap<u32, String> = BTreeMap::new();
     for path in layers.directory_files("map/strategicregions", ".txt")? {

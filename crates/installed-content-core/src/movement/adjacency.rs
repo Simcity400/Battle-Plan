@@ -14,7 +14,7 @@ use crate::{ResolvedLayers, fields::invalid, terrain::DefaultMap};
 pub fn read_authored(
     layers: &ResolvedLayers,
     default_map: &DefaultMap,
-) -> io::Result<Option<Vec<u8>>> {
+) -> io::Result<Option<crate::content::Bytes>> {
     let Some(path) = authored_path(default_map) else {
         return Ok(None);
     };

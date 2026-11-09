@@ -1984,7 +1984,7 @@ city_group = {
         IndexedImage {
             width,
             height: rows.len() as u32,
-            indices,
+            indices: indices.into(),
             palette: [[0; 4]; 256],
         }
     }
@@ -2004,7 +2004,7 @@ city_group = {
             values: &values,
         };
         let mut rivers = style.clone();
-        rivers.indices.fill(254);
+        rivers.indices.make_mut().fill(254);
         let plan = generate(
             &cities,
             &style,
@@ -2057,7 +2057,7 @@ city_group = {
             values: &values,
         };
         let mut rivers = style.clone();
-        rivers.indices.fill(254);
+        rivers.indices.make_mut().fill(254);
         let plan = generate(
             &cities,
             &style,

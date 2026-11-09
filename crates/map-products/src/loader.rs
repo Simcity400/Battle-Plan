@@ -8,7 +8,6 @@ use std::{
     sync::Arc,
 };
 use viewer_foundation::{
-    errors::invalid,
     map::{
         province_geometry::ProvinceGeometry,
         province_map::{HeightField, ProvinceMap},
@@ -111,10 +110,7 @@ impl Loader {
     ) -> io::Result<installed_content_image::IndexedImage> {
         let layers = self.reader(&self.layers, "heightmap");
         self.result((|| {
-            installed_content_image::bmp::decode_indexed(
-                &layers.read(&format!("map/{}", default_map.heightmap))?,
-            )
-            .map_err(|error| invalid(format!("map/{}: {error}", default_map.heightmap)))
+            installed_content_core::terrain::read_indexed_image(&layers, &format!("map/{}", default_map.heightmap))
         })())
     }
 

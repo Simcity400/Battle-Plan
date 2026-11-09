@@ -538,7 +538,7 @@ fn the_world_normal_loads_as_the_game_decodes_a_texture() {
         world_normal(&read(bitfields), Decode::default()).unwrap(),
         expected
     );
-    let missing = world_normal(
+    let missing = world_normal::<Vec<u8>>(
         &|_: &[u8]| Err(io::Error::from(io::ErrorKind::NotFound)),
         Decode::default(),
     );

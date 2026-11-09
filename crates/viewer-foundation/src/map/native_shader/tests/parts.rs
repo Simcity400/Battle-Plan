@@ -20,7 +20,7 @@ fn images() -> Vec<dds::Texture> {
                             if seed == 0 { 128 } else { 192 },
                         ]
                     })
-                    .collect(),
+                    .collect::<Vec<_>>(),
             })
         })
         .collect();

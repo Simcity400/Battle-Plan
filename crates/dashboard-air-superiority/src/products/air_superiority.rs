@@ -1295,7 +1295,7 @@ fn resolve_names(
             .content
             .as_ref()
             .ok_or_else(|| invalid("game folders are not chosen"))?;
-        let key = content::localisation_key(options)?;
+        let key = content::localisation_key(source, options)?;
         let state = source.append_state::<RegionNames>();
         let cached = state
             .lock()

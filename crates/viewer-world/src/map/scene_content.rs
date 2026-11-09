@@ -1,6 +1,6 @@
 //! Immutable world texture and shader content. The host owns ordered loading.
 use super::post::PostAssets;
-use installed_content_image::{IndexedImage, Rgba8Image, dds};
+use installed_content_image::{IndexedImage, SharedRgba8Image as Rgba8Image, dds};
 use std::sync::Arc;
 use viewer_foundation::map::camera::MapSize;
 

@@ -39,7 +39,7 @@ layer-fixtures = []
 
 [target.'cfg(windows)'.dependencies]
 # Native folder opens and the monitors the game's SDL display indices name.
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_UI_HiDpi"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_UI_HiDpi"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # Synthetic timestamp-preserving mutation regressions inspect file change records.

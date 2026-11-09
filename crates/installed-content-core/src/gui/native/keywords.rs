@@ -30,6 +30,10 @@ pub struct DynamicTokens(Arc<BTreeSet<Vec<u8>>>);
 impl DynamicTokens {
     /// Direct `.txt` files in filename byte order, each read as one string list.
     pub fn read(layers: &ResolvedLayers) -> io::Result<Self> {
+        layers.product("interface dynamic tokens", 1, &[], Self::read_tokens).map(|tokens| tokens.as_ref().clone())
+    }
+
+    fn read_tokens(layers: &ResolvedLayers) -> io::Result<Self> {
         let mut files = Vec::new();
         // Byte paths preserve archive filenames that a text listing cannot represent.
         let directory = b"common/synchronized_dynamic_tokens/";
@@ -43,7 +47,7 @@ impl DynamicTokens {
         {
             files.push(layers.read_path(&path)?);
         }
-        Ok(Self::from_files(files.iter().map(Vec::as_slice)))
+        Ok(Self::from_files(files.iter().map(|bytes| bytes.as_ref())))
     }
 
     /// Read strings from each file's start to a closing brace or the end.

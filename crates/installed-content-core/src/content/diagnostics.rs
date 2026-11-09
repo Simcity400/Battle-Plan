@@ -6,8 +6,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, replay_spool::Spooled)]
 struct Notes {
     uncovered: BTreeMap<u32, BTreeSet<LayerPath>>,
     overlays: BTreeMap<String, BTreeSet<LayerPath>>,
@@ -16,8 +15,7 @@ struct Notes {
     refused: BTreeSet<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-#[derive(replay_spool::Spooled)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, replay_spool::Spooled)]
 pub struct Diagnostics(Option<Arc<Notes>>);
 
 static EMPTY: Notes = Notes {
@@ -160,6 +158,35 @@ impl Diagnostics {
             }
         });
         super::credit_overlay_observers(&self.notes().fallbacks);
+    }
+
+    pub(super) fn credit_to(&self, layers: &super::ResolvedLayers) {
+        if self.is_empty() {
+            return;
+        }
+        if let Some(paths) = layers
+            .uncovered_reads
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            paths.extend(self.uncovered_paths().cloned());
+        }
+        {
+            let mut own = layers
+                .overlay_reads
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            for (name, paths) in &self.notes().overlays {
+                own.reads
+                    .entry(name.clone())
+                    .or_default()
+                    .extend(paths.iter().cloned());
+            }
+            own.refusals.extend(self.notes().fallbacks.iter().cloned());
+            own.refused.extend(self.notes().refused.iter().cloned());
+        }
+        self.credit();
     }
 
     pub fn append_to(&self, warnings: &mut Vec<String>) {
@@ -485,7 +512,7 @@ mod tests {
                         std::thread::scope(|scope| {
                             crate::parallel::join(crate::parallel::spawn(scope, || {
                                 layers.note_shader_warning(warning.to_owned());
-                                layers.read_uncovered(path).unwrap()
+                                layers.read_uncovered(path).unwrap().into_vec()
                             }))
                         })
                     })

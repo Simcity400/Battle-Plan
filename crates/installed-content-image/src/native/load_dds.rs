@@ -104,7 +104,8 @@ enum Form {
 
 /// Load a file with DDS magic: `Ok(None)` for `DXT2`/`DXT4`, so the decoding chain goes on.
 /// A zero side is kept: texture creation refuses it unless `pad_power_of_two` widens it first.
-pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
+pub(super) fn load(bytes: impl Into<crate::Bytes>) -> Result<Option<(Texture, Zero)>, Failure> {
+    let bytes = bytes.into();
     if bytes.len() < HEADER {
         return Err(Failure::Undefined(format!(
             "a {}-byte DDS: DDS decoding reads its 128-byte header past the end of the file",
@@ -125,7 +126,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
     // which texture creation refuses. Other DX10 files use that path; BC1-3 keeps its
     // block-rounded chain below.
     if start == HEADER + 20 && bytes.len() >= HEADER + 4 && matches!(word(128), 98 | 99) {
-        return bc7(bytes, word, word(128) == 99);
+        return bc7(&bytes, word, word(128) == 99);
     }
     let form = if fourcc == code(b"DXT1") {
         Form::Blocks(TextureFormat::Bc1, 8)
@@ -179,9 +180,9 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
             w * h * unit
         }
     };
-    let convert = |source: &[u8]| match &form {
-        Form::Blocks(..) => source.to_vec(),
-        Form::Pixels(pixels) => pixels.convert(source),
+    let convert = |source: &[u8], offset: usize| match &form {
+        Form::Blocks(..) => bytes.slice(offset..offset + source.len()),
+        Form::Pixels(pixels) => pixels.convert(source).into(),
     };
     let (format, zero) = match &form {
         Form::Blocks(format, _) => (*format, Zero::Transparent),
@@ -210,7 +211,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
                 levels.push(MipLevel {
                     width: level_width,
                     height: level_height,
-                    data: convert(source),
+                    data: convert(source, offset),
                 });
                 offset += size;
                 if level_width == 1
@@ -250,7 +251,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
         levels.push(MipLevel {
             width: level_width,
             height: level_height,
-            data: convert(source),
+            data: convert(source, offset),
         });
         offset += size;
         if level_width == 1 || level_height == 1 || levels.len() as u64 >= u64::from(mip_count) {
@@ -286,7 +287,7 @@ pub(super) fn load(bytes: &[u8]) -> Result<Option<(Texture, Zero)>, Failure> {
 
 /// The BC7-only DX10 branch: DDS logical sizes and complete authored mip chains.
 fn bc7(
-    bytes: &[u8],
+    bytes: &crate::Bytes,
     word: impl Fn(usize) -> u32,
     srgb: bool,
 ) -> Result<Option<(Texture, Zero)>, Failure> {
@@ -345,7 +346,7 @@ fn bc7(
         levels.push(MipLevel {
             width,
             height,
-            data: data.to_vec(),
+            data: bytes.slice(offset..offset + data.len()),
         });
         offset = end;
     }

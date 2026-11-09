@@ -43,8 +43,200 @@ struct Log {
 
 static LOG: OnceLock<Option<Log>> = OnceLock::new();
 
+static STARTUP: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
+
+
+pub(crate) fn first_complete() {
+    let Some(path) = std::env::var_os("BATTLE_PLAN_FIRST_FRAME_FILE").or_else(|| std::env::var_os("HOI4_FIRST_FRAME_FILE")) else { return; };
+    let event = serde_json::json!({"stage": "complete first hour", "at": epoch_ms()});
+    if let Ok(bytes) = serde_json::to_vec(&event) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+pub(crate) fn source_admission_probe(source: &dashboard::Source, options: &installed_content_core::ResolveOptions) {
+    let Some(path) = std::env::var_os("BATTLE_PLAN_SOURCE_ADMISSION_FILE").or_else(|| std::env::var_os("HOI4_SOURCE_ADMISSION_FILE")) else { return; };
+    let measure = || -> std::io::Result<serde_json::Value> {
+        let content = source.content(options)?;
+        let before = content.layers.content_counts().generation_validations;
+        let mut sequential_us = Vec::new();
+        for _ in 0..100 {
+            let started = Instant::now();
+            let current = source.content(options)?;
+            sequential_us.push(started.elapsed().as_secs_f64() * 1e6);
+            if !std::sync::Arc::ptr_eq(&current, &content) {
+                return Err(std::io::Error::other("admission probe changed content generation"));
+            }
+        }
+        let started = Instant::now();
+        std::thread::scope(|scope| -> std::io::Result<()> {
+            let jobs: Vec<_> = (0..20).map(|_| {
+                let expected = &content;
+                scope.spawn(move || {
+                    let current = source.content(options)?;
+                    if !std::sync::Arc::ptr_eq(&current, expected) {
+                        return Err(std::io::Error::other("concurrent admission changed content generation"));
+                    }
+                    Ok(())
+                })
+            }).collect();
+            for job in jobs {
+                job.join().map_err(|_| std::io::Error::other("admission probe worker panicked"))??;
+            }
+            Ok(())
+        })?;
+        let concurrent_us = started.elapsed().as_secs_f64() * 1e6;
+        let after = content.layers.content_counts().generation_validations;
+        Ok(serde_json::json!({
+            "source_id": source.key().source_id, "revision": source.key().revision,
+            "pid": std::process::id(),
+            "sequential_us": sequential_us, "concurrent_us": concurrent_us,
+            "validations_before": before, "validations_after": after,
+            "scope": "Map Source after its complete frame; 100 cached sequential admissions and 20 concurrent admissions, including thread creation; no transport"
+        }))
+    };
+    let result = measure().unwrap_or_else(|error| serde_json::json!({"error": error.to_string()}));
+    if let Ok(bytes) = serde_json::to_vec(&result) {
+        let _ = std::fs::write(path, bytes);
+    }
+}
+
+pub(crate) struct StartupSpan {
+    name: &'static str,
+    started: Option<(Instant, Option<u64>)>,
+    loaders: Option<installed_content_core::parallel::cpu::Measurement>,
+    source: Option<String>,
+    peak_before: Option<u64>,
+}
+
+fn requested() -> bool {
+    static REQUESTED: OnceLock<bool> = OnceLock::new();
+    *REQUESTED
+        .get_or_init(|| std::env::var_os("BATTLE_PLAN_PERF_MAP_LOG").or_else(|| std::env::var_os("HOI4_PERF_MAP_LOG")).is_some_and(|path| !path.is_empty()))
+}
+
+pub(crate) fn hour_view(epoch: u64, branch: replay_data::BranchId, hour: replay_data::Hour, view: crate::hours::View) {
+    let Some(log) = log() else { return; };
+    let at = epoch_ms();
+    log.send(serde_json::json!({
+        "t": "map_view", "at": at, "pid": std::process::id(),
+        "epoch": epoch, "branch": branch, "hour": hour,
+        "viewport": view.viewport, "ui_scale": view.ui_scale,
+    }).to_string(), at);
+}
+
+impl StartupSpan {
+    pub(crate) fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            started: requested().then(|| (Instant::now(), replay_frame::cpu::process_cpu_ns())),
+            loaders: None,
+            source: None,
+            peak_before: None,
+        }
+    }
+
+    pub(crate) fn with_loaders(mut self, path: &std::path::Path) -> Self {
+        if self.started.is_some() {
+            self.loaders = Some(installed_content_core::parallel::cpu::Measurement::start());
+            self.source = Some(path.display().to_string());
+            self.peak_before = startup_memory().map(|memory| memory.0);
+        }
+        self
+    }
+}
+
+impl Drop for StartupSpan {
+    fn drop(&mut self) {
+        let Some((started, cpu)) = self.started.take() else {
+            return;
+        };
+        let loaders = self.loaders.take().map(|measurement| measurement.finish());
+        let at = epoch_ms();
+        let cpu = cpu
+            .zip(replay_frame::cpu::process_cpu_ns())
+            .map(|(from, to)| to.saturating_sub(from) as f64 / 1e6);
+        let memory = startup_memory();
+        let line = serde_json::json!({
+            "t": "map_stage", "at": at, "pid": std::process::id(), "name": self.name,
+            "ms": started.elapsed().as_secs_f64() * 1000.0, "process_cpu_ms": cpu,
+            "loader_cpu_ms": loaders.as_ref().and_then(|sample| sample.ns).map(|ns| ns as f64 / 1e6),
+            "loader_threads": loaders.as_ref().map(|sample| sample.threads), "source": self.source,
+            "process_peak_commit_before_bytes": self.peak_before,
+            "process_peak_commit_bytes": memory.map(|memory| memory.0),
+            "process_private_bytes": memory.map(|memory| memory.1),
+            "process_peak_working_set_bytes": memory.map(|memory| memory.2),
+        }).to_string();
+        let mut pending = STARTUP
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(Some(log)) = LOG.get() {
+            drop(pending);
+            log.send(line, at);
+        } else {
+            pending.push((line, at));
+        }
+    }
+}
+
+fn startup_memory() -> Option<(u64, u64, u64)> {
+    #[cfg(windows)]
+    {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Memory {
+            size: u32,
+            faults: u32,
+            peak_working: usize,
+            working: usize,
+            peak_paged: usize,
+            paged: usize,
+            peak_nonpaged: usize,
+            nonpaged: usize,
+            pagefile: usize,
+            peak_pagefile: usize,
+            private: usize,
+        }
+        #[link(name = "psapi")]
+        unsafe extern "system" {
+            fn GetProcessMemoryInfo(
+                process: windows_sys::Win32::Foundation::HANDLE,
+                counters: *mut std::ffi::c_void,
+                size: u32,
+            ) -> i32;
+        }
+        let mut memory = Memory {
+            size: std::mem::size_of::<Memory>() as u32,
+            ..Default::default()
+        };
+        let ok = unsafe {
+            GetProcessMemoryInfo(
+                windows_sys::Win32::System::Threading::GetCurrentProcess(),
+                (&mut memory as *mut Memory).cast(),
+                memory.size,
+            )
+        };
+        (ok != 0).then_some((
+            memory.peak_pagefile as u64,
+            memory.private as u64,
+            memory.peak_working as u64,
+        ))
+    }
+    #[cfg(not(windows))]
+    None
+}
+
 fn log() -> Option<&'static Log> {
-    LOG.get_or_init(open).as_ref()
+    let log = LOG.get_or_init(open).as_ref()?;
+    let pending = std::mem::take(
+        &mut *STARTUP
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    for (line, at) in pending {
+        log.send(line, at);
+    }
+    Some(log)
 }
 
 /// Milliseconds since the Unix epoch, the clock the host and the page measure with too.
@@ -89,7 +281,11 @@ fn open() -> Option<Log> {
                     // An idle mark tells the host this queue held nothing older.
                     Err(RecvTimeoutError::Timeout) => {
                         owed_loss(&mut out);
-                        let _ = writeln!(out, r#"{{"t":"map_idle","at":{:.3},"pid":{pid}}}"#, epoch_ms());
+                        let _ = writeln!(
+                            out,
+                            r#"{{"t":"map_idle","at":{:.3},"pid":{pid}}}"#,
+                            epoch_ms()
+                        );
                         let _ = out.flush();
                         continue;
                     }
@@ -106,7 +302,11 @@ fn open() -> Option<Log> {
                 }
                 if finished {
                     owed_loss(&mut out);
-                    let _ = writeln!(out, r#"{{"t":"map_close","at":{:.3},"pid":{pid}}}"#, epoch_ms());
+                    let _ = writeln!(
+                        out,
+                        r#"{{"t":"map_close","at":{:.3},"pid":{pid}}}"#,
+                        epoch_ms()
+                    );
                 }
                 // The host may end this process after any frame.
                 let _ = out.flush();

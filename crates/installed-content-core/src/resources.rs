@@ -224,6 +224,10 @@ fn parse_file(input: &[u8]) -> FileRead {
 
 /// Every resource declaration in load order, and the files whose reading stops short.
 pub fn read(layers: &ResolvedLayers) -> io::Result<(Resources, Vec<Diagnostic>)> {
+    layers.recorded_product("strategic resources", 1, &[], read_resources).map(|resources| resources.as_ref().clone())
+}
+
+fn read_resources(layers: &ResolvedLayers) -> io::Result<(Resources, Vec<Diagnostic>)> {
     let mut warnings = Vec::new();
     let mut result = Resources::default();
     for path in script_files::paths(layers, "common/resources/", Some(".txt"))? {

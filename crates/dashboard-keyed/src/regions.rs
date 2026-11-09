@@ -25,7 +25,7 @@ impl RegionNames {
     /// are not chosen or the regions do not read.
     pub fn read(query: &Query<'_>) -> Result<Arc<Self>, String> {
         let options = query.content.ok_or("Game folders are not chosen")?;
-        let key = content::localisation_key(options).map_err(|error| error.to_string())?;
+        let key = content::localisation_key(query.source, options).map_err(|error| error.to_string())?;
         query
             .source
             .state::<KeyedResults<content::LocalisationKey, RegionNames>>()

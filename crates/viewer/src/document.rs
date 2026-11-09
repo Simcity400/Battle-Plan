@@ -239,6 +239,8 @@ fn load_sprawl(
 /// The verified local game content a replay is drawn with: everything that
 /// does not change with the recorded hour.
 pub struct Content {
+    loading: installed_content_core::content::Loading,
+    first_frame_reported: std::sync::atomic::AtomicBool,
     /// The executable tables the recording carries, which its map's work reads in their scope.
     pub tables: Option<engine_executable::executable_tables::Tables>,
     pub products: map_products::ProductContent,
@@ -1333,6 +1335,42 @@ pub fn select_movement(
     Ok(())
 }
 
+impl Content {
+    pub fn release_loading(&self) {
+        self.loading.finish();
+    }
+
+    pub fn finish_loading(&self) -> bool {
+        self.release_loading();
+        if self
+            .first_frame_reported
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return false;
+        }
+        crate::perf_log::first_complete();
+        let _post_load = crate::perf_log::StartupSpan::new("content_post_load");
+        if let Some(path) = std::env::var_os("BATTLE_PLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
+            let counts = serde_json::json!({
+                "stage": "complete first hour",
+                "at": crate::perf_log::epoch_ms(),
+                "artwork_pending": self.icons.lazy.has_pending(),
+                "reads": installed_content_core::content::io_counts::snapshot(),
+                "graph": self.loading.counts(),
+            });
+            if let Ok(bytes) = serde_json::to_vec(&counts) {
+                let _ = std::fs::write(path, bytes);
+            }
+        }
+        true
+    }
+}
+
+pub enum LoadTarget {
+    Content,
+    Scene,
+}
+
 impl Document {
     /// Which tables the open recording holds.
     pub fn capture_mode(&self) -> replay_data::scope::CaptureMode {
@@ -1347,6 +1385,7 @@ impl Document {
         visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
     ) -> io::Result<Self> {
+        let _generation = installed_content_core::content::Generation::inherit();
         let path = fs::canonicalize(path)?;
         let replay = Arc::new(Replay::open_timelines(&path)?);
         let source = dashboard::Source::from_replay(
@@ -1364,13 +1403,18 @@ impl Document {
             allow_unverified,
             initial,
             replay,
+            &source,
             visual_mods,
             texture_quality,
             None,
+            LoadTarget::Content,
         )?;
         document.bind_source(&source);
         // The hour read before the binding could not read a native map: read it again.
-        if !matches!(document.playback.current(), crate::playback::Current::Frame(_)) {
+        if !matches!(
+            document.playback.current(),
+            crate::playback::Current::Frame(_)
+        ) {
             let (branch, hour) = (document.playback.branch(), document.playback.hour());
             document.playback.seek(branch, hour)?;
         }
@@ -1393,29 +1437,79 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        source: &dashboard::Source,
         visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
+        target: LoadTarget,
     ) -> io::Result<Self> {
+        let _startup = crate::perf_log::StartupSpan::new("document").with_loaders(path);
         // A visual mod that changed while the content loaded, when a refresh would find nothing
         // loaded to check, loads it again: what installs is what the mods hold as it installs.
-        until_current(
+        let resolved = std::cell::RefCell::new({
+            let _admission = crate::perf_log::StartupSpan::new("source_admission");
+            source.content(options)?
+        });
+        let document = until_current(
             || {
-                let document = Self::load_shared_once(
-                    path,
-                    options,
-                    allow_unverified,
-                    initial,
-                    Arc::clone(&replay),
-                    visual_mods,
-                    texture_quality,
-                    visual_fallback,
-                )?;
-                let revision = document.content.visual_revision.clone();
-                Ok((document, revision))
+                loop {
+                    let mut current = Arc::clone(&resolved.borrow());
+                    let valid = {
+                        let _validation =
+                            crate::perf_log::StartupSpan::new("source_generation_validation");
+                        current.layers.generation_is_current()
+                            && current.layers.validate_generation().is_ok()
+                    };
+                    if !valid {
+                        current = source.refresh_content(options, &current)?;
+                        *resolved.borrow_mut() = Arc::clone(&current);
+                    }
+                    let _generation = current.layers.enter_generation();
+                    let document = Self::load_shared_once(
+                        path,
+                        options,
+                        allow_unverified,
+                        initial,
+                        Arc::clone(&replay),
+                        Arc::clone(&current),
+                        visual_mods,
+                        texture_quality,
+                        visual_fallback,
+                    );
+                    let document = match document {
+                        Ok(document) => document,
+                        Err(error) => {
+                            let _validation =
+                                crate::perf_log::StartupSpan::new("failed_generation_validation");
+                            if !current.layers.generation_is_current()
+                                || current.layers.validate_generation().is_err()
+                            {
+                                let fresh = source.refresh_content(options, &current)?;
+                                *resolved.borrow_mut() = fresh;
+                                continue;
+                            }
+                            return Err(error);
+                        }
+                    };
+                    let revision = document.content.visual_revision.clone();
+                    return Ok((document, revision));
+                }
             },
-            || visual_revision_now(options, &replay, visual_mods),
-        )
+            || {
+                let _revision = crate::perf_log::StartupSpan::new("visual_mod_revision");
+                let current = resolved.borrow();
+                let _generation = current.layers.enter_generation();
+                visual_revision_now(options, &replay, visual_mods)
+            },
+        )?;
+        {
+            let _sources = crate::perf_log::StartupSpan::new("source_release");
+            document.content.loading.release_sources();
+            if matches!(target, LoadTarget::Content) {
+                document.content.release_loading();
+            }
+        }
+        Ok(document)
     }
 
     /// [`Self::load_shared`], once, with the recording's own executable tables in scope.
@@ -1426,6 +1520,7 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        resolved: Arc<installed_content_core::content::ResolvedContent>,
         visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
@@ -1440,6 +1535,7 @@ impl Document {
                 allow_unverified,
                 initial,
                 replay,
+                resolved,
                 visual_mods,
                 texture_quality,
                 visual_fallback,
@@ -1454,10 +1550,12 @@ impl Document {
         allow_unverified: bool,
         initial: &InitialHour,
         replay: Arc<Replay>,
+        resolved: Arc<installed_content_core::content::ResolvedContent>,
         visual_mods: Option<&[installed_content_core::content::visual::Choice]>,
         texture_quality: u8,
         visual_fallback: Option<VisualFallback<'_>>,
     ) -> io::Result<Self> {
+        let _generation = installed_content_core::content::Generation::inherit();
         let mut warnings = dashboard_base::metadata::build_warnings(&replay);
         warnings.extend(replay.compatibility_gaps());
         warnings.extend(replay.warnings.iter().cloned());
@@ -1482,11 +1580,8 @@ impl Document {
         let recorded_language = language.strip_prefix("l_").unwrap_or(language).to_owned();
         // Replay::open requires every session to have the same content identity.
         // The recorded layer ids and hashes, rather than launcher state, select it.
-        let mut content = installed_content_core::playback(
-            &replay.identity,
-            dashboard_base::facts::recorded(&replay),
-            options,
-        )?;
+        let mut content = resolved.as_ref().clone();
+        content.layers = content.layers.with_own_overlay_diagnostics();
         content.append_changed_to(&mut warnings);
         let uncovered_reads = content.layers.report_uncovered_reads();
         let mut visual_revision = String::new();
@@ -1595,153 +1690,154 @@ impl Document {
         uncovered_reads: installed_content_core::content::UncoveredReads,
     ) -> io::Result<Self> {
         let content = Arc::new(content);
-        let scripted = Arc::new(dashboard::scripted_text::ScriptedContent::read(
-            Arc::clone(&content),
-            recorded_language.clone(),
-        ));
-        let map = product_loader.map()?;
-        let (terrain, default_map) = product_loader.terrain()?;
-        // The game logs a malformed terrain entry or field and loads the rest.
-        for reason in &terrain.skipped {
-            warnings.push(format!(
-                "Terrain content the game logs and reads past: {reason}."
-            ));
-        }
-        let defines = product_loader.defines()?;
-        let audio = product_loader.audio(&defines, &options.user_dir, &mut warnings);
-        // Graphics consumers read the recorded defines with the graphics sections of the defines
-        // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
-        // simulation section stays recorded, for every consumer. A graphics value of another
-        // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
-        // keep the recorded defines, each named.
-        let art_defines = defines.graphics_for(&content.layers);
-        let game_speeds = viewer_foundation::map::frame::GameSpeeds::load(&defines);
-        // The defines an artwork loader reads with the stack it was handed: graphics defines
-        // with the visual mods, recorded defines when it falls back to the recording.
-        let defines_for = |stack: &installed_content_core::ResolvedLayers| {
-            if stack.shows_visual_mods() {
-                &art_defines
-            } else {
-                &defines
+        std::thread::scope(|prefix| {
+            let scripted_content = Arc::clone(&content);
+            let scripted_language = recorded_language.clone();
+            let h_scripted = installed_content_core::parallel::spawn(prefix, move || {
+                let _startup = crate::perf_log::StartupSpan::new("document_scripted_text");
+                Arc::new(dashboard::scripted_text::ScriptedContent::read(
+                    scripted_content,
+                    scripted_language,
+                ))
+            });
+            let map = product_loader.map()?;
+            let (terrain, default_map) = product_loader.terrain()?;
+            // The game logs a malformed terrain entry or field and loads the rest.
+            for reason in &terrain.skipped {
+                warnings.push(format!(
+                    "Terrain content the game logs and reads past: {reason}."
+                ));
             }
-        };
-        // Every key as the game reads it (`installed_content_settings::settings::SettingsKeys`).
-        let settings = installed_content_settings::settings::read_keys(&options.user_dir)?;
-        let camera_tilt = viewer_foundation::map::camera::stored_tilt(
-            settings
-                .f32_or_constructed(
-                    &["camera_tilt"],
-                    installed_content_settings::settings::constructed::CAMERA_TILT,
-                )
-                .ok_or_else(|| invalid("settings.txt camera_tilt is not a number"))?,
-        );
-        // The local graphics preference defaults on when no boolean value is stored.
-        // The game halves the HDR scene; the output/interface remain full size.
-        let game_full_resolution = settings
-            .bool_at(&["maprenderingoptions", "draw_map_full_res"])
-            .unwrap_or(true);
-        let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
-        let game_audio = dashboard::map_settings::game_audio(&settings);
-        let game_dev_master = dashboard::map_settings::game_dev_master(&settings);
-        let cursor = content
-            .layers
-            .read_uncovered("gfx/cursors/normal.cur")
-            .and_then(|bytes| installed_content_image::cursor::decode(&bytes))
-            .map(|cursor| eframe::egui::CustomCursorImage {
-                rgba: cursor.image.pixels.into(),
-                size: [cursor.image.width as u16, cursor.image.height as u16],
-                hotspot: cursor.hotspot,
-            })
-            .map_err(|error| format!("gfx/cursors/normal.cur: {error}"));
-        let map_defines = crate::map_assets::graphics_define(
-            &content.layers,
-            "camera and map",
-            &art_defines,
-            &defines,
-            |defines| MapDefines::load(defines, camera_tilt),
-        )?;
-        let camera_law = crate::map_assets::graphics_define(
-            &content.layers,
-            "camera motion",
-            &art_defines,
-            &defines,
-            |defines| CameraLaw::load(defines, &settings),
-        )?;
-        // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
-        // pads every texture file the passes load and sets their global defines.
-        let decode = settings.texture_decode();
-        // Text is read in the user's game language, not the recording's: settings.txt's when the
-        // mod stack's language list declares it, else the list's first, as the game chooses.
-        let language = installed_content_localisation::localisation::selected_language(
-            &content.layers,
-            settings.language().as_deref(),
-        )
-        .map_err(|error| invalid(format!("No game language: {error}")))?;
-        if settings.is_absent() {
-            warnings.push(format!(
+            let defines = product_loader.defines()?;
+            let audio = product_loader.audio(&defines, &options.user_dir, &mut warnings);
+            // Graphics consumers read the recorded defines with the graphics sections of the defines
+            // merged natively with the visual mods' scripts (`Defines::with_graphics_of`); every
+            // simulation section stays recorded, for every consumer. A graphics value of another
+            // type than the recording's keeps the recorded one, and a mod's scripts that cannot run
+            // keep the recorded defines, each named.
+            let art_defines = defines.graphics_for(&content.layers);
+            let game_speeds = viewer_foundation::map::frame::GameSpeeds::load(&defines);
+            // The defines an artwork loader reads with the stack it was handed: graphics defines
+            // with the visual mods, recorded defines when it falls back to the recording.
+            let defines_for = |stack: &installed_content_core::ResolvedLayers| {
+                if stack.shows_visual_mods() {
+                    &art_defines
+                } else {
+                    &defines
+                }
+            };
+            // Every key as the game reads it (`installed_content_settings::settings::SettingsKeys`).
+            let settings = installed_content_settings::settings::read_keys(&options.user_dir)?;
+            let camera_tilt = viewer_foundation::map::camera::stored_tilt(
+                settings
+                    .f32_or_constructed(
+                        &["camera_tilt"],
+                        installed_content_settings::settings::constructed::CAMERA_TILT,
+                    )
+                    .ok_or_else(|| invalid("settings.txt camera_tilt is not a number"))?,
+            );
+            // The local graphics preference defaults on when no boolean value is stored.
+            // The game halves the HDR scene; the output/interface remain full size.
+            let game_full_resolution = settings
+                .bool_at(&["maprenderingoptions", "draw_map_full_res"])
+                .unwrap_or(true);
+            let game_strategic_names = settings.bool_at(&["strategic_regions"]).unwrap_or(false);
+            let game_audio = dashboard::map_settings::game_audio(&settings);
+            let game_dev_master = dashboard::map_settings::game_dev_master(&settings);
+            let cursor = content
+                .layers
+                .read_uncovered("gfx/cursors/normal.cur")
+                .and_then(|bytes| installed_content_image::cursor::decode(&bytes))
+                .map(|cursor| eframe::egui::CustomCursorImage {
+                    rgba: cursor.image.pixels.into(),
+                    size: [cursor.image.width as u16, cursor.image.height as u16],
+                    hotspot: cursor.hotspot,
+                })
+                .map_err(|error| format!("gfx/cursors/normal.cur: {error}"));
+            let map_defines = crate::map_assets::graphics_define(
+                &content.layers,
+                "camera and map",
+                &art_defines,
+                &defines,
+                |defines| MapDefines::load(defines, camera_tilt),
+            )?;
+            let camera_law = crate::map_assets::graphics_define(
+                &content.layers,
+                "camera motion",
+                &art_defines,
+                &defines,
+                |defines| CameraLaw::load(defines, &settings),
+            )?;
+            // The map is drawn as this client's game would draw it: its own `force_pow2_textures`
+            // pads every texture file the passes load and sets their global defines.
+            let decode = settings.texture_decode();
+            // Text is read in the user's game language, not the recording's: settings.txt's when the
+            // mod stack's language list declares it, else the list's first, as the game chooses.
+            let language = installed_content_localisation::localisation::selected_language(
+                &content.layers,
+                settings.language().as_deref(),
+            )
+            .map_err(|error| invalid(format!("No game language: {error}")))?;
+            if settings.is_absent() {
+                warnings.push(format!(
                 "settings.txt is not in {}: the map uses the game's own starting settings, as the game does until it first saves them, with text in {language}, the first language localisation/languages.yml declares.",
                 options.user_dir.display()
             ));
-        }
-        let (game_options, unread) = installed_content_settings::settings::MapOptions::read(&settings);
-        warnings.extend(
-            unread
-                .into_iter()
-                .map(|line| format!("Map options: {line}.")),
-        );
-        // Only the interface scale's default needs these; without them it falls
-        // back to 1.0 and says so, rather than refusing the recording.
-        let game_display = installed_content_settings::settings::read_pdx(&options.user_dir)
-            .and_then(|pdx| {
-                installed_content_settings::settings::Display::read(
-                    &settings,
-                    pdx.as_ref().map(|pdx| pdx.items.as_slice()),
-                )
-            })
-            .map_err(|error| error.to_string());
-        // The GUI viewport the map-icon windows' asset set is read at: settings.txt's own frame
-        // (the last `graphics` block's `size`, else the default 1280 x 720)
-        // over its scale as each block clamps it, a desktop the
-        // constructor's size standing in for display 0's. That read decides only which
-        // resources load, a set no viewport changes
-        // (`the_asset_set_does_not_depend_on_the_gui_viewport`); every view reads its windows
-        // again at its own viewport.
-        let asset_viewport = {
-            const CONSTRUCTED: [u32; 2] = [1280, 720];
-            let (frame, scale) = match &game_display {
-                Ok(display) => {
-                    let frame = display
-                        .clamps
-                        .iter()
-                        .rev()
-                        .find_map(|clamp| clamp.size)
-                        .unwrap_or(CONSTRUCTED);
-                    let scale =
-                        display.effective_gui_scale(installed_content_settings::settings::Desktop {
-                            physical: CONSTRUCTED,
-                            dpi: 96,
-                        });
-                    (frame, display.interface_to_frame(frame, scale))
-                }
-                Err(_) => (CONSTRUCTED, 1.0),
+            }
+            let (game_options, unread) = installed_content_settings::settings::MapOptions::read(&settings);
+            warnings.extend(
+                unread
+                    .into_iter()
+                    .map(|line| format!("Map options: {line}.")),
+            );
+            // Only the interface scale's default needs these; without them it falls
+            // back to 1.0 and says so, rather than refusing the recording.
+            let game_display = installed_content_settings::settings::read_pdx(&options.user_dir)
+                .and_then(|pdx| {
+                    installed_content_settings::settings::Display::read(
+                        &settings,
+                        pdx.as_ref().map(|pdx| pdx.items.as_slice()),
+                    )
+                })
+                .map_err(|error| error.to_string());
+            // The GUI viewport the map-icon windows' asset set is read at: settings.txt's own frame
+            // (the last `graphics` block's `size`, else the default 1280 x 720)
+            // over its scale as each block clamps it, a desktop the
+            // constructor's size standing in for display 0's. That read decides only which
+            // resources load, a set no viewport changes
+            // (`the_asset_set_does_not_depend_on_the_gui_viewport`); every view reads its windows
+            // again at its own viewport.
+            let asset_viewport = {
+                const CONSTRUCTED: [u32; 2] = [1280, 720];
+                let (frame, scale) = match &game_display {
+                    Ok(display) => {
+                        let frame = display
+                            .clamps
+                            .iter()
+                            .rev()
+                            .find_map(|clamp| clamp.size)
+                            .unwrap_or(CONSTRUCTED);
+                        let scale =
+                            display.effective_gui_scale(installed_content_settings::settings::Desktop {
+                                physical: CONSTRUCTED,
+                                dpi: 96,
+                            });
+                        (frame, display.interface_to_frame(frame, scale))
+                    }
+                    Err(_) => (CONSTRUCTED, 1.0),
+                };
+                native_shader_draw::gui_viewport(frame, scale)
             };
-            native_shader_draw::gui_viewport(frame, scale)
-        };
-        // Wave 1: everything needing only layers, map and terrain runs in
-        // parallel on scoped threads. Each job returns its bundle with its own
-        // warnings; the main thread joins in the serial load order below, so
-        // the first error and the warning order match the serial load within
-        // this wave. A wave-1 failure precedes any wave-2 one, since wave 2
-        // needs wave-1 values to start.
-        // The strategic regions are parsed once for borders, counters and aircraft.
-        let installed_content_regions::regions::StrategicRegions {
-            regions,
-            notes: region_notes,
-        } = installed_content_regions::regions::read(&content.layers)?;
-        warnings.extend(region_notes);
-        let wave1 = std::thread::scope(|scope| -> io::Result<_> {
+            // The strategic regions are parsed once for borders, counters and aircraft.
+            let installed_content_regions::regions::StrategicRegions {
+                regions,
+                notes: region_notes,
+            } = installed_content_regions::regions::read(&content.layers)?;
+            warnings.extend(region_notes);
+            let mut dag = installed_content_core::parallel::dag::Dag::default();
             let layers = &content.layers;
-            let h_assets = job_priority::spawn_in(scope, || {
+            let h_assets = dag.add(&[], || {
+                let _startup = crate::perf_log::StartupSpan::new("document_assets");
                 let mut warnings = Vec::new();
                 let assets = crate::map_assets::load_with_products(
                     Some(product_loader),
@@ -1755,11 +1851,12 @@ impl Document {
                     texture_quality,
                     decode,
                 );
-                (assets, warnings)
+                Ok((assets?, warnings))
             });
             // Artwork, interface, fonts, models and text load from the presentation stack, whose
             // visual mods show only under artwork roots, and fall back to the recording by name.
-            let h_icons = job_priority::spawn_in(scope, || {
+            let h_icons = dag.add(&[], || {
+                let _startup = crate::perf_log::StartupSpan::new("document_icons");
                 layers.artwork("map icons and interface", |stack| {
                     MapIcons::load_with_products(
                         Some(product_loader),
@@ -1774,7 +1871,8 @@ impl Document {
                     )
                 })
             });
-            let h_names = job_priority::spawn_in(scope, || {
+            let h_names = dag.add(&[], || {
+                let _startup = crate::perf_log::StartupSpan::new("document_names");
                 layers.artwork("map names", |stack| {
                     NameContent::load_with_localisation(stack, &map, || {
                         product_loader.localisation(stack, &language)
@@ -1783,14 +1881,14 @@ impl Document {
             });
             // Naval source labels in another language recover through the recording
             // language's localisation, indexed here so drawing reads no content.
-            let h_labels = job_priority::spawn_in(scope, || {
-                combat::naval_labels::RecordedLabels::prepare(
+            let h_labels = dag.add(&[], || {
+                Ok(Arc::new(combat::naval_labels::RecordedLabels::prepare(
                     recorded_language.clone(),
                     &language,
                     layers,
-                )
+                )))
             });
-            let h_counters = job_priority::spawn_in(scope, || {
+            let h_counters = dag.add(&[], || {
                 crate::map_assets::graphics_define(
                     layers,
                     "counters",
@@ -1808,7 +1906,7 @@ impl Document {
                     },
                 )
             });
-            let h_borders_in = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_borders_in = dag.add(&[], || -> io::Result<_> {
                 let border_assets = layers.artwork("borders", |stack| {
                     BorderAssets::load(
                         stack,
@@ -1822,7 +1920,7 @@ impl Document {
                 let adjacencies = installed_content_core::adjacencies::read(layers)?;
                 Ok((border_assets, states, adjacencies))
             });
-            let h_rail_reads = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_rail_reads = dag.add(&[], || -> io::Result<_> {
                 let (cities, city_styles) = installed_content_core::cities::read(layers)?;
                 let buildings_read = installed_content_core::positions::read_buildings(layers)?;
                 let building_types = product_loader.buildings()?;
@@ -1841,7 +1939,7 @@ impl Document {
                     rail_defines,
                 ))
             });
-            let h_trains = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_trains = dag.add(&[], || -> io::Result<_> {
                 let (trains, warnings) = layers.artwork("supply trains", |stack| {
                     let mut warnings = Vec::new();
                     viewer_world::map::trains::TrainAssets::load(
@@ -1854,7 +1952,7 @@ impl Document {
                 })?;
                 Ok((Arc::new(trains), warnings))
             });
-            let h_aircraft = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_aircraft = dag.add(&[], || -> io::Result<_> {
                 let (aircraft, warnings) = layers.artwork("aircraft", |stack| {
                     let mut warnings = Vec::new();
                     viewer_world::map::aircraft::AircraftAssets::load(
@@ -1869,14 +1967,15 @@ impl Document {
                 })?;
                 Ok((Arc::new(aircraft), warnings))
             });
-            let h_bridges = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_bridges = dag.add(&[], || -> io::Result<_> {
                 layers.artwork("railway bridges", |stack| {
                     let mut warnings = Vec::new();
                     Bridges::load(stack, decode, defines_for(stack), &mut warnings)
                         .map(|bridges| (bridges, warnings))
                 })
             });
-            let h_units = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_units = dag.add(&[], || -> io::Result<_> {
+                let _startup = crate::perf_log::StartupSpan::new("document_units");
                 // Its refusals are its own warnings; it never fails as a whole.
                 let stack = layers.presentation();
                 let mut warnings = Vec::new();
@@ -1896,14 +1995,14 @@ impl Document {
                 );
                 Ok((unit_models, warnings))
             });
-            let h_orders = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_orders = dag.add(&[], || -> io::Result<_> {
                 layers.artwork("orders and arrows", |stack| {
                     let mut warnings = Vec::new();
                     OrderAssets::load(stack, decode, (&defines, defines_for(stack)), &mut warnings)
                         .map(|order_assets| (order_assets, warnings))
                 })
             });
-            let h_weather = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_weather = dag.add(&[], || -> io::Result<_> {
                 layers.artwork("weather effects", |stack| {
                     viewer_world::map::weather_effects::Assets::load(
                         stack,
@@ -1913,7 +2012,7 @@ impl Document {
                     )
                 })
             });
-            let h_mapbuildings = job_priority::spawn_in(scope, || -> io::Result<_> {
+            let h_mapbuildings = dag.add(&[], || -> io::Result<_> {
                 layers.artwork("map buildings", |stack| {
                     let mut warnings = Vec::new();
                     let building_layers = product_loader.reader(stack, "display/buildings");
@@ -1927,34 +2026,257 @@ impl Document {
                     .map(|map_buildings| (map_buildings, warnings))
                 })
             });
-            let h_geometry = job_priority::spawn_in(scope, || {
+            let h_geometry = dag.add(&[], || {
                 let started = Instant::now();
                 let geometry = ProvinceGeometry::build(&map);
-                (geometry, started.elapsed())
+                Ok((geometry, started.elapsed()))
             });
-            let h_river_assets = job_priority::spawn_in(scope, || {
+            let h_river_assets = dag.add(&[], || {
                 layers.artwork("rivers", |stack| {
                     RiverAssets::load(stack, [map.width, map.height], texture_quality, decode)
                 })
             });
-            let h_rail_assets = job_priority::spawn_in(scope, || {
+            let h_rail_assets = dag.add(&[], || {
                 layers.artwork("railways", |stack| {
                     RailAssets::load(stack, [map.width, map.height], decode)
                 })
             });
             // The ideology groups supply the tactic triggers' ideology names.
             // Loading trigger keys registers those content names.
-            let h_ideologies = job_priority::spawn_in(scope, || product_loader.ideologies());
+            let h_ideologies = dag.add(&[], || product_loader.ideologies());
             // The resource declarations, for the tactic triggers' resource
             // names as the content is read.
-            let h_resources = job_priority::spawn_in(scope, || product_loader.resources());
+            let h_resources = dag.add(&[], || product_loader.resources());
             // The initial seek decodes from its block start to the hour, all
             // in memory; it overlaps the file reads above on its own thread.
             // Only playback moves here, so the joins below keep their order.
-            let h_initial = job_priority::spawn_in(scope, || Self::initial_playback(replay, initial));
-            let (assets_result, warnings) = h_assets.join().expect("assets loader panicked");
-            let assets = assets_result?;
-            let mut joined_warnings = warnings;
+            let h_initial = dag.add(&[], || {
+                Self::initial_playback(replay, initial).map(std::sync::Mutex::new)
+            });
+            let h_initial_flags = {
+                let playback = h_initial.clone();
+                let icons = h_icons.clone();
+                dag.add(&[playback.id(), icons.id()], move || {
+                    if let crate::playback::Current::Frame(frame) = playback
+                        .read()?
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner())
+                        .current()
+                    {
+                        let _ = counters::warm_initial_flags(frame, &icons.read()?.counters);
+                    }
+                    Ok(())
+                })
+            };
+            let h_movement = {
+                let (defines, regions) = (&defines, &regions);
+                let h_icons = h_icons.clone();
+                let h_counters = h_counters.clone();
+                dag.add(&[h_icons.id(), h_counters.id()], move || {
+                    let icons = h_icons.read()?;
+                    let counters = h_counters.read()?;
+
+                    let mut movement = product_loader.movement(&defines)?;
+                    movement.set_task_force_terrain(
+                        icons.combat.movement_terrain(),
+                        &regions,
+                        counters.subunit_tokens.clone(),
+                        icons.combat.shared_sub_units(),
+                    );
+                    Ok(movement)
+                })
+            };
+            let h_label_content = {
+                let (defines, art_defines) = (&defines, &art_defines);
+                dag.add(&[], move || {
+                    crate::map_assets::graphics_define(
+                        layers,
+                        "map labels",
+                        &art_defines,
+                        &defines,
+                        LabelContent::load,
+                    )
+                })
+            };
+            let h_borders = {
+                let (map, regions) = (&map, &regions);
+                let h_assets = h_assets.clone();
+                let h_borders_in = h_borders_in.clone();
+                dag.add(&[h_assets.id(), h_borders_in.id()], move || {
+                    let (assets, _) = h_assets.read()?;
+                    let heights = HeightField {
+                        width: assets.heightmap.width,
+                        height: assets.heightmap.height,
+                        values: assets.heightmap_texels(),
+                    };
+                    let (_, (states, _), adjacencies) = h_borders_in.read()?;
+
+                    let topology =
+                        Topology::new(&map, states.definitions(), &regions, &adjacencies)?;
+                    let straits =
+                        strait_quads(&adjacencies, &map, &|province| !topology.is_water(province))?;
+                    let started = Instant::now();
+                    let border_meshes = borders::build(
+                        &ProvinceMap {
+                            width: map.width,
+                            height: map.height,
+                            ids: &map.province_ids,
+                        },
+                        &|a, b| topology.trace_class(a, b),
+                        &|province| topology.is_water(province),
+                        &heights,
+                        map_defines.border_width,
+                    )?;
+                    Ok((straits, border_meshes, started.elapsed()))
+                })
+            };
+            let h_rivers = {
+                let h_assets = h_assets.clone();
+                dag.add(&[h_assets.id()], move || {
+                    let (assets, _) = h_assets.read()?;
+                    let heights = HeightField {
+                        width: assets.heightmap.width,
+                        height: assets.heightmap.height,
+                        values: assets.heightmap_texels(),
+                    };
+
+                    let started = Instant::now();
+                    let (river_mesh, river_trace) = rivers::build(
+                        &RiverImage {
+                            width: assets.rivers.width,
+                            height: assets.rivers.height,
+                            indices: &assets.rivers.indices,
+                        },
+                        &heights,
+                    )?;
+                    Ok((river_mesh, river_trace, started.elapsed()))
+                })
+            };
+            let h_trees = {
+                let h_assets = h_assets.clone();
+                dag.add(&[h_assets.id()], move || {
+                    let (assets, _) = h_assets.read()?;
+                    let heights = HeightField {
+                        width: assets.heightmap.width,
+                        height: assets.heightmap.height,
+                        values: assets.heightmap_texels(),
+                    };
+
+                    let started = Instant::now();
+                    let tree_field = trees::generate(
+                        &TreeImage {
+                            width: assets.trees.width,
+                            height: assets.trees.height,
+                            indices: &assets.trees.indices,
+                        },
+                        &heights,
+                    )?;
+                    let (tree_assets, warnings) = layers.artwork("trees", |stack| {
+                        let mut warnings = Vec::new();
+                        TreeAssets::load(
+                            stack,
+                            decode,
+                            &tree_field.palettes,
+                            &assets.rivers,
+                            &mut warnings,
+                        )
+                        .map(|trees| (trees, warnings))
+                    })?;
+                    let tree_geometry = trees::geometry(&tree_assets)?;
+                    Ok((
+                        tree_field,
+                        tree_assets,
+                        tree_geometry,
+                        started.elapsed(),
+                        warnings,
+                    ))
+                })
+            };
+            let h_sprawl = {
+                let (map, defines, art_defines) = (&map, &defines, &art_defines);
+                let h_assets = h_assets.clone();
+                let h_rail_reads = h_rail_reads.clone();
+                dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
+                    let (assets, _) = h_assets.read()?;
+                    let heights = HeightField {
+                        width: assets.heightmap.width,
+                        height: assets.heightmap.height,
+                        values: assets.heightmap_texels(),
+                    };
+                    let (cities, city_styles, _, _, _) = h_rail_reads.read()?;
+
+                    let started = Instant::now();
+                    let sprawl_plan = sprawl::generate(
+                        &cities,
+                        &city_styles,
+                        &assets.spawn_city,
+                        &heights,
+                        &map.province_ids,
+                        &assets.rivers,
+                    )?;
+                    let (sprawl, warnings) =
+                        load_sprawl(layers, decode, &sprawl_plan, (&defines, &art_defines))?;
+                    Ok((sprawl, started.elapsed(), warnings))
+                })
+            };
+            let h_railgeom = {
+                let map = &map;
+                let h_assets = h_assets.clone();
+                let h_rail_reads = h_rail_reads.clone();
+                dag.add(&[h_assets.id(), h_rail_reads.id()], move || {
+                    let (assets, _) = h_assets.read()?;
+                    let (_, _, buildings_read, building_types, rail_defines) =
+                        h_rail_reads.read()?;
+
+                    let started = Instant::now();
+                    let rail_geometry = rail_layer::RailGeometry::new(
+                        &map,
+                        &buildings_read,
+                        &building_types,
+                        &assets.rivers,
+                        Arc::clone(&assets.heightmap),
+                        *rail_defines,
+                    )?;
+                    Ok((rail_geometry, started.elapsed()))
+                })
+            };
+            let h_frame = {
+                let icons = h_icons.clone();
+                dag.add(&[icons.id()], move || {
+                    layers.artwork("map frame", |stack| {
+                        let mut warnings = Vec::new();
+                        FrameAssets::load(
+                            stack,
+                            decode,
+                            icons.read()?.raids.trigger_content.facts(),
+                            &mut warnings,
+                        )
+                        .map(|frame| (frame, warnings))
+                    })
+                })
+            };
+            let h_hover = {
+                let defines = &defines;
+                let icons = h_icons.clone();
+                let states = h_borders_in.clone();
+                let labels = h_labels.clone();
+                dag.add(&[icons.id(), states.id(), labels.id()], move || {
+                    let icons = icons.read()?;
+                    Ok(
+                        viewer_counter_products::map::province_tooltips::Content::load(
+                            layers,
+                            &defines,
+                            states.read()?.1.0.definitions(),
+                            &icons.combat.temperature,
+                            icons.combat.sub_units(),
+                            Arc::clone(labels.read()?),
+                        ),
+                    )
+                })
+            };
+            dag.run();
+            let (mut assets, notes) = h_assets.take()?;
+            let mut joined_warnings = notes;
             let crate::map_icons::LoadedIcons {
                 combat: mut combat_assets,
                 raids: mut raid_assets,
@@ -1963,7 +2285,7 @@ impl Document {
                 counters: mut counter_assets,
                 animated_text,
                 lazy,
-            } = h_icons.join().expect("icons loader panicked")?;
+            } = h_icons.take()?;
             joined_warnings.extend(counter_assets.warnings.iter().cloned());
             joined_warnings.extend(
                 raid_assets
@@ -1977,8 +2299,8 @@ impl Document {
                         .into(),
                 );
             }
-            let names = h_names.join().expect("names loader panicked")?;
-            let recorded_labels = Arc::new(h_labels.join().expect("label index loader panicked"));
+            let names = h_names.take()?;
+            let recorded_labels = h_labels.take()?;
             // The map-icon windows' resources need the localisation their texts are shown
             // through, which the names pass reads.
             joined_warnings.extend(layers.artwork("map icon windows", |stack| {
@@ -1990,46 +2312,32 @@ impl Document {
                     &names.localisation,
                 )
             })?);
-            let mut counters = h_counters.join().expect("counters loader panicked")?;
+            let mut counters = h_counters.take()?;
             counters.recorded_labels = Some(Arc::clone(&recorded_labels));
             if let Err(error) = counters.fog.as_ref() {
                 joined_warnings.push(format!(
                     "Fog of war cannot be rebuilt from this content ({error}): no fog is drawn and land stacks are drawn in full."
                 ));
             }
-            let (border_assets, states, adjacencies) =
-                h_borders_in.join().expect("borders loader panicked")?;
+            let (border_assets, states, _) = h_borders_in.take()?;
             if let Err(why) = &border_assets.faction_highlight_color {
                 joined_warnings.push(format!(
                     "Faction-theatre hover outline is unavailable: {why}"
                 ));
             }
-            let river_assets = h_river_assets
-                .join()
-                .expect("river assets loader panicked")?;
-            let (frame_assets, frame_warnings) = layers.artwork("map frame", |stack| {
-                let mut warnings = Vec::new();
-                FrameAssets::load(
-                    stack,
-                    decode,
-                    raid_assets.trigger_content.facts(),
-                    &mut warnings,
-                )
-                .map(|frame| (frame, warnings))
-            })?;
+            let river_assets = h_river_assets.take()?;
+            let (frame_assets, frame_warnings) = h_frame.take()?;
             joined_warnings.extend(frame_warnings);
-            let (cities, city_styles, buildings_read, building_types, rail_defines) =
-                h_rail_reads.join().expect("rail reads loader panicked")?;
-            let (ideologies, warnings) =
-                h_ideologies.join().expect("ideologies loader panicked")?;
+            let (_, _, _, building_types, _) = h_rail_reads.take()?;
+            let (ideologies, notes) = h_ideologies.take()?;
             joined_warnings.extend(
-                warnings
+                notes
                     .into_iter()
                     .map(|(_, warning)| format!("Combat tactics: ideologies: {warning}")),
             );
-            let (resources, warnings) = h_resources.join().expect("resources loader panicked")?;
+            let (resources, notes) = h_resources.take()?;
             joined_warnings.extend(
-                warnings
+                notes
                     .into_iter()
                     .map(|(_, warning)| format!("Combat tactics: resources: {warning}")),
             );
@@ -2044,18 +2352,18 @@ impl Document {
             raid_assets.trigger_content.ideologies = Some(ideologies.clone());
             // A naval counter at sea's `counter_ideology` frame is its group's number.
             counters.ideologies = ideologies;
-            let (trains, warnings) = h_trains.join().expect("trains loader panicked")?;
-            joined_warnings.extend(warnings.into_iter().map(|(_, message)| message));
-            let rail_assets = h_rail_assets.join().expect("rail assets loader panicked")?;
-            let (bridges, warnings) = h_bridges.join().expect("bridges loader panicked")?;
-            joined_warnings.extend(warnings.into_iter().map(|(_, message)| message));
-            let (aircraft, warnings) = h_aircraft.join().expect("aircraft loader panicked")?;
-            joined_warnings.extend(warnings.into_iter().map(|(_, message)| message));
-            let (unit_models, warnings) = h_units.join().expect("units loader panicked")?;
-            joined_warnings.extend(warnings);
-            let (order_assets, warnings) = h_orders.join().expect("orders loader panicked")?;
-            joined_warnings.extend(warnings.into_iter().map(|(_, message)| message));
-            let weather_effects = h_weather.join().expect("weather loader panicked")?;
+            let (trains, notes) = h_trains.take()?;
+            joined_warnings.extend(notes.into_iter().map(|(_, message)| message));
+            let rail_assets = h_rail_assets.take()?;
+            let (bridges, notes) = h_bridges.take()?;
+            joined_warnings.extend(notes.into_iter().map(|(_, message)| message));
+            let (aircraft, notes) = h_aircraft.take()?;
+            joined_warnings.extend(notes.into_iter().map(|(_, message)| message));
+            let (unit_models, notes) = h_units.take()?;
+            joined_warnings.extend(notes);
+            let (order_assets, notes) = h_orders.take()?;
+            joined_warnings.extend(notes.into_iter().map(|(_, message)| message));
+            let weather_effects = h_weather.take()?;
             if !weather_effects.unresolved.is_empty() {
                 joined_warnings.push(format!(
                     "{} pdxparticle objects name no particle block and draw nothing: {}",
@@ -2063,279 +2371,61 @@ impl Document {
                     weather_effects.unresolved.join(", ")
                 ));
             }
-            let (map_buildings, warnings) = h_mapbuildings
-                .join()
-                .expect("map buildings loader panicked")?;
-            joined_warnings.extend(warnings.into_iter().map(|(_, message)| message));
-            let (province_geometry, province_geometry_build) =
-                h_geometry.join().expect("geometry loader panicked");
-            let playback = h_initial.join().expect("initial seek panicked")?;
-            // Boxed: the loaded content is large, and the scope's unwind and result
-            // frames would otherwise each hold a copy on the loading thread's stack.
-            Ok(Box::new((
-                assets,
-                (
-                    combat_assets,
-                    raid_assets,
-                    icon_images,
-                    icon_fonts,
-                    counter_assets,
-                    animated_text,
-                    lazy,
-                ),
-                (names, recorded_labels),
-                counters,
-                border_assets,
-                states,
-                adjacencies,
-                frame_assets,
-                cities,
-                city_styles,
-                buildings_read,
-                building_types,
-                rail_defines,
-                trains,
-                aircraft,
-                bridges,
-                unit_models,
-                order_assets,
-                weather_effects,
-                map_buildings,
-                province_geometry,
-                province_geometry_build,
-                river_assets,
-                rail_assets,
-                joined_warnings,
-                playback,
-            )))
-        })?;
-        let (
-            mut assets,
-            (
-                combat_assets,
-                mut raid_assets,
-                icon_images,
-                icon_fonts,
-                counter_assets,
-                animated_text,
-                lazy,
-            ),
-            (names, recorded_labels),
-            mut counters,
-            border_assets,
-            states,
-            adjacencies,
-            frame_assets,
-            cities,
-            city_styles,
-            buildings_read,
-            building_types,
-            rail_defines,
-            trains,
-            aircraft,
-            bridges,
-            unit_models,
-            order_assets,
-            weather_effects,
-            map_buildings,
-            province_geometry,
-            province_geometry_build,
-            river_assets,
-            rail_assets,
-            wave_warnings,
-            playback,
-        ) = *wave1;
-        warnings.extend(wave_warnings);
-        let (states, state_conflicts) = states;
-        warnings.extend(state_conflicts.into_iter().map(|(_, message)| message));
-        // Wave 2: everything needing assets, in parallel. Joins run in the
-        // serial load order, so the first error and the warning order match
-        // the serial load within this wave.
-        assets.post.volumes.set_regions(&map, &regions);
-        let heights = HeightField {
-            width: assets.heightmap.width,
-            height: assets.heightmap.height,
-            values: assets.heightmap_texels(),
-        };
-        // The unit-stack slots `map/unitstacks.txt` leaves out.
-        counters.seed_default_anchors(
-            map.definitions.keys().copied(),
-            |province| province_geometry.centroid(province),
-            &heights,
-        );
-        if !counters.missing_standstill.is_empty() {
-            warnings.push(format!(
+            let (map_buildings, notes) = h_mapbuildings.take()?;
+            joined_warnings.extend(notes.into_iter().map(|(_, message)| message));
+            let (province_geometry, province_geometry_build) = h_geometry.take()?;
+            let playback = h_initial
+                .take()?
+                .into_inner()
+                .unwrap_or_else(|error| error.into_inner());
+            warnings.extend(joined_warnings);
+            let (states, state_conflicts) = states;
+            warnings.extend(state_conflicts.into_iter().map(|(_, message)| message));
+            assets.post.volumes.set_regions(&map, &regions);
+            let heights = HeightField {
+                width: assets.heightmap.width,
+                height: assets.heightmap.height,
+                values: assets.heightmap_texels(),
+            };
+            // The unit-stack slots `map/unitstacks.txt` leaves out.
+            counters.seed_default_anchors(
+                map.definitions.keys().copied(),
+                |province| province_geometry.centroid(province),
+                &heights,
+            );
+            if !counters.missing_standstill.is_empty() {
+                warnings.push(format!(
                 "{} provinces have neither a Standstill unit stack in map/unitstacks.txt nor pixels for the engine's centroid default; a unit counter in one of them is not drawn.",
                 counters.missing_standstill.len()
             ));
-        }
-        // Region icon positions also anchor the faction-theatre pins.
-        let unplaced = counters.place_region_icons(
-            |province| province_geometry.centroid(province),
-            map.width,
-            &heights,
-        );
-        if let Some(first) = unplaced.first() {
-            warnings.push(format!(
+            }
+            // Region icon positions also anchor the faction-theatre pins.
+            let unplaced = counters.place_region_icons(
+                |province| province_geometry.centroid(province),
+                map.width,
+                &heights,
+            );
+            if let Some(first) = unplaced.first() {
+                warnings.push(format!(
                 "{} strategic regions have no provinces or a province without pixels, so they have no icon position and a faction-theatre pin averaging one is not drawn; the first is {first}.",
                 unplaced.len()
             ));
-        }
-        let (
-            labels,
-            straits,
-            border_meshes,
-            border_trace,
-            river_mesh,
-            river_trace,
-            river_build,
-            tree_field,
-            tree_assets,
-            tree_geometry,
-            tree_build,
-            sprawl,
-            sprawl_build,
-            rail_geometry,
-            rail_build,
-            movement,
-            wave2_warnings,
-        ) = *std::thread::scope(|scope| -> io::Result<_> {
-            let layers = &content.layers;
-            // Decide only the initial hour's flag candidates, in the same stores the
-            // hour workers will use. This requests no atlas cells; any refused
-            // operands leave the original worker/acquire cold path in place.
-            // The playback's hour cursor is not shared with workers; its current hour is.
-            let (initial, initial_assets) = (playback.current(), &counter_assets);
-            let h_initial_flags = job_priority::spawn_in(scope, move || {
-                if let crate::playback::Current::Frame(frame) = initial {
-                    let _ = counters::warm_initial_flags(frame, initial_assets);
-                }
-            });
-            let h_movement = job_priority::spawn_in(scope, || -> io::Result<_> {
-                let mut movement = product_loader.movement(&defines)?;
-                movement.set_task_force_terrain(
-                    combat_assets.movement_terrain(),
-                    &regions,
-                    counters.subunit_tokens.clone(),
-                    combat_assets.shared_sub_units(),
-                );
-                Ok(movement)
-            });
-            let h_labels = job_priority::spawn_in(scope, || {
-                crate::map_assets::graphics_define(
-                    layers,
-                    "map labels",
-                    &art_defines,
-                    &defines,
-                    LabelContent::load,
-                )
-            });
-            let h_borders = job_priority::spawn_in(scope, || -> io::Result<_> {
-                let topology = Topology::new(&map, states.definitions(), &regions, &adjacencies)?;
-                let straits =
-                    strait_quads(&adjacencies, &map, &|province| !topology.is_water(province))?;
-                let started = Instant::now();
-                let border_meshes = borders::build(
-                    &ProvinceMap {
-                        width: map.width,
-                        height: map.height,
-                        ids: &map.province_ids,
-                    },
-                    &|a, b| topology.trace_class(a, b),
-                    &|province| topology.is_water(province),
-                    &heights,
-                    map_defines.border_width,
-                )?;
-                Ok((straits, border_meshes, started.elapsed()))
-            });
-            let h_rivers = job_priority::spawn_in(scope, || -> io::Result<_> {
-                let started = Instant::now();
-                let (river_mesh, river_trace) = rivers::build(
-                    &RiverImage {
-                        width: assets.rivers.width,
-                        height: assets.rivers.height,
-                        indices: &assets.rivers.indices,
-                    },
-                    &heights,
-                )?;
-                Ok((river_mesh, river_trace, started.elapsed()))
-            });
-            let h_trees = job_priority::spawn_in(scope, || -> io::Result<_> {
-                let started = Instant::now();
-                let tree_field = trees::generate(
-                    &TreeImage {
-                        width: assets.trees.width,
-                        height: assets.trees.height,
-                        indices: &assets.trees.indices,
-                    },
-                    &heights,
-                )?;
-                let (tree_assets, warnings) = layers.artwork("trees", |stack| {
-                    let mut warnings = Vec::new();
-                    TreeAssets::load(
-                        stack,
-                        decode,
-                        &tree_field.palettes,
-                        &assets.rivers,
-                        &mut warnings,
-                    )
-                    .map(|trees| (trees, warnings))
-                })?;
-                let tree_geometry = trees::geometry(&tree_assets)?;
-                Ok((
-                    tree_field,
-                    tree_assets,
-                    tree_geometry,
-                    started.elapsed(),
-                    warnings,
-                ))
-            });
-            let h_sprawl = job_priority::spawn_in(scope, || -> io::Result<_> {
-                let started = Instant::now();
-                let sprawl_plan = sprawl::generate(
-                    &cities,
-                    &city_styles,
-                    &assets.spawn_city,
-                    &heights,
-                    &map.province_ids,
-                    &assets.rivers,
-                )?;
-                let (sprawl, warnings) =
-                    load_sprawl(layers, decode, &sprawl_plan, (&defines, &art_defines))?;
-                Ok((sprawl, started.elapsed(), warnings))
-            });
-            let h_railgeom = job_priority::spawn_in(scope, || -> io::Result<_> {
-                let started = Instant::now();
-                let rail_geometry = rail_layer::RailGeometry::new(
-                    &map,
-                    &buildings_read,
-                    &building_types,
-                    &assets.rivers,
-                    Arc::clone(&assets.heightmap),
-                    rail_defines,
-                )?;
-                Ok((rail_geometry, started.elapsed()))
-            });
-            let labels = h_labels.join().expect("labels loader panicked")?;
-            let (straits, border_meshes, border_trace) =
-                h_borders.join().expect("borders loader panicked")?;
-            let (river_mesh, river_trace, river_build) =
-                h_rivers.join().expect("rivers loader panicked")?;
-            let (tree_field, tree_assets, tree_geometry, tree_build, warnings) =
-                h_trees.join().expect("trees loader panicked")?;
-            let mut joined = warnings;
-            let (sprawl, sprawl_build, warnings) =
-                h_sprawl.join().expect("sprawl loader panicked")?;
-            joined.extend(warnings);
-            let (rail_geometry, rail_build) =
-                h_railgeom.join().expect("rail geometry loader panicked")?;
+            }
+            let labels = h_label_content.take()?;
+            let (straits, border_meshes, border_trace) = h_borders.take()?;
+            let (river_mesh, river_trace, river_build) = h_rivers.take()?;
+            let (tree_field, tree_assets, tree_geometry, tree_build, notes) = h_trees.take()?;
+            let mut wave2_warnings = notes;
+            let (sprawl, sprawl_build, notes) = h_sprawl.take()?;
+            wave2_warnings.extend(notes);
+            let (rail_geometry, rail_build) = h_railgeom.take()?;
             // The movement map failing refuses glide, stack kinds and ETAs,
             // not the document: moving units then stand at their province.
-            let movement = match h_movement.join().expect("movement loader panicked") {
+            let movement = match h_movement.take() {
                 Ok(movement) => {
                     let unavailable = movement.map.unavailable_edges();
                     if let Some(((a, b), reason)) = unavailable.iter().next() {
-                        joined.push(format!(
+                        wave2_warnings.push(format!(
                             "{} neighbouring province pairs have no content movement distance, so routes over them have no progress or ETA; the first is {a}-{b}: {reason}",
                             unavailable.len()
                         ));
@@ -2343,65 +2433,43 @@ impl Document {
                     Some(Arc::new(movement))
                 }
                 Err(error) => {
-                    joined.push(format!(
+                    wave2_warnings.push(format!(
                         "Unit movement is unavailable for this content: {error}. Moving units stand at their province, and no route point or ETA is drawn."
                     ));
                     None
                 }
             };
-            h_initial_flags
-                .join()
-                .expect("initial flag warmer panicked");
-            // Boxed for the same reason as the first wave's content.
-            Ok(Box::new((
-                labels,
-                straits,
-                border_meshes,
-                border_trace,
-                river_mesh,
-                river_trace,
-                river_build,
-                tree_field,
-                tree_assets,
-                tree_geometry,
-                tree_build,
-                sprawl,
-                sprawl_build,
-                rail_geometry,
-                rail_build,
-                movement,
-                joined,
-            )))
-        })?;
-        warnings.extend(wave2_warnings);
-        // Raid `is_coastal` reads the movement map's static province terrain.
-        raid_assets.trigger_content.terrain = movement.clone();
-        let map_modes = {
-            let mode_layers = product_loader.reader(&content.layers, "display/modes");
-            let scripted_modes = installed_content_core::scripted_map_modes::read(&mode_layers)?;
-            for (field, count) in scripted_modes.refusal_counts() {
-                warnings.push(format!(
-                    "Scripted map modes: {count} unread entries {field}"
-                ));
-            }
-            let categories = installed_content_state_categories::state_categories::read(&mode_layers)?;
-            let infrastructure = viewer_world::map::map_mode::infrastructure::Content::new(&building_types);
-            let terrain_categories = combat_assets.movement_terrain();
-            let provinces: Vec<u32> = map.definitions.keys().copied().collect();
-            let province_terrain = |province| {
-                movement
-                    .as_ref()
-                    .and_then(|movement| movement.map.terrain(province))
-            };
-            // The map modes' colours and ranges are graphics defines: the mods' where they read.
-            let ideologies = Arc::new(counters.ideologies.clone());
-            Arc::new(crate::map_assets::graphics_define(
-                &mode_layers,
-                "map modes",
-                &art_defines,
-                &defines,
-                |defines| {
-                    let terrain = match (&terrain_categories, &movement) {
+            h_initial_flags.take()?;
+            warnings.extend(wave2_warnings);
+            // Raid `is_coastal` reads the movement map's static province terrain.
+            raid_assets.trigger_content.terrain = movement.clone();
+            let map_modes = {
+                let mode_layers = product_loader.reader(&content.layers, "display/modes");
+                let scripted_modes = installed_content_core::scripted_map_modes::read(&mode_layers)?;
+                for (field, count) in scripted_modes.refusal_counts() {
+                    warnings.push(format!(
+                        "Scripted map modes: {count} unread entries {field}"
+                    ));
+                }
+                let categories = installed_content_state_categories::state_categories::read(&mode_layers)?;
+                let infrastructure =
+                    viewer_world::map::map_mode::infrastructure::Content::new(&building_types);
+                let terrain_categories = combat_assets.movement_terrain();
+                let provinces: Vec<u32> = map.definitions.keys().copied().collect();
+                let province_terrain = |province| {
+                    movement
+                        .as_ref()
+                        .and_then(|movement| movement.map.terrain(province))
+                };
+                // The map modes' colours and ranges are graphics defines: the mods' where they read.
+                let ideologies = Arc::new(counters.ideologies.clone());
+                Arc::new(crate::map_assets::graphics_define(
+                    &mode_layers,
+                    "map modes",
+                    &art_defines,
+                    &defines,
+                    |defines| {
+                        let terrain = match (&terrain_categories, &movement) {
                         (Err(why), _) => Err(format!("the terrain database did not read: {why}")),
                         (_, None) => Err(
                             "the provinces' terrain records did not read (unit movement is unavailable)"
@@ -2415,434 +2483,452 @@ impl Document {
                             regions: &regions,
                         }),
                     };
-                    viewer_world::map::map_mode::Content::new(
-                        defines,
-                        Arc::clone(&ideologies),
-                        &categories,
-                        scripted_modes.clone(),
-                        mode_layers.faction_templates(),
-                        recorded_language.clone(),
-                        terrain,
-                        infrastructure.clone(),
-                        viewer_world::map::map_mode::strategic::Content::new(defines, &regions)?,
-                    )
-                },
-            )?)
-        };
-        // The intel icons' content, and the sprites their code sets that no template names.
-        let mut intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
-        intel_assets.scripted = Some(Arc::clone(&scripted));
-        warnings.extend(intel_assets.warnings.iter().cloned());
-        let mut counter_assets = counter_assets;
-        let mut icon_images = icon_images;
-        // The occupation catalogue reads settled script and modifier names after the content
-        // loaders above. Runtime badge sprites and inline trend icons share the native GUI.
-        let occupation = crate::map_assets::graphics_define(
-            &content.layers,
-            "occupation map icons",
-            &art_defines,
-            &defines,
-            viewer_world::map::occupation_icons::IconDefines::load,
-        )
-        .and_then(|defines| {
-            Ok(viewer_world::map::occupation_icons::Content {
-                definitions: installed_content_core::occupation_modifiers::Definitions::read(
-                    &content.layers,
-                )?,
-                defines,
+                        viewer_world::map::map_mode::Content::new(
+                            defines,
+                            Arc::clone(&ideologies),
+                            &categories,
+                            scripted_modes.clone(),
+                            mode_layers.faction_templates(),
+                            recorded_language.clone(),
+                            terrain,
+                            infrastructure.clone(),
+                            viewer_world::map::map_mode::strategic::Content::new(
+                                defines, &regions,
+                            )?,
+                        )
+                    },
+                )?)
+            };
+            let scripted = installed_content_core::parallel::join(h_scripted);
+            // The intel icons' content, and the sprites their code sets that no template names.
+            let mut intel_assets = intel_icons::IntelAssets::load(&content.layers, &defines);
+            intel_assets.scripted = Some(Arc::clone(&scripted));
+            warnings.extend(intel_assets.warnings.iter().cloned());
+            let mut counter_assets = counter_assets;
+            let mut icon_images = icon_images;
+            // The occupation catalogue reads settled script and modifier names after the content
+            // loaders above. Runtime badge sprites and inline trend icons share the native GUI.
+            let occupation = crate::map_assets::graphics_define(
+                &content.layers,
+                "occupation map icons",
+                &art_defines,
+                &defines,
+                viewer_world::map::occupation_icons::IconDefines::load,
+            )
+            .and_then(|defines| {
+                Ok(viewer_world::map::occupation_icons::Content {
+                    definitions: installed_content_core::occupation_modifiers::Definitions::read(
+                        &content.layers,
+                    )?,
+                    defines,
+                })
             })
-        })
-        .map_err(|error| error.to_string());
-        match &occupation {
-            Ok(occupation) => {
-                warnings.extend(occupation.warnings().cloned());
-                counter_assets.gui.load(
-                    &content.layers,
-                    &viewer_world::map::occupation_icons::gui_assets(occupation),
-                    &mut icon_images,
-                )?;
+            .map_err(|error| error.to_string());
+            match &occupation {
+                Ok(occupation) => {
+                    warnings.extend(occupation.warnings().cloned());
+                    counter_assets.gui.load(
+                        &content.layers,
+                        &viewer_world::map::occupation_icons::gui_assets(occupation),
+                        &mut icon_images,
+                    )?;
+                }
+                Err(why) => {
+                    warnings.push(format!("Occupation map icons: 1 content refusal: {why}"))
+                }
             }
-            Err(why) => warnings.push(format!("Occupation map icons: 1 content refusal: {why}")),
-        }
-        let intel_sprites = intel_assets.gui_assets(counter_assets.gui.registry());
-        counter_assets
-            .gui
-            .load(&content.layers, &intel_sprites, &mut icon_images)?;
-        if icon_images.len() >= viewer_foundation::map::lazy_icons::DYNAMIC_BASE {
-            return Err(invalid("more static icon pages than texture ids"));
-        }
-        let icons = MapIcons {
-            combat: Arc::new(combat_assets),
-            raids: Arc::new(raid_assets),
-            intel: Arc::new(intel_assets),
-            occupation,
-            images: icon_images,
-            fonts: icon_fonts,
-            counters: Arc::new(counter_assets),
-            animated_text: Arc::new(animated_text),
-            lazy,
-        };
-        warnings.push(
+            let intel_sprites = intel_assets.gui_assets(counter_assets.gui.registry());
+            counter_assets
+                .gui
+                .load(&content.layers, &intel_sprites, &mut icon_images)?;
+            if icon_images.len() >= viewer_foundation::map::lazy_icons::DYNAMIC_BASE {
+                return Err(invalid("more static icon pages than texture ids"));
+            }
+            let icons = MapIcons {
+                combat: Arc::new(combat_assets),
+                raids: Arc::new(raid_assets),
+                intel: Arc::new(intel_assets),
+                occupation,
+                images: icon_images,
+                fonts: icon_fonts,
+                counters: Arc::new(counter_assets),
+                animated_text: Arc::new(animated_text),
+                lazy,
+            };
+            warnings.push(
             "Unit counters are drawn for the viewing country: with fog of war on, a stack it cannot see carries the game's own question-mark icon, a question mark in place of its count and no bars. Which stacks those are is decided from the recorded faction, war, subject and UnitIntel tables, and for a land stack from the greater of its detection level and the province byte the viewer rebuilds for the viewing country from the recorded simulation. An hour missing a unit-sight table, or whose province fog cannot be rebuilt, states so and draws those stacks in full. --fog off, the game's fow console switch, draws every stack in full, still as the viewing country.".into(),
         );
-        warnings.push(
+            warnings.push(
             "A naval counter draws both bars full. The engine averages each task force's own ratio over the fleet's visible members. Strength ratios need a maximum bounded below by 100, and organisation ratios need a live modifier-derived maximum; the Ships table records the two current values and neither maximum, so a damaged fleet's bars are drawn full rather than guessed against the fleet's own best ship. The capital-ship diamond is drawn, but nonempty capital counts, type icons, carrier air bases and supply crates require unrecorded ship flags, sprite keys, carrier registration and mission/supply state.".into(),
         );
-        warnings.push(
+            warnings.push(
             "An air base draws no count beside it, and neither does a naval base. The engine fills the air base's wings_count with the planes based there over the base's capacity, and the naval base's txt_capacity with its own pair, but both blocks sit behind the map-mode selector — 2 for the air map mode and 1 for the naval one — and its other branch hides both boxes. The ordinary map mode hides both base count boxes. What the air box would say is computed and reported: the planes, the capacity, and whether the viewing country is shown the box at all, which needs a container at that base (recorded as AirBaseRegistrations), a state that is not demilitarised (recorded as StateFlags) and a positive container capacity word (recorded with the registration).".into(),
         );
-        warnings.push(
+            warnings.push(
             "Raid map icons are rebuilt for the viewing country from the recorded raids, raid target statuses, allowed raid types (the recorded player cache list, for the cache's own country; every other country's `allowed` evaluated at the shown hour, where an undecided one draws its offers grey and counted) and used ones, cooldowns and the raid scripts' inputs, as the game rebuilds its player cache when the player changes. An icon whose script input is unrecorded or unsupported is withheld and counted, and an offer is drawn enabled only when its launch gate is proved from recorded command power, stockpiles, units, sources and ranges; an offer the gate cannot decide, such as one waiting on an army or naval path search, is drawn grey and counted. A table the recorder reads daily or by slice is read as the recording last holds it. Offers are the player cache's rows: each built hour evaluates the next NRaids.MAX_TARGETS_TO_UPDATE_PER_FRAME targets from a rolling cursor, a paused hour one batch per frame until every target is current, and every other target shows its last evaluation. A seek, a step back, a branch change, a new recording or viewing country starts the cycle again at row 0, and a target not evaluated since draws nothing.".into(),
         );
-        warnings.push(
+            warnings.push(
             "Counter items use the first admitted division. Source icons are province/visual buckets, and geographic columns rebuild their unit lists with the engine's first-fit predicate. Province occupant order and alternate templates use recorded inputs. Missing rows and unrecorded presentation insertion history can change plate order, grouping, flags and icons.".into(),
         );
-        // Labels read the same finalised unit-stack table, slot 38.
-        let mut labels = labels;
-        labels.set_anchors(
-            map.definitions.keys().copied(),
-            |province| counters.anchor(province, labels::ANCHOR_STACK),
-            |province| counters.seeded_anchor(province, labels::ANCHOR_STACK),
-        );
-        if !labels.centroid_fallbacks.is_empty() {
-            warnings.push(format!(
+            // Labels read the same finalised unit-stack table, slot 38.
+            let mut labels = labels;
+            labels.set_anchors(
+                map.definitions.keys().copied(),
+                |province| counters.anchor(province, labels::ANCHOR_STACK),
+                |province| counters.seeded_anchor(province, labels::ANCHOR_STACK),
+            );
+            if !labels.centroid_fallbacks.is_empty() {
+                warnings.push(format!(
                 "{} provinces author neither a victory-point nor a defending unit stack, so their label stands at the engine's seeded default, the integer pixel centroid.",
                 labels.centroid_fallbacks.len()
             ));
-        }
-        // borders
-        if !border_meshes.one_pixel_provinces.is_empty() {
-            warnings.push(format!(
+            }
+            // borders
+            if !border_meshes.one_pixel_provinces.is_empty() {
+                warnings.push(format!(
                 "{} provinces cover a single pixel of map/provinces.bmp; the game reports these too and no border is traced through them.",
                 border_meshes.one_pixel_provinces.len()
             ));
-        }
-        // rivers
-        if river_trace.unreachable > 0 {
-            warnings.push(format!(
+            }
+            // rivers
+            if river_trace.unreachable > 0 {
+                warnings.push(format!(
                 "{} river pixels of map/rivers.bmp are not reachable from any source or junction marker and are not drawn; the game does not draw them either.",
                 river_trace.unreachable
             ));
-        }
-        if !river_trace.too_small.is_empty() {
-            warnings.push(format!(
+            }
+            if !river_trace.too_small.is_empty() {
+                warnings.push(format!(
                 "{} rivers of map/rivers.bmp are shorter than {} pixels; the game also rejects these short rivers and draws none of them.",
                 river_trace.too_small.len(),
                 rivers::MIN_RIVER_POINTS
             ));
-        }
-        // the map's table frame
-        // trees
-        warnings.push(
+            }
+            // the map's table frame
+            // trees
+            warnings.push(
             "Meshes, animations and textures are read from gfx/models and gfx/entities, which are outside the content coverage policy and are not hash-verified; their .gfx and .asset descriptors are verified.".into(),
         );
-        // close zoom
-        warnings.push("Railway geography limitations: tied crossing inputs and the initial tied-pixel collection order are unrecorded. Province visibility history and the railway manager's hash-table draw order are unrecorded; strips use all provinces in ascending order. Port selection uses recorded naval-base levels instead of strategic-navy membership. Custom adjacency overrides and the transient rail fade are not reconstructed; matching native geography and presentation snapshots would settle these cases.".into());
-        warnings.push(
+            // close zoom
+            warnings.push("Railway geography limitations: tied crossing inputs and the initial tied-pixel collection order are unrecorded. Province visibility history and the railway manager's hash-table draw order are unrecorded; strips use all provinces in ascending order. Port selection uses recorded naval-base levels instead of strategic-navy membership. Custom adjacency overrides and the transient rail fade are not reconstructed; matching native geography and presentation snapshots would settle these cases.".into());
+            warnings.push(
             "A division's model follows the engine's own ladder: the template's saved model, then the equipment pair's saved model, authored graphic pools and conventional candidates, else the viewing country's fallback queues, then the recorded model number and sub-unit key under the cosmetic tag, tag, graphical culture and bare name, then the recorded camouflage. Template composition and model choices are recorded hourly, so a template edit reaches its figures within the hour; a template whose model inputs were unreadable that hour draws no model for its divisions, and its counters are unaffected. Equipment is recorded daily, with an hourly record of divisions deployed since; an existing division's mid-day equipment change reaches its figure at the next daily refresh; the country's stored best-variant candidates are daily too. A no-pair fallback whose rows name different entities takes the second row of the game's labelled option list, its labels built in the display language from the recorded variant names and country tags; a label that cannot be built refuses the figure by name. The window advances authored state clips and attachment transforms with presentation seed 0x414e494d XOR the unit handle; original clocks and RNG ordering are unrecorded. A time-zero dump preserves the default first pose. A standing figure's facing is a hash, because nothing records the heading the engine last turned it to."
                 .into(),
         );
-        // orders: the recorded player's battle plan
-        warnings.push(
+            // orders: the recorded player's battle plan
+            warnings.push(
             "Map buildings keep the destroyed-mesh hysteresis, and stay drawn above the update distance once created below it, from this viewer's own camera history since the last seek; a seek starts every slot healthy and uncreated, as a freshly loaded game does. A dump has no camera history unless --building-camera supplies it. Popup growth and the shared model creation allowance run on the viewer's frame clock; native capture-time presentation remains unrecorded."
                 .into(),
         );
-        // Validate province membership before rebuilding region battle-name candidates.
-        let battle_name_provinces =
-            battle_name_candidates(&regions, states.definitions(), &|province| {
-                map.definitions.contains_key(&province)
+            // Validate province membership before rebuilding region battle-name candidates.
+            let battle_name_provinces =
+                battle_name_candidates(&regions, states.definitions(), &|province| {
+                    map.definitions.contains_key(&province)
+                });
+            let state_name_keys = states
+                .definitions()
+                .iter()
+                .map(|(id, state)| (*id, state.name_key.clone()))
+                .collect();
+            let province_hover = h_hover.take()?;
+            warnings.extend(province_hover.warnings());
+            let naval_dominance = viewer_world::map::naval_dominance::Content::new(
+                &map,
+                &regions,
+                icons
+                    .combat
+                    .movement_terrain()
+                    .as_deref()
+                    .map_err(String::as_str),
+                &defines,
+            );
+            let raid_hover = Arc::new(raids::tooltips::Content {
+                assets: Arc::clone(&icons.raids),
+                flags: Arc::clone(&icons.counters.flags),
+                localisation: Arc::clone(&names.localisation),
+                recorded_language: recorded_language.clone(),
+                scripted: Arc::clone(&scripted),
             });
-        let state_name_keys = states
-            .definitions()
-            .iter()
-            .map(|(id, state)| (*id, state.name_key.clone()))
-            .collect();
-        let province_hover = viewer_counter_products::map::province_tooltips::Content::load(
-            &content.layers,
-            &defines,
-            states.definitions(),
-            &icons.combat.temperature,
-            icons.combat.sub_units(),
-            Arc::clone(&recorded_labels),
-        );
-        warnings.extend(province_hover.warnings());
-        let naval_dominance = viewer_world::map::naval_dominance::Content::new(
-            &map,
-            &regions,
-            icons
-                .combat
-                .movement_terrain()
-                .as_deref()
-                .map_err(String::as_str),
-            &defines,
-        );
-        let raid_hover = Arc::new(raids::tooltips::Content {
-            assets: Arc::clone(&icons.raids),
-            flags: Arc::clone(&icons.counters.flags),
-            localisation: Arc::clone(&names.localisation),
-            recorded_language: recorded_language.clone(),
-            scripted: Arc::clone(&scripted),
-        });
-        let map = Arc::new(map);
-        let province_geometry = Arc::new(province_geometry);
-        let battle_name_provinces = Arc::new(battle_name_provinces);
-        let state_name_keys = Arc::new(state_name_keys);
-        let eta_cache = Arc::new(EtaCache::default());
-        let vision_memo = Arc::new(Keyed::new(perspective::VISION_TABLES));
-        let modifier_names = Arc::new(combat::modifier_text::name_index_cache());
-        let regions = Arc::new(regions);
-        let counters = Arc::new(counters);
-        let province_hover = Arc::new(province_hover);
-        let counter_content = Arc::new(viewer_counter_products::map::counter_content::Content {
-            anchors: Arc::clone(&counters.anchors),
-            default_anchors: Arc::clone(&counters.default_anchors),
-            terrain: Arc::clone(&counters.terrain),
-            region_of: Arc::clone(&counters.region_of),
-            kinds: Arc::clone(&counters.kinds),
-            ability_sprites: Arc::clone(&icons.counters.ability_sprites),
-            fog: Arc::clone(&counters.fog),
-            aggression: Arc::clone(&counters.aggression),
-            naval_counts: counters.defines.naval_counts,
-            port_mission_defines: counters.port_mission_defines.clone(),
-            supply_grace: counters.supply_grace.clone(),
-            comms_max_distance: counters.comms_max_distance.clone(),
-            dig_in_factor: counters.dig_in_factor.clone(),
-            attrition: counters.attrition.clone(),
-            ability_comms_scaling: counters.ability_comms_scaling.clone(),
-            ability_no_hq_scaling: counters.ability_no_hq_scaling.clone(),
-            equipment: Arc::clone(&unit_models.sub_units.equipment),
-            strategic_regions: Arc::clone(&regions),
-            province_hover: Arc::clone(&province_hover),
-            localisation: Arc::clone(&names.localisation),
-            recorded_language: recorded_language.clone(),
-            scripted: Arc::clone(&scripted),
-            state_name_keys: Arc::clone(&state_name_keys),
-            text_icons: icons.combat.clone(),
-            division_names: Arc::clone(&icons.combat.division_names),
-            sub_units: icons.combat.shared_sub_units(),
-            movement_terrain: icons.combat.movement_terrain(),
-            building_facts: Arc::clone(&map_buildings.facts),
-            air_base_first_provinces: Arc::clone(&counters.air_base_first_provinces),
-            movement: movement.clone(),
-            eta_cache: Arc::clone(&eta_cache),
-        });
-        let combat = Arc::new(combat::Content {
-            air_context: Some(Arc::clone(&counter_content)),
-            medals: Default::default(),
-            attrition: Default::default(),
-            assets: Arc::clone(&icons.combat),
-            localisation: Arc::clone(&names.localisation),
-            recorded_language: recorded_language.clone(),
-            recorded_labels: Arc::clone(&recorded_labels),
-            scripted: Arc::clone(&scripted),
-            map: Arc::clone(&map),
-            strategic_regions: Arc::clone(&regions),
-            battle_name_provinces: Arc::clone(&battle_name_provinces),
-            state_name_keys: Arc::clone(&state_name_keys),
-            province_geometry: Arc::clone(&province_geometry),
-            region_of: Arc::clone(&counters.region_of),
-            terrain: Arc::clone(&counters.terrain),
-            scores: counters.defines.land_combat.scores,
-            fog: Arc::clone(&counters.fog),
-            vision_memo: Arc::clone(&vision_memo),
-            eta_cache: Arc::clone(&eta_cache),
-            modifier_names: Arc::clone(&modifier_names),
-            movement: movement.clone(),
-            window_cache: Arc::clone(&icons.counters.window_cache),
-            small_flags: Arc::clone(&icons.counters.flags),
-            large_flags: Arc::clone(&icons.counters.large_flags),
-            lazy: Arc::clone(&icons.lazy),
-            trigger_content: Arc::new(icons.raids.trigger_content.clone()),
-        });
-        let resource_icons =
-            viewer_world::map::resource_icons::ResourceIconContent::load(&content.layers, &defines)
-                .map_err(|error| error.to_string());
-        match &resource_icons {
-            Ok(icons) => warnings.extend(icons.warnings().iter().cloned()),
-            Err(why) => warnings.push(format!(
-                "The resources map mode draws no state icons: {why}"
-            )),
-        }
-        let adjacency_icons = match installed_content_core::adjacency_rules::read(&content.layers) {
-            Ok(rules) => viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines),
-            Err(error) => {
-                warnings.push(format!(
+            let map = Arc::new(map);
+            let province_geometry = Arc::new(province_geometry);
+            let battle_name_provinces = Arc::new(battle_name_provinces);
+            let state_name_keys = Arc::new(state_name_keys);
+            let eta_cache = Arc::new(EtaCache::default());
+            let vision_memo = Arc::new(Keyed::new(perspective::VISION_TABLES));
+            let modifier_names = Arc::new(combat::modifier_text::name_index_cache());
+            let regions = Arc::new(regions);
+            let counters = Arc::new(counters);
+            let province_hover = Arc::new(province_hover);
+            let counter_content =
+                Arc::new(viewer_counter_products::map::counter_content::Content {
+                    anchors: Arc::clone(&counters.anchors),
+                    default_anchors: Arc::clone(&counters.default_anchors),
+                    terrain: Arc::clone(&counters.terrain),
+                    region_of: Arc::clone(&counters.region_of),
+                    kinds: Arc::clone(&counters.kinds),
+                    ability_sprites: Arc::clone(&icons.counters.ability_sprites),
+                    fog: Arc::clone(&counters.fog),
+                    aggression: Arc::clone(&counters.aggression),
+                    naval_counts: counters.defines.naval_counts,
+                    port_mission_defines: counters.port_mission_defines.clone(),
+                    supply_grace: counters.supply_grace.clone(),
+                    comms_max_distance: counters.comms_max_distance.clone(),
+                    dig_in_factor: counters.dig_in_factor.clone(),
+                    attrition: counters.attrition.clone(),
+                    ability_comms_scaling: counters.ability_comms_scaling.clone(),
+                    ability_no_hq_scaling: counters.ability_no_hq_scaling.clone(),
+                    equipment: Arc::clone(&unit_models.sub_units.equipment),
+                    strategic_regions: Arc::clone(&regions),
+                    province_hover: Arc::clone(&province_hover),
+                    localisation: Arc::clone(&names.localisation),
+                    recorded_language: recorded_language.clone(),
+                    scripted: Arc::clone(&scripted),
+                    state_name_keys: Arc::clone(&state_name_keys),
+                    text_icons: icons.combat.clone(),
+                    division_names: Arc::clone(&icons.combat.division_names),
+                    sub_units: icons.combat.shared_sub_units(),
+                    movement_terrain: icons.combat.movement_terrain(),
+                    building_facts: Arc::clone(&map_buildings.facts),
+                    air_base_first_provinces: Arc::clone(&counters.air_base_first_provinces),
+                    movement: movement.clone(),
+                    eta_cache: Arc::clone(&eta_cache),
+                });
+            let combat = Arc::new(combat::Content {
+                air_context: Some(Arc::clone(&counter_content)),
+                medals: Default::default(),
+                attrition: Default::default(),
+                assets: Arc::clone(&icons.combat),
+                localisation: Arc::clone(&names.localisation),
+                recorded_language: recorded_language.clone(),
+                recorded_labels: Arc::clone(&recorded_labels),
+                scripted: Arc::clone(&scripted),
+                map: Arc::clone(&map),
+                strategic_regions: Arc::clone(&regions),
+                battle_name_provinces: Arc::clone(&battle_name_provinces),
+                state_name_keys: Arc::clone(&state_name_keys),
+                province_geometry: Arc::clone(&province_geometry),
+                region_of: Arc::clone(&counters.region_of),
+                terrain: Arc::clone(&counters.terrain),
+                scores: counters.defines.land_combat.scores,
+                fog: Arc::clone(&counters.fog),
+                vision_memo: Arc::clone(&vision_memo),
+                eta_cache: Arc::clone(&eta_cache),
+                modifier_names: Arc::clone(&modifier_names),
+                movement: movement.clone(),
+                window_cache: Arc::clone(&icons.counters.window_cache),
+                small_flags: Arc::clone(&icons.counters.flags),
+                large_flags: Arc::clone(&icons.counters.large_flags),
+                lazy: Arc::clone(&icons.lazy),
+                trigger_content: Arc::new(icons.raids.trigger_content.clone()),
+            });
+            let resource_icons = viewer_world::map::resource_icons::ResourceIconContent::load(
+                &content.layers,
+                &defines,
+            )
+            .map_err(|error| error.to_string());
+            match &resource_icons {
+                Ok(icons) => warnings.extend(icons.warnings().iter().cloned()),
+                Err(why) => warnings.push(format!(
+                    "The resources map mode draws no state icons: {why}"
+                )),
+            }
+            let adjacency_icons = match installed_content_core::adjacency_rules::read(&content.layers) {
+                Ok(rules) => {
+                    viewer_world::map::adjacency_icons::AdjacencyIcons::new(&rules, &defines)
+                }
+                Err(error) => {
+                    warnings.push(format!(
                     "No strait or canal icons are drawn: the adjacency rules cannot be read: {error}"
                 ));
-                viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+                    viewer_world::map::adjacency_icons::AdjacencyIcons::new(&[], &defines)
+                }
+            };
+            let trade_routes = crate::map_assets::graphics_define(
+                &content.layers,
+                "trade-route lines and convoys",
+                &art_defines,
+                &defines,
+                viewer_world::map::trade_routes::TradeRouteDefines::read,
+            )
+            .map_err(|error| error.to_string());
+            let air_assignment_colors = crate::map_assets::graphics_define(
+                &content.layers,
+                "Air assignment stripes",
+                &art_defines,
+                &defines,
+                viewer_world::map::air_assignment::Colors::read,
+            )
+            .map_err(|error| error.to_string());
+            let occupation_stripe_alpha = crate::map_assets::graphics_define(
+                &content.layers,
+                "occupation country stripes",
+                &art_defines,
+                &defines,
+                viewer_world::map::occupation_stripes::Alpha::read,
+            )
+            .map_err(|error| error.to_string());
+            let naval_region_eligibility = viewer_world::map::naval_selection::eligible_regions(
+                &icons.raids.region_provinces,
+                &icons.raids.geometry,
+            );
+            let naval_selection_colors = crate::map_assets::graphics_define(
+                &content.layers,
+                "Navy local selection colours",
+                &art_defines,
+                &defines,
+                viewer_world::map::naval_selection::Colors::read,
+            )
+            .map_err(|error| error.to_string());
+            let radar_centers = viewer_world::map::radar_symbols::Centers::new(
+                &icons.raids.trigger_content.state_provinces,
+                &counters.bounds,
+                map.width as i32,
+            );
+            let air_order_colors = crate::map_assets::graphics_define(
+                &content.layers,
+                "Air mission arrows",
+                &art_defines,
+                &defines,
+                viewer_world::map::air_orders::Colors::read,
+            )
+            .map_err(|error| error.to_string());
+            let air_transfer_color = crate::map_assets::graphics_define(
+                &content.layers,
+                "Air transfer arrows",
+                &art_defines,
+                &defines,
+                viewer_world::map::air_transfers::color,
+            )
+            .map_err(|error| error.to_string());
+            let snow_content = map_products::display::SnowContent::new(
+                &map,
+                &assets.perm_snow,
+                assets.post.volumes.winter(),
+            );
+            let products = map_products::ProductContent::from_inputs(
+                product_loader.reads.clone(),
+                map_products::ProductInputs {
+                    map: Arc::clone(&map),
+                    fog: Arc::clone(&counters.fog),
+                    anchors: Arc::clone(&counters.anchors),
+                    default_anchors: Arc::clone(&counters.default_anchors),
+                    bounds: Arc::clone(&counters.bounds),
+                    localisation: Arc::clone(&names.localisation),
+                    map_text: viewer_world::map::animated_map_text::events::Content::new(
+                        &building_types,
+                    ),
+                    audio: audio.as_ref().map(|source| Arc::clone(&source.content)),
+                    triggers: Arc::new(icons.raids.trigger_content.clone()),
+                },
+            )
+            .with_snow(snow_content);
+            {
+                let _validation = crate::perf_log::StartupSpan::new("generation_validation");
+                content.layers.validate_generation()?;
             }
-        };
-        let trade_routes = crate::map_assets::graphics_define(
-            &content.layers,
-            "trade-route lines and convoys",
-            &art_defines,
-            &defines,
-            viewer_world::map::trade_routes::TradeRouteDefines::read,
-        )
-        .map_err(|error| error.to_string());
-        let air_assignment_colors = crate::map_assets::graphics_define(
-            &content.layers,
-            "Air assignment stripes",
-            &art_defines,
-            &defines,
-            viewer_world::map::air_assignment::Colors::read,
-        )
-        .map_err(|error| error.to_string());
-        let occupation_stripe_alpha = crate::map_assets::graphics_define(
-            &content.layers,
-            "occupation country stripes",
-            &art_defines,
-            &defines,
-            viewer_world::map::occupation_stripes::Alpha::read,
-        )
-        .map_err(|error| error.to_string());
-        let naval_region_eligibility = viewer_world::map::naval_selection::eligible_regions(
-            &icons.raids.region_provinces,
-            &icons.raids.geometry,
-        );
-        let naval_selection_colors = crate::map_assets::graphics_define(
-            &content.layers,
-            "Navy local selection colours",
-            &art_defines,
-            &defines,
-            viewer_world::map::naval_selection::Colors::read,
-        )
-        .map_err(|error| error.to_string());
-        let radar_centers = viewer_world::map::radar_symbols::Centers::new(
-            &icons.raids.trigger_content.state_provinces,
-            &counters.bounds,
-            map.width as i32,
-        );
-        let air_order_colors = crate::map_assets::graphics_define(
-            &content.layers,
-            "Air mission arrows",
-            &art_defines,
-            &defines,
-            viewer_world::map::air_orders::Colors::read,
-        )
-        .map_err(|error| error.to_string());
-        let air_transfer_color = crate::map_assets::graphics_define(
-            &content.layers,
-            "Air transfer arrows",
-            &art_defines,
-            &defines,
-            viewer_world::map::air_transfers::color,
-        )
-        .map_err(|error| error.to_string());
-        let snow_content = map_products::display::SnowContent::new(
-            &map,
-            &assets.perm_snow,
-            assets.post.volumes.winter(),
-        );
-        let products = map_products::ProductContent::from_inputs(
-            product_loader.reads.clone(),
-            map_products::ProductInputs {
-                map: Arc::clone(&map),
-                fog: Arc::clone(&counters.fog),
-                anchors: Arc::clone(&counters.anchors),
-                default_anchors: Arc::clone(&counters.default_anchors),
-                bounds: Arc::clone(&counters.bounds),
-                localisation: Arc::clone(&names.localisation),
-                map_text: viewer_world::map::animated_map_text::events::Content::new(
-                    &building_types,
-                ),
-                audio: audio.as_ref().map(|source| Arc::clone(&source.content)),
-                triggers: Arc::new(icons.raids.trigger_content.clone()),
-            },
-        )
-        .with_snow(snow_content);
-        let content = Content {
-            tables: engine_executable::executable_tables::current(),
-            products,
-            radar_centers,
-            resource_icons,
-            adjacency_icons,
-            trade_routes,
-            air_assignment_colors,
-            occupation_stripe_alpha,
-            naval_selection_colors,
-            naval_region_eligibility,
-            air_order_colors,
-            air_transfer_color,
-            counter_content,
-            combat,
-            visual_mods: visual_mods.map(<[installed_content_core::content::visual::Choice]>::to_vec),
-            visual_revision,
-            fallback,
-            texture_quality,
-            weather_effects,
-            map,
-            map_defines,
-            camera_law,
-            game_speeds,
-            game_display,
-            game_options,
-            game_full_resolution,
-            game_strategic_names,
-            game_audio,
-            game_dev_master,
-            cursor,
-            assets,
-            warnings,
-            uncovered_reads,
-            audio,
-            source_path: path.to_path_buf(),
-            // borders
-            border_assets,
-            border_meshes,
-            straits,
-            raid_hover,
-            strategic_regions: regions,
-            naval_dominance,
-            map_modes,
-            border_trace,
-            // names
-            icons,
-            names,
-            labels,
-            // rivers
-            river_assets,
-            river_mesh,
-            river_trace,
-            river_build,
-            // the map's table frame
-            frame_assets,
-            // counters
-            counters,
-            // trees
-            tree_assets,
-            tree_geometry,
-            tree_field,
-            tree_build,
-            // close zoom
-            sprawl,
-            sprawl_build,
-            map_buildings,
-            rail_assets,
-            rail_geometry,
-            trains,
-            aircraft,
-            rail_build,
-            bridges,
-            unit_models,
-            // orders: the recorded player's battle plan
-            orders: order_assets,
-            political_gpu: viewer_world::map::political_gpu::Cache::default(),
-            scene_textures: viewer_world::map::scene::TextureCache::default(),
-            eta_cache,
-            order_memo: Recent::new(),
-            trade_route_memo: Recent::new(),
-            type_tint_memo: Keyed::new(counters::type_tint::TABLES),
-            mission_memo: Recent::new(),
-            movement,
-            province_geometry,
-            province_geometry_build,
-        };
-        Ok(Self {
-            content: Arc::new(content),
-            playback,
-            hour_fraction: initial.hour_fraction,
-            demilitarized_override: BTreeSet::new(),
+            let loading = content.layers.loading();
+            if let Some(path) = std::env::var_os("BATTLE_PLAN_CONTENT_COUNTS_FILE").or_else(|| std::env::var_os("HOI4_CONTENT_COUNTS_FILE")) {
+                let counts = serde_json::json!({
+                    "reads": installed_content_core::content::io_counts::snapshot(),
+                    "graph": content.layers.content_counts(),
+                });
+                std::fs::write(path, serde_json::to_vec(&counts).map_err(io::Error::other)?)?;
+            }
+            let content = Content {
+                loading,
+                first_frame_reported: std::sync::atomic::AtomicBool::new(false),
+                tables: engine_executable::executable_tables::current(),
+                products,
+                radar_centers,
+                resource_icons,
+                adjacency_icons,
+                trade_routes,
+                air_assignment_colors,
+                occupation_stripe_alpha,
+                naval_selection_colors,
+                naval_region_eligibility,
+                air_order_colors,
+                air_transfer_color,
+                counter_content,
+                combat,
+                visual_mods: visual_mods.map(<[installed_content_core::content::visual::Choice]>::to_vec),
+                visual_revision,
+                fallback,
+                texture_quality,
+                weather_effects,
+                map,
+                map_defines,
+                camera_law,
+                game_speeds,
+                game_display,
+                game_options,
+                game_full_resolution,
+                game_strategic_names,
+                game_audio,
+                game_dev_master,
+                cursor,
+                assets,
+                warnings,
+                uncovered_reads,
+                audio,
+                source_path: path.to_path_buf(),
+                // borders
+                border_assets,
+                border_meshes,
+                straits,
+                raid_hover,
+                strategic_regions: regions,
+                naval_dominance,
+                map_modes,
+                border_trace,
+                // names
+                icons,
+                names,
+                labels,
+                // rivers
+                river_assets,
+                river_mesh,
+                river_trace,
+                river_build,
+                // the map's table frame
+                frame_assets,
+                // counters
+                counters,
+                // trees
+                tree_assets,
+                tree_geometry,
+                tree_field,
+                tree_build,
+                // close zoom
+                sprawl,
+                sprawl_build,
+                map_buildings,
+                rail_assets,
+                rail_geometry,
+                trains,
+                aircraft,
+                rail_build,
+                bridges,
+                unit_models,
+                // orders: the recorded player's battle plan
+                orders: order_assets,
+                political_gpu: viewer_world::map::political_gpu::Cache::default(),
+                scene_textures: viewer_world::map::scene::TextureCache::default(),
+                eta_cache,
+                order_memo: Recent::new(),
+                trade_route_memo: Recent::new(),
+                type_tint_memo: Keyed::new(counters::type_tint::TABLES),
+                mission_memo: Recent::new(),
+                movement,
+                province_geometry,
+                province_geometry_build,
+            };
+            Ok(Self {
+                content: Arc::new(content),
+                playback,
+                hour_fraction: initial.hour_fraction,
+                demilitarized_override: BTreeSet::new(),
+            })
         })
     }
 
@@ -2880,7 +2966,10 @@ impl Document {
             } else {
                 let mut candidates = Vec::new();
                 // Histories share the hours before they part: the main one answers for them.
-                let main = playback.replay().timelines().map(|timelines| timelines.main);
+                let main = playback
+                    .replay()
+                    .timelines()
+                    .map(|timelines| timelines.main);
                 if let Some(main) = main
                     && matches!(playback.replay().seek(main, hour)?, SeekResult::Frame(_))
                 {
@@ -5733,6 +5822,16 @@ mod tests {
                 3 => (2, 60827796),
                 _ => continue,
             };
+            let source = dashboard::Source::from_replay(
+                dashboard::SourceKey {
+                    source_id: path.to_owned(),
+                    revision: dashboard::protocol::replay_revision(Path::new(path)).unwrap(),
+                },
+                PathBuf::from(path),
+                Arc::clone(&replay),
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
             let document = Document::load_shared(
                 Path::new(path),
                 &options,
@@ -5742,10 +5841,12 @@ mod tests {
                     hour: Some(hour),
                     hour_fraction: 0.0,
                 },
-                replay,
+                Arc::clone(&replay),
+                &source,
                 None,
                 0,
                 None,
+                LoadTarget::Content,
             )
             .unwrap();
             let mut warnings = document.warnings.clone();

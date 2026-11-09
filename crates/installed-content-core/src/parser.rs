@@ -373,6 +373,7 @@ pub fn number_token(text: &[u8], quoted: bool) -> bool {
 /// Errors use zero-based byte offsets in the original input. `HOI4txt` is an
 /// ordinary anonymous scalar, so save-header validation belongs to the caller.
 pub fn parse(bytes: &[u8]) -> io::Result<Document> {
+    crate::content::io_counts::parse("balanced grammar", bytes);
     Parser::new(bytes, false, false).document()
 }
 
@@ -380,6 +381,7 @@ pub fn parse(bytes: &[u8]) -> io::Result<Document> {
 /// `variables`. Script loading instead takes `=` as a key with a retained value; that
 /// recovery does not represent the saved state.
 pub fn parse_save(bytes: &[u8]) -> io::Result<Document> {
+    crate::content::io_counts::parse("save grammar", bytes);
     let mut parser = Parser::new(bytes, false, false);
     parser.save_variables = true;
     parser.document()
@@ -398,6 +400,7 @@ pub struct BlockLines {
 /// order their `{` appear: a pre-order walk of the document's
 /// [`Value::Block`] and [`Value::Tagged`] values meets them in this order.
 pub fn parse_unclosed_lines(input: &[u8]) -> io::Result<(Document, Vec<BlockLines>, bool)> {
+    crate::content::io_counts::parse("unclosed grammar with lines", input);
     let mut parser = Parser::new(input, true, true);
     let document = parser.document()?;
     let closed = parser.lexer.at_eof.closed;
@@ -557,6 +560,7 @@ impl Lexer<'_> {
 /// anything for caller reporting. A truncated save remains an error: [`parse`] never
 /// recovers.
 pub fn parse_unclosed(input: &[u8]) -> io::Result<(Document, bool)> {
+    crate::content::io_counts::parse("unclosed grammar", input);
     let mut parser = Parser::new(input, true, false);
     let document = parser.document()?;
     Ok((document, parser.lexer.at_eof.closed))

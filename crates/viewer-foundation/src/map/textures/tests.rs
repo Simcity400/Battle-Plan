@@ -51,7 +51,7 @@ fn unknown_map_texture_outcomes_are_not_replaced_with_zero() {
     .unwrap_err();
     assert!(error.to_string().contains("map/unknown.dds"));
     assert!(warnings.is_empty());
-    let denied = |_: &[u8]| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+    let denied = |_: &[u8]| Err::<Vec<u8>, _>(io::Error::from(io::ErrorKind::PermissionDenied));
     assert_eq!(
         load_map_texture(
             "map/denied.dds",
@@ -445,7 +445,7 @@ fn declared_atlas_indices_keep_native_bytes_and_only_unmapped_indices_warn() {
     let image = |indices: &[u8]| IndexedImage {
         width: indices.len() as u32,
         height: 1,
-        indices: indices.to_vec(),
+        indices: indices.into(),
         palette: [[0; 4]; 256],
     };
 
@@ -555,7 +555,7 @@ fn a_nonsquare_cube_is_refused_by_name_before_gpu_validation() {
                 vec![dds::MipLevel {
                     width: 8,
                     height,
-                    data: vec![0; (8 * height * 4) as usize],
+                    data: (vec![0; (8 * height * 4) as usize]).into(),
                 }];
                 6
             ],
@@ -603,7 +603,7 @@ fn sixteen_bit_texels_sample_exactly_on_the_device() {
         mips: vec![vec![dds::MipLevel {
             width: 2,
             height: 1,
-            data: [0x0821_u16, 0xFFFF].map(u16::to_le_bytes).concat(),
+            data: ([0x0821_u16, 0xFFFF].map(u16::to_le_bytes).concat()).into(),
         }]],
     };
     let bound = upload(&device, &queue, "565", &texture, ColorSpace::Linear).unwrap();
@@ -740,7 +740,7 @@ fn upload_refusals_are_known_without_a_device() {
             vec![dds::MipLevel {
                 width,
                 height,
-                data: Vec::new(),
+                data: (Vec::new()).into(),
             }];
             faces as usize
         ],

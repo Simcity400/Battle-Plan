@@ -673,9 +673,10 @@ fn read_paths(layers: &ResolvedLayers, order: Vec<Vec<u8>>) -> io::Result<Vec<(S
     // Each file is read and parsed on the machine's threads as it would be alone; the rest
     // follows in load order, and the first file that fails to read fails the whole.
     let read = crate::parallel::map(&order, |bytes| {
-        layers
-            .read_path(bytes)
-            .map(|text| read_sprites_with(&text, &dynamic))
+        layers.product("interface file", 1, bytes, |layers| {
+            let dynamic = DynamicTokens::read(layers)?;
+            layers.read_path(bytes).map(|text| read_sprites_with(&text, &dynamic))
+        }).map(|file| file.as_ref().clone())
     });
     for (bytes, file) in order.into_iter().zip(read) {
         let mut file = file?;

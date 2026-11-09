@@ -335,8 +335,13 @@ fn parse_weather(bytes: &[u8]) -> io::Result<native::Read> {
     Ok(document)
 }
 
+#[cfg(test)]
 pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
     let document = parse_weather(bytes)?;
+    effect_names(&document)
+}
+
+fn effect_names(document: &native::Read) -> io::Result<Names> {
     let mut out = Names::new();
     for effects in document
         .items
@@ -381,6 +386,7 @@ pub(crate) fn parse_effect_names(bytes: &[u8]) -> io::Result<Names> {
     Ok(out)
 }
 
+#[cfg(test)]
 fn parse_temperature_ranges(bytes: &[u8]) -> io::Result<[[i64; 2]; 4]> {
     read_ranges(
         &parse_weather(bytes)?,
@@ -434,8 +440,13 @@ fn read_ranges<const N: usize>(
     Ok(ranges)
 }
 
+#[cfg(test)]
 fn parse_province_modifier_rules(bytes: &[u8]) -> io::Result<ProvinceModifierRules> {
     let document = parse_weather(bytes)?;
+    province_rules(&document).map_err(|error| invalid(format!("{PATH}: {error}")))
+}
+
+fn province_rules(document: &native::Read) -> io::Result<ProvinceModifierRules> {
     // Construction zeroes the ceiling; each assignment overwrites it, and a
     // value that is not a scalar leaves it unchanged.
     let mut snow_gain_max = 0;
@@ -467,14 +478,21 @@ fn parse_province_modifier_rules(bytes: &[u8]) -> io::Result<ProvinceModifierRul
 /// The content rules of a province weather record's modifier rebuild, from the
 /// stack's `common/weather.txt`.
 pub fn province_modifier_rules(layers: &ResolvedLayers) -> io::Result<ProvinceModifierRules> {
-    parse_province_modifier_rules(&layers.read(PATH)?)
-        .map_err(|error| invalid(format!("{PATH}: {error}")))
+    let document = read_weather(layers)?;
+    province_rules(&document)
+}
+
+fn read_weather(layers: &ResolvedLayers) -> io::Result<std::sync::Arc<native::Read>> {
+    layers.recorded_product("weather file grammar", 1, &[], |layers| {
+        parse_weather(&layers.read(PATH)?).map_err(|error| invalid(format!("{PATH}: {error}")))
+    })
 }
 
 /// The four native thermal intervals and their stack-resolved modifier
 /// identifiers. Numeric/classification consumers retain full fixed5 values.
 pub fn temperature_ranges(layers: &ResolvedLayers) -> io::Result<TemperatureRanges> {
-    let ranges = parse_temperature_ranges(&layers.read(PATH)?)
+    let document = read_weather(layers)?;
+    let ranges = read_ranges(&document, "temperature", &TEMPERATURE_MODIFIERS)
         .map_err(|error| invalid(format!("{PATH}: {error}")))?;
     let identifiers = crate::static_modifiers::read_identifiers(layers, &TEMPERATURE_MODIFIERS)?;
     let mut out = std::array::from_fn(|slot| TemperatureRange {
@@ -574,7 +592,8 @@ fn entity_particles(
 
 /// The weather effects of the stack, each entity resolved to its particles.
 pub fn effects(layers: &ResolvedLayers, catalog: &Catalog) -> io::Result<Effects> {
-    let names = parse_effect_names(&layers.read(PATH)?)
+    let document = read_weather(layers)?;
+    let names = effect_names(&document)
         .map_err(|error| invalid(format!("{PATH}: {error}")))?;
     //The existing memoized registry is also used by entity lights/models.
     //Clones copy the parent's registration-time definition, not its final one.

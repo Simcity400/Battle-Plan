@@ -534,12 +534,12 @@ fn merged_textures_keep_their_storage_and_first_seen_slots() {
             MipLevel {
                 width: 2,
                 height: 2,
-                data: vec![fill; 16],
+                data: (vec![fill; 16]).into(),
             },
             MipLevel {
                 width: 1,
                 height: 1,
-                data: vec![fill + 1; 4],
+                data: (vec![fill + 1; 4]).into(),
             },
         ]],
     };
@@ -647,7 +647,7 @@ fn failed_compositions_keep_unique_resources_through_repeated_and_empty_merges()
         mips: vec![vec![MipLevel {
             width: side,
             height: side,
-            data: vec![fill; (side * side * 4) as usize],
+            data: (vec![fill; (side * side * 4) as usize]).into(),
         }]],
     };
     let failure = concat!(

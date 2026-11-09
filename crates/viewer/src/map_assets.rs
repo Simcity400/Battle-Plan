@@ -1,7 +1,9 @@
 //! Ordered loading of world textures, shaders and movement artwork.
 
 use installed_content_core::{ResolvedLayers, terrain::DefaultMap, terrain::TerrainDefinitions};
-use installed_content_image::{bmp, native::Decode};
+use installed_content_image::native::Decode;
+#[cfg(test)]
+use installed_content_image::bmp;
 use std::{io, sync::Arc};
 use viewer_world::map::scene_content::MapAssets;
 use {
@@ -86,24 +88,20 @@ pub fn load_with_products(
             }
         })
     };
-    let terrain = bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.terrain))?)
-        .map_err(|error| invalid(format!("map/{}: {error}", default_map.terrain)))?;
+    let terrain = installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.terrain))?;
     let heightmap = match products {
         Some(products) => products.heightmap(default_map)?,
-        None => bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.heightmap))?)
-            .map_err(|error| invalid(format!("map/{}: {error}", default_map.heightmap)))?,
+        None => installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.heightmap))?,
     };
     // Load the sampled heightmap as a texture file.
     let height_texture =
         sampled_heights(&load_image("map/heightmap.bmp", &read, decode)?, &heightmap);
     let world_normal = world_normal(layers, decode)?;
     // rivers
-    let rivers = bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.rivers))?)
-        .map_err(|error| invalid(format!("map/{}: {error}", default_map.rivers)))?;
+    let rivers = installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.rivers))?;
     // The tree_definition names the tree bitmap. Draw an instance on every nonzero pixel, regardless
     // of palette index; automatic terrain-assignment indices do not restrict tree placement.
-    let trees = bmp::decode_indexed(&layers.read(&format!("map/{}", default_map.tree_definition))?)
-        .map_err(|error| invalid(format!("map/{}: {error}", default_map.tree_definition)))?;
+    let trees = installed_content_core::terrain::read_indexed_image(layers, &format!("map/{}", default_map.tree_definition))?;
     expect_size(
         "map/terrain.bmp",
         terrain.width,
@@ -235,7 +233,7 @@ pub fn load_with_products(
 fn world_normal(
     layers: &ResolvedLayers,
     decode: Decode,
-) -> io::Result<installed_content_image::Rgba8Image> {
+) -> io::Result<installed_content_image::SharedRgba8Image> {
     layers.artwork("map/world_normal.bmp", |stack| {
         installed_content_core::terrain::read_world_normal(stack, decode)
     })

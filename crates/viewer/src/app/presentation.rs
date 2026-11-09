@@ -18,10 +18,7 @@ use viewer_foundation::profiling::BuilderSpan;
 use viewer_foundation::retirement::Dropper;
 use viewer_foundation::retirement::Retired;
 use viewer_world::map::scene::SceneInput;
-use {
-    crate::{document::Document, hours},
-    viewer_foundation::map::camera::{Camera, MapSize},
-};
+use crate::{document::Document, hours};
 
 /// CPU-side presentation point of a successfully submitted map frame, not a
 /// GPU completion or scanout timestamp. Sampling never follows the log writer.
@@ -152,6 +149,7 @@ impl Viewer {
         &mut self,
         state: &eframe::egui_wgpu::RenderState,
         document: &mut Document,
+        view: hours::View,
         laps: &mut Laps,
     ) -> Result<(), std::io::Error> {
         laps.lap("before_hour");
@@ -201,36 +199,6 @@ impl Viewer {
             branch: document.playback.branch(),
             hour: document.playback.hour(),
             fraction: f64::from(document.hour_fraction),
-        });
-        let view = self.last_view.unwrap_or_else(|| {
-            let map_size = MapSize::of(&document.map);
-            let defines = document.map_defines;
-            let (viewport, camera) = match self.capture.as_ref().and_then(|capture| capture.pinned)
-            {
-                Some((size, camera)) => {
-                    let camera = camera.map_or_else(
-                        || Camera::fit(map_size, defines, size),
-                        |placement| placement.on(map_size, defines),
-                    );
-                    (size, camera)
-                }
-                None => {
-                    let size = [1280, 720];
-                    (
-                        size,
-                        self.camera.map_or_else(
-                            || Camera::fit(map_size, defines, size),
-                            |placement| placement.on(map_size, defines),
-                        ),
-                    )
-                }
-            };
-            hours::View {
-                camera,
-                viewport,
-                // The first frame lays the icons out again at its own scale.
-                ui_scale: 1.0,
-            }
         });
         // Playing, request one pool of hours from the playhead; paused, a step
         // either way is already built, except on a dashboard map, which only

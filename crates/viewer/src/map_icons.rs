@@ -69,135 +69,152 @@ impl MapIcons {
         gui_viewport: [u32; 2],
         decode: Decode,
     ) -> io::Result<LoadedIcons> {
-        let mut images = Vec::new();
-        // The natively drawn map-icon windows read nothing the legacy readers give. This read
-        // decides only which sprites, fonts and textures the windows' resources load, a set no
-        // GUI viewport changes (`max_resolution` changes a `windowType`'s size, never which
-        // elements exist); every read a view lays out and draws is at its own viewport
-        // (`WindowCache::at`).
-        let windows = NativeWindows::load_at(layers, gui_viewport)?;
-        let layouts = viewer_counters::map::counters::Layouts::read(&windows);
-        let mut font_warnings = Vec::new();
-        // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
-        let arrow_font = viewer_foundation::map::ribbon_content::arrow_text_font(layers)?;
-        // Interface definitions and graphics files share registries, so later font and colour
-        // overrides affect both world and GUI text.
-        let registry = installed_content_core::gui::native::resources::Registry::from_files(
-            installed_content_core::gui::native::sprites::read_object_layers(layers)?,
-        );
-        let interface = Interface {
-            sprites: gfx::SpriteSet::new(&registry.files),
-            registry,
-            decode,
-        };
-        let fonts = text::Fonts::load(
-            layers,
-            &interface,
-            language,
-            &text::DeclaredFonts {
-                counter: layouts
-                    .land
-                    .as_ref()
-                    .ok()
-                    .and_then(|land| land.count.font.as_deref()),
-                arrow: arrow_font.as_deref(),
-            },
-            &mut images,
-            &mut font_warnings,
-        )?;
-        let sprites = &interface.sprites;
-        // Flag and portrait reads happen after this load returns, so the lazy
-        // stores keep their own handle on the layers.
-        let shared = Arc::new(layers.clone());
-        let lazy = LazyTextures::new();
-        // counters
-        let mut counters = CounterAssets::load(
-            &shared,
-            (layouts, windows),
-            graphics,
-            (sprites, &interface.registry),
-            (language, map_size, decode),
-            &mut images,
-            &lazy,
-        )?;
-        counters.warnings.extend(font_warnings);
-        // What the game does not define in the interface files (each file's own level, each
-        // sprite and each font declaration), named and counted; a consumer asking for a refused
-        // sprite is told why ([`gfx::SpriteSet::lookup`]), and a refused font does not load
-        // ([`text::load`]).
-        let refused: Vec<String> = sprites
-            .refused
-            .iter()
-            .cloned()
-            .chain(
-                interface
-                    .registry
-                    .fonts
-                    .fonts()
-                    .iter()
-                    .flat_map(|font| &font.facts.refusals)
-                    .map(|refusal| format!("font {refusal}")),
-            )
-            .collect();
-        if !refused.is_empty() {
-            counters.warnings.push(format!(
-                "Interface files: {} refusals of what the game does not define: {}.",
-                refused.len(),
-                refused.join("; ")
-            ));
-        }
-        let combat = combat::Assets::load_with_products(
-            products,
-            &shared,
-            regions,
-            graphics,
-            &interface,
-            &counters.large_flags,
-            (language, map_size, &counters.windows),
-            &mut images,
-            &lazy,
-        )?;
-        let mut raids = viewer_raids::map::raids::RaidAssets::load_with_products(
-            products,
-            layers,
-            graphics,
-            map,
-            &interface.registry,
-        )?;
-        raids.trigger_content.triggers = Arc::new(combat.tactics.trigger_names());
-        raids.trigger_content.character_traits = combat.tactics.trait_databases();
-        raids.transport_sub_units = combat.sub_units().cloned().map_err(str::to_owned);
-        counters
-            .gui
-            .load(layers, &raids.gui_assets(), &mut images)?;
-        // The floating map text's fonts load into the counters' GUI resources.
-        let animated_text = viewer_world::map::animated_map_text::Assets::load(
-            layers,
-            (defines, graphics),
-            map_size,
-            decode,
-            &interface.registry.files,
-        );
-        counters
-            .gui
-            .load(layers, &animated_text.gui_assets(), &mut images)?;
-        // The resource icons' rows draw the resource strip inline.
-        counters.gui.load(
-            layers,
-            &viewer_world::map::resource_icons::gui_assets(),
-            &mut images,
-        )?;
-        if images.len() >= DYNAMIC_BASE {
-            return Err(invalid("more static icon pages than texture ids"));
-        }
-        Ok(LoadedIcons {
-            combat,
-            raids,
-            images,
-            fonts,
-            counters,
-            animated_text,
-            lazy,
+        std::thread::scope(|scope| {
+            let strict = installed_content_core::content::is_strict();
+            let raids = installed_content_core::parallel::spawn(scope, move || {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    installed_content_core::content::observe_overlay_refusals_isolated(|| {
+                        let load = || {
+                            viewer_raids::map::raids::RaidAssets::load_content_with_products(
+                                products, layers, graphics, map,
+                            )
+                        };
+                        if strict {
+                            installed_content_core::content::strict(load)
+                        } else {
+                            load()
+                        }
+                    })
+                }))
+            });
+            let mut images = Vec::new();
+            // The natively drawn map-icon windows read nothing the legacy readers give. This read
+            // decides only which sprites, fonts and textures the windows' resources load, a set no
+            // GUI viewport changes (`max_resolution` changes a `windowType`'s size, never which
+            // elements exist); every read a view lays out and draws is at its own viewport
+            // (`WindowCache::at`).
+            let windows = NativeWindows::load_at(layers, gui_viewport)?;
+            let layouts = viewer_counters::map::counters::Layouts::read(&windows);
+            let mut font_warnings = Vec::new();
+            // The battle-plan label font is named by `maparrows.txt`'s `arrowText`.
+            let arrow_font = viewer_foundation::map::ribbon_content::arrow_text_font(layers)?;
+            // Interface definitions and graphics files share registries, so later font and colour
+            // overrides affect both world and GUI text.
+            let registry = installed_content_core::gui::native::resources::Registry::from_files(
+                installed_content_core::gui::native::sprites::read_object_layers(layers)?,
+            );
+            let interface = Interface {
+                sprites: gfx::SpriteSet::new(&registry.files),
+                registry,
+                decode,
+            };
+            let fonts = text::Fonts::load(
+                layers,
+                &interface,
+                language,
+                &text::DeclaredFonts {
+                    counter: layouts
+                        .land
+                        .as_ref()
+                        .ok()
+                        .and_then(|land| land.count.font.as_deref()),
+                    arrow: arrow_font.as_deref(),
+                },
+                &mut images,
+                &mut font_warnings,
+            )?;
+            let sprites = &interface.sprites;
+            // Flag and portrait reads happen after this load returns, so the lazy
+            // stores keep their own handle on the layers.
+            let shared = Arc::new(layers.clone());
+            let lazy = LazyTextures::new();
+            // counters
+            let mut counters = CounterAssets::load(
+                &shared,
+                (layouts, windows),
+                graphics,
+                (sprites, &interface.registry),
+                (language, map_size, decode),
+                &mut images,
+                &lazy,
+            )?;
+            counters.warnings.extend(font_warnings);
+            // What the game does not define in the interface files (each file's own level, each
+            // sprite and each font declaration), named and counted; a consumer asking for a refused
+            // sprite is told why ([`gfx::SpriteSet::lookup`]), and a refused font does not load
+            // ([`text::load`]).
+            let refused: Vec<String> = sprites
+                .refused
+                .iter()
+                .cloned()
+                .chain(
+                    interface
+                        .registry
+                        .fonts
+                        .fonts()
+                        .iter()
+                        .flat_map(|font| &font.facts.refusals)
+                        .map(|refusal| format!("font {refusal}")),
+                )
+                .collect();
+            if !refused.is_empty() {
+                counters.warnings.push(format!(
+                    "Interface files: {} refusals of what the game does not define: {}.",
+                    refused.len(),
+                    refused.join("; ")
+                ));
+            }
+            let combat = combat::Assets::load_with_products(
+                products,
+                &shared,
+                regions,
+                graphics,
+                &interface,
+                &counters.large_flags,
+                (language, map_size, &counters.windows),
+                &mut images,
+                &lazy,
+            )?;
+            let (raids, refusals) = installed_content_core::parallel::join(raids)
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+            installed_content_core::content::credit_overlay_refusals(&refusals);
+            let mut raids = raids?;
+            raids.retain_glyphs(&interface.registry);
+            raids.trigger_content.triggers = Arc::new(combat.tactics.trigger_names());
+            raids.trigger_content.character_traits = combat.tactics.trait_databases();
+            raids.transport_sub_units = combat.sub_units().cloned().map_err(str::to_owned);
+            counters
+                .gui
+                .load(layers, &raids.gui_assets(), &mut images)?;
+            // The floating map text's fonts load into the counters' GUI resources.
+            let animated_text = viewer_world::map::animated_map_text::Assets::load(
+                layers,
+                (defines, graphics),
+                map_size,
+                decode,
+                &interface.registry.files,
+            );
+            counters
+                .gui
+                .load(layers, &animated_text.gui_assets(), &mut images)?;
+            // The resource icons' rows draw the resource strip inline.
+            counters.gui.load(
+                layers,
+                &viewer_world::map::resource_icons::gui_assets(),
+                &mut images,
+            )?;
+            if images.len() >= DYNAMIC_BASE {
+                return Err(invalid("more static icon pages than texture ids"));
+            }
+            Ok(LoadedIcons {
+                combat,
+                raids,
+                images,
+                fonts,
+                counters,
+                animated_text,
+                lazy,
+            })
         })
     }
 

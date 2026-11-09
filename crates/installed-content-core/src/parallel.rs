@@ -2,6 +2,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub mod cpu;
+pub mod dag;
+
 /// `work` over every item on up to the machine's threads, results in item order. Each worker
 /// thread runs as its caller does ([`job_priority::Caller`]): it works for the caller, which
 /// waits for it.
@@ -34,21 +37,24 @@ pub fn map_entering<T: Sync, R: Send>(
             .map(|_| {
                 let cpu = job_priority::accounting::Context::capture();
                 let diagnostics = &diagnostics;
-                job_priority::spawn_in(scope, move || {
-                    let _memory = engine_allocation::labels::resume(memory);
-                    diagnostics.enter(|| {
-                        let _cpu = cpu.enter("content parallel");
-                        enter();
-                        let mut done = Vec::new();
-                        loop {
-                            let index = next.fetch_add(1, Ordering::Relaxed);
-                            let Some(item) = items.get(index) else {
-                                return done;
-                            };
-                            done.push((index, work(item)));
-                        }
-                    })
-                })
+                job_priority::spawn_in(
+                    scope,
+                    crate::content::generation::carry(cpu::carry(move || {
+                        let _memory = engine_allocation::labels::resume(memory);
+                        diagnostics.enter(|| {
+                            let _cpu = cpu.enter("content parallel");
+                            enter();
+                            let mut done = Vec::new();
+                            loop {
+                                let index = next.fetch_add(1, Ordering::Relaxed);
+                                let Some(item) = items.get(index) else {
+                                    return done;
+                                };
+                                done.push((index, work(item)));
+                            }
+                        })
+                    })),
+                )
             })
             .collect();
         for task in tasks {
@@ -70,18 +76,22 @@ pub fn spawn<'scope, T: Send + 'scope>(
     scope: &'scope std::thread::Scope<'scope, '_>,
     work: impl FnOnce() -> T + Send + 'scope,
 ) -> std::thread::ScopedJoinHandle<'scope, T> {
+    job_priority::spawn_in(scope, carried(work))
+}
+
+fn carried<T>(work: impl FnOnce() -> T + Send) -> impl FnOnce() -> T + Send {
     let caller = job_priority::Caller::current();
     let cpu = job_priority::accounting::Context::capture();
     let diagnostics = crate::content::diagnostics::Context::capture();
     let memory = engine_allocation::labels::current();
-    job_priority::spawn_in(scope, move || {
+    crate::content::generation::carry(cpu::carry(move || {
         let _memory = engine_allocation::labels::resume(memory);
         diagnostics.enter(|| {
             let _cpu = cpu.enter("content helper");
             caller.enter();
             work()
         })
-    })
+    }))
 }
 
 /// A scoped thread's result, its panic resumed on this thread.

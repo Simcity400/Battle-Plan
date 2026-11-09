@@ -322,10 +322,10 @@ pub fn names(layers: &ResolvedLayers) -> io::Result<Names> {
 
 /// The database's files in load order, each with its path, their triggers
 /// read against `key_names`.
-fn read_files(files: &[(Vec<u8>, String)], key_names: &KeyNames) -> Names {
+fn read_files<B: AsRef<[u8]>>(files: &[(B, String)], key_names: &KeyNames) -> Names {
     let mut names = Names::default();
     for (index, (bytes, path)) in files.iter().enumerate() {
-        let file = read_file(bytes, key_names);
+        let file = read_file(bytes.as_ref(), key_names);
         names.warnings.extend(file.misreads.iter().map(|misread| {
             (
                 misread.kind,

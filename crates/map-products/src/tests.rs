@@ -80,7 +80,7 @@ fn content(stack: &Stack) -> ProductContent {
     let inputs = reads
         .load(|layers| {
             let values = layers.read("map/fixture.txt")?;
-            let authored = String::from_utf8(values).unwrap().parse::<f32>().unwrap();
+            let authored = std::str::from_utf8(&values).unwrap().parse::<f32>().unwrap();
             Ok(ProductInputs {
                 map: Arc::new(MapData {
                     width: 12,
@@ -341,7 +341,7 @@ fn witness_is_a_canonical_set_including_misses_errors_and_retained_reads() {
         })
         .unwrap();
     assert_eq!(before, other.witness().unwrap());
-    let result: io::Result<Vec<u8>> = reads.load(|layers| layers.read("map/missing.txt"));
+    let result: io::Result<installed_content_core::content::Bytes> = reads.load(|layers| layers.read("map/missing.txt"));
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
     retained.read("map/later.txt").unwrap();
     assert_ne!(before, reads.witness().unwrap());
