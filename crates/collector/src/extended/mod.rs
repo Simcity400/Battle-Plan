@@ -1299,7 +1299,10 @@ impl Captured {
 
     /// Project owned operands after their single live acquisition has finished.
     pub(crate) fn decode_division_presentation_inputs(&mut self) -> [u64; 2] {
-        self.division_presentation.decode_inputs()
+        let ticks = self.division_presentation.decode_inputs();
+        #[cfg(feature = "acquisition_profile")]
+        self.division_presentation.record_profile();
+        ticks
     }
 
     pub(crate) fn politics(&self) -> &politics::Captured {

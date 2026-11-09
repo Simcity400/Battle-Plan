@@ -663,6 +663,7 @@ unsafe extern "system-unwind" fn destroy_hq_group(
     let notification = ManuallyDrop::new((
         native_notification(&WATCHES, 46, first, second),
         crate::orders_group_changes::forwarded(first),
+        crate::order_membership_changes::group_changing(first),
     ));
     let original: NativeFunction =
         unsafe { std::mem::transmute(ORIGINAL[46].load(Ordering::Acquire)) };

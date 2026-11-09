@@ -712,6 +712,10 @@ pub fn scalar_from_bytes<T: Raw>(source: &[u8]) -> Option<T> {
 
 #[inline]
 pub fn read<T: Raw>(memory: &impl Memory, address: usize) -> Option<T> {
+    #[cfg(feature = "acquisition_profile")]
+    if std::mem::size_of::<T>() == std::mem::size_of::<usize>() {
+        crate::acquisition_profile::pointer_width_read();
+    }
     let len = size_of::<T>();
     if len == 0 {
         return Some(T::ZERO);

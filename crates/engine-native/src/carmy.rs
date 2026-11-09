@@ -1554,8 +1554,11 @@ pub struct RetreatBanRow {
 use crate::corders_group_member::{MembershipCapacity, MembershipPacket, MembershipQuery};
 
 mod model_inputs;
+mod status_membership;
 mod status_parts;
 pub use model_inputs::{ModelInputsReport, ModelInputsRow};
+#[cfg(feature = "order_membership_oracle")]
+pub use status_membership::oracle as membership_oracle;
 pub use status_parts::StatusPart;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -3246,7 +3249,9 @@ impl StatusPacket {
                     if let Some(reason) = self.units[unit].failure {
                         return Err(reason);
                     }
-                    self.membership.outcome(self.units[unit].membership)?;
+                    self.units[unit]
+                        .has_order
+                        .unwrap_or_else(|| self.membership.outcome(self.units[unit].membership))?;
 
                     self.units[unit].attrition_value = seed
                         .counter_attrition

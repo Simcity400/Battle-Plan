@@ -4,6 +4,8 @@
 use collector_test_support as test_support;
 
 pub mod read_accounting;
+#[cfg(feature = "acquisition_profile")]
+pub mod acquisition_profile;
 pub mod terminal;
 
 #[cfg(test)]

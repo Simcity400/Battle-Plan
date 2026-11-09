@@ -137,6 +137,7 @@ pub fn active() -> usize {
 /// or recovery: nothing observed before it certifies anything.
 pub fn boundary(invalidate: bool) {
     WATCHES.registry.boundary(invalidate);
+    crate::order_membership_changes::boundary(invalidate);
 }
 
 /// Off-thread: the group census counts every registered group before installation.
@@ -155,6 +156,7 @@ pub fn presize() {
 
 /// Off the game thread: free a replaced watch table.
 pub fn collect() {
+    crate::order_membership_changes::collect();
     WATCHES.registry.collect();
 }
 
@@ -177,9 +179,9 @@ pub fn record(counts: &Counts) {
 /// Observe while this family's patches and the forwarder's are enabled. Enabling starts a
 /// new epoch, so nothing held from before a gap certifies.
 fn observe() {
-    WATCHES
-        .registry
-        .set_enabled(PATCHED.load(Ordering::SeqCst) && FORWARDED.load(Ordering::SeqCst));
+    let enabled = PATCHED.load(Ordering::SeqCst) && FORWARDED.load(Ordering::SeqCst);
+    WATCHES.registry.set_enabled(enabled);
+    crate::order_membership_changes::forwarder(enabled);
 }
 
 /// The template family enabled or disabled its destructor patch; outside attach and detach
@@ -317,6 +319,9 @@ macro_rules! callback {
                 Receiver::First => first,
                 Receiver::Second => second,
             };
+            let membership = ManuallyDrop::new(
+                ($site == 2).then(|| crate::order_membership_changes::group_changing(group)),
+            );
             let notification = ManuallyDrop::new(if $site == DAILY_UPDATE {
                 WATCHES.daily(group, trains_to_maximum(group))
             } else {
@@ -326,6 +331,7 @@ macro_rules! callback {
                 unsafe { std::mem::transmute(ORIGINAL[$site].load(Ordering::Acquire)) };
             let result = timing.original(|| unsafe { original(first, second, third, fourth) });
             drop(ManuallyDrop::into_inner(notification));
+            drop(ManuallyDrop::into_inner(membership));
             result
         }
     };

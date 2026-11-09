@@ -10,10 +10,13 @@ license.workspace = true
 doctest = false
 
 [features]
+acquisition_profile = ["engine-native/acquisition_profile", "dep:collector-status", "dep:serde"]
 alloc-fault-injection = ["engine-allocation/alloc-fault-injection", "engine-native/alloc-fault-injection"]
 test-support = ["dep:collector-test-support"]
 
 [dependencies]
+collector-status = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
 engine-sites.workspace = true
 engine-allocation.workspace = true
 engine-native.workspace = true

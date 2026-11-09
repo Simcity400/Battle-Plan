@@ -3533,6 +3533,270 @@ fn division_status_preserves_maxima_and_distinguishes_training_orders_and_attrit
     );
 }
 
+#[derive(Default)]
+struct MembershipTestSignals {
+    stamps: std::cell::RefCell<std::collections::BTreeMap<usize, u64>>,
+    calls: std::cell::Cell<usize>,
+}
+
+impl MembershipTestSignals {
+    fn bump(&self, group: usize) {
+        *self.stamps.borrow_mut().entry(group).or_insert(0) += 1;
+    }
+}
+
+impl crate::corders_group_member::MembershipSignals for MembershipTestSignals {
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn group(&self, receiver: usize, _slot: usize) -> Option<((u64, u64), usize)> {
+        self.calls.set(self.calls.get() + 1);
+        (receiver != 0).then(|| {
+            (
+                (1, self.stamps.borrow().get(&receiver).copied().unwrap_or(0)),
+                receiver,
+            )
+        })
+    }
+}
+
+fn membership_signal_fixture() -> (PresentationMemory, [super::DivisionSeed; 2]) {
+    use crate::corder_instance as order;
+    let mut memory = presentation_fixture();
+    array(
+        &mut memory.bytes,
+        G1 + corders_group::PRIMARY_ORDER_DATA,
+        0x17000,
+        1,
+    );
+    p64(&mut memory.bytes, 0x17000, 0x18000);
+    p64(&mut memory.bytes, 0x18000, order::VTABLE_RVA.0 as u64);
+    p64(&mut memory.bytes, 0x18000 + order::OWNER, G1 as u64);
+    array(
+        &mut memory.bytes,
+        0x18000 + order::ASSIGNED_MEMBER_DATA,
+        0x19000,
+        2,
+    );
+    let seeds = [A1, A2].map(|pointer| super::DivisionSeed {
+        pointer,
+        division: pointer as u64,
+        orders_group: Some(G1),
+        ..Default::default()
+    });
+    for (index, seed) in seeds.iter().enumerate() {
+        p64(
+            &mut memory.bytes,
+            0x19000 + index * 8,
+            (seed.pointer + cunit::SCHEDULED_MEMBER) as u64,
+        );
+    }
+    (memory, seeds)
+}
+
+fn membership_test_packet(seeds: &[super::DivisionSeed]) -> super::StatusPacket {
+    let mut packet = super::StatusPacket::new(seeds.len()).unwrap();
+    packet.enable_growth();
+    for seed in seeds {
+        packet.units.push(super::StatusUnitInputs {
+            division: seed.division,
+            group: seed.orders_group.unwrap(),
+            ..Default::default()
+        });
+    }
+    packet.outcome = Outcome::Rows { len: seeds.len() };
+    packet
+}
+
+fn signaled_membership(
+    memory: &impl crate::Memory,
+    seeds: &[super::DivisionSeed],
+    cache: &mut super::status_membership::Cache,
+    signals: &impl crate::corders_group_member::MembershipSignals,
+) -> super::StatusPacket {
+    let mut packet = membership_test_packet(seeds);
+    cache
+        .acquire(memory, 0, seeds, &mut packet, signals)
+        .unwrap();
+    packet
+}
+
+#[test]
+fn status_membership_carries_without_native_reads_and_reacquires_own_writes() {
+    let (mut source, seeds) = membership_signal_fixture();
+    let signals = MembershipTestSignals::default();
+    let mut cache = super::status_membership::Cache::default();
+    for _ in 0..2 {
+        signaled_membership(&source, &seeds, &mut cache, &signals);
+    }
+    let observed = ObservedMovementMemory {
+        source: &source,
+        reads: Default::default(),
+        fault: None,
+    };
+    let packet = signaled_membership(&observed, &seeds, &mut cache, &signals);
+    for unit in &packet.units {
+        assert_eq!(unit.has_order, Some(Ok(true)));
+        assert_eq!(unit.membership, usize::MAX);
+    }
+    #[cfg(not(feature = "order_membership_oracle"))]
+    assert!(observed.reads.borrow().is_empty());
+    array(
+        &mut source.bytes,
+        0x18000 + crate::corder_instance::ASSIGNED_MEMBER_DATA,
+        0x19000,
+        0,
+    );
+    signals.bump(G1);
+    let packet = signaled_membership(&source, &seeds, &mut cache, &signals);
+    assert!(
+        packet
+            .units
+            .iter()
+            .all(|unit| unit.has_order == Some(Ok(false)) && unit.membership != usize::MAX)
+    );
+}
+
+#[test]
+fn status_membership_tracks_parent_writes_and_does_not_certify_a_new_parent_immediately() {
+    let (mut source, seeds) = membership_signal_fixture();
+    let signals = MembershipTestSignals::default();
+    let mut cache = super::status_membership::Cache::default();
+    p64(&mut source.bytes, G1 + corders_group::PARENT, 0x16000);
+    for _ in 0..2 {
+        signaled_membership(&source, &seeds, &mut cache, &signals);
+    }
+    signals.bump(0x16000);
+    let packet = signaled_membership(&source, &seeds, &mut cache, &signals);
+    assert_ne!(packet.units[0].membership, usize::MAX);
+    assert_eq!(
+        signaled_membership(&source, &seeds, &mut cache, &signals).units[0].membership,
+        usize::MAX
+    );
+    p64(&mut source.bytes, G1 + corders_group::PARENT, 0x1a000);
+    signals.bump(G1);
+    for _ in 0..2 {
+        assert_ne!(
+            signaled_membership(&source, &seeds, &mut cache, &signals).units[0].membership,
+            usize::MAX
+        );
+    }
+    assert_eq!(
+        signaled_membership(&source, &seeds, &mut cache, &signals).units[0].membership,
+        usize::MAX
+    );
+}
+
+#[test]
+fn status_membership_errors_are_retried_and_never_certified() {
+    let (source, seeds) = membership_signal_fixture();
+    let signals = MembershipTestSignals::default();
+    let mut cache = super::status_membership::Cache::default();
+    for _ in 0..2 {
+        signaled_membership(&source, &seeds, &mut cache, &signals);
+    }
+    signals.bump(G1);
+    let fault = ObservedMovementMemory {
+        source: &source,
+        reads: Default::default(),
+        fault: Some(0x19000),
+    };
+    for _ in 0..2 {
+        let packet = signaled_membership(&fault, &seeds, &mut cache, &signals);
+        assert!(packet.units[0].has_order.unwrap().is_err());
+        assert_ne!(packet.units[0].membership, usize::MAX);
+    }
+    let packet = signaled_membership(&source, &seeds, &mut cache, &signals);
+    assert_eq!(packet.units[0].has_order, Some(Ok(true)));
+    assert_ne!(packet.units[0].membership, usize::MAX);
+}
+
+#[test]
+fn status_membership_keys_and_mixed_batches_preserve_peer_admission() {
+    let (source, mut seeds) = membership_signal_fixture();
+    for seed in &mut seeds {
+        seed.selected = Some(crate::carmy_leader::Selected {
+            leader: None,
+            handle: None,
+            group_identity: true,
+            block: Ok(None),
+            training: None,
+        });
+    }
+    let signals = MembershipTestSignals::default();
+    let mut cache = super::status_membership::Cache::default();
+    for _ in 0..2 {
+        signaled_membership(&source, &seeds, &mut cache, &signals);
+    }
+    seeds[1].selected.as_mut().unwrap().group_identity = false;
+    let observed = ObservedMovementMemory {
+        source: &source,
+        reads: Default::default(),
+        fault: None,
+    };
+    let mixed = signaled_membership(&observed, &seeds, &mut cache, &signals);
+    let full = signaled_membership(&source, &seeds, &mut Default::default(), &());
+    assert_eq!(mixed.units[0].membership, usize::MAX);
+    assert_ne!(mixed.units[1].membership, usize::MAX);
+    assert!(observed.reads.borrow().contains(&G1));
+    assert_eq!(
+        mixed
+            .units
+            .iter()
+            .map(|unit| unit.has_order)
+            .collect::<Vec<_>>(),
+        full.units
+            .iter()
+            .map(|unit| unit.has_order)
+            .collect::<Vec<_>>()
+    );
+    for change in 0..2 {
+        if change == 0 {
+            seeds[0].division += 1;
+        } else {
+            seeds[0].pointer = A2;
+        }
+        let packet = signaled_membership(&source, &seeds, &mut cache, &signals);
+        assert_ne!(packet.units[0].membership, usize::MAX);
+        assert_eq!(packet.units[0].has_order, Some(Ok(true)));
+    }
+}
+
+#[test]
+fn unavailable_status_hours_neither_admit_nor_revoke_membership() {
+    let (source, seeds) = membership_signal_fixture();
+    let signals = MembershipTestSignals::default();
+    let mut prepared = membership_test_packet(&seeds[..1]);
+    let mut part = super::StatusPart::vacant();
+    part.range = 0..1;
+    prepared.outcome = Outcome::Unavailable {
+        reason: "source gap",
+    };
+    part.capture_signaled(&source, 0, GS, &seeds, &prepared, &signals);
+    assert_eq!(signals.calls.get(), 0);
+    prepared.outcome = Outcome::Rows { len: 1 };
+    for _ in 0..2 {
+        part.capture_signaled(&source, 0, GS, &seeds, &prepared, &signals);
+    }
+    prepared.outcome = Outcome::Unavailable {
+        reason: "source gap",
+    };
+    let before = signals.calls.get();
+    part.capture_signaled(&source, 0, GS, &seeds, &prepared, &signals);
+    assert_eq!(signals.calls.get(), before);
+    prepared.outcome = Outcome::Rows { len: 1 };
+    let observed = ObservedMovementMemory {
+        source: &source,
+        reads: Default::default(),
+        fault: None,
+    };
+    part.capture_signaled(&observed, 0, GS, &seeds, &prepared, &signals);
+    #[cfg(not(feature = "order_membership_oracle"))]
+    assert!(!observed.reads.borrow().contains(&0x19000));
+    assert!(signals.calls.get() > before);
+}
+
 #[test]
 fn status_membership_packet_preserves_rows_gaps_and_later_scalar_faults() {
     use crate::{corder_instance as order, corders_group_member::MembershipPacket, cunit};

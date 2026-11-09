@@ -46,6 +46,25 @@ pub(crate) fn status_parts_for(divisions: usize, workers: usize) -> usize {
 pub const N: usize = 7 + speed_terms::N;
 /// The passes inside the DivisionStatus acquisition span.
 pub(crate) const PHASES: usize = 23;
+#[cfg(feature = "acquisition_profile")]
+const PHASE_NAMES: [&str; PHASES] = [
+    "status", "dig_in", "naming", "prepare_sources", "prepare_certify", "prepare_native",
+    "sources_ordered", "sources_prune", "sources_variants", "sources_publish",
+    "certify_setup", "certify_ordered", "certify_finish", "prepare_attack_plan",
+    "decode_sources", "decode_attack", "decode_stitch", "decode_scalars",
+    "decode_speed_terms", "decode_movement", "sources_owned_gate", "sources_fallback",
+    "certification_native_fallback",
+];
+#[cfg(feature = "acquisition_profile")]
+static PROFILE_PHASES: [std::sync::atomic::AtomicU64; PHASES] =
+    [const { std::sync::atomic::AtomicU64::new(0) }; PHASES];
+
+#[cfg(feature = "acquisition_profile")]
+pub(crate) fn profile() -> impl serde::Serialize {
+    crate::status::map(PHASE_NAMES.iter().zip(&PROFILE_PHASES).map(|(name, ticks)| {
+        (*name, ticks.load(std::sync::atomic::Ordering::Relaxed))
+    }))
+}
 pub const TABLES: [TableId; N] = [
     TableId::DivisionMovement,
     TableId::DivisionStatus,
@@ -2156,6 +2175,13 @@ impl Captured {
     #[cfg(test)]
     pub(crate) fn phase_ticks(&self) -> [u64; PHASES] {
         self.phase_ticks
+    }
+
+    #[cfg(feature = "acquisition_profile")]
+    pub(crate) fn record_profile(&self) {
+        for (total, ticks) in PROFILE_PHASES.iter().zip(self.phase_ticks) {
+            total.fetch_add(ticks, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 
     pub(crate) fn enable_owned_settlement(&mut self) {

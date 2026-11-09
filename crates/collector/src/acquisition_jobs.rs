@@ -22,7 +22,7 @@ pub(crate) use acquisition::{Completion, Failure, SubmitError, Ticket};
 mod presentation;
 pub(crate) mod ship_details;
 mod variant_workers;
-#[cfg(test)]
+#[cfg(any(test, feature = "acquisition_profile"))]
 use engine_native::memory::CountedMemory;
 use engine_native::memory::LiveMemory;
 pub(crate) use presentation::{
@@ -2653,7 +2653,7 @@ impl Pool {
                 // SAFETY: submit's callback lease remains admitted until every
                 // accepted request is collected, including on callback unwind.
                 let memory = unsafe { LiveMemory::new() };
-                #[cfg(test)]
+                #[cfg(any(test, feature = "acquisition_profile"))]
                 let memory = CountedMemory::new(memory);
                 run_with_memory(job, &memory, &runner_calibration)
             },
@@ -2737,7 +2737,7 @@ impl Pool {
         let report = catch_failure(|| {
             // SAFETY: the caller retains the callback's live-read lease.
             let memory = unsafe { LiveMemory::new() };
-            #[cfg(test)]
+            #[cfg(any(test, feature = "acquisition_profile"))]
             let memory = CountedMemory::new(memory);
             run_with_memory(&mut request, &memory, &self.calibration)
         });

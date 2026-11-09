@@ -19,7 +19,7 @@ ROW_READERS = {
     "installed-content-save",
     "installed-content-weather",
 }
-LEAVES = {"engine-allocation", "engine-executable", "replay-identity"}
+LEAVES = {"engine-allocation", "engine-executable", "engine-heap", "replay-identity"}
 
 
 def check(lockfile):

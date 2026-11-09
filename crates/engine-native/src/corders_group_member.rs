@@ -23,6 +23,17 @@ use crate::{Memory, corder_instance as order, corders_group as group, cpdx_array
 const CAPACITY_ERROR: &str = "membership packet capacity";
 const NONE: usize = usize::MAX;
 
+pub trait MembershipSignals {
+    fn prepare(&self, _members: usize) {}
+    fn available(&self) -> bool {
+        false
+    }
+    fn group(&self, _receiver: usize, _slot: usize) -> Option<((u64, u64), usize)> {
+        None
+    }
+}
+impl MembershipSignals for () {}
+
 /// Independent owned storage capacities. Acquisition growth requires a worker.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MembershipCapacity {
@@ -275,6 +286,15 @@ impl MembershipPacket {
             .get(index)
             .and_then(|q| q.result)
             .unwrap_or(Err("membership query not acquired"))
+    }
+
+    pub fn parent(&self, index: usize) -> Option<usize> {
+        let query = self.queries.get(index)?;
+        if query.query.own_group == 0 {
+            Some(0)
+        } else {
+            query.parent
+        }
     }
 
     pub fn acquire(&mut self, memory: &impl Memory, base: usize) {

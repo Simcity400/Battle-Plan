@@ -1400,12 +1400,14 @@ name = "collector-memory"
 version = "0.1.0"
 dependencies = [
  "collector-memory",
+ "collector-status",
  "collector-test-support",
  "engine-allocation",
  "engine-native",
  "engine-sites",
  "replay-data",
  "replay-identity",
+ "serde",
  "test-unify",
  "windows-sys 0.61.2",
 ]

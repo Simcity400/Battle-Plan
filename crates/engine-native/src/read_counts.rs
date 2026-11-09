@@ -115,6 +115,8 @@ impl<M> CountedMemory<M> {
 impl<M: Memory> Memory for CountedMemory<M> {
     #[inline]
     fn read_scalar<T: crate::memory::Raw>(&self, address: usize) -> Option<T> {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(false);
         let len = std::mem::size_of::<T>();
         self.add_counts(ReadCounts {
             copy_calls: 1,
@@ -127,6 +129,8 @@ impl<M: Memory> Memory for CountedMemory<M> {
 
     #[inline]
     fn copy(&self, address: usize, destination: &mut [u8]) -> bool {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(false);
         self.add_counts(ReadCounts {
             copy_calls: 1,
             spans: u64::from(!destination.is_empty()),
@@ -142,6 +146,8 @@ impl<M: Memory> Memory for CountedMemory<M> {
         address: usize,
         destination: &'a mut [std::mem::MaybeUninit<u8>],
     ) -> Option<&'a mut [u8]> {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(false);
         self.add_counts(ReadCounts {
             copy_calls: 1,
             spans: u64::from(!destination.is_empty()),
@@ -157,6 +163,8 @@ impl<M: Memory> Memory for CountedMemory<M> {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(true);
         let completed = self.0.copy_scattered(addresses, destinations);
         self.add_counts(count_scattered(destinations, completed));
         completed
@@ -168,6 +176,8 @@ impl<M: Memory> Memory for CountedMemory<M> {
         addresses: [usize; N],
         destinations: &mut [&mut [u8]; N],
     ) -> usize {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(true);
         let completed = self.0.copy_scattered_prefetched(addresses, destinations);
         self.add_counts(count_scattered(destinations, completed));
         completed
@@ -180,6 +190,8 @@ impl<M: Memory> Memory for CountedMemory<M> {
         layout: &RecordLayout<'_>,
         destination: &mut [u8],
     ) -> usize {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(true);
         let completed = self.0.copy_records(sources, layout, destination);
         let (spans, bytes) = match layout.count(sources, destination.len()) {
             Some(count) => {
@@ -204,6 +216,8 @@ impl<M: Memory> Memory for CountedMemory<M> {
 
     #[inline]
     fn execute_read_plan(&self, plan: &PreparedPlan, destination: &mut [u8]) -> Option<Outcome> {
+        #[cfg(feature = "acquisition_profile")]
+        let _timer = crate::acquisition_profile::Timer::new(true);
         let result = self.0.execute_read_plan(plan, destination);
         let requested = match result {
             Some(Outcome::Complete) => plan.reads().len(),

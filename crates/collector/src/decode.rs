@@ -1143,6 +1143,7 @@ fn process_job(
             .extended
             .relations_pilot()
             .decode_relations_payload(payload, &mut decode_ticks);
+        account_decode(shared, &RELATIONS, &decode_ticks);
     }
     for (part, (refresh, payload)) in job
         .characters_refresh
@@ -1159,6 +1160,7 @@ fn process_job(
         let characters = frame.extended.characters_pilot();
         characters.decode_characters_payload(shared.base, payload, &mut decode_ticks);
         characters.remember_templates(payload);
+        account_decode(shared, &CHARACTERS, &decode_ticks);
     }
     if job.projects_refresh
         && let Some(payload) = job.projects_payload.as_ref()
@@ -1171,6 +1173,7 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
+        account_decode(shared, &PROJECTS, &decode_ticks);
     }
     if job.lexical_refresh
         && let Some(payload) = job.lexical_payload.as_ref()
@@ -1182,6 +1185,7 @@ fn process_job(
             .extended
             .lexical_pilot()
             .decode_lexical_payload(shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &LEXICAL, &decode_ticks);
     }
 
     if job.divisions_refresh
@@ -1191,6 +1195,7 @@ fn process_job(
         let frame = unsafe { &mut *shared.frames[job.index].load(Ordering::Acquire) };
         let mut decode_ticks = [0; 6];
         sampling::decode_divisions_payload(frame, shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &DIVISIONS, &decode_ticks);
     }
     if job.air_wing_refresh
         && let Some(payload) = job.air_wing_payload.as_mut()
@@ -1208,6 +1213,7 @@ fn process_job(
             .game_score_pilot()
             .install_air(&mut payload.game_score);
         payload.update_capacity_charge();
+        account_decode(shared, &AIR_WING, &decode_ticks);
     }
     if job.air_stats_refresh
         && let Some(payload) = job.air_stats_payload.as_ref()
@@ -1221,6 +1227,7 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
+        account_decode(shared, &AIR_STATS, &decode_ticks);
     }
     if job.naval_refresh
         && let Some(payload) = job.naval_payload.as_ref()
@@ -1231,6 +1238,7 @@ fn process_job(
         frame
             .extended
             .decode_naval_payload(shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &NAVAL_ORDER, &decode_ticks);
     }
     if job.players_refresh
         && let Some(payload) = job.players_payload.as_ref()
@@ -1241,6 +1249,7 @@ fn process_job(
         frame
             .map
             .decode_players_payload(shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &PLAYERS, &decode_ticks);
     }
     if job.session_refresh
         && let Some(payload) = job.session_payload.as_ref()
@@ -1253,6 +1262,7 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
+        account_decode(shared, &SESSION, &decode_ticks);
     }
     if job.production_rest_refresh
         && let Some(payload) = job.production_rest_payload.as_ref()
@@ -1269,6 +1279,7 @@ fn process_job(
                 payload,
                 &mut decode_ticks,
             );
+        account_decode(shared, &PRODUCTION_REST, &decode_ticks);
     }
     if job.construction_rest_refresh
         && let Some(payload) = job.construction_rest_payload.as_ref()
@@ -1282,6 +1293,7 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
+        account_decode(shared, &CONSTRUCTION_REST, &decode_ticks);
     }
     if job.economy_rest_refresh
         && let Some(payload) = job.economy_rest_payload.as_ref()
@@ -1293,6 +1305,7 @@ fn process_job(
             .extended
             .economy_rest_pilot()
             .decode_economy_rest_payload(shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &ECONOMY_REST, &decode_ticks);
     }
     if job.air_bases_refresh
         && let Some(payload) = job.air_bases_payload.as_ref()
@@ -1313,6 +1326,7 @@ fn process_job(
             },
             &mut decode_ticks,
         );
+        account_decode(shared, &AIR_BASES, &decode_ticks);
     }
     if job.supremacy_refresh
         && let Some(payload) = job.supremacy_payload.as_ref()
@@ -1325,6 +1339,7 @@ fn process_job(
             payload,
             &mut decode_ticks,
         );
+        account_decode(shared, &SUPREMACY, &decode_ticks);
     }
     if job.sunk_refresh
         && let Some(payload) = job.sunk_payload.as_ref()
@@ -1336,6 +1351,7 @@ fn process_job(
             .extended
             .sunk_pilot()
             .decode_sunk_payload(shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &SUNK, &decode_ticks);
     }
     if job.radar_refresh
         && let Some(payload) = job.radar_payload.as_ref()
@@ -1347,6 +1363,7 @@ fn process_job(
             .extended
             .radar_pilot()
             .decode_radar_payload(payload, &mut decode_ticks);
+        account_decode(shared, &RADAR, &decode_ticks);
     }
     if job.intel_refresh
         && let Some(payload) = job.intel_payload.as_ref()
@@ -1358,6 +1375,7 @@ fn process_job(
             .extended
             .intel_pilot()
             .decode_intel_payload(payload, &mut decode_ticks);
+        account_decode(shared, &INTEL, &decode_ticks);
     }
     if job.weather_refresh
         && let Some(payload) = job.weather_payload.as_ref()
@@ -1376,6 +1394,7 @@ fn process_job(
             &mut tracker,
             &mut decode_ticks,
         );
+        account_decode(shared, &WEATHER, &decode_ticks);
     }
     if job.capitulation_refresh
         && let Some(payload) = job.capitulation_payload.as_ref()
@@ -1387,7 +1406,18 @@ fn process_job(
             .extended
             .capitulation_pilot()
             .decode_capitulation_payload(shared.base, payload, &mut decode_ticks);
+        account_decode(shared, &CAPITULATION, &decode_ticks);
     }
+}
+
+#[inline]
+fn account_decode(shared: &Shared, tables: &[TableId], ticks: &[u64]) {
+    #[cfg(feature = "acquisition_profile")]
+    for (&table, &ticks) in tables.iter().zip(ticks) {
+        collector_memory::acquisition_profile::overlapped(table, shared.ns(ticks as i64));
+    }
+    #[cfg(not(feature = "acquisition_profile"))]
+    let _ = (shared, tables, ticks);
 }
 
 /// The FIFO worker owns the frame; this packet has no raw decode dependency.
@@ -1395,7 +1425,14 @@ fn process_job(
 fn decode_presentation(shared: &Shared, index: usize) {
     failure::stage("division presentation", None);
     let frame = unsafe { &mut *shared.frames[index].load(Ordering::Acquire) };
-    frame.extended.decode_division_presentation_inputs();
+    #[cfg(feature = "acquisition_profile")]
+    let started = sampling::qpc();
+    let ticks = frame.extended.decode_division_presentation_inputs();
+    account_decode(shared, &[TableId::DivisionMovement], &ticks[..1]);
+    #[cfg(feature = "acquisition_profile")]
+    account_decode(shared, &[TableId::DivisionStatus], &[
+        (sampling::qpc().saturating_sub(started).max(0) as u64).saturating_sub(ticks[0])
+    ]);
     if let Some(store) = frame.extended.take_settled_army_store() {
         shared.return_army_stat_store(store);
     }

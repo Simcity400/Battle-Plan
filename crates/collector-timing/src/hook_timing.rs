@@ -115,6 +115,7 @@ pub enum Family {
     CensusChanges,
     /// Six orders-group leader, HQ provider and training writers.
     OrdersGroupChanges,
+    OrderMembershipChanges,
     /// Province name effects, navy access setter and reset, world tension
     /// total, and dynamic modifier addition, renewal, removal and daily update.
     WorldInputChanges,
@@ -246,6 +247,7 @@ impl Family {
         Self::UnitLeaderChanges,
         Self::CensusChanges,
         Self::OrdersGroupChanges,
+        Self::OrderMembershipChanges,
         Self::WorldInputChanges,
         Self::DoctrineChanges,
         Self::AirRecordChanges,
@@ -318,6 +320,7 @@ impl Family {
             Self::UnitLeaderChanges => "unit_leader_changes",
             Self::CensusChanges => "census_changes",
             Self::OrdersGroupChanges => "orders_group_changes",
+            Self::OrderMembershipChanges => "order_membership_changes",
             Self::WorldInputChanges => "world_input_changes",
             Self::DoctrineChanges => "doctrine_changes",
             Self::AirRecordChanges => "air_record_changes",
@@ -384,6 +387,7 @@ impl Family {
             | Self::UnitLeaderChanges
             | Self::CensusChanges
             | Self::OrdersGroupChanges
+            | Self::OrderMembershipChanges
             | Self::WorldInputChanges
             | Self::AirRecordChanges
             | Self::LocalSubunitChanges

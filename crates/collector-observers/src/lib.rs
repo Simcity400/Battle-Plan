@@ -31,6 +31,7 @@ pub mod naval_tree_changes;
 pub mod nuclear_strikes;
 pub mod opinion_changes;
 pub mod orders_group_changes;
+pub mod order_membership_changes;
 pub mod occupation_changes;
 pub mod output_log;
 pub mod political_status_changes;

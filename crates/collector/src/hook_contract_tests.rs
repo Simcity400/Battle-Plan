@@ -29,6 +29,7 @@ pub(super) fn expected_tables(family: Family) -> &'static [TableId] {
         | Family::UnitLeaders
         | Family::Census
         | Family::OrdersGroups
+        | Family::OrderMembership
         | Family::AirRecords
         | Family::LocalSubunits
         | Family::ShipModels
@@ -214,6 +215,9 @@ fn constructor_sites(family: Family) -> Vec<engine_sites::Rva> {
         Family::Census => sites!(census_mutations::MUTATIONS, s => s.rva),
         // Group destruction arrives through Templates.
         Family::OrdersGroups => sites!(orders_group_mutations::MUTATIONS, (s, _) => s.rva),
+        Family::OrderMembership => {
+            sites!(engine_mutations::order_membership_mutations::MUTATIONS, (s, _) => s.rva)
+        }
         Family::WorldInputs => sites!(world_input_mutations::MUTATIONS, (s, _) => s.rva),
         Family::AirRecords => sites!(air_record_mutations::MUTATIONS, s => s.rva),
         Family::LocalSubunits => sites!(local_subunit_mutations::MUTATIONS, (s, _) => s.rva),

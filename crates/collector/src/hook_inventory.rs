@@ -92,6 +92,9 @@ pub(crate) fn patches() -> Vec<Patch> {
     for (site, _) in engine_mutations::orders_group_mutations::MUTATIONS {
         add("orders_group_changes", site.name, site.rva, FIVE);
     }
+    for (site, _) in engine_mutations::order_membership_mutations::MUTATIONS {
+        add("order_membership_changes", site.name, site.rva, FIVE);
+    }
     use engine_events::map_event_sites as map;
     for (name, rva) in [
         ("FakeDivisionRevealed", map::FAKE_REVEAL_VISIBILITY_CALL_RVA),

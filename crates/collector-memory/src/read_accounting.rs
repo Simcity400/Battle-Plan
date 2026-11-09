@@ -45,9 +45,13 @@ impl State {
     }
 
     fn flush(&mut self) {
+        #[cfg(any(test, feature = "test-support", feature = "acquisition_profile"))]
+        let reads = ReadCounts::take_current();
+        #[cfg(feature = "acquisition_profile")]
+        crate::acquisition_profile::boundary(self.current, reads);
         #[cfg(any(test, feature = "test-support"))]
         {
-            self.tables[self.current] += ReadCounts::take_current();
+            self.tables[self.current] += reads;
         }
         if let Some(key) = engine_sites::take_taint() {
             withhold(self.current, key);
@@ -164,6 +168,8 @@ impl Capture {
             state.current = TableId::Clock.index();
         });
         capture.open = true;
+        #[cfg(feature = "acquisition_profile")]
+        crate::acquisition_profile::enter();
         capture
     }
 
@@ -199,6 +205,8 @@ impl Capture {
             }
             state.current = previous.current;
         });
+        #[cfg(feature = "acquisition_profile")]
+        crate::acquisition_profile::leave();
     }
 }
 

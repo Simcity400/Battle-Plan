@@ -36,7 +36,14 @@ impl StatusWork {
                 part,
                 attack,
             } => {
-                part.capture(memory, context.base, context.game_state, seeds, prepared);
+                part.capture_signaled(
+                    memory,
+                    context.base,
+                    context.game_state,
+                    seeds,
+                    prepared,
+                    &collector_observers::order_membership_changes::Observer,
+                );
                 attack.capture(memory, context.base);
             }
         }

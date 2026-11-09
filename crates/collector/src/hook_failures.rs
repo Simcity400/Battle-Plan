@@ -62,6 +62,7 @@ runtime_families! {
     UnitLeaders => ("unit_leader_changes", crate::unit_leader_changes::Hooks),
     Census => ("census_changes", crate::census_changes::Hooks),
     OrdersGroups => ("orders_group_changes", crate::orders_group_changes::Hooks),
+    OrderMembership => ("order_membership_changes", crate::order_membership_changes::Hooks),
     WorldInputs => ("world_input_changes", crate::world_input_changes::Hooks),
     AirRecords => ("air_record_changes", crate::air_record_changes::Hooks),
     LocalSubunits => ("local_subunit_changes", crate::local_subunit_changes::Hooks),
@@ -289,6 +290,7 @@ impl Family {
                 CharacterRoleTraits,
             ],
             Self::OrdersGroups => &[DivisionStatus, DivisionPanelSources, DivisionRetreatBans],
+            Self::OrderMembership => &[],
             Self::WorldInputs => &[
                 ProvinceNames,
                 NavalRegionAccess,
@@ -464,6 +466,7 @@ impl Family {
                 | Self::UnitLeaders
                 | Self::Census
                 | Self::OrdersGroups
+                | Self::OrderMembership
                 | Self::AirRecords
                 | Self::LocalSubunits
                 | Self::ShipModels
@@ -1011,6 +1014,7 @@ family_hooks!(
     unit_leader_changes,
     census_changes,
     orders_group_changes,
+    order_membership_changes,
     world_input_changes,
     air_record_changes,
     local_subunit_changes,
@@ -1088,7 +1092,7 @@ mod tests {
                 assert!(refuse(family, "publication", "synthetic publication failure").is_err());
                 continue;
             }
-            if family == Family::PlayerCommands {
+            if matches!(family, Family::PlayerCommands | Family::OrderMembership) {
                 assert!(family.tables().is_empty());
             } else {
                 assert!(

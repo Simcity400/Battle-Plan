@@ -262,5 +262,8 @@ pub mod unit_leader_trait_experience_entry;
 pub mod walk;
 
 pub use memory::{Memory, read, read_slice};
+pub mod certified_read;
+#[cfg(feature = "acquisition_profile")]
+pub mod acquisition_profile;
 
 pub mod division_panel_operands;

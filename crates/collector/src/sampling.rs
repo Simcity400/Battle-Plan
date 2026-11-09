@@ -1986,7 +1986,7 @@ pub unsafe extern "system" fn tick(state: usize, commands: usize) {
         let _phase = crate::allocation::enter(crate::allocation::Phase::Callback);
         let _reads = crate::read_accounting::Capture::new();
         let memory = unsafe { LiveMemory::new() };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "acquisition_profile"))]
         let memory = engine_native::memory::CountedMemory::new(memory);
         let world_generation = crate::world_lifetime::generation();
         // Read the clock at entry: it is still the hour just ended, the trampoline

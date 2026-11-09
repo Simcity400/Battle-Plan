@@ -115,6 +115,7 @@ pub(crate) use collector_observers::nuclear_strikes;
 mod operation_outcomes;
 pub(crate) use collector_observers::opinion_changes;
 pub(crate) use collector_observers::orders_group_changes;
+pub(crate) use collector_observers::order_membership_changes;
 mod orders_parts;
 pub(crate) use collector_governance::party_changes;
 pub(crate) use collector_governance::party_leader_changes;

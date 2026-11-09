@@ -713,12 +713,19 @@ fn run(
     for (_, withheld) in located.withheld() {
         progress.step(format_args!("site {withheld}"), None);
     }
-    progress.step(format_args!("sites_moved {}", located.moved().count()), None);
+    progress.step(
+        format_args!("sites_moved {}", located.moved().count()),
+        None,
+    );
     // On the reference build every key must be where the reference build has it.
     if engine_sites::layout_checked(&exe.sha256) {
         for (key, live) in located.moved() {
             progress.step(
-                format_args!("site_moved {} {:#x} -> {live:#x}", engine_sites::name(key), key.0),
+                format_args!(
+                    "site_moved {} {:#x} -> {live:#x}",
+                    engine_sites::name(key),
+                    key.0
+                ),
                 None,
             );
         }
@@ -776,11 +783,13 @@ fn run(
     crate::market_changes::restore_sequence(market_sequence)?;
     let mut processor = Processor::new(&config.output_dir, history, session.clone())
         .map_err(|error| error_reason(error, "collector bootstrap preparation failed"))?;
-    let mut hook = unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }
-        .map_err(|cause| {
-            let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
-            installation_message(format!("hourly hook construction failed: {cause}"))
-        })?;
+    let mut hook =
+        unsafe { Hook::new(hourly_site, sampling::tick as *const () as usize, sentinel) }.map_err(
+            |cause| {
+                let _ = crate::hook_failures::refuse(RestoreFamily::Hourly, "construction", &cause);
+                installation_message(format!("hourly hook construction failed: {cause}"))
+            },
+        )?;
     let mut portrait_hooks = FamilyHooks::construct(base, || unsafe {
         crate::portrait_changes::Hooks::new(&memory, base)
     })?;
@@ -858,6 +867,9 @@ fn run(
     })?;
     let mut template_hooks = FamilyHooks::construct(base, || unsafe {
         crate::template_changes::Hooks::new(&memory, base)
+    })?;
+    let mut membership_hooks = FamilyHooks::construct(base, || unsafe {
+        crate::order_membership_changes::Hooks::new(&memory, base)
     })?;
     let mut orders_group_hooks = FamilyHooks::construct(base, || unsafe {
         crate::orders_group_changes::Hooks::new(&memory, base)
@@ -1268,6 +1280,7 @@ fn run(
     ranges.extend(design_hooks.executable_ranges());
     ranges.extend(template_hooks.executable_ranges());
     ranges.extend(orders_group_hooks.executable_ranges());
+    ranges.extend(membership_hooks.executable_ranges());
     ranges.extend(faction_goal_hooks.executable_ranges());
     ranges.extend(faction_companion_hooks.executable_ranges());
     ranges.extend(ship_model_hooks.executable_ranges());
@@ -1538,6 +1551,9 @@ fn run(
                     }),
                     ("variant_changes", &mut || design_hooks.set_enabled(true)),
                     ("template_changes", &mut || template_hooks.set_enabled(true)),
+                    ("order_membership_changes", &mut || {
+                        membership_hooks.set_enabled(true)
+                    }),
                     ("orders_group_changes", &mut || {
                         orders_group_hooks.set_enabled(true)
                     }),
@@ -1743,7 +1759,7 @@ fn run(
                 }
                 std::mem::forget((
                     $workers, hook, portrait_hooks, advisor_hooks, relation_hooks,
-                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, province_combat_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
+                    history_hooks, flag_hooks, network_auxiliary_hooks, intel_source_hooks, propaganda_hooks, building_hooks, advisor_pool_hooks, party_leader_hooks, variable_hooks, party_hooks, wing_hooks, roster_hooks, political_status_hooks, mission_hooks, rail_hooks, territory_hooks, army_stat_hooks, country_input_hooks, raid_hooks, naval_tree_hooks, air_record_hooks, participation_hooks, world_input_hooks, opinion_hooks, destruction_hooks, naval_result_hooks, local_subunit_hooks, design_hooks, template_hooks, orders_group_hooks, membership_hooks, faction_goal_hooks, faction_companion_hooks, ship_model_hooks, province_unit_hooks, province_combat_hooks, air_base_carry_hooks, unit_leader_hooks, naval_management_hooks, census_hooks,
                     air_loss_hooks, bombing_hooks, nuclear_hooks, market_hooks, map_event_hooks, line_hooks, land_hooks, prune_hooks,
                     construction_hooks, experience_hooks, command_hooks, event_feed_hooks, world_hooks,
                     fuel_hooks, operation_hooks, politics_hooks, logistics_hooks,
@@ -1847,6 +1863,7 @@ fn run(
             RestoreFamily::Designs => design_hooks.set_enabled(false),
             RestoreFamily::Templates => template_hooks.set_enabled(false),
             RestoreFamily::OrdersGroups => orders_group_hooks.set_enabled(false),
+            RestoreFamily::OrderMembership => membership_hooks.set_enabled(false),
             RestoreFamily::FactionGoals => faction_goal_hooks.set_enabled(false),
             RestoreFamily::FactionCompanions => faction_companion_hooks.set_enabled(false),
             RestoreFamily::ShipModels => ship_model_hooks.set_enabled(false),
@@ -2144,6 +2161,7 @@ fn run(
             design_hooks,
             template_hooks,
             orders_group_hooks,
+            membership_hooks,
             faction_goal_hooks,
             faction_companion_hooks,
             ship_model_hooks,
@@ -2384,6 +2402,10 @@ impl RestoreFamily {
                 crate::census_changes::active() != 0,
                 "role census callbacks did not quiesce; collector retained",
             ),
+            Self::OrderMembership => (
+                crate::order_membership_changes::active() != 0,
+                "order membership callbacks did not quiesce; collector retained",
+            ),
             Self::OrdersGroups => (
                 crate::orders_group_changes::active() != 0,
                 "orders group callbacks did not quiesce; collector retained",
@@ -2530,6 +2552,7 @@ impl RestoreFamily {
                 | Self::UnitLeaders
                 | Self::Census
                 | Self::OrdersGroups
+                | Self::OrderMembership
                 | Self::WorldInputs
                 | Self::AirRecords
                 | Self::WarParticipation
@@ -2584,6 +2607,7 @@ pub(crate) fn hook_patch_families() -> impl Iterator<Item = &'static str> {
         RestoreFamily::UnitLeaders => "unit_leader_changes",
         RestoreFamily::Census => "census_changes",
         RestoreFamily::OrdersGroups => "orders_group_changes",
+        RestoreFamily::OrderMembership => "order_membership_changes",
         RestoreFamily::WorldInputs => "world_input_changes",
         RestoreFamily::AirRecords => "air_record_changes",
         RestoreFamily::LocalSubunits => "local_subunit_changes",
@@ -2938,7 +2962,18 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
         "hook_timing": crate::hook_timing::status(),
         "equipment_destruction": crate::equipment_destruction::status(),
         "sample_boundary": sampling::SAMPLE_BOUNDARY.name(),
+        "order_membership_signals": crate::order_membership_changes::status(),
     });
+    #[cfg(feature = "order_membership_oracle")]
+    let base = base.join(status!({
+        "order_membership_oracle": engine_native::carmy::membership_oracle(),
+        "order_membership_hook_spans": crate::order_membership_changes::hook_reads(),
+    }));
+    #[cfg(feature = "acquisition_profile")]
+    let base = base.join(status!({
+        "native_acquisition": collector_memory::acquisition_profile::status(),
+        "division_acquisition_phase_ticks": crate::extended::division_presentation::profile(),
+    }));
     #[cfg(feature = "callback_profile")]
     let base = base.join(status!({
         "callback_profile": crate::callback_profile::status(),

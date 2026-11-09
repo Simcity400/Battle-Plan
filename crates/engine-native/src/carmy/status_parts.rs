@@ -7,6 +7,7 @@ use std::ops::Range;
 /// ordered; no range can replace another seed's carried maxima.
 pub struct StatusPart {
     packet: StatusPacket,
+    membership_cache: super::status_membership::Cache,
     pub range: Range<usize>,
     pub organisation_refused: u64,
     outcome: Outcome,
@@ -16,6 +17,7 @@ impl StatusPart {
     pub fn vacant() -> Self {
         Self {
             packet: StatusPacket::vacant(),
+            membership_cache: Default::default(),
             range: 0..0,
             organisation_refused: 0,
             outcome: Outcome::Rows { len: 0 },
@@ -23,7 +25,7 @@ impl StatusPart {
     }
 
     pub fn allocated_bytes(&self) -> usize {
-        self.packet.allocated_bytes()
+        self.packet.allocated_bytes() + self.membership_cache.allocated_bytes()
     }
 
     pub fn fail(&mut self, reason: &'static str) {
@@ -39,6 +41,19 @@ impl StatusPart {
         seeds: &[DivisionSeed],
         prepared: &StatusPacket,
     ) {
+        self.capture_signaled(memory, base, state, seeds, prepared, &());
+    }
+
+    pub fn capture_signaled(
+        &mut self,
+        memory: &impl Memory,
+        base: usize,
+        state: usize,
+        seeds: &[DivisionSeed],
+        prepared: &StatusPacket,
+        signals: &impl crate::corders_group_member::MembershipSignals,
+    ) {
+        signals.prepare(seeds.len());
         self.organisation_refused = 0;
         let result = (|| {
             let units = prepared
@@ -78,27 +93,8 @@ impl StatusPart {
                 _ => Outcome::Rows { len: units.len() },
             };
             if !matches!(prepared.outcome, Outcome::Unavailable { .. }) {
-                for (index, seed) in seeds.iter().enumerate() {
-                    if self.packet.units[index].failure.is_some() {
-                        break;
-                    }
-                    let member = seed
-                        .pointer
-                        .checked_add(cunit::SCHEDULED_MEMBER)
-                        .ok_or("division membership address overflow")?;
-                    if census_authenticated(seed) {
-                        let _ = self
-                            .packet
-                            .membership
-                            .admit_group(self.packet.units[index].group);
-                    }
-                    self.packet.units[index].membership =
-                        self.packet.membership.push_query(MembershipQuery {
-                            member,
-                            own_group: self.packet.units[index].group,
-                        })?;
-                }
-                self.packet.membership.acquire(memory, base);
+                self.membership_cache
+                    .acquire(memory, base, seeds, &mut self.packet, signals)?;
                 let experience = prepared
                     .prepared_experience
                     .get(self.range.start..self.range.end.min(prepared.prepared_experience.len()))
@@ -117,10 +113,11 @@ impl StatusPart {
                 );
                 // Decisions outlive the range-local membership/manpower arenas.
                 for index in 0..self.packet.units.len() {
-                    let has_order = self
-                        .packet
-                        .membership
-                        .outcome(self.packet.units[index].membership);
+                    let has_order = self.packet.units[index].has_order.unwrap_or_else(|| {
+                        self.packet
+                            .membership
+                            .outcome(self.packet.units[index].membership)
+                    });
                     let exercising = self.packet.exercising_at(index);
                     self.packet.units[index].has_order = Some(has_order);
                     self.packet.units[index].exercising = Some(exercising);
