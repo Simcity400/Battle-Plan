@@ -8,7 +8,12 @@ before building the three release artifacts.
 It preserves the input save and restores the isolated user
 profile selection/settings after normal exit. Explicit actions remain available. Baseline reads only the game's clock,
 which is withheld on a build this release does not recognise; it sends no input and does not inject.
-The script does not modify settings or certify that a save finished loading.
+Launch does not modify settings or certify that a save finished loading.
+Reload requires a held GameLock and its exact LockOwner token, an explicit GameId,
+and UiConfig naming expected_save, expected_hour, expected_seed, menu, load_game,
+load_local, load_row, load_row_step, load_visible_rows, cursor_park and load_button,
+with calibrated pause-menu, Load-dialog and Load-label references. It requires the background shim
+and a changed load timestamp with the expected stable clock and seed.
 Launch and Smoke require a physical user directory without subst drives, junction or
 symbolic-link ancestors or hyphens in its path. ContinueLastSave requires ExpectedSave;
 the driver writes a complete ASCII-safe, BOM-free UTF-8 continue_game.json for that
@@ -93,7 +98,7 @@ powershell -File tools/smoke.ps1 -Action ShimMask -Mask 127
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Smoke', 'Launch', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline', 'Clock',
+    [ValidateSet('Smoke', 'Launch', 'Reload', 'Screenshot', 'Key', 'Click', 'Move', 'Wheel', 'Text', 'Console', 'Baseline', 'Clock',
         'ShimStatus', 'ShimMask')]
     [string]$Action = 'Smoke',
     [string]$GameExe = '',
@@ -104,6 +109,7 @@ param(
     [string]$Out,
     [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
     [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
+    [string]$LockOwner,
     [ValidateRange(1, 2147483647)][int]$Seconds = 120,
     [ValidateSet('Space', 'Escape', 'Enter', 'Grave', 'Tab', 'Backspace', 'Delete',
         'Left', 'Right', 'Up', 'Down', 'Home', 'End', '1', '2', '3', '4', '5',
@@ -114,6 +120,8 @@ param(
     [ValidateRange(-50, 50)][int]$Delta = 0,
     [ValidateLength(1, 512)][string]$Text,
     [string]$UiConfig,
+    [string]$MenuPatch,
+    [int[]]$MenuPatchOrigin = @(1150, 440),
     [string]$BuildReceipt,
     [string]$BinaryDirectory,
     [switch]$Checkpoint,
@@ -132,6 +140,7 @@ param(
     # Directory holding inputshim.dll and inputshim-inject.exe. Launch attaches the shim in
     # background mode, and background clicks then need no foreground borrow at all.
     [string]$InputShimDir = '',
+    [switch]$RequireInputShim,
     [ValidateRange(-1, 255)][int]$Mask = -1,   # ShimMask: new hook_mask
     [string[]]$ExtraArgs = @()
 )
@@ -341,7 +350,7 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         ulong idler = BitConverter.ToUInt64(bytes, 0);
         if (idler == 0 || idler > long.MaxValue - 0x1000) return false;
         if (!Read(image + 0x033ddb10, 8) || BitConverter.ToUInt64(bytes, 0) != idler) return false;
-        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e5838) return false;
+        if (!Read(idler, 8) || BitConverter.ToUInt64(bytes, 0) != image + 0x029e58d8) return false;
         if (!Read(idler + 0x6c1, 1) || bytes[0] > 1) return false;
         clock.paused = bytes[0];
         // The live root member is a pointer.
@@ -365,8 +374,6 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         clock.viewport = new int[4];
         for (int n = 0; n < 4; n++) clock.viewport[n] = BitConverter.ToInt32(bytes, n * 4);
 
-        if (!Read(image + 0x033dd888, 8)) return false;
-        clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
         return true;
     }
     Clock Once() {
@@ -386,6 +393,8 @@ public sealed class Hoi4ClockBaseline : IDisposable {
         clock.speed = BitConverter.ToInt32(bytes, 0);
         if (!Read(state + 0x4c0, 1)) return null;
         clock.tick_busy = bytes[0];
+        if (!Read(image + 0x033dd888, 8)) return null;
+        clock.play_session_started_at = BitConverter.ToInt64(bytes, 0);
         clock.presentation_valid = Presentation(clock);
         if (!clock.presentation_valid) { clock.eye = null; clock.look_at = null; clock.viewport = null; }
         if (!Read(image + 0x033dd6b0, 8) || BitConverter.ToUInt64(bytes, 0) != state) return null;
@@ -986,6 +995,152 @@ if ($gameProcesses.Count -ne 1) { throw 'Exactly one running hoi4.exe is require
 $game = $gameProcesses[0]
 if ($GameId -ne 0 -and $game.Id -ne $GameId) { throw "The running game has PID $($game.Id), not $GameId." }
 if ($game.Path -ine $gamePath) { throw "The running game executable differs from GameExe: $($game.Path)" }
+if ($RequireInputShim -and $Action -in @('Click','Move','Wheel','Key','Text','Console')) {
+    if ($Foreground) { throw 'RequireInputShim refuses foreground input.' }
+    $requiredShim=Open-InputShim
+    if (-not $requiredShim) { throw 'The required background input shim is absent; input was not sent.' }
+    try { if ($requiredShim.View.ReadUInt32(80) -ne $game.Id) { throw 'The background input shim belongs to another process; input was not sent.' } }
+    finally { Close-InputShim $requiredShim }
+}
+if ($Action -eq 'Reload') {
+    . (Join-Path $PSScriptRoot 'recorder-guard.ps1')
+    if (-not $LockOwner -or -not $GameId -or -not $UiConfig -or -not $ExpectedSave -or -not $Out) {
+        throw 'Reload requires GameId, GameLock, LockOwner, UiConfig, ExpectedSave and Out.'
+    }
+    function Confirm-ReloadLock {
+        if ([IO.File]::ReadAllText((Join-Path $GameLock 'owner')).Trim() -cne $LockOwner) { throw 'The shared game lock belongs to another screen.' }
+        (Get-Item -LiteralPath $GameLock).LastWriteTimeUtc = [DateTime]::UtcNow
+    }
+    Confirm-ReloadLock
+    Assert-ClockReadable (Get-GameBuild $gamePath)
+    function Confirm-ReloadIdle {
+        Confirm-ReloadLock
+        $game.Refresh()
+        if ($game.HasExited) { throw 'Game exited during reload.' }
+        if (@(Get-GameBlockingRecorder).Count) { throw 'Another recorder is running; Load was not requested.' }
+        if (@($game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count) { throw 'Detach the collector before reloading.' }
+    }
+    Confirm-ReloadIdle
+    $userPath = Resolve-LaunchUserDirectory $UserDirectory
+    if ($ExpectedSave.IndexOfAny([char[]]'\/:"') -ge 0 -or $ExpectedSave -notlike '*.hoi4') { throw 'ExpectedSave must be a local save filename.' }
+    $save = Join-Path (Join-Path $userPath 'save games') $ExpectedSave
+    if (-not (Test-Path -LiteralPath $save -PathType Leaf)) { throw 'Expected save is missing.' }
+    $saves=@(Get-ChildItem -LiteralPath (Split-Path -Parent $save) -File -Filter '*.hoi4' | Sort-Object LastWriteTimeUtc -Descending)
+    $selected=Get-Item -LiteralPath $save
+    $selectedSecond=([DateTimeOffset]$selected.LastWriteTimeUtc).ToUnixTimeSeconds()
+    if (@($saves | Where-Object { ([DateTimeOffset]$_.LastWriteTimeUtc).ToUnixTimeSeconds() -eq $selectedSecond }).Count -ne 1) { throw 'The expected save has an ambiguous timestamp in the load-menu order.' }
+    $row=@($saves | Where-Object LastWriteTimeUtc -gt $selected.LastWriteTimeUtc).Count
+    $command = (Get-CimInstance Win32_Process -Filter "ProcessId=$GameId").CommandLine
+    if ($command -notmatch ('(?i)(?:"-userdir=' + [regex]::Escape($userPath) + '"|-userdir="' + [regex]::Escape($userPath) + '"|-userdir=' + [regex]::Escape($userPath) + '(?=\s|$))')) { throw 'Running game uses a different user directory.' }
+    $ui = Get-Content -LiteralPath $UiConfig -Raw | ConvertFrom-Json
+    if (-not $MenuPatch -and $ui.PSObject.Properties['menu_patch']) { $MenuPatch=[string]$ui.menu_patch; $MenuPatchOrigin=[int[]]$ui.menu_patch_origin }
+    if (-not $MenuPatch -or -not (Test-Path -LiteralPath $MenuPatch -PathType Leaf) -or $MenuPatchOrigin.Count -ne 2 -or $MenuPatchOrigin[0] -lt 0 -or $MenuPatchOrigin[1] -lt 0) { throw 'Reload requires a calibrated pause-menu reference image and origin.' }
+    if (-not $ui.PSObject.Properties['load_button_patch'] -or -not (Test-Path -LiteralPath $ui.load_button_patch -PathType Leaf) -or $ui.load_button_patch_origin.Count -ne 2) { throw 'Reload requires a calibrated Load button reference image and origin.' }
+    if (-not $ui.PSObject.Properties['load_menu_patch'] -or -not (Test-Path -LiteralPath $ui.load_menu_patch -PathType Leaf) -or $ui.load_menu_patch_origin.Count -ne 2) { throw 'Reload requires a calibrated Load dialog reference image and origin.' }
+    if ($ui.expected_save -cne $ExpectedSave -or $null -eq $ui.expected_hour -or $null -eq $ui.expected_seed) { throw 'UiConfig must identify expected_save, expected_hour and expected_seed.' }
+    foreach ($name in @('menu','load_game','load_local','load_row','load_button','cursor_park')) {
+        $point = $ui.$name
+        if ($point.Count -ne 2 -or $point[0] -lt 0 -or $point[1] -lt 0 -or $point[0] -ge $ui.width -or $point[1] -ge $ui.height) { throw "Invalid calibrated point: $name" }
+    }
+    if ($ui.load_row_step -le 0 -or $ui.load_visible_rows -le 0 -or $row -ge $ui.load_visible_rows) { throw "Expected save is outside the calibrated visible load rows: $ExpectedSave" }
+    $rowY=[int]$ui.load_row[1]+$row*[int]$ui.load_row_step
+    if ($rowY -ge $ui.height) { throw 'Expected save row lies outside the calibrated window.' }
+    $shim = Open-InputShim
+    if (-not $shim) { $null = Install-InputShim $game.Id; $shim = Open-InputShim }
+    if (-not $shim) { throw 'Reload requires the background input shim; supply InputShimDir.' }
+    Close-InputShim $shim
+    $game.Refresh()
+    if (@($game.Modules | Where-Object ModuleName -ieq 'inputshim.dll').Count -ne 1) { throw 'The background input shim is not loaded in the selected game.' }
+    $driver = $PSCommandPath
+    function Reload-Drive([string]$action, [hashtable]$extra) {
+        Confirm-ReloadLock
+        & $driver -Action $action -GameExe $gamePath -UserDirectory $userPath -GameId $GameId -InputShimDir $InputShimDir -RequireInputShim -CaptureRoot $CaptureRoot @extra
+    }
+    function Reload-Click([string]$name) { $point=$ui.$name; $null=Reload-Drive 'Click' @{X=[int]$point[0];Y=[int]$point[1]}; Start-Sleep -Milliseconds 500 }
+    function Test-ReloadMenu([string]$name,[string]$patch=$MenuPatch,[int[]]$origin=$MenuPatchOrigin,[double]$tolerance=22,[switch]$Label) {
+        $captureName=[IO.Path]::GetFileNameWithoutExtension($name)+'-'+[Guid]::NewGuid().ToString('N')+'.png'
+        $shot=Reload-Drive 'Screenshot' @{Out=(Join-Path $Out $captureName)}
+        if ($shot.Width -ne $ui.width -or $shot.Height -ne $ui.height) { throw 'Window dimensions differ from calibrated UI.' }
+        Add-Type -AssemblyName System.Drawing
+        $reference=[Drawing.Bitmap]::FromFile($patch); $image=[Drawing.Bitmap]::FromFile($shot.Path)
+        try {
+            if ($origin[0] -lt 0 -or $origin[1] -lt 0 -or $origin[0]+$reference.Width -gt $image.Width -or $origin[1]+$reference.Height -gt $image.Height) { throw 'Menu reference lies outside the calibrated window.' }
+            $sum=0.0; $count=0; $glyphs=0; $difference=0; $union=0
+            $stride=if ($Label) {1} else {4}
+            $threshold=0.0
+            if ($Label) {
+                $minimum=765; $maximum=0
+                for ($py=0;$py -lt $reference.Height;$py++) { for ($px=0;$px -lt $reference.Width;$px++) {
+                    $pixel=$reference.GetPixel($px,$py); $brightness=$pixel.R+$pixel.G+$pixel.B
+                    $minimum=[math]::Min($minimum,$brightness); $maximum=[math]::Max($maximum,$brightness)
+                } }
+                if ($minimum -eq $maximum) { return $false }
+                $threshold=($minimum+$maximum)/2.0
+            }
+            for ($py=0;$py -lt $reference.Height;$py+=$stride) { for ($px=0;$px -lt $reference.Width;$px+=$stride) {
+                $a=$reference.GetPixel($px,$py); $b=$image.GetPixel($origin[0]+$px,$origin[1]+$py)
+                if ($Label) {
+                    $expected=($a.R+$a.G+$a.B -ge $threshold); $actual=($b.R+$b.G+$b.B -ge $threshold)
+                    if ($expected) { $glyphs++ }
+                    if ($expected -or $actual) { $union++ }
+                    if ($expected -ne $actual) { $difference++ }
+                }
+                $sum += [math]::Abs($a.R-$b.R)+[math]::Abs($a.G-$b.G)+[math]::Abs($a.B-$b.B); $count++
+            } }
+            if ($Label) {
+                if ($glyphs -gt $count/2) { $glyphs=$count-$glyphs; $union=$count-$union+$difference }
+                return ($glyphs -gt 0 -and $union -gt 0 -and 100.0*$difference/$union -lt $tolerance)
+            }
+            return ($sum/(3.0*$count) -lt $tolerance)
+        } finally { $reference.Dispose(); $image.Dispose() }
+    }
+    function Wait-ReloadMenu([string]$name,[string]$patch,[int[]]$origin,[double]$tolerance,[switch]$Label) {
+        $deadline=[DateTime]::UtcNow.AddSeconds(15)
+        do {
+            if (Test-ReloadMenu $name $patch $origin $tolerance -Label:$Label) { return }
+            if ([DateTime]::UtcNow -ge $deadline) { throw "Reload witness failed: calibrated dialog did not become visible: $name" }
+            Start-Sleep -Milliseconds 250
+        } while ($true)
+    }
+    Initialize-SmokeClock
+    $reader = [Hoi4ClockBaseline]::new([uint32]$game.Id, [uint64]$game.MainModule.BaseAddress.ToInt64())
+    try {
+        $before = $reader.Sample()
+        if (-not $before -or -not $before.presentation_valid -or $before.play_session_started_at -le 0) { throw 'No authenticated presentation/load witness before reload.' }
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        if (-not (Test-ReloadMenu 'menu-before.png')) {
+            Reload-Click 'menu'
+            Wait-ReloadMenu 'menu-open.png' $MenuPatch $MenuPatchOrigin 22
+        }
+        Reload-Click 'load_game'
+        Wait-ReloadMenu 'load-menu.png' $ui.load_menu_patch ([int[]]$ui.load_menu_patch_origin) 5 -Label
+        Reload-Click 'load_local'
+        $null=Reload-Drive 'Click' @{X=[int]$ui.load_row[0];Y=$rowY}
+        Start-Sleep -Milliseconds 500
+        $null=Reload-Drive 'Move' @{X=[int]$ui.cursor_park[0];Y=[int]$ui.cursor_park[1]}
+        Wait-ReloadMenu 'load-ready.png' $ui.load_button_patch ([int[]]$ui.load_button_patch_origin) 5 -Label
+        Confirm-ReloadIdle
+        [IO.File]::WriteAllText((Join-Path $Out 'load-requested.json'),(@{expected_save=$ExpectedSave;before_load=$before.play_session_started_at;requested_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json))
+        Reload-Click 'load_button'
+        $stable = $null
+        while ($watch.Elapsed.TotalSeconds -lt 240) {
+            Confirm-ReloadLock
+            $game.Refresh(); if ($game.HasExited) { throw 'Game exited during reload.' }
+            $clock=$reader.Sample()
+            if ($clock -and $clock.play_session_started_at -gt 0 -and $clock.play_session_started_at -ne $before.play_session_started_at -and
+                $clock.hour -eq $ui.expected_hour -and $clock.seed -eq $ui.expected_seed -and
+                (-not $ui.PSObject.Properties['expected_play_time'] -or $clock.play_time -eq $ui.expected_play_time) -and
+                $clock.tick_busy -eq 0 -and $clock.presentation_valid -and $clock.paused -eq 1) {
+                if ($stable -and $clock.Same($stable) -and $watch.Elapsed.TotalSeconds - $stableAt -ge 2) {
+                    return [pscustomobject]@{Action='Reload';GameId=$GameId;ExpectedSave=$ExpectedSave;Before=$before;Clock=$clock;Verified=$true;Seconds=$watch.Elapsed.TotalSeconds}
+                }
+                if (-not $stable -or -not $clock.Same($stable)) { $stable=$clock; $stableAt=$watch.Elapsed.TotalSeconds }
+            } else { $stable=$null }
+            Start-Sleep -Milliseconds 100
+        }
+        throw 'Reload witness failed: expected a new load timestamp and the expected stable clock and seed.'
+    } finally { $reader.Dispose() }
+}
 if ($Action -eq 'Clock') {
     Assert-ClockReadable (Get-GameBuild $gamePath)
     Initialize-SmokeClock
@@ -1469,6 +1624,7 @@ try {
                     }
                 } finally { Close-InputShim $shim }
             } else {
+                if ($RequireInputShim) { throw 'The required background input shim disappeared; input was not sent.' }
                 # No shim: UI buttons need real input, which only reaches the foreground window. Borrow it
                 # for the click, restore the previous window and push the game behind again (~250 ms in front).
                 $flash = [Hoi4ProbeInput]::AcquireTargetFocus($window, [uint32]$game.Id)

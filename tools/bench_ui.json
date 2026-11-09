@@ -13,5 +13,8 @@
   "save_menu": [1720, 520],
   "save_name": [1730, 985],
   "save_confirm": [1824, 1035],
-  "note": "Example outer-window coordinates for a 3440x1440 game window (DPI-aware); recalibrate for your game window and menu. menu opens the pause menu from the top bar; load_row clicks the name of the top Local save, clear of its delete icon. bench.ps1 touches the benchmark save so it sorts first. save_menu, save_name and save_confirm are the pause menu's Save entry, name field and confirm button, as in the smoke UI config."
+  "note": "Example 3440x1440 outer-window coordinates; recalibrate for your window. load_row is the first Local row, clear of its delete icon. Rows sort by save modification time; save files remain read-only.",
+  "load_local": [1635, 507],
+  "load_row_step": 68,
+  "load_visible_rows": 6
 }

@@ -71,13 +71,15 @@ Pause-menu reference image for menu reloads, with its outer-window origin in Men
 .PARAMETER GameLock
 Hold this shared lock for the full benchmark. Create its directory and owner file
 before running, then remove them after all owned game/recorder work has stopped.
+.PARAMETER LockOwner
+Exact owner-file token from the caller's held game lock.
 .PARAMETER WorkerSampler
 Collector profiling configuration forwarded as BATTLE_PLAN_WORKER_SAMPLER to recorder candidates.
 Requires a frozen collector built with its worker_sampler feature.
 .PARAMETER CaptureRoot
 User-selected output root; defaults to LOCALAPPDATA/HOI4Replay/captures.
 .EXAMPLE
-powershell -File tools/bench.ps1 -Plan ./plan.json -GameExe "$(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })/hoi4.exe" -UserDirectory ./profile -Out "$env:LOCALAPPDATA/HOI4Replay/captures/bench/run01" -MetricsTool ./metrics.exe
+powershell -File tools/bench.ps1 -Plan ./plan.json -GameExe "$(if (Test-Path Env:BATTLE_PLAN_GAME_DIR) { $env:BATTLE_PLAN_GAME_DIR } else { $env:HOI4_GAME_DIR })/hoi4.exe" -UserDirectory ./profile -Out "$env:LOCALAPPDATA/HOI4Replay/captures/bench/run01" -MetricsTool ./metrics.exe -LockOwner $ownerToken
 #>
 [CmdletBinding()]
 param(
@@ -94,15 +96,15 @@ param(
     [string]$CaptureRoot = (Join-Path $env:LOCALAPPDATA 'HOI4Replay\captures'),
     [string]$WorkerSampler = '',
     [string]$GameLock = (Join-Path $env:TEMP 'HOI4Replay\hoi4_game.lock'),
+    [string]$LockOwner,
     [int]$AttachTimeoutSeconds = 300,
     # Default: keys posted, clicks borrow the foreground briefly (the UI needs real clicks),
     # PrintWindow screenshots, game pushed behind the previous window afterwards.
     [switch]$Foreground,
     [switch]$Background,  # compatibility no-op
     [switch]$PostedClicks,  # experimental: posted mouse messages instead of the brief foreground borrow
-    # menu = in-game Load menu (needed while a recorder stays attached); relaunch = -start_save,
-    # no clicks, never in front; auto picks relaunch when nothing is attached.
-    [ValidateSet('menu', 'relaunch', 'auto')][string]$ReloadMode = 'auto',
+    # Both choices use smoke.ps1's background-only Load menu.
+    [ValidateSet('menu', 'auto')][string]$ReloadMode = 'auto',
     # Rebuild results.md and the cost tables from an existing Out\results.jsonl without driving the game.
     [switch]$SummarizeOnly
 )
@@ -126,7 +128,6 @@ $smoke = Join-Path $scriptDir 'smoke.ps1'
 $script:planSaved = $false
 $script:menuPatchPath = $MenuPatch
 if ($MenuPatchOrigin.Count -ne 2 -or $MenuPatchOrigin[0] -lt 0 -or $MenuPatchOrigin[1] -lt 0) { throw 'MenuPatchOrigin requires two nonnegative pixel coordinates.' }
-$script:chainStarted = $false
 $userPath = (Resolve-Path -LiteralPath $UserDirectory).ProviderPath
 $savePath = Join-Path (Join-Path $userPath 'save games') ([string]$spec.save)
 if (Test-Path -LiteralPath $savePath -PathType Leaf) { $saveSha = (Get-FileHash -LiteralPath $savePath -Algorithm SHA256).Hash }
@@ -157,7 +158,7 @@ foreach ($candidate in $spec.candidates) {
 }
 $buildNames = @('cargo', 'rustc', 'lld-link', 'clippy-driver', 'link', 'cl')
 $lock = [IO.Path]::GetFullPath($GameLock)
-if (-not $SummarizeOnly -and -not (Test-Path -LiteralPath (Join-Path $lock 'owner'))) { throw "Take the game lock first: $lock" }
+if (-not $SummarizeOnly -and (-not $LockOwner -or -not (Test-Path -LiteralPath (Join-Path $lock 'owner')) -or [IO.File]::ReadAllText((Join-Path $lock 'owner')).Trim() -cne $LockOwner)) { throw "Supply the exact LockOwner token from your game-lock acquisition: $lock" }
 
 # Reuse the smoke driver's read-only clock reader and guarded input helper.
 $driverSource = Get-Content -LiteralPath $smoke -Encoding UTF8 -Raw
@@ -435,160 +436,27 @@ function Get-MemorySample($attached) {
 }
 
 # ---- reload ------------------------------------------------------------------
-function Invoke-Relaunch([string]$runDir, [bool]$fresh = $false) {
-    # Calibration lane: finish the previous screen's detach before the game is closed.
-    Complete-Pending
-    $script:game.Refresh()
-    $started = [Diagnostics.Stopwatch]::StartNew()
-    $launch = $null
-    if (-not ($fresh -and -not $script:game.HasExited)) {
-        if (-not $script:game.HasExited) {
-            # A recorder session must be detached first; a leftover ladder DLL dies with the process.
-            # Our previous screen's recorder may still be exiting after finalization; only processes this run started are ours.
-            $ours = { @($script:recorders | Where-Object { -not $_.HasExited }) }
-            if (@($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) {
-                # A diagnostic build may never finish detaching; its game and recorder are closed instead.
-                if (-not $script:lastDiagnostic) { throw 'Relaunch reload requested while the collector is attached.' }
-                Log 'A diagnostic collector stayed loaded; closing the game and its recorder.'
-                foreach ($stuck in (& $ours)) { try { $stuck.Kill() } catch { } }
-            }
-            $deadline = [DateTime]::UtcNow.AddSeconds(300)
-            while ((& $ours).Count -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
-            if ((& $ours).Count) { throw 'Relaunch reload requested while a recorder is running.' }
-            if ($script:reader) { $script:reader.Dispose(); $script:reader = $null }
-            $script:game.Kill(); if (-not $script:game.WaitForExit(300000)) { throw 'The game did not exit.' }
-        }
-        $started.Restart()
-        $launch = Start-SaveLaunch
-        Connect-Game
-    }
-    $limit = [DateTime]::UtcNow.AddSeconds(240)
-    do {
-        $clock = $script:reader.Sample()
-        if ($clock -and $clock.hour -eq $expectedHour -and $clock.seed -eq $expectedSeed -and $clock.paused -eq 1 -and $clock.tick_busy -eq 0 -and $clock.presentation_valid) { break }
-        if ([DateTime]::UtcNow -gt $limit) { throw 'Relaunched game did not reach the paused baseline state.' }
-        Start-Sleep -Milliseconds 100
-    } while ($true)
-    $clock = Read-Clock
-    $verb = $(if ($launch) { 'Relaunched into' } else { 'Using the fresh launch of' })
-    Log ("{0} {1} in {2:n1}s; pid {3}, load signal {4}, foreground pushes {5}" -f $verb, $spec.save, $started.Elapsed.TotalSeconds, $script:game.Id, $clock.play_session_started_at, $(if ($launch) { $launch.ForegroundPushes } else { 0 }))
-    return $clock
-}
-function Test-PauseMenu([string]$runDir) {
-    if (-not $script:menuPatchPath -or -not (Test-Path -LiteralPath $script:menuPatchPath -PathType Leaf)) { throw 'Menu reload requires -MenuPatch with a calibrated pause-menu reference image.' }
-    # Compare the menu's button column against the calibrated reference patch (mean abs diff over the patch).
-    $shot = Join-Path $runDir ('menu_probe_' + [DateTime]::UtcNow.ToString('HHmmssfff') + '.png')
-    try { $null = & $smoke -GameExe $GameExe -CaptureRoot $CaptureRoot -InputShimDir $InputShimDir -Action Screenshot -GameId $script:game.Id -Out $shot -Foreground:(-not $Background) } catch { return $false }
-    Add-Type -AssemblyName System.Drawing
-    $ref = [Drawing.Bitmap]::FromFile($script:menuPatchPath); $img = [Drawing.Bitmap]::FromFile($shot)
-    try {
-        $sum = 0.0; $n = 0
-        for ($y = 0; $y -lt $ref.Height; $y += 4) { for ($x = 0; $x -lt $ref.Width; $x += 4) {
-            $a = $ref.GetPixel($x, $y); $b = $img.GetPixel($MenuPatchOrigin[0] + $x, $MenuPatchOrigin[1] + $y)
-            $sum += [math]::Abs($a.R - $b.R) + [math]::Abs($a.G - $b.G) + [math]::Abs($a.B - $b.B); $n++
-        } }
-        $mad = $sum / (3.0 * $n)
-    } finally { $ref.Dispose(); $img.Dispose() }
-    Remove-Item -LiteralPath $shot -ErrorAction SilentlyContinue
-    return ($mad -lt 22)
-}
-function Open-PauseMenu([string]$runDir) {
-    if ($ui.PSObject.Properties['menu'] -and $ui.menu) {
-        # The top-bar menu button opens the pause menu over any open panel; the reload's
-        # clock check catches a menu that did not open.
-        Send-Click $ui.menu; Start-Sleep -Milliseconds 900
-        return
-    }
-    # Escape first closes popups and panels; repeat until the pause menu itself is visible.
-    for ($attempt = 0; $attempt -lt 6; $attempt++) {
-        Send-Key 0x1B; Start-Sleep -Milliseconds 700
-        if (Test-PauseMenu $runDir) { return }
-    }
-    throw 'Pause menu did not open after six Escape presses.'
-}
 function Invoke-Reload([string]$runDir, [bool]$attached = $false, [bool]$reference = $false) {
-    # Only the first reload after a launch into the save can use that game as it is. Menu
-    # reloads use it only for a no-recorder reference, so every recorder screen starts reloaded.
-    $fresh = $script:freshLaunch; $script:freshLaunch = $false
-    $mode = $ReloadMode
-    if ($spec.PSObject.Properties['reload_mode'] -and $spec.reload_mode) { $mode = [string]$spec.reload_mode }
-    if ($mode -eq 'auto') { $mode = $(if ($attached) { 'menu' } else { 'relaunch' }) }
-    # A diagnostic collector that never finished detaching leaves only a relaunch.
-    if ($script:game -and -not $script:game.HasExited -and
-        @($script:game.Modules | Where-Object { $_.ModuleName -ieq 'collector.dll' }).Count -ne 0) { $mode = 'relaunch' }
-    if ($mode -eq 'relaunch' -or ($mode -eq 'menu' -and $fresh -and $reference)) { return Invoke-Relaunch $runDir $fresh }
-    if ($mode -eq 'none') {
-        # chain runs without reloading (state drifts forward; only for comparisons that tolerate it)
-        $null = Set-Paused $true
-        $clock = Read-Clock
-        if ($clock.hour -eq $expectedHour -or $script:chainStarted) { $script:chainStarted = $true; return $clock }
-        $script:chainStarted = $true
-        $mode = 'menu'   # first run of a chain starts from the baseline hour
+    Complete-Pending
+    $fresh=$script:freshLaunch; $script:freshLaunch=$false
+    $mode=$ReloadMode
+    if ($spec.PSObject.Properties['reload_mode'] -and $spec.reload_mode) { $mode=[string]$spec.reload_mode }
+    if ($mode -eq 'auto') { $mode='menu' }
+    if ($mode -notin @('menu','auto')) { throw "Unsupported reload mode: $mode. Only the shared screen driver relaunches the game." }
+    if ($fresh -and $reference) {
+        $clock=Read-Clock
+        if ($clock.hour -ne $expectedHour -or $clock.seed -ne $expectedSeed -or $clock.paused -ne 1 -or -not $clock.presentation_valid) { throw 'Fresh launch did not reach the expected paused save.' }
+        return $clock
     }
-    # The in-game reload needs real clicks, which fail while someone else has the foreground;
-    # relaunching into the save needs none, so it is the fallback.
-    try { return Invoke-MenuReload $runDir }
-    catch {
-        Log "In-game reload failed ($($_.Exception.Message)); relaunching into the save instead."
-        Complete-Pending
-        return Invoke-Relaunch $runDir
-    }
-}
-function Invoke-MenuReload([string]$runDir) {
-    (Get-Item -LiteralPath $savePath).LastWriteTime = Get-Date   # sorts first in the Local list
-    $null = Set-Paused $true
-    $before = Read-Clock
-    Open-PauseMenu $runDir
-    $shim = $(if ($Background -and -not $PostedClicks) { Open-InputShim } else { $null })
-    if ($shim) {
-        try {
-            Invoke-ShimClick $shim ($script:rect.Left + [int]$ui.load_game[0]) ($script:rect.Top + [int]$ui.load_game[1]); Start-Sleep -Milliseconds 1000
-            Invoke-ShimClick $shim ($script:rect.Left + [int]$ui.load_row[0]) ($script:rect.Top + [int]$ui.load_row[1]); Start-Sleep -Milliseconds 350
-            Invoke-ShimClick $shim ($script:rect.Left + [int]$ui.load_button[0]) ($script:rect.Top + [int]$ui.load_button[1])
-        } finally { Close-InputShim $shim }
-    } elseif ($Background -and -not $PostedClicks) {
-        # No shim: each click borrows the foreground and retries if focus is taken back.
-        Send-Click $ui.load_game; Start-Sleep -Milliseconds 1000
-        Send-Click $ui.load_row; Start-Sleep -Milliseconds 350
-        Send-Click $ui.load_button
-    } else {
-        Send-Click $ui.load_game; Start-Sleep -Milliseconds 1200
-        Send-Click $ui.load_row; Start-Sleep -Milliseconds 400
-        Send-Click $ui.load_button
-    }
-    $started = [Diagnostics.Stopwatch]::StartNew()
-    $stable = $null
-    # A Load click occasionally does not register and leaves the dialog open on the
-    # selected save; Enter is the dialog's Load shortcut. Retry only while the old,
-    # unloaded game is still idle, so a load in progress is never requested twice.
-    $retries = @(6, 15)
-    while ($started.Elapsed.TotalSeconds -lt 240) {
-        Start-Sleep -Milliseconds 250
-        $script:game.Refresh(); if ($script:game.HasExited) { throw 'The game exited during reload.' }
-        $clock = $script:reader.Sample()
-        if ($retries.Count -and $started.Elapsed.TotalSeconds -ge $retries[0] -and $clock -and
-            $clock.play_session_started_at -eq $before.play_session_started_at -and $clock.tick_busy -eq 0) {
-            $retries = @($retries | Select-Object -Skip 1)
-            Log 'Load did not start; pressing Enter on the load dialog.'
-            Send-Key 0x0D
-        }
-        if ($started.Elapsed.TotalSeconds -ge 25 -and $clock -and
-            $clock.play_session_started_at -eq $before.play_session_started_at -and $clock.tick_busy -eq 0) {
-            Take-Screenshot (Join-Path $runDir 'menu_reload_not_started.png')
-            throw 'the load never started'
-        }
-        if ($null -eq $clock -or $clock.play_session_started_at -eq $before.play_session_started_at) { $stable = $null; continue }
-        if ($clock.hour -ne $expectedHour -or $clock.seed -ne $expectedSeed -or $clock.paused -ne 1 -or $clock.tick_busy -ne 0 -or -not $clock.presentation_valid) { $stable = $null; continue }
-        if ($null -eq $stable) { $stable = $clock; continue }
-        if ($clock.play_session_started_at -eq $stable.play_session_started_at) { break }
-        $stable = $null
-    }
-    if ($null -eq $stable) { Take-Screenshot (Join-Path $runDir 'reload_timeout.png'); throw 'Reload did not produce the expected paused baseline state within 240 s.' }
-    Send-Move $ui.cursor_park
-    $clock = Read-Clock
-    if ($clock.hour -ne $expectedHour -or $clock.paused -ne 1) { throw 'Baseline state drifted after reload.' }
-    Log ("Reloaded {0} in {1:n1}s; load signal {2}" -f $spec.save, $started.Elapsed.TotalSeconds, $clock.play_session_started_at)
-    return $clock
+    $reloadUi=$ui | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $reloadUi | Add-Member -NotePropertyName expected_save -NotePropertyValue ([string]$spec.save) -Force
+    $reloadUi | Add-Member -NotePropertyName expected_hour -NotePropertyValue $expectedHour -Force
+    $reloadUi | Add-Member -NotePropertyName expected_seed -NotePropertyValue $expectedSeed -Force
+    $config=Join-Path $runDir 'reload-ui.json'
+    Write-Json $config $reloadUi
+    $reload=& $smoke -Action Reload -GameExe $GameExe -UserDirectory $userPath -GameId $script:game.Id -GameLock $lock -LockOwner $LockOwner -UiConfig $config -MenuPatch $MenuPatch -MenuPatchOrigin $MenuPatchOrigin -InputShimDir $InputShimDir -CaptureRoot $CaptureRoot -ExpectedSave ([string]$spec.save) -Out $runDir
+    Write-Json (Join-Path $runDir 'reload.json') $reload
+    return $reload.Clock
 }
 
 # ---- recorder attach / detach ------------------------------------------------
@@ -779,8 +647,7 @@ function Update-RecorderPeak($attached) {
     if ($null -ne $private -and $private -gt $attached.recorder_private_peak_detach) { $attached.recorder_private_peak_detach = [int64]$private }
 }
 function Begin-Stop($attached, [string]$runDir) {
-    # Request the detach and return once collector.dll has left the game. Drain ends before the
-    # unload; finalization continues in recorder.exe, so the next reload can overlap it.
+    # Return after unload; Complete-Pending awaits finalization before the next reload.
     if ($attached.PSObject.Properties['detach'] -and $attached.detach) { return }
     $recorderExe = Join-Path $attached.frozen 'recorder.exe'
     $detach = Start-Process -FilePath $recorderExe -ArgumentList @('detach', '--out', ('"' + $attached.recording + '"')) -WorkingDirectory $attached.frozen -WindowStyle Hidden -PassThru `
@@ -1037,7 +904,7 @@ function Save-Game($clock) {
 }
 function Invoke-Screen($attached, [string]$runDir) {
     $identity = Set-Paused $true
-    if ($identity.hour -ne $expectedHour -and -not $script:chainStarted) { throw "Screen must start at hour $expectedHour, found $($identity.hour)." }
+    if ($identity.hour -ne $expectedHour) { throw "Screen must start at hour $expectedHour, found $($identity.hour)." }
     Set-Speed $speed; Send-Move $ui.cursor_park
     $statusBefore = $null
     if ($attached) { $statusBefore = Read-Status $attached.status; Write-Json (Join-Path $runDir 'status_before.json') $statusBefore }
@@ -1234,8 +1101,7 @@ function Save-Row($row) {
     [IO.File]::AppendAllText($resultsPath, (($row | ConvertTo-Json -Depth 20 -Compress) + "`n"), $utf8)
     [void]$rowDicts.Add($row)
 }
-# A recorder screen whose collector has left the game while recorder.exe still finalizes. The
-# next reload overlaps that finalization; it completes before the next timed window or attach.
+# Unloaded recorder waiting to finish finalization before the next reload.
 $script:pending = $null
 function Complete-Pending {
     $p = $script:pending
@@ -1292,7 +1158,6 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
             } elseif ($candidate.frozen) {
                 $row.collector_sha256 = (Get-FileHash -LiteralPath (Join-Path ([string]$candidate.frozen) 'collector.dll') -Algorithm SHA256).Hash
                 $null = Invoke-Reload $runDir $false
-                # The previous recorder finalizes meanwhile; only the next attach waits for it.
                 Invoke-PlanConsole
                 Complete-Pending
                 $attached = Start-Candidate $candidate $runDir
@@ -1331,13 +1196,7 @@ for ($rep = 1; $rep -le $repeats; $rep++) {
     }
 }
 Complete-Pending
-# Every candidate is detached and finalized: close the game now rather than leave it paused
-# through the offline metrics below, which read only the finalized replays.
-if ($script:game -and -not $script:game.HasExited) {
-    if ($script:reader) { $script:reader.Dispose(); $script:reader = $null }
-    $script:game.Kill(); $null = $script:game.WaitForExit(300000)
-    Log 'Closed the game after the last screen.'
-}
+if ($script:reader) { $script:reader.Dispose(); $script:reader=$null }
 # Exact per-hour metrics decode each finalized replay; run them after the game work.
 foreach ($row in $rowDicts) {
     if ($row.Contains('diagnostic_only') -and $row.diagnostic_only) { continue }

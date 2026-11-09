@@ -6639,6 +6639,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "inputshim"
+version = "0.1.0"
+dependencies = [
+ "test-unify",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
