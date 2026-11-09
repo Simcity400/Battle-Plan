@@ -21,10 +21,15 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-type TextureMap = BTreeMap<u32, Option<wgpu::TextureView>>;
+type TextureMap = BTreeMap<u32, Option<gpu::TextureBinding>>;
 
 fn same_snapshot<T: PartialEq + ?Sized>(a: &Arc<T>, b: &Arc<T>) -> bool {
     Arc::ptr_eq(a, b) || **a == **b
+}
+
+pub enum WarmPass {
+    Selected,
+    Recorded(String),
 }
 
 pub struct Stream {
@@ -39,7 +44,7 @@ pub struct Stream {
     textures: TextureMap,
     // Created only for a successful immutable bind; ordinary texture changes stay in-place.
     texture_snapshot: Option<Arc<TextureMap>>,
-    null_textures: BTreeMap<super::TextureKind, wgpu::TextureView>,
+    null_textures: BTreeMap<super::TextureKind, gpu::TextureBinding>,
     last_pass: Option<ResolvedPass>,
     pub cache: gpu::Cache,
     pub refused: BTreeMap<String, u64>,
@@ -54,6 +59,7 @@ pub struct Stream {
 type Target = (wgpu::TextureFormat, u32, wgpu::PrimitiveTopology);
 
 struct Build {
+    gui: bool,
     selection: Selection,
     state: gpu::State,
     target: Target,
@@ -62,11 +68,19 @@ struct Build {
 }
 
 impl Build {
-    fn is(&self, selection: &Selection, state: &gpu::State, target: Target) -> bool {
-        self.selection.effect.id == selection.effect.id
-            && self.selection.index == selection.index
-            && self.target == target
-            && gpu::same_packed(&self.state, state)
+    fn is(&self, gui: bool, selection: &Selection, state: &gpu::State, target: Target) -> bool {
+        if self.gui != gui
+            || self.selection.effect.id != selection.effect.id
+            || self.selection.index != selection.index
+            || self.target != target
+        {
+            return false;
+        }
+        let compiled = selection
+            .effect
+            .compiled_now(selection.index)
+            .and_then(Result::ok);
+        gpu::same_packed(&self.state, state, compiled.as_deref())
     }
 }
 
@@ -82,6 +96,7 @@ impl Builds {
     /// The finished build for this draw, taken; else `None`, its build started unless under way.
     fn take_or_start(
         &self,
+        gui: bool,
         device: &wgpu::Device,
         selection: &Selection,
         state: &gpu::State,
@@ -90,7 +105,7 @@ impl Builds {
         let mut builds = lock(&self.0);
         if let Some(at) = builds
             .iter()
-            .position(|build| build.is(selection, state, target))
+            .position(|build| build.is(gui, selection, state, target))
         {
             return match builds[at].made {
                 Some(_) => builds.swap_remove(at).made,
@@ -98,6 +113,7 @@ impl Builds {
             };
         }
         builds.push(Build {
+            gui,
             selection: selection.clone(),
             state: state.clone(),
             target,
@@ -117,8 +133,9 @@ impl Builds {
                 let (format, samples, topology) = target;
                 // A build that panicked is refused by name, so its draws never wait for it.
                 let made = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    gpu::Cache::default()
-                        .build_packed(&device, &selection, &state, format, samples, topology)
+                    let mut cache = gpu::Cache::default();
+                    cache.gui = gui;
+                    cache.build_packed(&device, &selection, &state, format, samples, topology)
                 }))
                 .unwrap_or_else(|_| {
                     (
@@ -128,7 +145,7 @@ impl Builds {
                 });
                 if let Some(build) = lock(&shared)
                     .iter_mut()
-                    .find(|build| build.is(&selection, &state, target))
+                    .find(|build| build.is(gui, &selection, &state, target))
                 {
                     build.made = Some(made);
                 }
@@ -141,7 +158,7 @@ impl Builds {
             Ok(_) => None,
             // With no thread to build on, the draw is refused by name, never built here.
             Err(error) => {
-                lock(&self.0).retain(|build| !build.is(selection, state, target));
+                lock(&self.0).retain(|build| !build.is(gui, selection, state, target));
                 Some((
                     Err(format!(
                         "GUI pipeline builds could not start a thread: {error}"
@@ -337,6 +354,12 @@ pub struct NativeSubmission {
 }
 
 impl Stream {
+    pub fn gui() -> Self {
+        let mut stream = Self::default();
+        stream.cache.gui = true;
+        stream
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn same_bindings(&self, other: &Self) -> bool {
         let program = match (&self.program, &other.program) {
@@ -384,20 +407,26 @@ impl Stream {
             (Some((a, al)), Some((b, bl))) => {
                 a.effect.source == b.effect.source
                     && a.effect.defines == b.effect.defines
-                    && a.index == b.index && al == bl
+                    && a.index == b.index
+                    && al == bl
             }
             _ => false,
         };
         program
             && self.same_state(other)
             && self.textures.len() == other.textures.len()
-            && self.textures.iter().zip(&other.textures).all(|((a_key, a), (b_key, b))| {
-                a_key == b_key && match (a, b) {
-                    (Some(a), Some(b)) => same_texture(a, b),
-                    (None, None) => true,
-                    _ => false,
-                }
-            })
+            && self
+                .textures
+                .iter()
+                .zip(&other.textures)
+                .all(|((a_key, a), (b_key, b))| {
+                    a_key == b_key
+                        && match (a, b) {
+                            (Some(a), Some(b)) => a.format == b.format && same_texture(a, b),
+                            (None, None) => true,
+                            _ => false,
+                        }
+                })
     }
 
     /// Start a scoped render-to-texture pass with the caller's retained bindings.
@@ -494,6 +523,41 @@ impl Stream {
 
     pub fn bind_rasterizer(&mut self, state: RasterizerState) {
         self.rasterizer = Some(state);
+    }
+
+    /// Preserve device resources, with the same native state as a fresh frame.
+    pub fn begin_frame(&mut self) {
+        *self = Self {
+            cache: std::mem::take(&mut self.cache),
+            null_textures: std::mem::take(&mut self.null_textures),
+            builds: self.builds.take(),
+            ..Default::default()
+        };
+    }
+
+    /// Build only the pipeline; no resource bindings, geometry or draw counters change.
+    pub fn warm_pass(
+        &mut self,
+        device: &wgpu::Device,
+        template: &gpu::Pass,
+        vertices: Vec<gpu::VertexLayout>,
+    ) -> Result<WarmPass, String> {
+        let selection = &self
+            .program
+            .as_ref()
+            .ok_or("no selected warm-up program")?
+            .0;
+        let (mut pass, _, _) = self.pass_state(template);
+        pass.vertices = vertices;
+        match self.cache.get_pass(device, selection, &self.state, &pass) {
+            Ok(_) => Ok(WarmPass::Selected),
+            Err(why) => {
+                let recorded = selection.recorded().ok_or_else(|| why.clone())?;
+                self.cache
+                    .get_pass(device, &recorded, &self.state, &pass)
+                    .map(|_| WarmPass::Recorded(why))
+            }
+        }
     }
 
     /// A non-native pass (or a new frame) has replaced device state we cannot reconstruct.
@@ -607,11 +671,22 @@ impl Stream {
 
     /// A sampler overrides the caller's slot, for both texture and sampler.
     /// A null pixel sampler retains state, a null vertex sampler clears it; null texture unbinds.
+    /// Batched GUI uses `bind_formatted_texture`: a view's colour-space format is not queryable.
     pub fn bind_texture(
         &mut self,
         slot: u32,
         stage: Stage,
         texture: Option<wgpu::TextureView>,
+        sampler: Option<&Sampler>,
+    ) {
+        self.bind_formatted_texture(slot, stage, texture.map(Into::into), sampler);
+    }
+
+    pub fn bind_formatted_texture(
+        &mut self,
+        slot: u32,
+        stage: Stage,
+        texture: Option<gpu::TextureBinding>,
         sampler: Option<&Sampler>,
     ) {
         let slot = sampler.map_or(slot, |sampler| sampler.index);
@@ -676,12 +751,20 @@ impl Stream {
         selection: &Selection,
         (format, samples, topology): Target,
     ) -> Option<gpu::Cached> {
+        // A pipeline this stream already holds is found once, before anything else is asked.
+        if let Some(found) =
+            self.cache
+                .find_packed(selection, &self.state, (format, samples, topology))
+        {
+            return Some(found);
+        }
         if let Some(builds) = &self.builds
             && !self
                 .cache
                 .ready(device, selection, &self.state, format, samples, topology)
         {
             let made = builds.take_or_start(
+                self.cache.gui,
                 device,
                 selection,
                 &self.state,
@@ -797,6 +880,55 @@ impl Stream {
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> Result<Submission, String> {
+        match self.prepare_packet_inner(arena, bytes, stride, count, topology, format, samples)? {
+            gpu::batch::Packet::Native { pipeline, draw } => Ok(Submission { pipeline, draw }),
+            gpu::batch::Packet::Batched(_) => {
+                Err("GUI batch packet requires its sprite pass".into())
+            }
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one native draw carries geometry and target state together"
+    )]
+    pub fn prepare_packet(
+        &mut self,
+        arena: &gpu::Arena,
+        label: &str,
+        bytes: &[u8],
+        stride: usize,
+        count: usize,
+        topology: wgpu::PrimitiveTopology,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Result<gpu::batch::Packet, String> {
+        let waits = self.waits;
+        let result = self
+            .prepare_packet_inner(arena, bytes, stride, count, topology, format, samples)
+            .map_err(|reason| format!("native draw {label:?}: {reason}"));
+        if let Err(reason) = &result
+            && self.waits == waits
+        {
+            self.refuse(arena, label, reason);
+        }
+        result
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the public draw arguments are forwarded without an alternate state model"
+    )]
+    fn prepare_packet_inner(
+        &mut self,
+        arena: &gpu::Arena,
+        bytes: &[u8],
+        stride: usize,
+        count: usize,
+        topology: wgpu::PrimitiveTopology,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Result<gpu::batch::Packet, String> {
         let (mut selection, declaration) = self.program.clone().ok_or(
             "null technique needs the preceding native program, which has not been supplied",
         )?;
@@ -830,10 +962,10 @@ impl Stream {
         self.null_textures(arena.device(), &selection, kinds())?;
         self.check_constants(&pipeline)?;
         let bound = |binding| match self.textures.get(&binding)? {
-            Some(view) => Some(view),
+            Some(view) => Some(pipeline.sampled_texture(binding, view)),
             None => {
                 let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
-                self.null_textures.get(kind)
+                self.null_textures.get(kind).map(|bound| &bound.view)
             }
         };
         // A texture variant this pipeline lacks builds elsewhere while the draw waits.
@@ -841,7 +973,7 @@ impl Stream {
             return Err(self.wait());
         }
         let draw = pipeline
-            .prepare_with(
+            .packet(
                 arena,
                 |binding| self.constants.get(&binding).map(Vec::as_slice),
                 |binding| match self.textures.get(&binding)? {
@@ -859,7 +991,7 @@ impl Stream {
                 },
             )
             .map_err(|reason| format!("effect {:?}: {reason}", selection.effect.source.effect))?;
-        Ok(Submission { pipeline, draw })
+        Ok(draw)
     }
 
     ///Prepare arbitrary caller-owned vertex/index streams with retained native bindings.
@@ -1134,10 +1266,10 @@ impl Stream {
         self.check_constants(&pipeline)?;
         let constants = |binding| self.constants.get(&binding).map(Vec::as_slice);
         let textures = |binding| match self.textures.get(&binding)? {
-            Some(view) => Some(view),
+            Some(view) => Some(pipeline.sampled_texture(binding, view)),
             None => {
                 let (_, kind) = kinds().find(|(key, _)| *key == binding)?;
-                self.null_textures.get(kind)
+                self.null_textures.get(kind).map(|bound| &bound.view)
             }
         };
         let bindings = if let Some(cache) = cache {
@@ -1329,7 +1461,7 @@ impl Stream {
                 Some(None) => {
                     self.null_textures
                         .entry(cube)
-                        .or_insert_with(|| gpu::null_texture(device, cube));
+                        .or_insert_with(|| gpu::null_texture(device, cube).into());
                 }
                 None => {
                     return Err(format!(
@@ -1897,6 +2029,7 @@ Effect Up { VertexShader = V PixelShader = P }
                 };
                 let shader = |wgsl: &str, inputs| Shader {
                     wgsl: wgsl.into(),
+                    independent_draws: false,
                     buffers: vec![],
                     textures: vec![],
                     samplers: vec![],

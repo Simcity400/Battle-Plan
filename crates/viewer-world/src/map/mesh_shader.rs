@@ -481,6 +481,7 @@ pub(crate) mod tests {
         };
         let shader = |wgsl: &str, inputs| Shader {
             wgsl: wgsl.into(),
+            independent_draws: false,
             buffers: vec![],
             textures: vec![],
             samplers: vec![],

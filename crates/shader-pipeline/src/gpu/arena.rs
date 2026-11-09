@@ -13,6 +13,7 @@ const RECENT: usize = 8;
 pub struct Arena {
     device: wgpu::Device,
     alignment: u64,
+    storage_limit: u64,
     inner: RefCell<Inner>,
     /// Native packed geometry is copied into staging before the next draw reuses this storage.
     packed: RefCell<Vec<f32>>,
@@ -81,6 +82,7 @@ impl Arena {
         Self {
             device: device.clone(),
             alignment: u64::from(device.limits().min_uniform_buffer_offset_alignment),
+            storage_limit: u64::from(device.limits().max_storage_buffer_binding_size),
             inner: RefCell::default(),
             packed: RefCell::default(),
         }
@@ -179,7 +181,7 @@ impl Arena {
             .sum::<usize>();
         let mut inner = self.inner.borrow_mut();
         let inner = &mut *inner;
-        if inner.room(&self.device, total + alignment)? {
+        if inner.room(&self.device, total + alignment, 1, u64::MAX)? {
             inner.recent.clear();
             inner.last.fill(None);
             inner.vertices.clear();
@@ -229,6 +231,28 @@ impl Arena {
             .push((buffer.clone(), offset, bytes.to_vec()));
     }
 
+    pub(crate) fn storage(&self, bytes: &[u8], stride: usize) -> Result<Slice, String> {
+        let alignment = stride;
+        let size = align(bytes.len().max(4), 4);
+        let mut inner = self.inner.borrow_mut();
+        let inner = &mut *inner;
+        if inner.room(&self.device, size, alignment, self.storage_limit)? {
+            inner.recent.clear();
+            inner.last.fill(None);
+            inner.vertices.clear();
+        }
+        let chunk = &mut inner.chunks[inner.current];
+        let offset = align(chunk.staged.len(), alignment);
+        chunk.staged.resize(offset, 0);
+        chunk.staged.extend_from_slice(bytes);
+        chunk.staged.resize(offset + size, 0);
+        Ok(Slice {
+            buffer: chunk.buffer.clone(),
+            offset: offset as u64,
+            size: size as u64,
+        })
+    }
+
     /// A vertex stream. An empty stream binds four zero bytes, which no attribute reads.
     pub fn vertices(&self, bytes: &[u8]) -> Result<Slice, String> {
         let size = align(bytes.len().max(4), 4);
@@ -246,7 +270,7 @@ impl Arena {
                 size: size as u64,
             });
         }
-        if inner.room(&self.device, size + 4)? {
+        if inner.room(&self.device, size, 4, u64::MAX)? {
             inner.recent.clear();
             inner.last.fill(None);
             inner.vertices.clear();
@@ -274,12 +298,21 @@ impl Arena {
 
 impl Inner {
     /// Make the current buffer able to take `size` more bytes; true if it changed.
-    fn room(&mut self, device: &wgpu::Device, size: usize) -> Result<bool, String> {
+    fn room(
+        &mut self,
+        device: &wgpu::Device,
+        size: usize,
+        alignment: usize,
+        limit: u64,
+    ) -> Result<bool, String> {
         let original = self.current;
         let mut changed = false;
         loop {
             let replace = match self.chunks.get(self.current) {
-                Some(chunk) if (chunk.staged.len() + size) as u64 <= chunk.buffer.size() => {
+                Some(chunk)
+                    if (align(chunk.staged.len(), alignment) + size) as u64
+                        <= chunk.buffer.size().min(limit) =>
+                {
                     return Ok(changed);
                 }
                 Some(chunk) if !chunk.staged.is_empty() || self.current + 1 < self.chunks.len() => {
@@ -290,13 +323,13 @@ impl Inner {
                 // An unused last buffer too small for this upload is replaced.
                 found => found.is_some(),
             };
-            let bytes = CHUNK.max(size as u64);
-            if bytes > device.limits().max_buffer_size {
+            let bytes = CHUNK.min(limit).max(size as u64);
+            if bytes > device.limits().max_buffer_size.min(limit) {
                 // Refusal must leave the current chunk and its recent offsets together.
                 self.current = original;
                 return Err(format!(
                     "a draw's {bytes} upload bytes exceed the device's {}-byte buffer limit",
-                    device.limits().max_buffer_size
+                    device.limits().max_buffer_size.min(limit)
                 ));
             }
             let chunk = Chunk {
@@ -304,6 +337,7 @@ impl Inner {
                     label: Some("native upload arena"),
                     size: bytes,
                     usage: wgpu::BufferUsages::UNIFORM
+                        | wgpu::BufferUsages::STORAGE
                         | wgpu::BufferUsages::VERTEX
                         | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,

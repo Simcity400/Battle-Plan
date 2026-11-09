@@ -9,13 +9,17 @@ use installed_content_core::pdxshader::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, OnceLock},
 };
 use wgpu;
 
 #[path = "gpu/arena.rs"]
 mod arena;
 pub use arena::{Arena, Slice};
+pub mod batch;
+mod batch_position;
+mod batch_shader;
+mod batch_views;
 
 #[path = "gpu/stats.rs"]
 pub mod stats;
@@ -26,9 +30,34 @@ mod uploads;
 #[cfg(any(test, feature = "test-support"))]
 pub use uploads::FrozenBufferWrites;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextureBinding {
+    pub view: wgpu::TextureView,
+    pub format: wgpu::TextureFormat,
+    pub array: Option<(wgpu::TextureView, u32)>,
+}
+
+impl From<wgpu::TextureView> for TextureBinding {
+    fn from(view: wgpu::TextureView) -> Self {
+        Self {
+            format: view.texture().format(),
+            view,
+            array: None,
+        }
+    }
+}
+
+impl std::ops::Deref for TextureBinding {
+    type Target = wgpu::TextureView;
+    fn deref(&self) -> &Self::Target {
+        &self.view
+    }
+}
+
 /// One user's pipeline: a device's shared [`Core`] and the bind groups this user's own arena made.
 pub struct Pipeline {
     core: Arc<Core>,
+    topology: wgpu::PrimitiveTopology,
     /// Stamped with this user's arena frames, so users of one core never prune each other's.
     groups: Arc<Mutex<Groups>>,
     /// Shader-filtered variants by native binding mask, made for this user; `None` while one
@@ -39,6 +68,8 @@ pub struct Pipeline {
 /// What a pipeline is on its device: the compiled program, its layouts and samplers. Every user
 /// on the device with the same key draws with one core ([`Cache`]).
 pub struct Core {
+    _source: Arc<Source>,
+    batch: Option<Arc<batch::Program>>,
     pub pipeline: wgpu::RenderPipeline,
     label: String,
     null_cube: Option<wgpu::TextureView>,
@@ -63,9 +94,10 @@ impl std::ops::Deref for Pipeline {
 
 impl Pipeline {
     /// A new user of `core`, with bind groups of its own.
-    fn over(core: Arc<Core>) -> Self {
+    fn over(core: Arc<Core>, topology: wgpu::PrimitiveTopology) -> Self {
         Self {
             core,
+            topology,
             groups: Arc::default(),
             variants: Arc::default(),
         }
@@ -74,6 +106,7 @@ impl Pipeline {
 
 /// Float formats are known only when views are bound; keep variants by native binding mask.
 struct Fallback {
+    gui: bool,
     compiled: Compiled,
     effect: String,
     technique: Technique,
@@ -87,6 +120,7 @@ struct Fallback {
 struct Groups {
     frame: u64,
     constants: Vec<(wgpu::Buffer, wgpu::BindGroup, GroupStamp)>,
+    batch_constants: Vec<(Vec<wgpu::Buffer>, wgpu::BindGroup, GroupStamp)>,
     /// By the hash of the views, so a hit clones none of them.
     textures: HashMap<u64, Vec<(Vec<wgpu::TextureView>, wgpu::BindGroup, GroupStamp)>>,
     /// The last texture entry used: consecutive draws usually share a material.
@@ -101,6 +135,7 @@ impl Groups {
             self.frame = frame;
             let live = |used: &GroupStamp| used.get() + 1 >= frame;
             self.constants.retain(|(_, _, used)| live(used));
+            self.batch_constants.retain(|(_, _, used)| live(used));
             for entries in self.textures.values_mut() {
                 entries.retain(|(_, _, used)| live(used));
             }
@@ -198,7 +233,7 @@ impl Pass {
 /// registers over both stages, which compilation enforces.
 pub const CONSTANT_BINDINGS: usize = 2 * super::BUFFER_SLOTS as usize;
 pub const TEXTURE_BINDINGS: usize = 2 * super::SAMPLER_SLOTS as usize;
-const BUFFERS: usize = CONSTANT_BINDINGS;
+const BUFFERS: usize = CONSTANT_BINDINGS + 1;
 const TEXTURES: usize = TEXTURE_BINDINGS;
 
 #[derive(Clone)]
@@ -513,6 +548,7 @@ impl State {
 
 #[derive(Clone)]
 struct PipelineKey {
+    gui: bool,
     effect: uuid::Uuid,
     technique: usize,
     samplers: Vec<(u32, [u32; 10])>,
@@ -556,7 +592,8 @@ fn read_samplers<'a>(
 
 impl PipelineKey {
     fn same(&self, other: &Self) -> bool {
-        self.effect == other.effect
+        self.gui == other.gui
+            && self.effect == other.effect
             && self.technique == other.technique
             && self.blend == other.blend
             && self.write_mask == other.write_mask
@@ -566,6 +603,7 @@ impl PipelineKey {
 
     /// Hash of the key a lookup would build, from borrowed parts.
     fn hash(
+        gui: bool,
         effect: uuid::Uuid,
         technique: usize,
         state: &State,
@@ -574,7 +612,7 @@ impl PipelineKey {
     ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::hash::DefaultHasher::new();
-        (effect, technique, state.blend, state.write_mask, pass).hash(&mut hasher);
+        (gui, effect, technique, state.blend, state.write_mask, pass).hash(&mut hasher);
         for sampler in read_samplers(state, reads) {
             sampler.hash(&mut hasher);
         }
@@ -583,13 +621,15 @@ impl PipelineKey {
 
     fn matches(
         &self,
+        gui: bool,
         effect: uuid::Uuid,
         technique: usize,
         state: &State,
         pass: &Pass,
         reads: Option<&Compiled>,
     ) -> bool {
-        self.effect == effect
+        self.gui == gui
+            && self.effect == effect
             && self.technique == technique
             && self.blend == state.blend
             && self.write_mask == state.write_mask
@@ -651,18 +691,11 @@ pub fn wait_for_builds() {
     }
 }
 
-/// Whether a packed cache entry was made under `state`.
-pub(crate) fn same_packed(cached: &State, state: &State) -> bool {
+/// Compare only sampler slots the compiled program reads.
+pub(crate) fn same_packed(cached: &State, state: &State, reads: Option<&Compiled>) -> bool {
     cached.blend == state.blend
         && cached.write_mask == state.write_mask
-        && cached
-            .samplers
-            .iter()
-            .map(|(slot, sampler)| (*slot, sampler_key(sampler)))
-            .eq(state
-                .samplers
-                .iter()
-                .map(|(slot, sampler)| (*slot, sampler_key(sampler))))
+        && read_samplers(cached, reads).eq(read_samplers(state, reads))
 }
 
 type PackedKey = (
@@ -688,6 +721,155 @@ struct DeviceEntry {
 }
 
 static DEVICE_CORES: DeviceCores = DeviceCores(Mutex::new(Vec::new()), Condvar::new());
+
+struct Source {
+    compiled: Compiled,
+    samplers: Vec<(u32, [u32; 10])>,
+    vertices: Vec<VertexLayout>,
+    topology: wgpu::PrimitiveTopology,
+    strip_safe: bool,
+    unfilterable: u32,
+    gui: bool,
+    prepared: OnceLock<Result<Modules, String>>,
+    null_cube: Arc<Mutex<Option<wgpu::TextureView>>>,
+}
+
+struct Modules {
+    batch: Option<Arc<batch::Program>>,
+    vertex: wgpu::ShaderModule,
+    pixel: wgpu::ShaderModule,
+}
+
+struct DeviceSources {
+    device: wgpu::Device,
+    sources: Vec<std::sync::Weak<Source>>,
+    null_cube: std::sync::Weak<Mutex<Option<wgpu::TextureView>>>,
+}
+
+static SOURCES: Mutex<Vec<DeviceSources>> = Mutex::new(Vec::new());
+
+impl Source {
+    fn get(
+        device: &wgpu::Device,
+        compiled: &Compiled,
+        state: &State,
+        pass: &Pass,
+        unfilterable: u32,
+        gui: bool,
+    ) -> Arc<Self> {
+        let samplers: Vec<_> = read_samplers(state, Some(compiled)).collect();
+        let mut devices = SOURCES.lock().unwrap_or_else(|error| error.into_inner());
+        devices.retain_mut(|entry| {
+            entry.sources.retain(|source| source.strong_count() != 0);
+            !entry.sources.is_empty()
+        });
+        let entry = match devices.iter().position(|entry| entry.device == *device) {
+            Some(index) => &mut devices[index],
+            None => {
+                devices.push(DeviceSources { device: device.clone(), sources: Vec::new(), null_cube: Default::default() });
+                devices.last_mut().unwrap()
+            }
+        };
+        let sources = &mut entry.sources;
+        if let Some(source) = sources
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .find(|source| {
+                source.gui == gui
+                    && source.unfilterable == unfilterable
+                    && (source.topology == pass.primitive.topology
+                        || (source.strip_safe
+                            && matches!(
+                                source.topology,
+                                wgpu::PrimitiveTopology::TriangleList
+                                    | wgpu::PrimitiveTopology::TriangleStrip
+                            )
+                            && matches!(
+                                pass.primitive.topology,
+                                wgpu::PrimitiveTopology::TriangleList
+                                    | wgpu::PrimitiveTopology::TriangleStrip
+                            )))
+                    && source.vertices == pass.vertices
+                    && source.samplers == samplers
+                    && source.compiled == *compiled
+            })
+        {
+            return source;
+        }
+        let null_cube = entry.null_cube.upgrade().unwrap_or_else(|| {
+            let shared = Arc::new(Mutex::new(None));
+            entry.null_cube = Arc::downgrade(&shared);
+            shared
+        });
+        let source = Arc::new(Self {
+            compiled: compiled.clone(),
+            samplers,
+            vertices: pass.vertices.clone(),
+            topology: pass.primitive.topology,
+            strip_safe: gui && batch_shader::strip_safe(&compiled.vertex.wgsl),
+            unfilterable,
+            gui,
+            prepared: OnceLock::new(),
+            null_cube,
+        });
+        sources.push(Arc::downgrade(&source));
+        source
+    }
+
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        state: &State,
+        pass: &Pass,
+        label: &str,
+    ) -> Result<&Modules, String> {
+        self.prepared
+            .get_or_init(|| {
+                scoped(device, || {
+                    let mut translated = self.compiled.clone();
+                    translated.vertex.wgsl = super::sampling::lower(
+                        &self.compiled.vertex.wgsl,
+                        &state.samplers,
+                        &self.compiled.vertex.textures,
+                        self.unfilterable,
+                    )?;
+                    translated.pixel.wgsl = super::sampling::lower(
+                        &self.compiled.pixel.wgsl,
+                        &state.samplers,
+                        &self.compiled.pixel.textures,
+                        self.unfilterable,
+                    )?;
+                    let batch = if self.gui {
+                        batch::Program::translate(device, &translated, pass, label)?.map(Arc::new)
+                    } else {
+                        None
+                    };
+                    let module = |source: &str| {
+                        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                            label: Some(label),
+                            source: wgpu::ShaderSource::Wgsl(source.into()),
+                        })
+                    };
+                    Ok(Modules {
+                        vertex: module(
+                            batch
+                                .as_ref()
+                                .map_or(&translated.vertex.wgsl, |batch| &batch.shader.vertex),
+                        ),
+                        pixel: module(
+                            batch
+                                .as_ref()
+                                .map_or(&translated.pixel.wgsl, |batch| &batch.shader.pixel),
+                        ),
+                        batch,
+                    })
+                })
+                .and_then(|result| result)
+            })
+            .as_ref()
+            .map_err(Clone::clone)
+    }
+}
 
 /// Takes a core under way off its device's list when its making ends, however it ends.
 struct Making<'a> {
@@ -829,6 +1011,8 @@ impl DeviceCores {
 /// shares the device's core when any user holds one ([`DeviceCores`]), with bind groups its own.
 #[derive(Default)]
 pub struct Cache {
+    pub(crate) gui: bool,
+    sources: Vec<Arc<Source>>,
     /// Packed passes derive their complete vertex layout only on a state-cache miss.
     packed: HashMap<PackedKey, Vec<(State, Cached, Diagnostics)>>,
     entries: HashMap<u64, Vec<(PipelineKey, Cached, Diagnostics)>>,
@@ -840,7 +1024,13 @@ impl Cache {
     /// Release cache-held bindings after encoding; submitted commands keep their
     /// own handles. This lets the owner bound its retained texture uploads.
     pub fn release_bind_groups(&self) {
-        for (_, result, _) in self.entries.values().flatten() {
+        for result in self
+            .entries
+            .values()
+            .flatten()
+            .map(|(_, result, _)| result)
+            .chain(self.packed.values().flatten().map(|(_, result, _)| result))
+        {
             if let Ok(pipeline) = result {
                 pipeline.release_bind_groups();
             }
@@ -884,16 +1074,8 @@ impl Cache {
             samples,
             topology,
         );
-        if let Some((_, result, diagnostics)) = self.packed.get(&key).and_then(|entries| {
-            entries
-                .iter()
-                .find(|(cached, _, _)| same_packed(cached, state))
-        }) {
-            diagnostics.credit();
-            if let Err(reason) = result {
-                *self.refused.entry(reason.clone()).or_default() += 1;
-            }
-            return result.clone();
+        if let Some(found) = self.find_packed(selection, state, (format, samples, topology)) {
+            return found;
         }
         let (result, diagnostics) =
             self.build_packed(device, selection, state, format, samples, topology);
@@ -903,6 +1085,36 @@ impl Cache {
             .or_default()
             .push((state.clone(), result.clone(), diagnostics));
         result
+    }
+
+    /// Find and credit a held packed pipeline without building it.
+    pub fn find_packed(
+        &mut self,
+        selection: &super::library::Selection,
+        state: &State,
+        (format, samples, topology): (wgpu::TextureFormat, u32, wgpu::PrimitiveTopology),
+    ) -> Option<Cached> {
+        let key = (
+            selection.effect.id,
+            selection.index,
+            format,
+            samples,
+            topology,
+        );
+        let reads = selection
+            .effect
+            .compiled_now(selection.index)
+            .and_then(Result::ok);
+        let (_, result, diagnostics) = self
+            .packed
+            .get(&key)?
+            .iter()
+            .find(|(cached, _, _)| same_packed(cached, state, reads.as_deref()))?;
+        diagnostics.credit();
+        if let Err(reason) = result {
+            *self.refused.entry(reason.clone()).or_default() += 1;
+        }
+        Some(result.clone())
     }
 
     /// What [`Self::get`] makes on a miss, with what making it observed, kept by no cache.
@@ -938,10 +1150,14 @@ impl Cache {
             samples,
             topology,
         );
+        let reads = selection
+            .effect
+            .compiled_now(selection.index)
+            .and_then(Result::ok);
         let entries = self.packed.entry(key).or_default();
         if !entries
             .iter()
-            .any(|(cached, _, _)| same_packed(cached, state))
+            .any(|(cached, _, _)| same_packed(cached, state, reads.as_deref()))
         {
             entries.push((state.clone(), result, diagnostics));
         }
@@ -965,14 +1181,16 @@ impl Cache {
             samples,
             topology,
         );
+        let compiled = selection.effect.compiled_now(selection.index);
+        let reads = compiled.as_ref().and_then(|result| result.as_deref().ok());
         if self.packed.get(&key).is_some_and(|entries| {
             entries
                 .iter()
-                .any(|(cached, _, _)| same_packed(cached, state))
+                .any(|(cached, _, _)| same_packed(cached, state, reads))
         }) {
             return true;
         }
-        let compiled = match selection.effect.compiled_now(selection.index) {
+        let compiled = match compiled {
             None => return false,
             // A failed compile is found, not built.
             Some(Err(_)) => return true,
@@ -980,9 +1198,33 @@ impl Cache {
         };
         let mut pass = Pass::packed(&compiled, state, format, samples);
         pass.primitive.topology = topology;
+        if self.gui
+            && device
+                .features()
+                .contains(wgpu::Features::FLOAT32_FILTERABLE)
+            && self.sources.iter().any(|source| {
+                source.topology == topology
+                    && source.vertices == pass.vertices
+                    && source.compiled == *compiled
+                    && source
+                        .samplers
+                        .iter()
+                        .copied()
+                        .eq(read_samplers(state, Some(&compiled)))
+                    && source.prepared.get().is_some_and(|modules| {
+                        modules
+                            .as_ref()
+                            .is_ok_and(|modules| modules.batch.is_some())
+                    })
+            })
+        {
+            pass.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+            pass.primitive.strip_index_format = None;
+        }
         let (effect, index, reads) = (selection.effect.id, selection.index, Some(&*compiled));
-        let hash = PipelineKey::hash(effect, index, state, &pass, reads);
-        let matches = |cached: &PipelineKey| cached.matches(effect, index, state, &pass, reads);
+        let hash = PipelineKey::hash(self.gui, effect, index, state, &pass, reads);
+        let matches =
+            |cached: &PipelineKey| cached.matches(self.gui, effect, index, state, &pass, reads);
         if self
             .entries
             .get(&hash)
@@ -994,6 +1236,7 @@ impl Cache {
             return false;
         };
         let key = PipelineKey {
+            gui: self.gui,
             effect,
             technique: index,
             samplers: read_samplers(state, reads).collect(),
@@ -1003,7 +1246,7 @@ impl Cache {
         };
         self.entries.entry(hash).or_default().push((
             key,
-            Ok(Arc::new(Pipeline::over(core))),
+            Ok(Arc::new(Pipeline::over(core, topology))),
             diagnostics,
         ));
         true
@@ -1017,20 +1260,66 @@ impl Cache {
         pass: &Pass,
     ) -> Result<Arc<Pipeline>, String> {
         let effect = &selection.effect;
+        let topology = pass.primitive.topology;
+        let source = if self.gui {
+            let compiled = effect.compiled(selection.index)?;
+            let source = Source::get(device, &compiled, state, pass, 0, true);
+            if !self.sources.iter().any(|held| Arc::ptr_eq(held, &source)) {
+                self.sources.push(Arc::clone(&source));
+            }
+            if let Err(reason) = source.prepare(
+                device,
+                state,
+                pass,
+                &format!(
+                    "{}:{}",
+                    effect.source.effect, effect.source.techniques[selection.index].name
+                ),
+            ) {
+                let reason = format!(
+                    "effect {:?}, technique {:?}: {reason}",
+                    effect.source.effect, effect.source.techniques[selection.index].name
+                );
+                *self.refused.entry(reason.clone()).or_default() += 1;
+                return Err(reason);
+            }
+            Some(source)
+        } else {
+            None
+        };
+        let mut canonical;
+        let pass = if source.as_ref().is_some_and(|source| {
+            source
+                .prepared
+                .get()
+                .unwrap()
+                .as_ref()
+                .is_ok_and(|modules| modules.batch.is_some())
+        }) && device
+            .features()
+            .contains(wgpu::Features::FLOAT32_FILTERABLE)
+        {
+            canonical = pass.clone();
+            canonical.primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+            canonical.primitive.strip_index_format = None;
+            &canonical
+        } else {
+            pass
+        };
         let reads = effect.compiled_now(selection.index).and_then(Result::ok);
         let reads = reads.as_deref();
-        let hash = PipelineKey::hash(effect.id, selection.index, state, pass, reads);
+        let hash = PipelineKey::hash(self.gui, effect.id, selection.index, state, pass, reads);
         let bucket = self.entries.entry(hash).or_default();
-        let result = match bucket
-            .iter()
-            .find(|(key, _, _)| key.matches(effect.id, selection.index, state, pass, reads))
-        {
+        let result = match bucket.iter().find(|(key, _, _)| {
+            key.matches(self.gui, effect.id, selection.index, state, pass, reads)
+        }) {
             Some((_, result, diagnostics)) => {
                 diagnostics.credit();
                 result.clone()
             }
             None => {
                 let key = || PipelineKey {
+                    gui: self.gui,
                     effect: effect.id,
                     technique: selection.index,
                     samplers: read_samplers(state, reads).collect(),
@@ -1042,25 +1331,29 @@ impl Cache {
                 let (result, diagnostics) = DEVICE_CORES.get_or_create(
                     device,
                     hash,
-                    |cached| cached.matches(effect.id, selection.index, state, pass, reads),
+                    |cached| {
+                        cached.matches(self.gui, effect.id, selection.index, state, pass, reads)
+                    },
                     key,
                     || {
                         diagnostics::capture(|| {
                             let compiled = effect.compiled(selection.index)?;
                             let core = Core::for_pass(
+                                self.gui,
                                 device,
                                 &compiled,
                                 &effect.source,
                                 &effect.source.techniques[selection.index],
                                 state,
                                 pass,
+                                source.clone(),
                             )?;
                             *created += 1;
                             Ok(Arc::new(core))
                         })
                     },
                 );
-                let result = result.map(|core| Arc::new(Pipeline::over(core)));
+                let result = result.map(|core| Arc::new(Pipeline::over(core, topology)));
                 diagnostics.credit();
                 bucket.push((key(), result.clone(), diagnostics));
                 result
@@ -1069,7 +1362,13 @@ impl Cache {
         if let Err(reason) = &result {
             *self.refused.entry(reason.clone()).or_default() += 1;
         }
-        result
+        result.map(|pipeline| {
+            if pipeline.topology == topology {
+                pipeline
+            } else {
+                Arc::new(Pipeline::over(Arc::clone(&pipeline.core), topology))
+            }
+        })
     }
 }
 
@@ -1105,10 +1404,12 @@ impl Pipeline {
                 &fallback.state,
                 &fallback.pass,
                 mask,
+                fallback.gui,
+                None,
             )
         })
         .and_then(|result| result)
-        .map(|core| Arc::new(Pipeline::over(Arc::new(core))))
+        .map(|core| Arc::new(Pipeline::over(Arc::new(core), self.topology)))
         .map_err(|reason| {
             format!(
                 "effect {:?}, technique {:?}: {reason}",
@@ -1173,6 +1474,27 @@ impl Pipeline {
             return false;
         }
         true
+    }
+
+    fn variant(&self, device: &wgpu::Device, mask: u32) -> Result<Arc<Pipeline>, String> {
+        let made = self
+            .variants
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&mask)
+            .cloned()
+            .flatten();
+        match made {
+            Some(variant) => variant,
+            None => {
+                let variant = self.make_variant(device, mask);
+                self.variants
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .insert(mask, Some(variant.clone()));
+                variant
+            }
+        }
     }
 
     fn release_bind_groups(&self) {
@@ -1243,23 +1565,37 @@ impl Pipeline {
         state: &State,
         pass: &Pass,
     ) -> Result<Self, String> {
-        Core::for_pass(device, compiled, program, technique, state, pass)
-            .map(|core| Self::over(Arc::new(core)))
+        Core::for_pass(
+            false, device, compiled, program, technique, state, pass, None,
+        )
+        .map(|core| Self::over(Arc::new(core), pass.primitive.topology))
     }
 }
 
 impl Core {
     fn for_pass(
+        gui: bool,
         device: &wgpu::Device,
         compiled: &Compiled,
         program: &Program,
         technique: &Technique,
         state: &State,
         pass: &Pass,
+        source: Option<Arc<Source>>,
     ) -> Result<Self, String> {
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let result = Self::create(device, compiled, &program.effect, technique, state, pass, 0);
+        let result = Self::create(
+            device,
+            compiled,
+            &program.effect,
+            technique,
+            state,
+            pass,
+            0,
+            gui,
+            source,
+        );
         let error = pollster::block_on(validation.pop()).or(pollster::block_on(memory.pop()));
         match error {
             Some(error) => Err(error.to_string()),
@@ -1278,6 +1614,7 @@ impl Core {
                     .contains(wgpu::Features::FLOAT32_FILTERABLE)
             {
                 pipeline.fallback = Some(Fallback {
+                    gui,
                     compiled: compiled.clone(),
                     effect: program.effect.clone(),
                     technique: technique.clone(),
@@ -1298,8 +1635,15 @@ impl Core {
         state: &State,
         pass: &Pass,
         unfilterable: u32,
+        gui: bool,
+        source: Option<Arc<Source>>,
     ) -> Result<Self, String> {
         stats::build();
+        let source =
+            source.unwrap_or_else(|| Source::get(device, compiled, state, pass, unfilterable, gui));
+        let modules =
+            source.prepare(device, state, pass, &format!("{effect}:{}", technique.name))?;
+        let batch = modules.batch.clone();
         let mut buffers = compiled.vertex.buffers.clone();
         buffers.extend_from_slice(&compiled.pixel.buffers);
         buffers.sort_by_key(|buffer| buffer.binding);
@@ -1399,12 +1743,17 @@ impl Core {
                         binding: b.binding,
                         visibility: visibility(b.binding),
                         ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: true,
+                            ty: if batch.is_some() {
+                                wgpu::BufferBindingType::Storage { read_only: true }
+                            } else {
+                                wgpu::BufferBindingType::Uniform
+                            },
+                            has_dynamic_offset: batch.is_none(),
                             min_binding_size: std::num::NonZeroU64::new(u64::from(b.size)),
                         },
                         count: None,
                     })
+                    .chain(batch.iter().map(|_| batch::metadata_layout()))
                     .collect::<Vec<_>>(),
             }),
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1419,7 +1768,11 @@ impl Core {
                                 filterable: filterable(binding)
                                     && unfilterable & (1 << binding) == 0,
                             },
-                            view_dimension: cube.view(),
+                            view_dimension: if batch.is_some() {
+                                wgpu::TextureViewDimension::D2Array
+                            } else {
+                                cube.view()
+                            },
                             multisampled: false,
                         },
                         count: None,
@@ -1452,43 +1805,34 @@ impl Core {
             ],
             immediate_size: 0,
         });
-        let samplers = crate::gpu::stats::create_bind_group(&device, &wgpu::BindGroupDescriptor {
-            label: Some("native samplers"),
-            layout: &samplers_layout,
-            entries: &samplers
-                .iter()
-                .map(|(binding, sampler)| wgpu::BindGroupEntry {
-                    binding: *binding,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                })
-                .collect::<Vec<_>>(),
-        });
-        let vertex = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&technique.vertex),
-            source: wgpu::ShaderSource::Wgsl(
-                super::sampling::lower(
-                    &compiled.vertex.wgsl,
-                    &state.samplers,
-                    &compiled.vertex.textures,
-                    unfilterable,
-                )?
-                .into(),
-            ),
-        });
-        let pixel = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some(&technique.pixel),
-            source: wgpu::ShaderSource::Wgsl(
-                super::sampling::lower(
-                    &compiled.pixel.wgsl,
-                    &state.samplers,
-                    &compiled.pixel.textures,
-                    unfilterable,
-                )?
-                .into(),
-            ),
-        });
-        let vertex_layouts: Vec<_> = pass
-            .vertices
+        let samplers = crate::gpu::stats::create_bind_group(
+            &device,
+            &wgpu::BindGroupDescriptor {
+                label: Some("native samplers"),
+                layout: &samplers_layout,
+                entries: &samplers
+                    .iter()
+                    .map(|(binding, sampler)| wgpu::BindGroupEntry {
+                        binding: *binding,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    })
+                    .collect::<Vec<_>>(),
+            },
+        );
+        let mut vertices = pass.vertices.clone();
+        let mut primitive = pass.primitive;
+        if let Some(batch) = &batch {
+            let stride = vertices[0].stride;
+            vertices[0].attributes.push(wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Uint32,
+                offset: stride,
+                shader_location: batch.shader.input,
+            });
+            vertices[0].stride += 4;
+            primitive.topology = wgpu::PrimitiveTopology::TriangleList;
+            primitive.strip_index_format = None;
+        }
+        let vertex_layouts: Vec<_> = vertices
             .iter()
             .map(|layout| {
                 Some(wgpu::VertexBufferLayout {
@@ -1502,16 +1846,16 @@ impl Core {
             label: Some(&format!("{effect}:{}", technique.name)),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &vertex,
+                module: &modules.vertex,
                 entry_point: Some("main"),
                 compilation_options: Default::default(),
                 buffers: &vertex_layouts,
             },
-            primitive: pass.primitive,
+            primitive,
             depth_stencil: pass.depth_stencil.clone(),
             multisample: pass.multisample,
             fragment: Some(wgpu::FragmentState {
-                module: &pixel,
+                module: &modules.pixel,
                 entry_point: Some("main"),
                 compilation_options: Default::default(),
                 targets: &pass.targets,
@@ -1519,13 +1863,21 @@ impl Core {
             multiview_mask: None,
             cache: None,
         });
+        let null_cube = if textures.iter().any(|(_, kind)| *kind == super::TextureKind::Cube) {
+            let mut held = source.null_cube.lock().unwrap_or_else(|error| error.into_inner());
+            if held.is_none() {
+                *held = Some(scoped(device, || null_texture(device, super::TextureKind::Cube))?);
+            }
+            held.clone()
+        } else {
+            None
+        };
         Ok(Self {
+            _source: source,
+            batch,
             pipeline,
             label: format!("effect {effect:?}, technique {:?}", technique.name),
-            null_cube: textures
-                .iter()
-                .any(|(_, kind)| *kind == super::TextureKind::Cube)
-                .then(|| null_texture(device, super::TextureKind::Cube)),
+            null_cube,
             layouts: [constants, textures_layout],
             samplers,
             buffers,
@@ -1619,6 +1971,32 @@ impl Pipeline {
             .map(|(bindings, program)| (bindings, program.expect("successful capture")))
     }
 
+    pub fn sampled_texture<'a>(&'a self, key: u32, binding: &'a TextureBinding) -> &'a wgpu::TextureView {
+        self.sampled_view(key, &binding.view, binding.array.is_some())
+    }
+
+    fn sampled_view<'a>(
+        &'a self,
+        key: u32,
+        view: &'a wgpu::TextureView,
+        plain: bool,
+    ) -> &'a wgpu::TextureView {
+        // Sampling a native two-dimensional SRV through TextureCube returns zero.
+        if let Some(zero) = &self.null_cube
+            && self
+                .textures
+                .iter()
+                .any(|(slot, kind)| *slot == key && *kind == super::TextureKind::Cube)
+            && (plain
+                || (view.texture().dimension() == wgpu::TextureDimension::D2
+                    && view.texture().depth_or_array_layers() == 1))
+        {
+            zero
+        } else {
+            view
+        }
+    }
+
     fn bind_with_capture<'a>(
         &'a self,
         arena: &Arena,
@@ -1628,21 +2006,7 @@ impl Pipeline {
     ) -> Result<(Bindings, Option<BindingProgram>), String> {
         let sampled = |key| {
             let view = textures(key)?;
-            // The DDS cube flag alone determines the texture view; binding does not reshape it.
-            // The native hardware GPU samples a 2D SRV through TextureCube as zero.
-            // Preserve the caller's view: a later Texture2D draw still reads its texels.
-            if let Some(zero) = &self.null_cube
-                && self
-                    .textures
-                    .iter()
-                    .any(|(slot, kind)| *slot == key && *kind == super::TextureKind::Cube)
-                && view.texture().dimension() == wgpu::TextureDimension::D2
-                && view.texture().depth_or_array_layers() == 1
-            {
-                Some(zero)
-            } else {
-                Some(view)
-            }
+            Some(self.sampled_view(key, view, false))
         };
         self.bind(arena, constants, sampled, capture)
             .map(|(bindings, mut program)| {
@@ -1665,24 +2029,7 @@ impl Pipeline {
             let device = arena.device();
             let mask = self.unfilterable(device, &textures);
             if mask != 0 {
-                let made = self
-                    .variants
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .get(&mask)
-                    .cloned()
-                    .flatten();
-                let variant = match made {
-                    Some(variant) => variant,
-                    None => {
-                        let variant = self.make_variant(device, mask);
-                        self.variants
-                            .lock()
-                            .unwrap_or_else(|error| error.into_inner())
-                            .insert(mask, Some(variant.clone()));
-                        variant
-                    }
-                }?;
+                let variant = self.variant(device, mask)?;
                 return variant.bind(arena, constants, textures, capture);
             }
         }
@@ -1911,7 +2258,7 @@ pub(crate) fn null_texture(device: &wgpu::Device, kind: super::TextureKind) -> w
 }
 
 /// Validation and out-of-memory errors while creating a GPU object, as a named failure.
-fn scoped<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, String> {
+pub fn scoped<T>(device: &wgpu::Device, create: impl FnOnce() -> T) -> Result<T, String> {
     let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let result = create();

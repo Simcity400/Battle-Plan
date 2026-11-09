@@ -15,6 +15,20 @@ pub(crate) struct Schedule {
     pub pan: Option<f32>,
     /// Frames whose scene is also written to `<out>/frame-<index>.png`, after their timing.
     pub pngs: Vec<u32>,
+    /// Wheel lines turned at once, every so many frames, over the map's centre: the window's own
+    /// camera takes them through the game's law, reversing at its limits.
+    pub zoom: Option<Zoom>,
+    /// The hour is held, as when playback is paused.
+    pub paused: bool,
+    /// The display refresh a dropped frame is counted against.
+    pub refresh_hz: f64,
+    pub complete_models: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Zoom {
+    pub lines: f32,
+    pub every: u32,
 }
 
 /// The window thread's charged time by label, and every lap note, for one frame's difference.
@@ -224,15 +238,15 @@ pub(crate) fn measure(
         &Default::default(),
     )?);
     viewer.scene.as_mut().unwrap().set_graphics(viewer.graphics);
-    // Frames written as PNGs are captures, so their models draw complete.
     viewer
         .scene
         .as_mut()
         .unwrap()
-        .settle_builds(!schedule.pngs.is_empty());
-    viewer.playing = schedule.pan.is_none();
+        .settle_builds(schedule.complete_models);
+    viewer.playing = schedule.pan.is_none() && !schedule.paused;
     viewer.speed = 1440.0;
     viewer.animation_seek = true;
+    viewer.camera_step = Some(1.0 / schedule.refresh_hz as f32);
     viewer.last_view = Some(hours::View {
         camera,
         viewport: pixels,
@@ -241,7 +255,8 @@ pub(crate) fn measure(
     viewer.capture = Some(Capture {
         path: PathBuf::new(),
         remaining: u32::MAX,
-        pinned: Some((pixels, options.camera)),
+        // A zoom run's camera is the window's own, moved only by its wheel.
+        pinned: schedule.zoom.is_none().then_some((pixels, options.camera)),
         exit: false,
         time: Some(0.0),
         step: 0.0,
@@ -278,10 +293,19 @@ pub(crate) fn measure(
     shader_pipeline::gpu::stats::mark_window_thread();
     shader_pipeline::gpu::stats::take();
     let map_width = MapSize::of(&document.map).x();
+    if schedule.zoom.is_some() {
+        viewer.camera = Some(camera.placement());
+        viewer.camera_manual = true;
+    }
+    // Zoom in first; a burst that moved the camera no farther than the last reverses it.
+    let mut zoom_in = true;
+    let mut burst_height = None::<f32>;
+    let center = egui::pos2(pixels[0] as f32 * 0.5, pixels[1] as f32 * 0.5);
     for index in 0..hours {
-        let offset = match schedule.pan {
-            Some(_) => 0,
-            None => i64::from(index) * i64::from(schedule.step),
+        let offset = if schedule.pan.is_some() || schedule.paused {
+            0
+        } else {
+            i64::from(index) * i64::from(schedule.step)
         };
         let hour = i32::try_from(i64::from(start) + offset).map_err(io::Error::other)?;
         if let Some(pan) = schedule.pan {
@@ -294,22 +318,41 @@ pub(crate) fn measure(
             hour,
             fraction: 0.0,
         });
-        viewer.capture.as_mut().unwrap().time = Some(index as f32 / 1440.0);
+        viewer.capture.as_mut().unwrap().time = Some(index as f32 / schedule.refresh_hz as f32);
         let process_before = process_cycles();
         let thread_before = viewer_foundation::profiling::current_thread_cpu_time();
         let frame_start = Instant::now();
         // Each frame is a window frame of the perf map log, when it is written.
         crate::perf_log::frame_start();
+        let perf_frame = crate::perf_log::frame_id();
         let mut result = Ok(());
         let _other_cost = cpu::scope("frame.harness", Some("other"));
+        let mut events = Vec::new();
+        if let Some(zoom) = schedule.zoom {
+            events.push(egui::Event::PointerMoved(center));
+            if index % zoom.every == 0 {
+                let height = viewer.camera.map(|placement| placement.height);
+                if burst_height.is_some() && burst_height == height {
+                    zoom_in = !zoom_in;
+                }
+                burst_height = height;
+                events.push(egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: egui::vec2(0.0, if zoom_in { zoom.lines } else { -zoom.lines }),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+        }
         let _ = ctx.run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
                     egui::vec2(pixels[0] as f32, pixels[1] as f32),
                 )),
-                time: Some(f64::from(index) / 1440.0),
-                focused: false,
+                time: Some(f64::from(index) / schedule.refresh_hz),
+                focused: schedule.zoom.is_some(),
+                events,
                 ..Default::default()
             },
             |ui| {
@@ -349,6 +392,9 @@ pub(crate) fn measure(
                 timeout: None,
             })
             .map_err(io::Error::other)?;
+        crate::perf_log::gpu_times(
+            viewer.scene.as_mut().unwrap().gpu_frame_times(&state.device),
+        );
         crate::perf_log::frame_end();
         frame_wall.push(frame_start.elapsed().as_secs_f64() * 1e6);
         if let Some(ns) = process_before
@@ -391,8 +437,9 @@ pub(crate) fn measure(
         labels_before = labels_after;
         serde_json::to_writer(
             &mut frames,
-            &json!({"frame":index,"hour":hour,"thread_us":frame_thread_cpu.last(),
+            &json!({"frame":index,"perf_frame":perf_frame,"hour":hour,"thread_us":frame_thread_cpu.last(),
                 "wall_us":frame_wall.last(),
+                "camera_height":viewer.camera.map(|placement| placement.height),
                 "gpu":shader_pipeline::gpu::stats::NAMES.iter().zip(counts)
                     .map(|(name, count)| (name.to_string(), json!(count)))
                     .collect::<serde_json::Map<_, _>>(),
@@ -428,6 +475,12 @@ pub(crate) fn measure(
     let memory = monitor.finish();
     let mut report = crate::playback_cost::accounting(&before, &after, process_ns, cycle_ns, hours);
     report["schema"] = json!(1);
+    report["model_build_mode"] = json!(if schedule.complete_models {
+        "complete"
+    } else {
+        "live"
+    });
+    report["png_frames"] = json!(schedule.pngs);
     report["hour_step"] = json!(schedule.pan.is_none().then_some(schedule.step));
     report["pan_units_per_frame"] = json!(schedule.pan);
     report["branch"] = json!(branch);
@@ -444,6 +497,11 @@ pub(crate) fn measure(
     report["frame_cpu_scope"] = json!(
         "Whole-process QueryProcessCycleTime, converted with the same calibrated TSC rate as exclusive thread scopes; includes unregistered process threads. No scaling to force agreement with GetProcessTimes."
     );
+    let budget = 1e6 / schedule.refresh_hz;
+    let dropped = |values: &[f64]| values.iter().filter(|us| **us > budget).count();
+    report["dropped_frames"] = json!({"refresh_hz":schedule.refresh_hz,"budget_us":budget,
+        "window_thread":dropped(&frame_thread_cpu),"wall":dropped(&frame_wall),
+        "scope":"frames whose window-thread time, or whose wall time with the harness's wait for the GPU, exceeds one refresh; frame 0 included"});
     report["frame_thread_cpu_us"] = if frame_thread_cpu.len() == hours as usize {
         distribution(frame_thread_cpu)
     } else {
@@ -465,7 +523,7 @@ pub(crate) fn measure(
     report["frames_with_warnings"] = json!(options.diagnostics.then_some(warning_frames));
     report["diagnostic_warnings_collected"] = json!(options.diagnostics);
     report["schedule"] = json!(
-        "One frame per consecutive game hour; clocks advance 1/1440 s per hour. Same hour coordinator, projections, SceneInput and Scene::render as viewing. GPU drained each frame; no vsync, window, OS input, PNG readback, audio-device output or synthetic codec work. CPU/wall includes first-hour pipeline startup and final GPU drain; static content/device setup is separate."
+        "One frame per requested game hour; camera and presentation clocks advance 1/refresh_hz s per frame. Same hour coordinator, projections, SceneInput and Scene::render as viewing. GPU drained each frame; no vsync, window, OS input, audio-device output or synthetic codec work. CPU/wall includes first-hour pipeline startup and final GPU drain; static content/device setup is separate."
     );
     Ok(report)
 }

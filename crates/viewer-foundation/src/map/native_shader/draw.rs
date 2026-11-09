@@ -91,6 +91,7 @@ pub struct Quad {
     /// Original native positions and UVs, before the world/projection matrix.
     pub vertices: Vec<u8>,
     pub stride: usize,
+    pub source_draws: u64,
     /// Native buffer zero, including the world matrix; projection is applied at upload. Its
     /// length is what the native binding shows a shader ([`Allocation::visible`]), of which only
     /// the first [`Quad::known`] bytes are written by the draw; the rest is uninitialised in the
@@ -209,6 +210,7 @@ pub fn line_chart(
         shade: 0.,
         exact: Some(sprites::Exact {
             native: Some(Arc::new(Quad {
+                source_draws: 1,
                 path: "air history linechart".into(),
                 effect,
                 declaration: Declaration::LineChart,
@@ -250,6 +252,16 @@ pub fn emit(
     origin: [i32; 2],
     sheets: &dyn native_gui::Sheets,
     batch: &mut crate::map::sprites::Batch,
+) -> Result<(), native_gui::Refusal> {
+    emit_inner(part, origin, sheets, batch, true)
+}
+
+fn emit_inner(
+    part: &native_gui::Part,
+    origin: [i32; 2],
+    sheets: &dyn native_gui::Sheets,
+    batch: &mut crate::map::sprites::Batch,
+    join_text: bool,
 ) -> Result<(), native_gui::Refusal> {
     use crate::map::{native_effects::Blend, sprites};
     use native_gui::{InlineSource, PartKind, Refusal, RefusalKind};
@@ -337,7 +349,7 @@ pub fn emit(
             None
         };
         let start = batch.quads.len();
-        emit(&plain, origin, sheets, batch)?;
+        emit_inner(&plain, origin, sheets, batch, join_text)?;
         for quad in &mut batch.quads[start..] {
             let draw = Arc::make_mut(quad.exact.as_mut().unwrap().native.as_mut().unwrap());
             // Two 80-byte records are uploaded to b1 of both stages. Each record's first
@@ -392,7 +404,7 @@ pub fn emit(
             native.original = replacement;
         }
         let start = batch.quads.len();
-        emit(&plain, origin, sheets, batch)?;
+        emit_inner(&plain, origin, sheets, batch, join_text)?;
         for quad in &mut batch.quads[start..] {
             let draw = Arc::make_mut(quad.exact.as_mut().unwrap().native.as_mut().unwrap());
             draw.constants[20..24].copy_from_slice(offsets);
@@ -444,13 +456,14 @@ pub fn emit(
         debug_assert_eq!(16 + tail.len(), SPRITE_ANIMATION_TIME as usize / 4 + 1);
         tail
     };
-    let mut push = |positions: [[f32; 3]; 4],
-                    coordinates: [[f32; 2]; 4],
-                    matrix: Matrix,
-                    tail: &[f32],
-                    colors: Option<([f32; 4], u32)>,
-                    textures: Vec<(u32, Option<usize>)>,
-                    order: Order| {
+    let push = |batch: &mut sprites::Batch,
+                positions: [[f32; 3]; 4],
+                coordinates: [[f32; 2]; 4],
+                matrix: Matrix,
+                tail: &[f32],
+                colors: Option<([f32; 4], u32)>,
+                textures: Vec<(u32, Option<usize>)>,
+                order: Order| {
         let declaration = if colors.is_some() {
             Declaration::Text
         } else {
@@ -458,28 +471,9 @@ pub fn emit(
         };
         let stride = if colors.is_some() { 28 } else { 20 };
         let mut vertices = Vec::with_capacity(stride * 6);
-        let (corners, topology): (&[usize], _) = match &order {
-            Order::Strip(corners) => (corners, eframe::wgpu::PrimitiveTopology::TriangleStrip),
-            Order::List(corners) => (corners, eframe::wgpu::PrimitiveTopology::TriangleList),
-        };
-        for &i in corners {
-            vertices.extend_from_slice(bytemuck::cast_slice(&positions[i]));
-            vertices.extend_from_slice(bytemuck::cast_slice(&coordinates[i]));
-            if let Some((color, border)) = colors {
-                // Packed colour channels truncate rather than round to the nearest byte.
-                vertices.extend([2, 1, 0, 3].map(|i| (color[i] * 255.) as u8));
-                vertices.extend(border.to_le_bytes());
-            }
-        }
+        let topology = append_vertices(&mut vertices, positions, coordinates, colors, order);
         let world = parent * matrix;
-        // Where the vertices land, in interface pixels (native `y` runs up).
-        let m = world.0;
-        let landing = positions.map(|[x, y, z]| {
-            [
-                m[0] * x + m[4] * y + m[8] * z + m[12],
-                -(m[1] * x + m[5] * y + m[9] * z + m[13]),
-            ]
-        });
+        let landing = land(world, positions);
         let allocation = constant_allocation(kind, part.shading.clocked);
         let mut constants = Vec::with_capacity(allocation.visible as usize / 4);
         constants.extend_from_slice(&world.to_cols_array());
@@ -502,6 +496,7 @@ pub fn emit(
             shade: 0.,
             exact: Some(sprites::Exact {
                 native: Some(Arc::new(Quad {
+                    source_draws: 1,
                     path: part.path.clone(),
                     effect: effect.clone(),
                     declaration,
@@ -586,6 +581,7 @@ pub fn emit(
             }
             if !vertices.is_empty() {
                 push(
+                    batch,
                     [[0.; 3]; 4],
                     [[0.; 2]; 4],
                     translation(*centre, 0.),
@@ -642,6 +638,7 @@ pub fn emit(
             }
             let (positions, matrix) = geometry(g);
             push(
+                batch,
                 positions,
                 uv(*coordinates),
                 matrix,
@@ -676,6 +673,7 @@ pub fn emit(
                 ));
             }
             push(
+                batch,
                 positions,
                 uv(*coordinates),
                 matrix,
@@ -709,7 +707,16 @@ pub fn emit(
             tail[4..8].copy_from_slice(&colors[1]);
             tail[8] = *state;
             let (positions, matrix) = geometry(g);
-            push(positions, *uv, matrix, &tail, None, textures, SPRITE_STRIP);
+            push(
+                batch,
+                positions,
+                *uv,
+                matrix,
+                &tail,
+                None,
+                textures,
+                SPRITE_STRIP,
+            );
         }
         PartKind::Tiles {
             sprite,
@@ -721,6 +728,7 @@ pub fn emit(
             for ([x, y, w, h], coordinates) in quads {
                 let local = [x - native_origin[0], native_origin[1] - y - h, *w, *h];
                 push(
+                    batch,
                     points(local, 1.),
                     uv(*coordinates),
                     translation(*native_origin, -1.),
@@ -753,6 +761,7 @@ pub fn emit(
             })?;
             let local = [x - native_origin[0], native_origin[1] - y - h, *w, *h];
             push(
+                batch,
                 points(local, 1.),
                 uv([0., 0., 1., 1.]),
                 translation(*native_origin, -1.),
@@ -785,6 +794,7 @@ pub fn emit(
                 InlineSource::Texture(id) => *id,
             };
             push(
+                batch,
                 points([*x, -y - h, *w, *h], 0.),
                 uv(*coordinates),
                 Matrix::IDENTITY,
@@ -803,22 +813,52 @@ pub fn emit(
             font_viewport,
             ..
         } => {
-            for glyph in glyphs {
+            let join = join_text && glyphs.len() > 1 && independent_draws(effect);
+            let geometry = |glyph: &native_gui::DrawnGlyph| {
                 let [x, y] = glyph.at;
                 let [width, height] = glyph.size.map(|value| value as f32 * scale);
+                points([x, -y - height, width, height], 0.)
+            };
+            let mut remaining = glyphs.as_slice();
+            while let Some((first, following)) = remaining.split_first() {
+                let count = if join {
+                    following
+                        .iter()
+                        .take_while(|glyph| glyph.texture == first.texture)
+                        .count()
+                } else {
+                    0
+                };
                 push(
-                    points([x, -y - height, width, height], 0.),
-                    uv(glyph.uv),
+                    batch,
+                    geometry(first),
+                    uv(first.uv),
                     Matrix::IDENTITY,
                     modulate,
-                    Some((glyph.color, *border_color)),
-                    vec![(0, Some(glyph.texture))],
+                    Some((first.color, *border_color)),
+                    vec![(0, Some(first.texture))],
                     QUAD_LIST,
                 );
-            }
-            // One quad per glyph.
-            for quad in batch.quads.iter_mut().rev().take(glyphs.len()) {
-                native_projection(Some(quad), *font_viewport);
+                let exact = batch.quads.last_mut().unwrap().exact.as_mut().unwrap();
+                let native = Arc::make_mut(exact.native.as_mut().unwrap());
+                native.font_viewport = *font_viewport;
+                native.source_draws = 1 + count as u64;
+                if count > 0 {
+                    native.vertices.reserve(count * 6 * native.stride);
+                    let world = Matrix::from_cols_array(native.constants[..16].try_into().unwrap());
+                    for glyph in &following[..count] {
+                        let positions = geometry(glyph);
+                        append_vertices(
+                            &mut native.vertices,
+                            positions,
+                            uv(glyph.uv),
+                            Some((glyph.color, *border_color)),
+                            QUAD_LIST,
+                        );
+                        exact.corners = union(exact.corners, land(world, positions));
+                    }
+                }
+                remaining = &following[count..];
             }
         }
     }
@@ -917,7 +957,7 @@ fn bake_draws(
             });
         }
         let start = batch.quads.len();
-        emit(&part, [0, 0], sheets, &mut batch)?;
+        emit_inner(&part, [0, 0], sheets, &mut batch, false)?;
         for quad in &mut batch.quads[start..] {
             let draw = Arc::make_mut(quad.exact.as_mut().unwrap().native.as_mut().unwrap());
             draw.default_blend = default_blend;
@@ -984,11 +1024,11 @@ fn bake_draws(
                 0.,
             )?;
         }
-        for glyph in &bake.glyphs[start[0]..end[0]] {
+        if end[0] > start[0] {
             append(
                 PartKind::Text {
                     font: Vec::new(),
-                    glyphs: vec![*glyph],
+                    glyphs: bake.glyphs[start[0]..end[0]].to_vec(),
                     scale: 1.,
                     modulate: [1.; 4],
                     border_color: bake.border_color,
@@ -1001,14 +1041,85 @@ fn bake_draws(
         }
         start = end;
     }
+    let draws = batch
+        .quads
+        .into_iter()
+        .map(|quad| (*quad.exact.unwrap().native.unwrap()).clone())
+        .collect();
     Ok(Arc::new(Bake {
         size: bake.size.map(|v| v as u32),
-        draws: batch
-            .quads
-            .into_iter()
-            .map(|q| (*q.exact.unwrap().native.unwrap()).clone())
-            .collect(),
+        draws,
     }))
+}
+
+fn independent_draws(effect: &Effect) -> bool {
+    let Some(index) = effect
+        .asset
+        .source
+        .techniques
+        .iter()
+        .position(|technique| technique.name.eq_ignore_ascii_case(&effect.technique))
+    else {
+        return false;
+    };
+    effect.asset.independent_draws(index)
+}
+
+fn union(a: [[f32; 2]; 4], b: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
+    let bounds = a.iter().chain(&b).fold(
+        [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ],
+        |b, p| {
+            [
+                b[0].min(p[0]),
+                b[1].min(p[1]),
+                b[2].max(p[0]),
+                b[3].max(p[1]),
+            ]
+        },
+    );
+    [
+        [bounds[0], bounds[1]],
+        [bounds[2], bounds[1]],
+        [bounds[2], bounds[3]],
+        [bounds[0], bounds[3]],
+    ]
+}
+
+fn land(world: Matrix, positions: [[f32; 3]; 4]) -> [[f32; 2]; 4] {
+    let m = world.0;
+    positions.map(|[x, y, z]| {
+        [
+            m[0] * x + m[4] * y + m[8] * z + m[12],
+            -(m[1] * x + m[5] * y + m[9] * z + m[13]),
+        ]
+    })
+}
+
+fn append_vertices(
+    vertices: &mut Vec<u8>,
+    positions: [[f32; 3]; 4],
+    coordinates: [[f32; 2]; 4],
+    colors: Option<([f32; 4], u32)>,
+    order: Order,
+) -> eframe::wgpu::PrimitiveTopology {
+    let (corners, topology): (&[usize], _) = match &order {
+        Order::Strip(corners) => (corners, eframe::wgpu::PrimitiveTopology::TriangleStrip),
+        Order::List(corners) => (corners, eframe::wgpu::PrimitiveTopology::TriangleList),
+    };
+    for &i in corners {
+        vertices.extend_from_slice(bytemuck::cast_slice(&positions[i]));
+        vertices.extend_from_slice(bytemuck::cast_slice(&coordinates[i]));
+        if let Some((color, border)) = colors {
+            vertices.extend([2, 1, 0, 3].map(|i| (color[i] * 255.) as u8));
+            vertices.extend(border.to_le_bytes());
+        }
+    }
+    topology
 }
 
 // Column-major native matrix storage; keep scalar f32 operations, without SIMD reassociation.

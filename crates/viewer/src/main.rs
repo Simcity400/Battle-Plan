@@ -78,6 +78,7 @@ viewer --dump <replay.battleplan> --hour <n>[.<fraction>] --out <frame.png>
 viewer --window-dump <replay.battleplan> --hour <n> --out <frame.png>
 viewer --compare <game.png> <viewer.png> [--mask <mask.png>] [--diff <out.png>]
 Folders: --game-dir <directory> --user-dir <directory>, default the desktop app's saved folders
+Capture artwork: --visual-mod <mod id> (repeatable), mounted above recorded artwork
 Options: --branch <id> --hour-fraction <0..1>, how far past --hour the frame is; a moving
          division's counter stands at its settled route point all hour, as the game draws it
          --allow-unverified-content
@@ -292,6 +293,7 @@ struct Options {
     /// `--dump`: render one frame without opening a window.
     headless_dump: bool,
     playback_cost_end: Option<Hour>,
+    visual_mods: Vec<installed_content_core::content::visual::Choice>,
     // capture
     /// `--window-dump`: open the window and render one frame through the
     /// windowed path at `size` and `camera` into `dump`, then close.
@@ -689,6 +691,17 @@ impl Options {
                     options.game_dir =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
                 }
+                Some("--visual-mod") => {
+                    let id = args
+                        .next()
+                        .and_then(|value| value.into_string().ok())
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| invalid("--visual-mod needs a mod id, such as mod/name.mod"))?;
+                    options.visual_mods.push(installed_content_core::content::visual::Choice {
+                        name: id.clone(),
+                        id,
+                    });
+                }
                 Some("--user-dir") => {
                     options.user_dir =
                         Some(PathBuf::from(args.next().ok_or_else(|| invalid(USAGE))?))
@@ -959,6 +972,9 @@ impl Options {
             && !matches!(options.combat, Some(combat::Selector::AirRegion(_)))
         {
             return Err(invalid("air history options require --air-region"));
+        }
+        if !options.visual_mods.is_empty() && !options.headless_dump && !options.window_dump {
+            return Err(invalid("--visual-mod requires --dump or --window-dump"));
         }
         if options.headless_dump && (options.out.is_none() || options.hour.is_none()) {
             return Err(invalid(USAGE));
@@ -1231,7 +1247,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 hour: options.hour,
                 hour_fraction: options.hour_fraction,
             },
-            None,
+            (!options.visual_mods.is_empty()).then_some(options.visual_mods.as_slice()),
             graphics.texture_quality,
         )?;
         // The dump works on this recording alone, with its own executable tables.

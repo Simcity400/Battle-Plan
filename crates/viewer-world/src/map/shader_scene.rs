@@ -60,6 +60,24 @@ impl Program {
         buffers: &BTreeMap<u32, impl AsRef<[u8]>>,
         textures: &BTreeMap<u32, wgpu::TextureView>,
     ) {
+        self.bind_registers(retained, buffers);
+        self.bind_textures(retained, textures);
+    }
+
+    pub fn bind_formatted(
+        &self,
+        retained: &mut State,
+        buffers: &BTreeMap<u32, impl AsRef<[u8]>>,
+        textures: &BTreeMap<u32, gpu::TextureBinding>,
+    ) {
+        self.bind_registers(retained, buffers);
+        self.bind_images(
+            retained,
+            textures.iter().map(|(key, image)| (*key, image.clone())),
+        );
+    }
+
+    fn bind_registers(&self, retained: &mut State, buffers: &BTreeMap<u32, impl AsRef<[u8]>>) {
         use installed_content_core::pdxshader::program::Stage;
         self.select(retained);
         let stream = &mut retained.stream;
@@ -78,7 +96,6 @@ impl Program {
                 stream.bind_constants(key / 2, stage, Some(bytes.as_ref()));
             }
         }
-        self.bind_textures(retained, textures);
     }
 
     /// The sampler this program binds with a texture at `key`.
@@ -95,18 +112,31 @@ impl Program {
     }
 
     pub fn bind_textures(&self, retained: &mut State, textures: &BTreeMap<u32, wgpu::TextureView>) {
+        self.bind_images(
+            retained,
+            textures
+                .iter()
+                .map(|(key, image)| (*key, image.clone().into())),
+        );
+    }
+
+    fn bind_images(
+        &self,
+        retained: &mut State,
+        textures: impl Iterator<Item = (u32, gpu::TextureBinding)>,
+    ) {
         use installed_content_core::pdxshader::program::Stage;
         let stream = &mut retained.stream;
-        for (&key, texture) in textures {
+        for (key, texture) in textures {
             let stage = if key % 2 == 0 {
                 Stage::Vertex
             } else {
                 Stage::Pixel
             };
-            stream.bind_texture(
+            stream.bind_formatted_texture(
                 key / 2,
                 stage,
-                Some(texture.clone()),
+                Some(texture),
                 self.state.samplers.get(&key),
             );
         }
@@ -141,7 +171,29 @@ pub struct State {
     vertices: BTreeMap<u32, Buffer>,
 }
 
+pub(super) struct Frame<'a>(&'a std::cell::RefCell<State>);
+
+impl<'a> Frame<'a> {
+    pub(super) fn new(state: &'a std::cell::RefCell<State>) -> Self {
+        state.borrow_mut().begin_frame();
+        Self(state)
+    }
+}
+
+impl Drop for Frame<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.borrow_mut();
+        state.stream.cache.release_bind_groups();
+        state.begin_frame();
+    }
+}
+
 impl State {
+    pub fn begin_frame(&mut self) {
+        self.stream.begin_frame();
+        self.vertices.clear();
+    }
+
     pub fn inherit(&mut self, previous: &Self) {
         self.stream.inherit_bindings(&previous.stream);
         self.vertices = previous.vertices.clone();

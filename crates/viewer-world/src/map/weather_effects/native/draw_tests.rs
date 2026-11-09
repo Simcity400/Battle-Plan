@@ -320,6 +320,7 @@ fn effect(replacement: bool) -> Arc<Effect> {
     }).unwrap());
     let shader = |wgsl: &str| Shader {
         wgsl: wgsl.into(),
+        independent_draws: false,
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),
@@ -805,7 +806,7 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
     let snapshots = |cache: &shader_pipeline::stream::NativePassCache| {
         cache.binding_textures().cloned().collect::<Vec<_>>()
     };
-    type Snapshot = Arc<BTreeMap<u32, Option<wgpu::TextureView>>>;
+    type Snapshot = Arc<BTreeMap<u32, Option<gpu::TextureBinding>>>;
     let same_snapshots = |a: &[Snapshot], b: &[Snapshot]| {
         a.len() == b.len() && a.iter().zip(b).all(|(a, b)| Arc::ptr_eq(a, b))
     };
@@ -962,8 +963,8 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
         2,
         "A/B/A returns do not accumulate new captures"
     );
-    assert_eq!(warm[0][&binding(0, Stage::Pixel)], Some(views[0].clone()));
-    assert_eq!(warm[1][&binding(0, Stage::Pixel)], Some(views[1].clone()));
+    assert_eq!(warm[0][&binding(0, Stage::Pixel)], Some(views[0].clone().into()));
+    assert_eq!(warm[1][&binding(0, Stage::Pixel)], Some(views[1].clone().into()));
     // Several warm entries must survive a later bind whose geometry fails. Retry in
     // the same frame/Arena: refusal must not publish the third page or disturb A/B.
     let third = image.create_view(&Default::default());
@@ -1014,7 +1015,7 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
         "third page publishes once, after successful geometry"
     );
     assert!(same_snapshots(&warm, &recovered[..2]));
-    assert_eq!(recovered[2][&binding(0, Stage::Pixel)], Some(third.clone()));
+    assert_eq!(recovered[2][&binding(0, Stage::Pixel)], Some(third.clone().into()));
     // All three entries expire after a whole frame without use, as ordinary groups do.
     for _ in 0..2 {
         old_arena.reset();
@@ -1060,12 +1061,12 @@ fn weather_native_cache_preserves_keys_ranges_resources_and_late_upload_failures
             let unread = binding(5, Stage::Pixel);
             let expected = match draw {
                 0 => None,
-                1 | 2 => Some(Some(views[draw - 1].clone())),
+                1 | 2 => Some(Some(views[draw - 1].clone().into())),
                 _ => Some(None),
             };
             assert!(
                 held.iter().any(|map| {
-                    map[&binding(0, Stage::Pixel)] == Some(views[0].clone())
+                    map[&binding(0, Stage::Pixel)] == Some(views[0].clone().into())
                         && map.get(&unread).cloned() == expected
                 }),
                 "complete map includes unread missing/view/null identity"

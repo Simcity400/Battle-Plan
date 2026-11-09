@@ -18,6 +18,7 @@ fn a_written_font_viewport_is_the_compiled_projection() {
         declaration: Declaration::Text,
         vertices: Vec::new(),
         stride: 28,
+        source_draws: 1,
         constants: Matrix::IDENTITY.to_cols_array().to_vec(),
         known: 64,
         pixel_constants: false,

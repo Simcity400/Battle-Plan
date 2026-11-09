@@ -3662,6 +3662,7 @@ pub struct Pool<K> {
     cursor: usize,
     /// The live list in the manager's order, with each icon's owner.
     live: Vec<(SlotId, K)>,
+    owners: HashMap<K, SlotId>,
     /// The update's original extent, whose tail survives live-prefix compaction.
     update_buffer: Vec<(SlotId, K)>,
     /// A growth task was started by an exhausted request.
@@ -3681,7 +3682,7 @@ pub(crate) type Setup = Box<dyn Fn(&mut Instance, &Element) -> Result<(), String
 
 struct Slot {
     instance: Instance,
-    in_use: bool,
+    live: Option<usize>,
 }
 
 /// Map icon types and their initial pool sizes.
@@ -3785,7 +3786,7 @@ pub struct Pass<K> {
     pub erased: Vec<Erased<K>>,
 }
 
-impl<K: Clone + Eq> Pool<K> {
+impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
     /// The pool of `kind`, its windows built from `template` in the viewport with `resources`
     /// ([`Instance::construct`]) and hidden, each then given `setup` (the icon type's own
     /// constructor steps).
@@ -3803,6 +3804,7 @@ impl<K: Clone + Eq> Pool<K> {
             slots: Vec::new(),
             cursor: 0,
             live: Vec::new(),
+            owners: HashMap::new(),
             update_buffer: Vec::new(),
             growing: false,
             missed: 0,
@@ -3830,7 +3832,7 @@ impl<K: Clone + Eq> Pool<K> {
             instance.take_held();
             self.slots.push(Slot {
                 instance,
-                in_use: false,
+                live: None,
             });
         }
         Ok(())
@@ -3838,10 +3840,7 @@ impl<K: Clone + Eq> Pool<K> {
 
     /// The slot `owner`'s live icon holds, if it has one.
     pub fn slot_of(&self, owner: &K) -> Option<SlotId> {
-        self.live
-            .iter()
-            .find(|(_, live)| live == owner)
-            .map(|(slot, _)| *slot)
+        self.owners.get(owner).copied()
     }
 
     /// Returns the owner's retained icon, or the first free slot from the round-robin cursor
@@ -3855,9 +3854,10 @@ impl<K: Clone + Eq> Pool<K> {
         let count = self.slots.len();
         let mut at = self.cursor;
         for _ in 0..count {
-            if !self.slots[at].in_use {
-                self.slots[at].in_use = true;
+            if self.slots[at].live.is_none() {
+                self.slots[at].live = Some(self.live.len());
                 self.cursor = if at + 1 >= count { 0 } else { at + 1 };
+                self.owners.insert(owner.clone(), SlotId(at));
                 self.live.push((SlotId(at), owner));
                 return Some(SlotId(at));
             }
@@ -3872,11 +3872,14 @@ impl<K: Clone + Eq> Pool<K> {
     /// compaction), the slot free, its window hidden when visible. The grids and lists that
     /// Hide reached.
     fn free(&mut self, template: &Element, slot: SlotId) -> Result<Vec<Held>, String> {
-        if let Some(at) = self.live.iter().position(|(live, _)| *live == slot) {
-            self.live.swap_remove(at);
+        if let Some(at) = self.slots[slot.0].live.take() {
+            let (_, owner) = self.live.swap_remove(at);
+            self.owners.remove(&owner);
+            if let Some((moved, _)) = self.live.get(at) {
+                self.slots[moved.0].live = Some(at);
+            }
         }
         let entry = &mut self.slots[slot.0];
-        entry.in_use = false;
         if entry.instance.drawn() {
             entry.instance.hide(template, template)?;
         }
@@ -3914,7 +3917,7 @@ impl<K: Clone + Eq> Pool<K> {
             match test(&owner, &self.slots[slot.0].instance) {
                 Admission::Empty | Admission::Outside => {
                     let live = self.live.len();
-                    if let Some(at) = buffer[..live].iter().position(|(own, _)| *own == slot) {
+                    if let Some(at) = self.slots[slot.0].live {
                         buffer[at] = buffer[live - 1].clone();
                     }
                     let held = self.free(template, slot)?;
@@ -3943,7 +3946,7 @@ impl<K: Clone + Eq> Pool<K> {
     pub fn get(&mut self, slot: SlotId) -> Option<&mut Instance> {
         self.slots
             .get_mut(slot.0)
-            .filter(|entry| entry.in_use)
+            .filter(|entry| entry.live.is_some())
             .map(|entry| &mut entry.instance)
     }
 
@@ -4228,7 +4231,7 @@ impl<K: Eq + std::hash::Hash> Withheld<K> {
     }
 }
 
-impl<K: Clone + Eq> Pool<K> {
+impl<K: Clone + Eq + std::hash::Hash> Pool<K> {
     /// The manager's visible list ([`Visible`]): every live icon whose window is visible, in the
     /// live list's order, with the refusal standing on its window.
     pub fn visible(&self) -> impl Iterator<Item = Visible<'_, K>> {

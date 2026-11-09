@@ -929,7 +929,7 @@ pub struct NamePass {
     strategic_names: StrategicNames,
     country_layer: bool,
     compiled: Result<super::name_shader::Names, String>,
-    pages: Vec<wgpu::TextureView>,
+    pages: Vec<shader_pipeline::gpu::TextureBinding>,
     chunks: Vec<wgpu::Buffer>,
     draws: Vec<NativeDraw>,
     names: Vec<StaticName>,

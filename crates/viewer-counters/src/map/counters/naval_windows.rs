@@ -1449,7 +1449,10 @@ fn mission_windows(missions: &naval_missions::MissionView) -> Vec<Registered> {
 }
 
 /// Every window of `pool`, in use or not, as the transition list names it.
-fn pool_windows<K: Clone + Eq>(pool: &Pool<K>, icon: fn(SlotId) -> IconSlot) -> Vec<Registered> {
+fn pool_windows<K: Clone + Eq + std::hash::Hash>(
+    pool: &Pool<K>,
+    icon: fn(SlotId) -> IconSlot,
+) -> Vec<Registered> {
     pool.registrations()
         .map(|(_, slot)| Registered::Icon(icon(slot)))
         .collect()
@@ -2001,7 +2004,7 @@ fn settle(windows: &mut Windows, native: &NativeWindows) {
 /// parts of the icon an update may keep (`kept`: for a combat icon the bars, the grids and
 /// `bg_btn`'s frame, which an unengaged or non-rotating update does not write), and its window's
 /// fade and movement ([`transition_unknown`]).
-fn allocate<K: Clone + Eq>(
+fn allocate<K: Clone + Eq + std::hash::Hash>(
     windows: &mut Windows,
     pool: &mut Pool<K>,
     owner: K,

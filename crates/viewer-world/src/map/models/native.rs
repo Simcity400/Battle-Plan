@@ -1619,6 +1619,7 @@ mod tests {
         .unwrap();
         let shader = |wgsl: &str| Shader {
             wgsl: wgsl.into(),
+            independent_draws: false,
             buffers: Vec::new(),
             textures: Vec::new(),
             samplers: Vec::new(),

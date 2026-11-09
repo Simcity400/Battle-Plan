@@ -137,8 +137,11 @@ fn run(args: &[OsString]) -> io::Result<()> {
         step: 1,
         pan: None,
         pngs: Vec::new(),
+        zoom: None,
+        paused: false,
+        refresh_hz: 0.0,
+        complete_models: false,
     };
-    let mut visual_mods = Vec::new();
     let mut from = false;
     let mut speed = false;
     let mut args = args.iter();
@@ -174,17 +177,6 @@ fn run(args: &[OsString]) -> io::Result<()> {
                         .ok_or_else(|| invalid("--png-frame needs a frame index"))?,
                 );
             }
-            Some("--visual-mod") => {
-                let id = args
-                    .next()
-                    .and_then(|v| v.to_str())
-                    .filter(|v| !v.is_empty())
-                    .ok_or_else(|| invalid("--visual-mod needs a mod id, such as mod/name.mod"))?;
-                visual_mods.push(installed_content_core::content::visual::Choice {
-                    id: id.to_owned(),
-                    name: id.to_owned(),
-                });
-            }
             Some("--pan") => {
                 schedule.pan = Some(
                     args.next()
@@ -198,6 +190,27 @@ fn run(args: &[OsString]) -> io::Result<()> {
             Some("--profile-pointer") => {
                 let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
                 pointer = Some(crate::parse_profile_pointer(value)?);
+            }
+            Some("--zoom") => {
+                let value = args.next().and_then(|v| v.to_str()).unwrap_or_default();
+                let (lines, every) = value
+                    .split_once(':')
+                    .and_then(|(lines, every)| {
+                        Some((lines.parse::<f32>().ok()?, every.parse::<u32>().ok()?))
+                    })
+                    .filter(|(lines, every)| lines.is_finite() && *lines > 0.0 && *every > 0)
+                    .ok_or_else(|| invalid("--zoom needs <wheel lines>:<every N frames>"))?;
+                schedule.zoom = Some(crate::app::playback_cost::Zoom { lines, every });
+            }
+            Some("--paused") => schedule.paused = true,
+            Some("--complete-models") => schedule.complete_models = true,
+            Some("--refresh-hz") => {
+                schedule.refresh_hz = args
+                    .next()
+                    .and_then(|v| v.to_str())
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .ok_or_else(|| invalid("--refresh-hz needs a positive rate"))?;
             }
             Some("--speed") => {
                 if args.next().map(|s| s.as_os_str()) != Some(std::ffi::OsStr::new("max")) {
@@ -229,6 +242,14 @@ fn run(args: &[OsString]) -> io::Result<()> {
             ) => return Err(invalid("Unsupported playback-cost option")),
             _ => translated.push(arg.clone()),
         }
+    }
+    if schedule.refresh_hz == 0.0 {
+        return Err(invalid("--playback-cost requires --refresh-hz HZ"));
+    }
+    if !schedule.pngs.is_empty() && !schedule.complete_models {
+        return Err(invalid(
+            "--png-frame requires --complete-models; pixel proof runs are not timing runs",
+        ));
     }
     let hours = hours.ok_or_else(|| invalid("--playback-cost requires --hours N"))?;
     if !from || !speed {
@@ -295,7 +316,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
             hour: options.hour,
             hour_fraction: 0.0,
         },
-        (!visual_mods.is_empty()).then_some(visual_mods.as_slice()),
+        (!options.visual_mods.is_empty()).then_some(options.visual_mods.as_slice()),
         0,
     )?;
     engine_executable::executable_tables::enter(document.content.tables);
@@ -340,7 +361,7 @@ fn run(args: &[OsString]) -> io::Result<()> {
     report["game_directory"] = json!(resolve.game_dir);
     report["user_directory"] = json!(resolve.user_dir);
     report["visual_mods"] = json!(
-        visual_mods
+        options.visual_mods
             .iter()
             .map(|choice| &choice.id)
             .collect::<Vec<_>>()

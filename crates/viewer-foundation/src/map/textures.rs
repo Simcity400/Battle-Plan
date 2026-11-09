@@ -30,6 +30,9 @@ use installed_content_image::{IndexedImage, Rgba8Image, dds, native::Decode};
 
 use super::{camera::MapSize, gradient_math};
 
+mod gui;
+pub use gui::{GuiTexture, upload_gui};
+
 mod intel_cells;
 pub use intel_cells::{IntelCells, IntelCellsCache};
 
@@ -75,12 +78,18 @@ pub fn gradient_layer_height(map: MapSize) -> f32 {
 pub struct Bound {
     pub texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    pub view_format: wgpu::TextureFormat,
 }
 
 impl Bound {
     fn new(texture: wgpu::Texture, descriptor: &wgpu::TextureViewDescriptor<'_>) -> Self {
         let view = texture.create_view(descriptor);
-        Self { texture, view }
+        let view_format = descriptor.format.unwrap_or(texture.format());
+        Self {
+            texture,
+            view,
+            view_format,
+        }
     }
 }
 
@@ -278,19 +287,7 @@ pub fn upload(
     texture: &dds::Texture,
     space: ColorSpace,
 ) -> io::Result<Bound> {
-    upload_unpacking(device, queue, label, texture, space, None)
-}
-
-/// [`upload`] during a frame, cropping padded block-compressed mips with the caller's
-/// [`unpack_pipeline`], so it neither builds one nor waits on the device's registry.
-pub fn upload_held(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    label: &str,
-    texture: &dds::Texture,
-    (space, unpack): (ColorSpace, &wgpu::ComputePipeline),
-) -> io::Result<Bound> {
-    upload_unpacking(device, queue, label, texture, space, Some(unpack))
+    upload_unpacking(device, queue, label, texture, space, None, None)
 }
 
 fn upload_unpacking(
@@ -300,6 +297,7 @@ fn upload_unpacking(
     texture: &dds::Texture,
     space: ColorSpace,
     unpack: Option<&wgpu::ComputePipeline>,
+    target: Option<(&wgpu::Texture, u32)>,
 ) -> io::Result<Bound> {
     check_upload(label, texture, space)?;
     let cube = texture.faces == 6;
@@ -324,7 +322,9 @@ fn upload_unpacking(
         && (!texture.width.is_multiple_of(4) || !texture.height.is_multiple_of(4))
     {
         return match unpack {
-            Some(unpack) => upload_unaligned_bc(device, queue, label, texture, space, unpack),
+            Some(unpack) => {
+                upload_unaligned_bc(device, queue, label, texture, space, unpack, target)
+            }
             None => upload_unaligned_bc(
                 device,
                 queue,
@@ -332,22 +332,25 @@ fn upload_unpacking(
                 texture,
                 space,
                 &unpack_pipeline(device),
+                target,
             ),
         };
     }
-    let gpu = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: texture.width,
-            height: texture.height,
-            depth_or_array_layers: texture.faces,
-        },
-        mip_level_count: texture.mip_count() as u32,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
+    let gpu = target.map(|(gpu, _)| gpu.clone()).unwrap_or_else(|| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: texture.width,
+                height: texture.height,
+                depth_or_array_layers: texture.faces,
+            },
+            mip_level_count: texture.mip_count() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
     });
     let block = format.block_dimensions().0;
     let unit_bytes = format
@@ -366,7 +369,7 @@ fn upload_unpacking(
                     origin: wgpu::Origin3d {
                         x: 0,
                         y: 0,
-                        z: face as u32,
+                        z: target.map_or(0, |(_, layer)| layer) + face as u32,
                     },
                     aspect: wgpu::TextureAspect::All,
                 },
@@ -391,6 +394,8 @@ fn upload_unpacking(
         gpu,
         &wgpu::TextureViewDescriptor {
             label: Some(label),
+            base_array_layer: target.map_or(0, |(_, layer)| layer),
+            array_layer_count: Some(texture.faces),
             dimension: Some(if cube {
                 wgpu::TextureViewDimension::Cube
             } else {
@@ -430,6 +435,7 @@ fn upload_unaligned_bc(
     texture: &dds::Texture,
     space: ColorSpace,
     pipeline: &wgpu::ComputePipeline,
+    target: Option<(&wgpu::Texture, u32)>,
 ) -> io::Result<Bound> {
     let format = format_of(texture.format, space)?;
     let view_format = if format.is_srgb() {
@@ -437,21 +443,21 @@ fn upload_unaligned_bc(
     } else {
         wgpu::TextureFormat::Rgba8Unorm
     };
-    let gpu = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: wgpu::Extent3d {
-            width: texture.width,
-            height: texture.height,
-            depth_or_array_layers: texture.faces,
-        },
-        mip_level_count: texture.mip_count() as u32,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+    let gpu = target.map(|(gpu, _)| gpu.clone()).unwrap_or_else(|| {
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d {
+                width: texture.width,
+                height: texture.height,
+                depth_or_array_layers: texture.faces,
+            },
+            mip_level_count: texture.mip_count() as u32,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[wgpu::TextureFormat::Rgba8UnormSrgb],
+        })
     });
     let mut encoder = device.create_command_encoder(&Default::default());
     for (face, mips) in texture.mips.iter().enumerate() {
@@ -490,7 +496,7 @@ fn upload_unaligned_bc(
                 dimension: Some(wgpu::TextureViewDimension::D2),
                 base_mip_level: level as u32,
                 mip_level_count: Some(1),
-                base_array_layer: face as u32,
+                base_array_layer: target.map_or(0, |(_, layer)| layer) + face as u32,
                 array_layer_count: Some(1),
                 ..Default::default()
             });
@@ -524,6 +530,8 @@ fn upload_unaligned_bc(
         gpu,
         &wgpu::TextureViewDescriptor {
             label: Some(label),
+            base_array_layer: target.map_or(0, |(_, layer)| layer),
+            array_layer_count: Some(texture.faces),
             format: Some(view_format),
             usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
             dimension: Some(if texture.faces == 6 {

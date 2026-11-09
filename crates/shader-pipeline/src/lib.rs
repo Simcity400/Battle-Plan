@@ -17,6 +17,7 @@ use installed_content_core::pdxshader::program::{Program, Stage, Technique};
 
 pub mod artwork;
 pub mod atlas;
+mod batching;
 pub mod cache;
 pub mod clock;
 pub mod gpu;
@@ -85,6 +86,8 @@ pub struct VertexInput {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Shader {
     pub wgsl: String,
+    /// Whether concatenated triangle lists preserve invocation-local inputs.
+    pub independent_draws: bool,
     pub buffers: Vec<Buffer>,
     /// Physical slots actually read, after compiler dead-code elimination.
     pub textures: Vec<(u32, TextureKind)>,
@@ -444,6 +447,7 @@ fn translate(
     .map_err(|e| format!("{stage:?} WGSL: {e}"))?;
     let mut shader = Shader {
         wgsl,
+        independent_draws: batching::independent(&module),
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),

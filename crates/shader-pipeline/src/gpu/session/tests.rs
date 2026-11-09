@@ -63,6 +63,7 @@ fn ordered_sessions_preserve_group_retirement_release_buffers_and_refusal_prefix
     let (device, queue) = pollster::block_on(adapter.request_device(&descriptor)).unwrap();
     let shader = |wgsl: &str| Shader {
         wgsl: wgsl.into(),
+        independent_draws: false,
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),

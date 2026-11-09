@@ -870,6 +870,81 @@ impl Renderer {
         }
     }
 
+    /// Prepare each authored technique independently, without touching native frame state.
+    pub(super) fn warm(&mut self, device: &wgpu::Device, emitters: &[&Emitter]) {
+        let mut stream = shader_pipeline::stream::Stream::default();
+        stream.cache = std::mem::take(&mut self.retained.stream.cache);
+        let mut seen = std::collections::BTreeSet::new();
+        let (mut prepared, mut recorded, mut refused, mut retained) = (0, 0, 0, 0);
+        for emitter in emitters {
+            let name = emitter.render.technique();
+            if !seen.insert((name.clone(), emitter.render.trail)) {
+                continue;
+            }
+            let result = (|| -> io::Result<Option<shader_pipeline::stream::WarmPass>> {
+                let index = self.techniques.get(&self.effect, &emitter.render)?;
+                let Some(program) = &self.techniques.programs[index].program else {
+                    return Ok(None);
+                };
+                stream.begin_frame();
+                stream.select_program(&program.selection, &program.layouts);
+                stream.bind_blend(program.state.blend, program.state.write_mask);
+                stream.bind_rasterizer(program.raster.clone());
+                for (key, sampler) in crate::map::mesh_shader::map_samplers() {
+                    if key % 2 == 1 && (4..14).contains(&(key / 2)) {
+                        stream.bind_texture(key / 2, Stage::Pixel, None, Some(&sampler));
+                    }
+                }
+                stream.bind_texture(
+                    0,
+                    Stage::Pixel,
+                    None,
+                    program.state.samplers.get(&binding(0, Stage::Pixel)),
+                );
+                let buffers = (0..program.layouts.len())
+                    .map(|slot| (slot as u32, None))
+                    .collect();
+                let layouts =
+                    shader_pipeline::vertices::pack_native(&program.layouts, &buffers, 0, 0)
+                        .map_err(io::Error::other)?
+                        .layouts;
+                let topology = if emitter.render.trail {
+                    wgpu::PrimitiveTopology::TriangleStrip
+                } else {
+                    wgpu::PrimitiveTopology::TriangleList
+                };
+                stream
+                    .warm_pass(device, &particle_pass(self.samples, topology), layouts)
+                    .map(Some)
+                    .map_err(io::Error::other)
+            })();
+            match result {
+                Ok(Some(shader_pipeline::stream::WarmPass::Selected)) => prepared += 1,
+                Ok(Some(shader_pipeline::stream::WarmPass::Recorded(why))) => {
+                    prepared += 1;
+                    recorded += 1;
+                    eprintln!(
+                        "particle warm-up {name:?}: recorded pipeline prepared after replacement refusal: {why}"
+                    );
+                }
+                Ok(None) => {
+                    retained += 1;
+                    eprintln!(
+                        "particle warm-up {name:?}: missing technique retains runtime program"
+                    );
+                }
+                Err(why) => {
+                    refused += 1;
+                    eprintln!("particle warm-up {name:?} refused: {why}");
+                }
+            }
+        }
+        self.retained.stream.cache = stream.cache;
+        eprintln!(
+            "particle warm-up: {prepared} prepared ({recorded} recorded), {retained} retained, {refused} refused"
+        );
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
@@ -906,35 +981,10 @@ impl Renderer {
         let mut ordinary_offset = 0;
         let mut ring = InstanceRing::new(allocation_size(self.max_particles, 48)?);
         let trail_size = allocation_size(self.max_particles, 56 * 28)?;
-        let depth = installed_content_core::pdxshader::DepthStencilState {
-            depth_enable: true,
-            depth_write_mask: 0,
-            depth_function: 3,
-            stencil_enable: false,
-            ..Default::default()
-        };
-        let template = |topology| gpu::Pass {
-            vertices: Vec::new(),
-            primitive: wgpu::PrimitiveState {
-                topology,
-                ..Default::default()
-            },
-            depth_stencil: Some(
-                gpu::depth_stencil(&depth, &Default::default(), gpu_contract::DEPTH_FORMAT).0,
-            ),
-            multisample: wgpu::MultisampleState {
-                count: self.samples,
-                ..Default::default()
-            },
-            targets: vec![Some(wgpu::ColorTargetState {
-                format: gpu_contract::SCENE_FORMAT,
-                blend: None,
-                write_mask: wgpu::ColorWrites::ALL,
-            })],
-        };
+        let depth = particle_depth();
         let [list, strip] = [
-            template(wgpu::PrimitiveTopology::TriangleList),
-            template(wgpu::PrimitiveTopology::TriangleStrip),
+            particle_pass(self.samples, wgpu::PrimitiveTopology::TriangleList),
+            particle_pass(self.samples, wgpu::PrimitiveTopology::TriangleStrip),
         ];
         // Bind these resources even with no actors. The next seam inherits the empty view's render state.
         {
@@ -1957,3 +2007,36 @@ mod tests {
 #[cfg(test)]
 #[path = "native/draw_tests.rs"]
 mod draw_tests;
+
+fn particle_depth() -> installed_content_core::pdxshader::DepthStencilState {
+    installed_content_core::pdxshader::DepthStencilState {
+        depth_enable: true,
+        depth_write_mask: 0,
+        depth_function: 3,
+        stencil_enable: false,
+        ..Default::default()
+    }
+}
+
+fn particle_pass(samples: u32, topology: wgpu::PrimitiveTopology) -> gpu::Pass {
+    let depth = particle_depth();
+    gpu::Pass {
+        vertices: Vec::new(),
+        primitive: wgpu::PrimitiveState {
+            topology,
+            ..Default::default()
+        },
+        depth_stencil: Some(
+            gpu::depth_stencil(&depth, &Default::default(), gpu_contract::DEPTH_FORMAT).0,
+        ),
+        multisample: wgpu::MultisampleState {
+            count: samples,
+            ..Default::default()
+        },
+        targets: vec![Some(wgpu::ColorTargetState {
+            format: gpu_contract::SCENE_FORMAT,
+            blend: None,
+            write_mask: wgpu::ColorWrites::ALL,
+        })],
+    }
+}

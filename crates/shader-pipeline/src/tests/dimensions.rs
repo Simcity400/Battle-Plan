@@ -13,6 +13,7 @@ fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
     }).unwrap();
     let shader = |wgsl: String| Shader {
         wgsl,
+        independent_draws: false,
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),
@@ -74,6 +75,22 @@ fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
         dimension: Some(wgpu::TextureViewDimension::Cube),
         ..Default::default()
     });
+    let layer = gpu::TextureBinding {
+        view: cube.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            base_array_layer: 3,
+            array_layer_count: Some(1),
+            ..Default::default()
+        }),
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        array: Some((
+            cube.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            }),
+            3,
+        )),
+    };
     for slot in [7, 9] {
         let key = binding(slot, Stage::Pixel);
         for (kind, declaration, coordinates, supplied, expected) in [
@@ -81,21 +98,35 @@ fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
                 TextureKind::Cube,
                 "texture_cube<f32>",
                 "vec3(1.,0.,0.)",
-                &view,
+                gpu::TextureBinding::from(view.clone()),
                 [0, 0, 0, 0],
             ),
             (
                 TextureKind::D2,
                 "texture_2d<f32>",
                 "vec2(0.5,0.5)",
-                &view,
+                gpu::TextureBinding::from(view.clone()),
                 [64, 128, 192, 255],
             ),
             (
                 TextureKind::Cube,
                 "texture_cube<f32>",
                 "vec3(1.,0.,0.)",
-                &cube_view,
+                gpu::TextureBinding::from(cube_view.clone()),
+                [64, 128, 192, 255],
+            ),
+            (
+                TextureKind::Cube,
+                "texture_cube<f32>",
+                "vec3(1.,0.,0.)",
+                layer.clone(),
+                [0, 0, 0, 0],
+            ),
+            (
+                TextureKind::D2,
+                "texture_2d<f32>",
+                "vec2(0.5,0.5)",
+                layer.clone(),
                 [64, 128, 192, 255],
             ),
         ] {
@@ -119,10 +150,10 @@ fn cube_sampling_of_2d_srv_is_zero_without_changing_later_2d_draws() {
                 gpu::Pipeline::for_pass(&device, &compiled, &program, technique, &state, &pass)
                     .unwrap();
             let bindings = pipeline
-                .bindings(
+                .bind_with(
                     &arena,
-                    &BTreeMap::<u32, Vec<u8>>::new(),
-                    &BTreeMap::from([(key, supplied.clone())]),
+                    |_| None,
+                    |slot| (slot == key).then(|| pipeline.sampled_texture(slot, &supplied)),
                 )
                 .unwrap();
             let pixels = render_with(&device, &queue, &arena, |pass| {
@@ -153,6 +184,7 @@ fn texture_binding_errors_name_the_effect_and_technique() {
     .unwrap();
     let shader = |wgsl: &str| Shader {
         wgsl: wgsl.into(),
+        independent_draws: false,
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),

@@ -156,7 +156,7 @@ impl Names {
         arena: &gpu::Arena,
         frame: &[u8],
         alpha_offset: [f32; 2],
-        page: &wgpu::TextureView,
+        page: &gpu::TextureBinding,
     ) -> io::Result<gpu::Bindings> {
         // Initialize all16 bytes and binds b0/b1 to both stages.
         let b1 = [alpha_offset[0], alpha_offset[1], 0., 0.];
@@ -168,7 +168,15 @@ impl Names {
         ]);
         let textures = BTreeMap::from([(binding(0, Stage::Pixel), page.clone())]);
         self.pipeline
-            .bindings(arena, &buffers, &textures)
+            .bind_with(
+                arena,
+                |key| buffers.get(&key).map(Vec::as_slice),
+                |key| {
+                    textures
+                        .get(&key)
+                        .map(|texture| self.pipeline.sampled_texture(key, texture))
+                },
+            )
             .map_err(|error| refuse(self.pass_name, error.to_string()))
     }
 
@@ -177,10 +185,10 @@ impl Names {
         retained: &mut super::shader_scene::State,
         frame: &[u8],
         alpha_offset: [f32; 2],
-        page: &wgpu::TextureView,
+        page: &gpu::TextureBinding,
     ) {
         let b1 = [alpha_offset[0], alpha_offset[1], 0., 0.];
-        self.retained.bind(
+        self.retained.bind_formatted(
             retained,
             &BTreeMap::from([
                 (binding(0, Stage::Vertex), frame.to_vec()),

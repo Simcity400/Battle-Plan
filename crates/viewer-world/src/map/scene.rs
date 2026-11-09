@@ -240,6 +240,7 @@ pub struct Scene {
     intel_scratch: Vec<u8>,
     /// See [`Scene::settle_builds`].
     settled_builds: bool,
+    retained_scene: RefCell<crate::map::shader_scene::State>,
     fow_noise: Arc<Bound>,
     /// Whether this hour has a fog-of-war input at all; see
     /// [`Scene::set_fog_of_war`].
@@ -575,7 +576,13 @@ impl SceneTextures {
             .transpose()?
             .map(Arc::new);
         Ok(Arc::new(Self {
-            atlas: Arc::new(upload(device, queue, "atlas0", &assets.atlas, ColorSpace::Srgb)?),
+            atlas: Arc::new(upload(
+                device,
+                queue,
+                "atlas0",
+                &assets.atlas,
+                ColorSpace::Srgb,
+            )?),
             atlas_normal: Arc::new(upload(
                 device,
                 queue,
@@ -710,9 +717,10 @@ impl TextureCache {
         // Held through an upload, so scenes built at once upload these textures once.
         let mut entries = self.0.lock().unwrap_or_else(|error| error.into_inner());
         entries.retain(|(_, textures)| textures.strong_count() != 0);
-        if let Some(shared) = entries.iter().find_map(|(owner, textures)| {
-            (owner == device).then(|| textures.upgrade()).flatten()
-        }) {
+        if let Some(shared) = entries
+            .iter()
+            .find_map(|(owner, textures)| (owner == device).then(|| textures.upgrade()).flatten())
+        {
             return Ok(shared);
         }
         let shared = SceneTextures::new(device, queue, assets, icon_images)?;
@@ -952,6 +960,7 @@ impl Scene {
             intel_installed: None,
             intel_scratch: Vec::new(),
             settled_builds: false,
+            retained_scene: RefCell::default(),
             fow_noise,
             fog: false,
             visibility: viewer_foundation::map::mode_visibility::Visibility::POLITICAL,
@@ -1243,7 +1252,17 @@ impl Scene {
             trees.warm(device, high);
         }
         if self.graphics.sky && self.sky.is_none() {
-            self.sky = Some(sky_pipeline(device, &self.sky_effect, self.graphics.samples));
+            self.sky = Some(sky_pipeline(
+                device,
+                &self.sky_effect,
+                self.graphics.samples,
+            ));
+        }
+        if let Some(text) = &self.animated_text {
+            text.warm();
+        }
+        if let Some(weather) = &mut self.weather_effects {
+            weather.warm(device);
         }
         let (map, samples) = (self.map_size, self.graphics.samples);
         for pass in [
@@ -2246,6 +2265,7 @@ impl Scene {
         )?;
         let colors = super::political_gpu::ProvinceColors::new(device, &base)?;
         self.secondary = Bound {
+            view_format: colors.bound.view_format,
             texture: colors.bound.texture.clone(),
             view: colors.bound.view.clone(),
         };
@@ -2284,6 +2304,7 @@ impl Scene {
         if political.set_strategic_styles(device, queue, styles)? {
             let [first, second] = political.textures().cloned().expect("shown above");
             let bound = |texture: wgpu::Texture| Bound {
+                view_format: texture.format(),
                 view: texture.create_view(&Default::default()),
                 texture,
             };
@@ -2334,6 +2355,7 @@ impl Scene {
         }
         let [first, second] = political.textures().cloned().expect("shown above");
         let bound = |texture: wgpu::Texture| Bound {
+            view_format: texture.format(),
             view: texture.create_view(&Default::default()),
             texture,
         };
@@ -3107,6 +3129,7 @@ impl Scene {
         self.sprite_pass
             .set_camera_moving(self.sprite_camera.replace(sprite_camera) != Some(sprite_camera));
         let sprite_cpu = viewer_foundation::profiling::thread_span("sprite_upload");
+        let draw_cursor = std::cell::Cell::new(clock.map(|_| shader_pipeline::gpu::stats::draws()));
         self.sprite_pass.upload(
             device,
             queue,
@@ -3115,6 +3138,11 @@ impl Scene {
             size,
             overlay.ui_scale,
         );
+        if let Some(previous) = draw_cursor.get() {
+            let now = shader_pipeline::gpu::stats::draws();
+            viewer_foundation::profiling::record_count("draws_gui_bake", now - previous);
+            draw_cursor.set(Some(now));
+        }
         sprite_cpu.finish();
         self.detail_laps.lap("sprite_upload");
         let prepared = clock.map(|clock| clock.elapsed());
@@ -3124,6 +3152,36 @@ impl Scene {
         let pass_cpu_laps = RefCell::new(&mut self.pass_cpu_laps);
         let cpu_mark = |label: &'static str| {
             pass_cpu_laps.borrow_mut().lap_sum(label);
+            if let Some(previous) = draw_cursor.get() {
+                let now = shader_pipeline::gpu::stats::draws();
+                let scope = match label {
+                    "terrain_refraction" | "terrain" => "draws_terrain",
+                    "shadow_mesh_casters" => "draws_shadow_meshes",
+                    "shadow_tree_casters" | "shadow_tree_receivers" => "draws_shadow_trees",
+                    "shadow_arrow_casters" => "draws_shadow_arrows",
+                    "shadow_receivers" => "draws_shadow_ground",
+                    "shadow_blur_horizontal" | "shadow_blur_vertical" => "draws_shadow_filter",
+                    "borders_land" | "borders_sea" | "demilitarized" | "straits" => "draws_borders",
+                    "rivers" => "draws_rivers",
+                    "railways" => "draws_railways",
+                    "trees" => "draws_trees",
+                    "water" => "draws_water",
+                    "unknown_snow_mud" => "draws_unknown_ground",
+                    "orders_main" | "orders_seethrough" | "orders_late" => "draws_orders",
+                    "radar_ranges" => "draws_radar",
+                    "model_prepare" => "draws_model_setup_and_movement_arrows",
+                    "model_encode" => "draws_models",
+                    "animated_text" => "draws_world_text",
+                    "weather" => "draws_weather",
+                    "names" => "draws_country_names",
+                    "sky" => "draws_sky",
+                    "overlay_sprites" => "draws_gui_frame",
+                    name if name.starts_with("post") => "draws_post",
+                    _ => "draws_other",
+                };
+                viewer_foundation::profiling::record_count(scope, now - previous);
+                draw_cursor.set(Some(now));
+            }
         };
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("map") });
@@ -3517,10 +3575,11 @@ impl Scene {
             color: targets.scene_attachment(wgpu::LoadOp::Load),
             depth: targets.depth_attachment(wgpu::LoadOp::Load),
         };
-        let retained_scene = RefCell::new(crate::map::shader_scene::State::default());
+        let retained_scene = &self.retained_scene;
+        let _native_frame = crate::map::shader_scene::Frame::new(retained_scene);
         macro_rules! draw_world {
             ($pass:ident => $draw:expr) => {
-                passes.world(passes::Pass::$pass, &retained_scene, || {
+                passes.world(passes::Pass::$pass, retained_scene, || {
                     #[cfg(any(test, feature = "test-support"))]
                     faults.preflight(passes::Pass::$pass)?;
                     $draw
@@ -3587,7 +3646,7 @@ impl Scene {
                     arena,
                     mode,
                     crate::map::terrain_shader::Inputs {
-                        retained: Some(&retained_scene),
+                        retained: Some(retained_scene),
                         frames: view_frames,
                         offsets: view_offsets,
                         cover: &self.cover,
@@ -3638,7 +3697,7 @@ impl Scene {
             // Land borders, rivers, rails, trees, water and sea highlights share scene depth. The unlit shadow
             // pre-pass uses its own depth buffer.
             let border_inputs = || crate::map::border_shader::Inputs {
-                retained: Some(&retained_scene),
+                retained: Some(retained_scene),
                 frames: view_frames,
                 snow_mud: &self.snow_mud.view,
                 intel: &self.intel_map.view,
@@ -3675,7 +3734,7 @@ impl Scene {
                     &mut encoder,
                     border_target(),
                     crate::map::river_shader::Inputs {
-                        retained: Some(&retained_scene),
+                        retained: Some(retained_scene),
                         frames: view_frames,
                         shadow_matrix: &globals.shadow_matrix,
                         time: map_time,
@@ -3712,7 +3771,7 @@ impl Scene {
                     &mut encoder,
                     border_target(),
                     crate::map::rail_shader::Inputs {
-                        retained: Some(&retained_scene),
+                        retained: Some(retained_scene),
                         frames: view_frames,
                         shadow_matrix: &globals.shadow_matrix,
                         time: map_time,
@@ -3754,7 +3813,7 @@ impl Scene {
                         planes: side_planes(camera, size),
                     },
                     crate::map::trees::LitInputs {
-                        retained: Some(&retained_scene),
+                        retained: Some(retained_scene),
                         view,
                         frames: &native_frame_bytes,
                         retained_pixel_b2: pixel_b2,
@@ -3782,7 +3841,7 @@ impl Scene {
                     &mut encoder,
                     border_target(),
                     crate::map::water_shader::Inputs {
-                        retained: Some(&retained_scene),
+                        retained: Some(retained_scene),
                         frames: view_frames,
                         time: map_time,
                         size,
@@ -3876,7 +3935,7 @@ impl Scene {
                     },
                     view_frames,
                     [&self.snow_mud.view, &self.intel_map.view],
-                    Some(&retained_scene),
+                    Some(retained_scene),
                     overlay.interface && self.graphics.strait_crossings(),
                 ));
             }
@@ -3901,7 +3960,7 @@ impl Scene {
                         encoder,
                         targets,
                         crate::map::order_pass::NativeInputs {
-                            retained: Some(&retained_scene),
+                            retained: Some(retained_scene),
                             scene: native_frame_bytes[view],
                             grid: bytemuck::bytes_of(&globals.light_grid),
                             textures: [
@@ -3931,7 +3990,7 @@ impl Scene {
                         encoder,
                         targets,
                         Some(view),
-                        Some(&retained_scene),
+                        Some(retained_scene),
                     )?;
                 }
                 Ok(())
@@ -3960,7 +4019,7 @@ impl Scene {
                     &mut encoder,
                     targets,
                     crate::map::order_pass::NativeInputs {
-                        retained: Some(&retained_scene),
+                        retained: Some(retained_scene),
                         scene: native_frame_bytes[view],
                         grid: bytemuck::bytes_of(&globals.light_grid),
                         textures: [
@@ -4269,7 +4328,11 @@ impl Scene {
         // Draw sky once with the original camera, after map text.
         if self.graphics.sky {
             if self.sky.is_none() {
-                self.sky = Some(sky_pipeline(device, &self.sky_effect, self.graphics.samples));
+                self.sky = Some(sky_pipeline(
+                    device,
+                    &self.sky_effect,
+                    self.graphics.samples,
+                ));
             }
             passes.run(passes::Pass::Sky, || {
                 #[cfg(any(test, feature = "test-support"))]
@@ -4299,14 +4362,9 @@ impl Scene {
                 .map(|previous| animation_time - previous);
             let tau_delta = self.post.adaptation_tau(delta);
             let grading = self.post.grading(camera, day_night);
-            let post = self.post.draw(
-                arena,
-                &mut encoder,
-                targets,
-                grading,
-                tau_delta,
-                &mut mark,
-            );
+            let post = self
+                .post
+                .draw(arena, &mut encoder, targets, grading, tau_delta, &mut mark);
             #[cfg(any(test, feature = "test-support"))]
             let post = post.and_then(|()| faults.after(failure_tests::Point::Post));
             if post.is_err() {

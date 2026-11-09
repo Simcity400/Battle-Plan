@@ -40,6 +40,11 @@ pub const NAMES: [&str; 12] = [
 ];
 
 static COUNTS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
+static BUILDS_TOTAL: AtomicU64 = AtomicU64::new(0);
+
+pub fn builds_total() -> u64 {
+    BUILDS_TOTAL.load(Relaxed)
+}
 
 std::thread_local! {
     static WINDOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -58,6 +63,7 @@ pub fn on_window_thread() -> bool {
 /// A shader compile or pipeline build, attributed to the window thread when it made it.
 #[inline]
 pub fn build() {
+    BUILDS_TOTAL.fetch_add(1, Relaxed);
     add(Count::Builds, 1);
     if WINDOW.with(std::cell::Cell::get) {
         add(Count::WindowBuilds, 1);
@@ -72,6 +78,10 @@ pub fn add(count: Count, n: u64) {
 #[inline]
 pub fn draw() {
     add(Count::Draws, 1);
+}
+
+pub fn draws() -> u64 {
+    COUNTS[Count::Draws as usize].load(Relaxed)
 }
 
 #[inline]

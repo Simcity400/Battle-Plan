@@ -47,6 +47,7 @@ fn program() -> Program {
 fn shader(wgsl: &str) -> Shader {
     Shader {
         wgsl: wgsl.into(),
+        independent_draws: false,
         buffers: vec![],
         textures: vec![],
         samplers: vec![],
@@ -126,6 +127,7 @@ fn draw(asset: Arc<Effect>, path: &str) -> draw::Quad {
     .flatten()
     .collect();
     draw::Quad {
+        source_draws: 1,
         path: path.into(),
         effect: draw::Effect {
             asset,

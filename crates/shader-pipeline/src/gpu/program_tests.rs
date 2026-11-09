@@ -8,6 +8,7 @@ fn successful_program_matches_fresh_multiframe_bytes_offsets_and_queued_pixels()
     let (device, queue) = crate::tests::device();
     let shader = |wgsl: &str, bindings: &[u32]| Shader {
         wgsl: wgsl.into(),
+        independent_draws: false,
         buffers: bindings
             .iter()
             .map(|binding| Buffer {

@@ -51,6 +51,7 @@ fn effect(sample: bool) -> Arc<Effect> {
     let header = "struct Constants { m: mat4x4<f32>, color: vec4<f32>, offsets: vec4<f32>, clocks: vec4<f32> }";
     let shader = |wgsl: String| Shader {
         wgsl,
+        independent_draws: false,
         buffers: vec![],
         textures: vec![],
         samplers: vec![],
@@ -134,6 +135,7 @@ fn native(effect: Arc<Effect>, extent: f32, offset: f32) -> draw::Quad {
         declaration: shader_pipeline::vertices::Declaration::Sprite,
         vertices: bytemuck::cast_slice(&vertices).to_vec(),
         stride: 20,
+        source_draws: 1,
         constants,
         known: 112,
         pixel_constants: true,

@@ -127,7 +127,11 @@ impl ProvinceColors {
             },
         );
         Ok(Self {
-            bound: Bound { texture, view },
+            bound: Bound {
+                view_format: texture.format(),
+                texture,
+                view,
+            },
             colors,
             palette,
             tiles,

@@ -24,7 +24,7 @@ use super::{
     gpu_contract::{Targets, sampler_entry, texture_entry},
     lazy_icons::{DYNAMIC_BASE, LazyTextures},
     text,
-    textures::{Bound, ColorSpace, upload, upload_held},
+    textures::{Bound, ColorSpace, GuiTexture, upload, upload_gui},
 };
 
 mod fade;
@@ -537,14 +537,15 @@ pub fn filter_mode(ui_scale: f32) -> f32 {
 /// each pass builds its own bind groups over them with the sampler its shader
 /// declares.
 pub struct IconTextures {
-    bound: Vec<Bound>,
+    bound: Vec<GuiTexture>,
+    unpack: Arc<wgpu::ComputePipeline>,
     /// Clamped and pinned to the top mip: what a 1:1 screen quad needs.
     screen: wgpu::Sampler,
 }
 
 impl IconTextures {
-    pub fn views(&self) -> Vec<wgpu::TextureView> {
-        self.bound.iter().map(|bound| bound.view.clone()).collect()
+    pub fn views(&self) -> Vec<shader_pipeline::gpu::TextureBinding> {
+        self.bound.iter().map(GuiTexture::binding).collect()
     }
 
     /// Uploads every page in image order.
@@ -553,16 +554,8 @@ impl IconTextures {
         queue: &wgpu::Queue,
         images: &[dds::Texture],
     ) -> io::Result<Self> {
-        let mut bound = Vec::with_capacity(images.len());
-        for (index, image) in images.iter().enumerate() {
-            bound.push(upload(
-                device,
-                queue,
-                &format!("map icon {index}"),
-                image,
-                ColorSpace::Linear,
-            )?);
-        }
+        let unpack = super::textures::unpack_pipeline(device);
+        let bound = upload_gui(device, queue, images, &unpack)?;
         let clamp = |label, mip, max_lod| {
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some(label),
@@ -579,6 +572,7 @@ impl IconTextures {
         };
         Ok(Self {
             bound,
+            unpack,
             // The batch samples the top mip only: at 1:1 on integer pixel
             // corners that is the only one a sample can land in, and a mip of
             // an atlas would blend neighbouring cells. Scaled quads keep to
@@ -662,7 +656,7 @@ const OPAQUE: f32 = 1.0 - 0.5 / 255.0;
 /// A lazy texture on the GPU, at the revision it was uploaded from.
 struct DynamicPage {
     revision: u64,
-    texture: Bound,
+    texture: GuiTexture,
     group: wgpu::BindGroup,
 }
 
@@ -682,6 +676,9 @@ pub struct SpritePass {
     bake_views: Vec<(u32, View)>,
     native: super::native_shader::stream::Stream,
     native_draws: Vec<super::native_shader::stream::Submission>,
+    native_packets: Vec<Option<shader_pipeline::gpu::batch::Packet>>,
+    fade_packets: Vec<Option<shader_pipeline::gpu::batch::Packet>>,
+    array_views: shader_pipeline::gpu::batch::Views,
     native_format: wgpu::TextureFormat,
     native_samples: u32,
     bakes: Vec<CachedBake>,
@@ -695,7 +692,7 @@ pub struct SpritePass {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// Static page views used by compiled effect bindings.
-    views: Vec<wgpu::TextureView>,
+    views: Vec<shader_pipeline::gpu::TextureBinding>,
     /// One transparent texel for an empty slot.
     empty: Bound,
     /// The content's lazy textures, mirrored into `dynamic` by [`SpritePass::sync`].
@@ -914,7 +911,7 @@ impl SpritePass {
             ColorSpace::Linear,
         )?;
         Ok(Self {
-            native: Default::default(),
+            native: super::native_shader::stream::Stream::gui(),
             uploads: Some(shader_pipeline::gpu::Arena::new(device)),
             retained: None,
             retained_valid: false,
@@ -924,8 +921,11 @@ impl SpritePass {
             packet_views: Vec::new(),
             bake_views: Vec::new(),
             native_draws: Vec::new(),
+            native_packets: Vec::new(),
+            fade_packets: Vec::new(),
+            array_views: Default::default(),
             bakes: Vec::new(),
-            bake_stream: Default::default(),
+            bake_stream: super::native_shader::stream::Stream::gui(),
             native_format: format,
             native_samples: samples,
             native_refusals: Default::default(),
@@ -934,11 +934,7 @@ impl SpritePass {
             bind_groups,
             layout,
             sampler: textures.screen_clamp().clone(),
-            views: textures
-                .bound
-                .iter()
-                .map(|texture| texture.view.clone())
-                .collect(),
+            views: textures.bound.iter().map(GuiTexture::binding).collect(),
             empty,
             lazy: Arc::clone(lazy),
             synced: None,
@@ -950,7 +946,7 @@ impl SpritePass {
             count: 0,
             fade: fade::Pages::new(device, format, samples),
             fade_legacy,
-            fade_stream: Default::default(),
+            fade_stream: super::native_shader::stream::Stream::gui(),
             fade_draws: Vec::new(),
             fade_runs: Vec::new(),
             fade_vertices: buffer(device, INITIAL_VERTICES, std::mem::size_of::<Vertex>()),
@@ -967,7 +963,7 @@ impl SpritePass {
             builds: Default::default(),
             waited: false,
             logged: HashSet::new(),
-            unpack: super::textures::unpack_pipeline(device),
+            unpack: Arc::clone(&textures.unpack),
         })
     }
 
@@ -1061,12 +1057,26 @@ impl SpritePass {
             if !plan.upload.contains(&id) {
                 continue;
             }
-            let texture = match upload_held(
+            if let Some(page) = self.dynamic.get_mut(&id)
+                && !entry.cells.is_empty()
+            {
+                page.texture.update_cells(
+                    queue,
+                    &entry.texture,
+                    entry.cells.iter().filter_map(|(cell, revision)| {
+                        (*revision > page.revision).then_some(*cell)
+                    }),
+                );
+                page.revision = entry.revision;
+                self.failed.remove(&id);
+                continue;
+            }
+            let texture = match GuiTexture::upload(
                 device,
                 queue,
                 &format!("lazy icon {}", id - DYNAMIC_BASE),
                 &entry.texture,
-                (ColorSpace::Linear, &self.unpack),
+                &self.unpack,
             ) {
                 Ok(texture) => texture,
                 Err(error) => {
@@ -1116,13 +1126,19 @@ impl SpritePass {
     }
 
     /// The view of a static page or a resident lazy texture, the empty texel for no texture.
-    fn view(&self, texture: usize) -> Option<&wgpu::TextureView> {
+    fn view(&self, texture: usize) -> Option<shader_pipeline::gpu::TextureBinding> {
         if texture == NO_TEXTURE {
-            return Some(&self.empty.view);
+            return Some(shader_pipeline::gpu::TextureBinding {
+                view: self.empty.view.clone(),
+                format: self.empty.view_format,
+                array: None,
+            });
         }
-        self.views
-            .get(texture)
-            .or_else(|| self.dynamic.get(&texture).map(|page| &page.texture.view))
+        self.views.get(texture).cloned().or_else(|| {
+            self.dynamic
+                .get(&texture)
+                .map(|page| page.texture.binding())
+        })
     }
 
     /// Decline retention for the next upload while the drawn camera changes. A moving
@@ -1266,6 +1282,9 @@ impl SpritePass {
         ui_scale: f32,
     ) {
         self.packets.begin();
+        self.array_views.begin();
+        self.native_packets.clear();
+        self.fade_packets.clear();
         self.runs.clear();
         self.native_draws.clear();
         // The fade pages' draws are this frame's alone.
@@ -1284,6 +1303,7 @@ impl SpritePass {
         self.count = 0;
         if batch.is_empty() || size[0] == 0 || size[1] == 0 {
             self.bakes.clear();
+            self.array_views.finish();
             self.fade.fit(device, &[]);
             self.packets.finish();
             return;
@@ -1443,6 +1463,28 @@ impl SpritePass {
                 (&mut frame, &mut pages),
             );
         }
+
+        self.runs = batch_runs(
+            std::mem::take(&mut self.runs),
+            &mut self.native_packets,
+            &mut self.native_draws,
+            &mut self.array_views,
+            arena,
+            size,
+            &mut self.native_refusals,
+        );
+        for page in 0..self.fade_pages {
+            self.fade_runs[page] = batch_runs(
+                std::mem::take(&mut self.fade_runs[page]),
+                &mut self.fade_packets,
+                &mut self.fade_draws,
+                &mut self.array_views,
+                arena,
+                self.fade.size(page),
+                &mut self.native_refusals,
+            );
+        }
+        self.array_views.finish();
         self.bakes.retain(|bake| bake.used);
         self.packets.finish();
         self.count = frame.len() as u32;
@@ -1549,13 +1591,13 @@ impl SpritePass {
                     };
                     match target {
                         Target::Frame => {
-                            let index = self.native_draws.len();
-                            self.native_draws.push(submission);
+                            let index = self.native_packets.len();
+                            self.native_packets.push(Some(submission));
                             self.runs.push(run(index));
                         }
                         Target::Page { page, .. } => {
-                            let index = self.fade_draws.len();
-                            self.fade_draws.push(submission);
+                            let index = self.fade_packets.len();
+                            self.fade_packets.push(Some(submission));
                             self.page_runs(page).push(run(index));
                         }
                     }
@@ -1569,7 +1611,7 @@ impl SpritePass {
                     if self.logged.insert(reason.clone()) {
                         eprintln!("{reason}");
                     }
-                    *self.native_refusals.entry(reason).or_default() += 1;
+                    *self.native_refusals.entry(reason).or_default() += native.source_draws;
                     // By what was refused, whatever refused it (program selection, textures,
                     // bakes or the draw): a map compares these across loads.
                     arena.refuse(&gui_refusal(native));
@@ -1870,9 +1912,15 @@ impl SpritePass {
         scale: f32,
         clip: Option<fade::ClipAffine>,
         page: Option<wgpu::TextureFormat>,
-    ) -> Result<super::native_shader::stream::Submission, String> {
+    ) -> Result<shader_pipeline::gpu::batch::Packet, String> {
+        let _span = crate::profiling::span("sprite_native");
         let baked = draw.bake.as_ref().map(|bake| {
             self.prepare_bake(device, queue, arena, bake)
+                .map(|view| shader_pipeline::gpu::TextureBinding {
+                    view,
+                    format: BAKE_FORMAT,
+                    array: None,
+                })
                 .map_err(|why| {
                     format!(
                         "effect {:?}, text sprite {:?}: {why}",
@@ -1965,7 +2013,7 @@ impl SpritePass {
         draw: &super::native_shader::draw::Quad,
         storage: &mut Vec<(u32, View)>,
     ) {
-        packets::views(storage, draw, |id| self.view(id).cloned());
+        packets::views(storage, draw, |id| self.view(id));
     }
 
     fn prepare_bake(
@@ -1998,6 +2046,7 @@ impl SpritePass {
         arena: &shader_pipeline::gpu::Arena,
         bake: &Arc<super::native_shader::draw::Bake>,
     ) -> Result<wgpu::TextureView, String> {
+        let _span = crate::profiling::span("sprite_bake");
         // Changed lazy pages invalidate a bake even if its layout is unchanged. The bake
         // inherits the caller's retained binds, so only a bake that reads nothing it does not
         // bind itself gives the same pixels wherever it is drawn.
@@ -2013,6 +2062,7 @@ impl SpritePass {
             cached.diagnostics.credit();
             return Ok(cached.view.clone());
         }
+        let _made = crate::profiling::span("sprite_bake_made");
         let [width, height] = bake.size;
         if width == 0 || height == 0 || width.max(height) > device.limits().max_texture_dimension_2d
         {
@@ -2061,6 +2111,22 @@ impl SpritePass {
             self.bake_views = views;
             submissions.push(submission?);
         }
+        let submissions = shader_pipeline::gpu::batch::prepare(
+            submissions
+                .into_iter()
+                .map(|packet| shader_pipeline::gpu::batch::Item {
+                    packet,
+                    scissor: [0, 0, width, height],
+                })
+                .collect(),
+            &mut self.array_views,
+            arena,
+            [width, height],
+            |reason, count| {
+                arena.refuse(&reason);
+                *self.native_refusals.entry(reason).or_default() += count;
+            },
+        );
         let mut encoder = device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2079,8 +2145,14 @@ impl SpritePass {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for submission in &submissions {
-                submission.pipeline.draw(&mut pass, &submission.draw);
+            let mut previous = None;
+            for (submission, scissor) in &submissions {
+                let [x, y, w, h] = scissor.unwrap_or([0, 0, width, height]);
+                pass.set_scissor_rect(x, y, w, h);
+                submission
+                    .pipeline
+                    .draw_after(&mut pass, &submission.draw, previous);
+                previous = Some(&submission.draw);
             }
         }
         // The bake is submitted before the frame: its uploads are written first.
@@ -2095,6 +2167,60 @@ impl SpritePass {
         });
         Ok(view)
     }
+}
+
+fn batch_runs(
+    runs: Vec<Run>,
+    packets: &mut [Option<shader_pipeline::gpu::batch::Packet>],
+    draws: &mut Vec<super::native_shader::stream::Submission>,
+    array_views: &mut shader_pipeline::gpu::batch::Views,
+    arena: &shader_pipeline::gpu::Arena,
+    size: [u32; 2],
+    refusals: &mut BTreeMap<String, u64>,
+) -> Vec<Run> {
+    let mut output = Vec::new();
+    let mut pending = Vec::new();
+    let mut refuse = |reason: String, count| {
+        arena.refuse(&reason);
+        *refusals.entry(reason).or_default() += count;
+    };
+    let mut flush = |pending: &mut Vec<shader_pipeline::gpu::batch::Item>,
+                     output: &mut Vec<Run>,
+                     draws: &mut Vec<super::native_shader::stream::Submission>,
+                     array_views: &mut shader_pipeline::gpu::batch::Views| {
+        if pending.is_empty() {
+            return;
+        }
+        for (submission, scissor) in shader_pipeline::gpu::batch::prepare(
+            std::mem::take(pending),
+            array_views,
+            arena,
+            size,
+            &mut refuse,
+        ) {
+            let index = draws.len();
+            draws.push(submission);
+            output.push(Run {
+                pipe: Pipe::Native(index),
+                texture: NO_TEXTURE,
+                scissor,
+                range: 0..0,
+            });
+        }
+    };
+    for run in runs {
+        if let Pipe::Native(index) = run.pipe {
+            pending.push(shader_pipeline::gpu::batch::Item {
+                packet: packets[index].take().expect("each packet is drawn once"),
+                scissor: run.scissor.unwrap_or([0, 0, size[0], size[1]]),
+            });
+        } else {
+            flush(&mut pending, &mut output, draws, array_views);
+            output.push(run);
+        }
+    }
+    flush(&mut pending, &mut output, draws, array_views);
+    output
 }
 
 /// Counts and logs a frame's wait for GUI builds no warm-up foresaw.
@@ -2161,7 +2287,7 @@ fn self_contained(draw: &super::native_shader::draw::Quad) -> bool {
 }
 
 /// A slot's texture as the replay holds it: `Ok(None)` a null bind, `Err` one it does not hold.
-type View = Result<Option<wgpu::TextureView>, String>;
+type View = Result<Option<shader_pipeline::gpu::TextureBinding>, String>;
 
 /// What a compiled draw is prepared for: the GUI viewport it projects over, the target's format
 /// and samples, a placement after its projection and whether the target keeps premultiplied
@@ -2216,7 +2342,7 @@ fn prepare_draw(
     arena: &shader_pipeline::gpu::Arena,
     draw: &super::native_shader::draw::Quad,
     views: &[(u32, View)],
-    baked: Option<Result<wgpu::TextureView, String>>,
+    baked: Option<Result<shader_pipeline::gpu::TextureBinding, String>>,
     Output {
         viewport,
         format,
@@ -2225,7 +2351,7 @@ fn prepare_draw(
         premultiply,
         layer,
     }: Output,
-) -> Result<super::native_shader::stream::Submission, String> {
+) -> Result<shader_pipeline::gpu::batch::Packet, String> {
     use installed_content_core::pdxshader::program::Stage;
     let packets::Metadata { label, selection } = packets.metadata(draw);
     let mut refused = baked
@@ -2310,23 +2436,28 @@ fn prepare_draw(
             .then(|| draw.effect.asset.source.sampler(slot))
             .flatten();
         match view {
-            Ok(view) => native.bind_texture(slot, Stage::Pixel, view, sampler),
+            Ok(view) => native.bind_formatted_texture(slot, Stage::Pixel, view, sampler),
             Err(_) => native.forget_texture(slot, Stage::Pixel, sampler),
         }
     }
     if let Some(reason) = refused {
         return Err(reason);
     }
-    native.prepare(
-        arena,
-        &label,
-        &draw.vertices,
-        draw.stride,
-        draw.vertices.len() / draw.stride,
-        draw.topology,
-        format,
-        samples,
-    )
+    native
+        .prepare_packet(
+            arena,
+            &label,
+            &draw.vertices,
+            draw.stride,
+            draw.vertices.len() / draw.stride,
+            draw.topology,
+            format,
+            samples,
+        )
+        .map(|mut packet| {
+            packet.source_draws(draw.source_draws);
+            packet
+        })
 }
 
 /// What [`SpritePass::sync`] does with the lazy textures.

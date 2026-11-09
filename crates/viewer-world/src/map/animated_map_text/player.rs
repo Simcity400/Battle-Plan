@@ -133,7 +133,7 @@ pub struct Player {
     renderer: Result<draw::Renderer, String>,
     styles: BTreeMap<Style, Result<LoadedStyle, String>>,
     colors: BTreeMap<u8, [f32; 4]>,
-    textures: Vec<wgpu::TextureView>,
+    textures: Vec<shader_pipeline::gpu::TextureBinding>,
     cutoff: Result<f32, String>,
     retained: shader_scene::State,
     provinces: BTreeMap<u32, Province>,
@@ -143,10 +143,17 @@ pub struct Player {
 }
 
 impl Player {
+    /// Compiles the world text's program now, so the first frame with text compiles nothing.
+    pub fn warm(&self) {
+        if let Ok(renderer) = &self.renderer {
+            renderer.warm();
+        }
+    }
+
     pub fn new(
         assets: &Assets,
         resources: &GuiResources,
-        textures: Vec<wgpu::TextureView>,
+        textures: Vec<shader_pipeline::gpu::TextureBinding>,
         samples: u32,
     ) -> Self {
         Self {

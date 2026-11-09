@@ -199,6 +199,23 @@ pub(crate) fn gpu_timer(support: Result<(), String>) {
     let _ = GPU_TIMER.set(support);
 }
 
+pub(crate) fn since(name: &str, started: Instant) {
+    let Some(log) = log() else {
+        return;
+    };
+    let at = epoch_ms();
+    log.send(
+        format!(
+            r#"{{"t":"map_stage","at":{at:.3},"pid":{},"name":{},"ms":{:.3},"builds_total":{}}}"#,
+            std::process::id(),
+            json_string(name),
+            started.elapsed().as_secs_f64() * 1000.0,
+            shader_pipeline::gpu::stats::builds_total(),
+        ),
+        at,
+    );
+}
+
 thread_local! {
     /// The number the next `map` record carries.
     static FRAME: Cell<u64> = const { Cell::new(0) };
@@ -250,6 +267,23 @@ pub(crate) fn frame_id() -> Option<u64> {
     STARTED.with(Cell::get).map(|_| FRAME.with(Cell::get))
 }
 
+/// The rendered frame's opt-in profile, keyed with its window and GPU records.
+pub(crate) fn profile_frame(line: &str) {
+    let Some(frame) = frame_id() else {
+        return;
+    };
+    let log = log().unwrap();
+    let at = epoch_ms();
+    log.send(
+        format!(
+            r#"{{"t":"map_profile","at":{at:.3},"pid":{},"frame":{frame},"line":{}}}"#,
+            std::process::id(),
+            json_string(line),
+        ),
+        at,
+    );
+}
+
 /// Frames' GPU milliseconds just settled; each later `map` record carries one.
 pub(crate) fn gpu_times(times: Vec<(u64, Result<f64, String>)>) {
     if !times.is_empty() && log().is_some() {
@@ -272,7 +306,12 @@ pub(crate) fn frame_end() {
         .with(|previous| previous.replace(Some(started)))
         .map_or_else(
             || "null".to_owned(),
-            |previous| format!("{:.3}", started.duration_since(previous).as_secs_f64() * 1000.0),
+            |previous| {
+                format!(
+                    "{:.3}",
+                    started.duration_since(previous).as_secs_f64() * 1000.0
+                )
+            },
         );
     let (paint, acquire, painted) = PAINTED.with(Cell::take).map_or_else(
         || ("null".to_owned(), "null".to_owned(), "null".to_owned()),

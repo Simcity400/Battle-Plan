@@ -1191,6 +1191,7 @@ pub struct Viewer {
     fade: Option<LayerFade>,
     hovered_name_region: Option<u32>,
     last_frame: Instant,
+    camera_step: Option<f32>,
     label_report: LabelReport,
     /// The raid offer cycle, advanced off the frame path.
     raid_lane: crate::raid_lane::RaidLane,
@@ -1400,7 +1401,10 @@ fn load_scene_scoped(
             cache: &document.content.political_gpu,
         },
     )?;
+    let warm_started = Instant::now();
     scene.apply(device, queue, SceneInput::WarmPipelines)?;
+    crate::perf_log::since("pipeline_warmup", warm_started);
+    let warm_started = Instant::now();
     let icons = &document.icons;
     scene.warm_gui(
         device,
@@ -1411,6 +1415,7 @@ fn load_scene_scoped(
             .into_iter()
             .chain(icons.combat.gui.effects()),
     );
+    crate::perf_log::since("gui_warmup", warm_started);
     Ok(scene)
 }
 
@@ -1713,6 +1718,7 @@ impl Viewer {
             fade: None,
             hovered_name_region: None,
             last_frame: Instant::now(),
+            camera_step: None,
             label_report: LabelReport::default(),
             raid_lane: Default::default(),
             faction_highlight: Default::default(),
@@ -2563,7 +2569,8 @@ impl Viewer {
                             &resolve,
                             options.allow_unverified,
                             &initial,
-                            None,
+                            (!options.visual_mods.is_empty())
+                                .then_some(options.visual_mods.as_slice()),
                             0,
                         ),
                     }
@@ -3766,6 +3773,7 @@ impl Viewer {
         viewer_foundation::map::counter_move::take_profile();
         if profiling() {
             static ADAPTER_ONCE: std::sync::Once = std::sync::Once::new();
+            shader_pipeline::gpu::stats::mark_window_thread();
             let info = state.adapter.get_info();
             ADAPTER_ONCE.call_once(|| {
                 profile_print(format!("PROFILE adapter {} {:?}", info.name, info.backend));
@@ -4243,7 +4251,9 @@ impl Viewer {
             }
         }
         // The frame time the camera law and the name fade integrate.
-        let frame_delta = self.last_frame.elapsed().as_secs_f32();
+        let frame_delta = self
+            .camera_step
+            .unwrap_or_else(|| self.last_frame.elapsed().as_secs_f32());
         self.last_frame = Instant::now();
         // The game's keys and edge scrolling go to the map that owns camera input: the window must
         // have the system's focus, and a dashboard map must also be the one last pressed with a
@@ -6065,8 +6075,8 @@ impl Viewer {
             if let Some(cpu) = laps.frame_cpu.take() {
                 cpu.finish();
             }
-            profile_print(format!(
-                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {} thread {} cpu_hz {} {} {}",
+            let profile = format!(
+                "PROFILE frame {} fraction {} height {} total {:.6} overlay {:.6} spline {:.6} hour {} frame_total {:.3} outside {:.3} scene {:.3}/{:.3}/{:.3}/{:.3} gpu {:.3} laps {} detail {} spans {} thread {} cpu_hz {} {} {} perf_frame={} commands={:?}",
                 self.profile_frame,
                 document.hour_fraction,
                 camera.height,
@@ -6091,7 +6101,11 @@ impl Viewer {
                     .map_or_else(|| "unavailable".to_owned(), |hz| hz.to_string()),
                 playback_stamp.expect("PROFILE frame sampled its playback stamp"),
                 shown_stamp.expect("PROFILE frame sampled its shown stamp"),
-            ));
+                crate::perf_log::frame_id().map_or_else(|| "unavailable".to_owned(), |id| id.to_string()),
+                shader_pipeline::gpu::stats::take(),
+            );
+            crate::perf_log::profile_frame(&profile);
+            profile_print(profile);
         }
         // A capture waits until every flag and portrait its frame asked for
         // has decoded and been laid out, as a headless dump does. The overlay's own layout version

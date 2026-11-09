@@ -229,7 +229,7 @@ impl<K> Default for PoolView<K> {
     }
 }
 
-impl<K: Clone + Eq> PoolView<K> {
+impl<K: Clone + Eq + std::hash::Hash> PoolView<K> {
     /// Every live window's owner and slot.
     pub fn live(&self) -> Vec<(K, SlotId)> {
         self.pool.as_ref().map_or_else(Vec::new, |pool| {

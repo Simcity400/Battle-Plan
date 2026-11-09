@@ -307,7 +307,7 @@ pub fn geometry(
 }
 
 /// An error means unknown native content/resource bytes. `Ok(None)` is a known null SRV.
-pub type Texture = Result<Option<wgpu::TextureView>, String>;
+pub type Texture = Result<Option<gpu::TextureBinding>, String>;
 
 pub struct Renderer {
     effect: Arc<Effect>,
@@ -353,6 +353,21 @@ impl Renderer {
         }
     }
 
+    /// Compiles the Text3D technique now, so the first frame with text compiles nothing.
+    pub fn warm(&self) {
+        let _ = self.selected();
+    }
+
+    fn selected(&self) -> &Result<Option<Selection>, String> {
+        self.compiled.get_or_init(|| {
+            // A visual mod's replacement that cannot be compiled falls back to the recording.
+            shader_pipeline::library::with_recorded(&self.effect, |effect| {
+                effect.select("Text3D").map_err(std::io::Error::other)
+            })
+            .map_err(|error| error.to_string())
+        })
+    }
+
     /// Mutate the caller's scene state in native bucket order. PS b0 and the rasterizer
     /// remain inherited; the VS allocation is exactly80 initialized physical bytes.
     pub fn prepare(
@@ -369,13 +384,7 @@ impl Renderer {
         if !mesh.has_text {
             return Ok(prepared);
         }
-        let selected = self.compiled.get_or_init(|| {
-            // A visual mod's replacement that cannot be compiled falls back to the recording.
-            shader_pipeline::library::with_recorded(&self.effect, |effect| {
-                effect.select("Text3D").map_err(std::io::Error::other)
-            })
-            .map_err(|error| error.to_string())
-        });
+        let selected = self.selected();
         let mut first_refusal = None;
         match selected {
             Ok(selection) => {
@@ -433,9 +442,11 @@ impl Renderer {
         for group in &mesh.groups {
             let view = texture(group.texture);
             match &view {
-                Ok(view) => retained
-                    .stream
-                    .bind_texture(0, Stage::Pixel, view.clone(), sampler),
+                Ok(view) => {
+                    retained
+                        .stream
+                        .bind_formatted_texture(0, Stage::Pixel, view.clone(), sampler)
+                }
                 Err(_) => retained.stream.forget_texture(0, Stage::Pixel, sampler),
             }
             if program_refused {

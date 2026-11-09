@@ -517,6 +517,7 @@ mod tests {
         let program =
             installed_content_core::pdxshader::program::read_with(b"absent.lua", &|_| None).unwrap();
         let a = draw::Quad {
+            source_draws: 1,
             path: "synthetic".into(),
             effect: draw::Effect {
                 asset: crate::map::native_shader::library::Effect::from_compiled(

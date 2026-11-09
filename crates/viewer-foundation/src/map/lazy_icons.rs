@@ -22,9 +22,9 @@
 //! icon page, and are never reused, so a quad laid out against an id that has
 //! since been evicted draws nothing rather than another texture.
 
-use job_priority::SpawnCarried as _;
 #[cfg(test)]
 use crate::map::test_support::TEST_HANG_GUARD;
+use job_priority::SpawnCarried as _;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     io,
@@ -60,6 +60,7 @@ pub struct Resident {
     /// Bumped whenever the texture's pixels change.
     pub revision: u64,
     pub texture: Arc<dds::Texture>,
+    pub cells: Arc<BTreeMap<[u32; 4], u64>>,
 }
 
 #[derive(Default)]
@@ -120,6 +121,7 @@ impl LazyTextures {
             Resident {
                 revision: 0,
                 texture: Arc::new(texture),
+                cells: Default::default(),
             },
         );
         drop(registry);
@@ -127,11 +129,12 @@ impl LazyTextures {
         id
     }
 
-    fn modify(&self, id: usize, change: impl FnOnce(&mut dds::Texture)) {
+    fn modify(&self, id: usize, cell: [u32; 4], change: impl FnOnce(&mut dds::Texture)) {
         let mut registry = lock(&self.registry);
         if let Some(entry) = registry.entries.get_mut(&id) {
             change(Arc::make_mut(&mut entry.texture));
             entry.revision += 1;
+            Arc::make_mut(&mut entry.cells).insert(cell, entry.revision);
         }
         drop(registry);
         self.bump();
@@ -332,7 +335,9 @@ impl LazyFlags {
     ) -> Arc<Self> {
         let mut folded: BTreeMap<String, String> = BTreeMap::new();
         for (key, path) in index {
-            folded.entry(key.chars().map(fold).collect()).or_insert(path);
+            folded
+                .entry(key.chars().map(fold).collect())
+                .or_insert(path);
         }
         let flags = Arc::new(Self {
             index: folded.into_iter().collect(),
@@ -603,9 +608,13 @@ impl PendingLoad for LazyFlags {
                 state.pages.push(id);
             }
             let pages = self.pages;
-            self.textures.modify(state.pages[page as usize], |texture| {
-                pages.blit(&mut texture.mips[0][0].data, at, &image.pixels);
-            });
+            self.textures.modify(
+                state.pages[page as usize],
+                [at[0], at[1], pages.cell[0], pages.cell[1]],
+                |texture| {
+                    pages.blit(&mut texture.mips[0][0].data, at, &image.pixels);
+                },
+            );
             state.cells.insert(key.clone(), Some(cell));
             state.keys.push(key);
         }
@@ -663,11 +672,7 @@ pub struct LazyImages {
 }
 
 impl LazyImages {
-    pub fn new(
-        what: &'static str,
-        read: ImageReader,
-        textures: &Arc<LazyTextures>,
-    ) -> Arc<Self> {
+    pub fn new(what: &'static str, read: ImageReader, textures: &Arc<LazyTextures>) -> Arc<Self> {
         let images = Arc::new(Self {
             what,
             read,
@@ -910,6 +915,31 @@ mod tests {
         let textures = LazyTextures::new();
         textures.set_background(false);
         textures
+    }
+
+    #[test]
+    fn cell_revisions_cover_missed_updates_without_changing_old_snapshots() {
+        let textures = foreground();
+        let id = textures.insert(dds::Texture::from_rgba8(Rgba8Image {
+            width: 2,
+            height: 1,
+            pixels: vec![0; 8],
+        }));
+        textures.modify(id, [0, 0, 1, 1], |image| image.mips[0][0].data[0] = 1);
+        let first = textures.snapshot().pop().unwrap().1;
+        textures.modify(id, [1, 0, 1, 1], |image| image.mips[0][0].data[4] = 2);
+        textures.modify(id, [0, 0, 1, 1], |image| image.mips[0][0].data[0] = 3);
+        let latest = textures.snapshot().pop().unwrap().1;
+        let changed: Vec<_> = latest
+            .cells
+            .iter()
+            .filter_map(|(cell, revision)| (*revision > first.revision).then_some(*cell))
+            .collect();
+        assert_eq!(changed, [[0, 0, 1, 1], [1, 0, 1, 1]]);
+        assert_eq!(first.cells.len(), 1);
+        assert_eq!(first.texture.base().data[0], 1);
+        assert_eq!(latest.texture.base().data[0], 3);
+        assert_eq!(latest.texture.base().data[4], 2);
     }
 
     #[test]

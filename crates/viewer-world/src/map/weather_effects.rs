@@ -1766,6 +1766,19 @@ impl Pass {
         Packets(packets)
     }
 
+    /// Build each content-selected particle pipeline before drawing a frame.
+    pub fn warm(&mut self, device: &wgpu::Device) {
+        let assets = Arc::clone(&self.assets);
+        let emitters: Vec<&Emitter> = assets
+            .systems
+            .values()
+            .flatten()
+            .flat_map(|pair| pair.members.iter().flatten())
+            .chain(assets.entities.values().flat_map(|(_, emitters)| emitters))
+            .collect();
+        self.native.warm(device, &emitters);
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn draw_view(
         &mut self,

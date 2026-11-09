@@ -266,6 +266,7 @@ mod tests {
     fn only_a_technique_that_reads_the_snow_mud_slot_shows_snow_on_water() {
         let stage = |slots: &[u32]| shader_pipeline::Shader {
             wgsl: String::new(),
+            independent_draws: false,
             buffers: Vec::new(),
             textures: slots
                 .iter()

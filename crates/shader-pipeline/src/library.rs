@@ -55,10 +55,17 @@ pub struct Effect {
     /// How many of `defines` are the library's globals, which every variant keeps.
     globals: usize,
     compiled: Vec<OnceLock<Result<Arc<Compiled>, String>>>,
+    independent: Vec<DrawIndependence>,
     cache: Arc<cache::Cache>,
     variants: Mutex<BTreeMap<Vec<String>, Observed<Arc<Effect>>>>,
     /// The recorded effect a visual mod's replacement stands in for, with the same defines.
     recorded: Option<Recorded>,
+}
+
+#[derive(Default)]
+struct DrawIndependence {
+    ready: std::sync::OnceLock<bool>,
+    pending: std::sync::OnceLock<()>,
 }
 
 /// A replacement effect's recorded counterpart and where a refusal of the replacement is named.
@@ -132,6 +139,11 @@ impl Effect {
         Arc::new(Self {
             id: uuid::Uuid::new_v4(),
             compiled: source.techniques.iter().map(|_| OnceLock::new()).collect(),
+            independent: source
+                .techniques
+                .iter()
+                .map(|_| Default::default())
+                .collect(),
             source,
             globals: globals.len(),
             defines: globals.into_iter().chain(caller).collect(),
@@ -156,6 +168,11 @@ impl Effect {
     ) -> Arc<Self> {
         Arc::new(Self {
             id: uuid::Uuid::new_v4(),
+            independent: source
+                .techniques
+                .iter()
+                .map(|_| Default::default())
+                .collect(),
             source,
             defines,
             globals: 0,
@@ -175,6 +192,11 @@ impl Effect {
     ) -> Arc<Self> {
         Arc::new(Self {
             id: uuid::Uuid::new_v4(),
+            independent: source
+                .techniques
+                .iter()
+                .map(|_| Default::default())
+                .collect(),
             source,
             defines: Vec::new(),
             globals: 0,
@@ -266,6 +288,56 @@ impl Effect {
     /// Technique `index`'s program if it has been compiled, without compiling it.
     pub fn compiled_now(&self, index: usize) -> Option<Result<Arc<Compiled>, String>> {
         self.compiled.get(index)?.peek().cloned()
+    }
+
+    /// Includes every recorded program a runtime pipeline refusal could select.
+    pub fn independent_draws(&self, index: usize) -> bool {
+        self.independence(index).unwrap_or_else(|| {
+            if let Some(slot) = self.independent.get(index) {
+                slot.pending.get_or_init(|| {
+                    eprintln!("native batching effect {:?} technique {:?}: retained draw boundaries while compilation is pending",
+                        self.source.effect, self.source.techniques[index].name);
+                });
+            }
+            false
+        })
+    }
+
+    fn independence(&self, index: usize) -> Option<bool> {
+        let slot = self.independent.get(index)?;
+        if let Some(independent) = slot.ready.get() {
+            return Some(*independent);
+        }
+        let own = self.compiled_now(index)?;
+        let mut independent = own.is_ok_and(|compiled| {
+            compiled.vertex.independent_draws && compiled.pixel.independent_draws
+        });
+        if let Some(recorded) = &self.recorded {
+            let name = &self.source.techniques[index].name;
+            independent &= match recorded
+                .effect
+                .source
+                .techniques
+                .iter()
+                .position(|technique| technique.name.eq_ignore_ascii_case(name))
+            {
+                Some(index) => recorded.effect.independence(index)?,
+                None => false,
+            };
+        }
+        Some(*slot.ready.get_or_init(|| {
+            eprintln!(
+                "native batching effect {:?} technique {:?}: {}",
+                self.source.effect,
+                self.source.techniques[index].name,
+                if independent {
+                    "independent draws"
+                } else {
+                    "retained draw boundaries"
+                }
+            );
+            independent
+        }))
     }
 
     /// Compiles every technique now. A failure is reported where a technique is used

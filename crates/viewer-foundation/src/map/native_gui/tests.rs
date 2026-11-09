@@ -7297,6 +7297,7 @@ fn clocked_effect(techniques: &str, clock: crate::map::native_shader::clock::Clo
     .unwrap();
     let shader = |clock| Shader {
         wgsl: String::new(),
+        independent_draws: false,
         buffers: Vec::new(),
         textures: Vec::new(),
         samplers: Vec::new(),
