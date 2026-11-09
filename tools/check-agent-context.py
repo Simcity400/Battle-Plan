@@ -79,9 +79,9 @@ def main():
             print("Agent context grew compared to " + args.against + ":")
             print("\n".join(growth))
             if args.allow_increase:
-                print("Accepted by the agent-context-increase label.")
+                print("Accepted by --allow-increase.")
             else:
-                print("Cut the added text, or ask a maintainer to add the agent-context-increase label.")
+                print("Cut the added text, or ask the user to accept the growth.")
                 failures.append("grown")
     return 1 if failures else 0
 

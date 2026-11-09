@@ -3,8 +3,7 @@ name: Release build
 # Builds the one per-user installer that carries Battle Plan and Battle Plan Recorder at one version,
 # signs it for Tauri's updater (and with Authenticode once Azure Artifact Signing is configured),
 # proves the signature verifies against the public key both apps carry, and uploads the installer,
-# its signature and checksums as the `installer` artifact. release.yml publishes it; ci.yml runs it
-# as a preview on a pull request labelled `release-preview`.
+# its signature and checksums as the `installer` artifact. release.yml publishes it.
 #
 # Preview builds carry no update feed (battle-plan_RELEASES is unset), so they never update and are
 # never offered as an update.

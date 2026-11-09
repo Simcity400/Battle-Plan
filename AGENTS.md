@@ -75,14 +75,14 @@ All Rust is in `crates/`; names group by prefix.
 
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
-- Only Rust compiles go to Boat, never this machine. The one exception is the self-hosted GitHub Actions runner (`tools/release-runner.ps1`): it alone compiles here, for release builds and PR checks. Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
+- Only Rust compiles go to Boat, never this machine. The one exception is the self-hosted GitHub Actions runner (`tools/release-runner.ps1`): it alone compiles here, for release builds. Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
   - Check: `python tools/boat.py check --all-targets -p <crate>...` for the crates you changed only. Never the whole workspace, never their dependents. `tools/check_changed.py` works out those crates for you.
   - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
 
 ## Verifying
 
-- Run `python tools/check_changed.py` once, when the work is done, not as you go. It checks only what your changes touch: the changed crates on Boat, the UI, and the repo checks. Work that passed needs no second check. If you are going to build anyway, skip it. CI runs `cargo check --workspace` on the runner, so you never do.
+- Run `python tools/check_changed.py` once, when the work is done, not as you go. It checks only what your changes touch: the changed crates on Boat, the UI, and the repo checks. Work that passed needs no second check. If you are going to build anyway, skip it.
 - Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
 - Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
 - A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
@@ -111,7 +111,7 @@ All Rust is in `crates/`; names group by prefix.
 
 - Don't write READMEs or other docs. When a change makes existing doc text wrong, fix or delete that text.
 - Plans, research notes and scratch files stay outside the worktree. Never commit them.
-- This file has a size budget. After editing it, run `python tools/check-agent-context.py --write`. CI fails any growth unless a maintainer adds the label `agent-context-increase`, so cut text before adding it.
+- This file has a size budget. After editing it, run `python tools/check-agent-context.py --write`. `check_changed.py` fails growth against `main`, so cut text before adding it.
 
 ## Running the game
 
