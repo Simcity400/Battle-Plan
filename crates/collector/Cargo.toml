@@ -17,6 +17,8 @@ advisor_changes = []
 advisor_profile = ["advisor_changes"]
 # Bounded per-hour slow-callback phase and thread-cycle diagnostics.
 callback_profile = ["collector-fuel-awards/callback_profile"]
+# Diagnostic: thread cycles per spool, helper and sizing step; off by default.
+phase_cpu = []
 # Diagnostic in-process CPU instruction sampling; off by default.
 worker_sampler = []
 # Live smoke only: a `columnar.fail` file in a campaign's directory fails its next journal

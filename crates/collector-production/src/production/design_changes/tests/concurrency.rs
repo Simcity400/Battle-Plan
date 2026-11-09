@@ -145,24 +145,23 @@ fn different_saved_designs_overlap_and_publish_exact_terminal_snapshots() {
     pauses[1].wait();
     assert_eq!(active(), 2);
     assert!(!MISSED.load(Ordering::Acquire));
-    // Finish in the opposite order to the original stores. Snapshots and
-    // sequence allocation share STORE, so publication follows terminal copies.
+    // Finish in the opposite order to the original stores; the boundary reads in design order.
     pauses[1].wait();
     assert_eq!(second.join().unwrap(), 22);
     pauses[0].wait();
     assert_eq!(first.join().unwrap(), 11);
     let mut changes = Vec::new();
-    drain(space.base, 7, &mut changes).unwrap();
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(2));
     assert_eq!(
         changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
-        [registry[1].id, registry[0].id]
+        [registry[0].id, registry[1].id]
     );
     assert_eq!(
         changes
             .iter()
             .map(|row| row.snapshot.as_ref().unwrap().stats[0])
             .collect::<Vec<_>>(),
-        [22, 11]
+        [11, 22]
     );
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
@@ -206,12 +205,9 @@ fn same_saved_design_overlap<const SITE: usize>() {
     assert_published_equals_fresh(baseline, changes.clone(), acquire(&space, &registry));
     let mut captured = Captured::vacant();
     captured.outcome = Outcome::Rows { len: changes.len() };
-    captured.repaired = 1;
     captured.rows = changes;
-    assert!(matches!(
-        captured.table_input(None),
-        TableInput::Sampled(TableView::Unavailable { .. })
-    ));
+    assert!(matches!(captured.table_input(None), TableInput::Sampled(
+        TableView::Complete(rows::TableRows::VariantChanges(rows))) if rows.len() == 1));
 }
 #[test]
 fn same_saved_design_overlap_repairs_only_that_receiver_even_when_original_stores_are_ordered() {
@@ -261,26 +257,31 @@ fn same_thread_nesting_keeps_outer_snapshot_and_independent_nested_receiver() {
     assert_eq!(first.join().unwrap(), 77);
     assert_eq!(TARGET.get(), 0);
     let mut changes = Vec::new();
-    drain(space.base, 7, &mut changes).unwrap();
+    // The nested same-receiver writer adds no mark of its own; each receiver is read once.
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(3));
     assert_eq!(
         changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
-        [registry[1].id, registry[2].id, registry[0].id]
+        [registry[0].id, registry[1].id, registry[2].id]
+    );
+    assert_eq!(
+        changes
+            .iter()
+            .map(|row| row.snapshot.as_ref().unwrap().stats[0])
+            .collect::<Vec<_>>(),
+        [1, 2, 3]
     );
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn contended_terminal_snapshots_keep_every_occurrence_in_sequence_order() {
+fn contended_marks_keep_every_receiver_for_one_terminal_snapshot_each() {
     static WAIT: OnceLock<Barrier> = OnceLock::new();
     fn waiting() {
         WAIT.get().unwrap().wait();
     }
     let (space, registry, baseline) = setup(2);
     let pause = WAIT.get_or_init(|| Barrier::new(registry.len() + 1));
-    let mut store = STORE.get().unwrap().lock().unwrap();
-    let spans = store.batch.log.spans.capacity() * 2;
-    let bytes = store.batch.log.bytes.capacity() * 2;
-    store.batch.prepare(registry.len() * 2, spans, bytes);
+    let store = STORE.get().unwrap().lock().unwrap();
     std::thread::scope(|threads| {
         let writers: Vec<_> = registry
             .iter()
@@ -300,68 +301,61 @@ fn contended_terminal_snapshots_keep_every_occurrence_in_sequence_order() {
             })
             .collect();
         // Both distinct receivers have completed their first native edit and
-        // reached the occupied STORE. Neither callback may discard its copy.
+        // reached the occupied STORE. Neither callback may lose its mark.
         pause.wait();
         drop(store);
         for writer in writers {
             writer.join().unwrap();
         }
     });
-    let meter = OnlyDesign {
-        space: &space,
-        forbidden: registry[0].pointer(),
-        reads: std::cell::Cell::new(0),
-    };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&meter, space.base, 7, &mut changes), Ok(0));
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(2));
     assert_eq!(
-        meter.reads.get(),
-        0,
-        "drain decodes owned occurrences, with no terminal reread"
+        changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
+        [registry[0].id, registry[1].id]
     );
-    assert_eq!(changes.len(), 4);
+    // Each design's last edit, as the boundary reads it.
+    assert_eq!(
+        changes
+            .iter()
+            .map(|row| row.snapshot.as_ref().unwrap().stats[0])
+            .collect::<Vec<_>>(),
+        [2, 12]
+    );
     assert!(
         changes
             .windows(2)
             .all(|pair| pair[0].sequence < pair[1].sequence)
     );
-    for (index, source) in registry.iter().enumerate() {
-        assert_eq!(
-            changes
-                .iter()
-                .filter(|row| row.variant == source.id)
-                .map(|row| row.snapshot.as_ref().unwrap().stats[0])
-                .collect::<Vec<_>>(),
-            [index as i64 * 10 + 1, index as i64 * 10 + 2]
-        );
-    }
     assert!(LOCK_CONTENTIONS.load(Ordering::Relaxed) >= 2);
     assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
-    assert_eq!(REPAIRED_INTERVALS.load(Ordering::Relaxed), 0);
+    assert_eq!(REPAIRED_INTERVALS.load(Ordering::Relaxed), 1);
     assert!(!needs_full());
     assert_published_equals_fresh(baseline, changes.clone(), acquire(&space, &registry));
     let mut captured = Captured::vacant();
     captured.outcome = Outcome::Rows { len: changes.len() };
     captured.rows = changes;
     assert!(matches!(captured.table_input(None), TableInput::Sampled(
-        TableView::Complete(rows::TableRows::VariantChanges(rows))) if rows.len() == 4));
+        TableView::Complete(rows::TableRows::VariantChanges(rows))) if rows.len() == 2));
 }
 #[test]
-fn a_self_owned_derived_writer_waits_only_for_its_terminal_snapshot() {
+fn a_contended_self_owned_derived_writer_marks_only_its_receiver() {
     let (space, registry, baseline) = setup(2);
     assert_eq!(
         with_store_contended(|| unsafe { around::<1>([registry[0].pointer(), 0, 17, 0], edited) }),
         17
     );
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
     assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0].variant, registry[0].id);
+    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], 17);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
-fn contended_scalar_and_flag_writes_keep_both_occurrences_and_refresh_cached_flags() {
+fn a_contended_scalar_and_flag_mark_reads_the_design_once_and_refreshes_cached_flags() {
     let (space, registry, baseline) = setup(2);
     let pointer = registry[0].pointer();
     unsafe {
@@ -369,19 +363,15 @@ fn contended_scalar_and_flag_writes_keep_both_occurrences_and_refresh_cached_fla
         std::ptr::write((pointer + native::CAN_UPGRADE_VARIANT) as *mut u8, 1);
     }
     with_store_contended(|| {
-        scalar::observe(
-            &space.memory(),
-            space.base,
-            pointer,
-            scalar::Field::AutoUpgraded,
-        );
-        flag_change(&space.memory(), space.base, pointer);
+        mark_design(&space.memory(), space.base, pointer, false);
+        mark_design(&space.memory(), space.base, pointer, false);
     });
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
-    assert_eq!(changes.len(), 2);
-    assert_eq!(changes[0].scalar.as_ref().unwrap().auto_upgraded, Some(1));
-    assert_eq!(changes[1].flags.unwrap()[1], 1);
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+    assert_eq!(changes.len(), 1);
+    let snapshot = changes[0].snapshot.as_ref().unwrap();
+    let state = snapshot.definition.design.require("design").unwrap();
+    assert_eq!((state.auto_upgraded, state.can_upgrade_variant), (1, 1));
     assert_eq!(
         STORE.get().unwrap().lock().unwrap().watched[&pointer].flags[1],
         1
@@ -409,7 +399,20 @@ fn a_parent_content_conflict_does_not_poison_an_independent_child_identity_snaps
     pauses[1].wait();
     second.join().unwrap();
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+    // The conflicted parent and the admitted child are each read once at the boundary.
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(2));
+    assert_eq!(
+        changes.iter().map(|row| row.variant).collect::<Vec<_>>(),
+        [registry[0].id, registry[2].id]
+    );
+    assert_eq!(
+        changes
+            .iter()
+            .map(|row| row.snapshot.as_ref().unwrap().stats[0])
+            .collect::<Vec<_>>(),
+        [22, 7]
+    );
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
     assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
@@ -460,12 +463,13 @@ fn a_new_saved_binding_keeps_its_publication_and_contended_edit() {
     prepare(&registry[..2], &baseline);
     assert!(baseline_admitted());
     let pointer = registry[2].pointer();
-    observe(&space.memory(), space.base, pointer, false, true);
+    mark_design(&space.memory(), space.base, pointer, true);
     with_store_contended(|| unsafe { around::<0>([pointer, 0, 17, 0], edited) });
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
-    assert_eq!(changes.len(), 2);
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+    assert_eq!(changes.len(), 1);
     assert_eq!(changes[0].variant, registry[2].id);
+    assert_eq!(changes[0].snapshot.as_ref().unwrap().stats[0], 17);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
 #[test]
@@ -673,16 +677,21 @@ fn a_contended_move_with_a_saved_operand_retains_the_consumed_bindings() {
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
-    assert!(changes.iter().any(|row| row.removed));
-    assert!(changes.last().unwrap().snapshot.is_some());
+    // Both tombstones, then the rebound destination's boundary read; the source is never read.
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
+    assert_eq!(changes.len(), 3);
+    assert!(changes[0].removed && changes[1].removed);
+    assert_eq!(
+        [changes[0].variant, changes[1].variant],
+        [registry[0].id, registry[1].id]
+    );
+    assert!(changes[2].snapshot.is_some() && changes[2].variant == registry[1].id);
     assert!(!needs_full());
     let rebound =
         native::RegistryRow::read(&space.memory(), space.base, registry[0].pointer()).unwrap();
     let mut survivors = vec![rebound];
     survivors.extend_from_slice(&registry[2..]);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &survivors));
-    assert_eq!(memory.reads.get(), 0);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
@@ -691,13 +700,7 @@ fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occu
     let baseline = acquire(&space, &registry[2..]);
     begin_read();
     prepare(&registry[2..], &baseline);
-    observe(
-        &space.memory(),
-        space.base,
-        registry[1].pointer(),
-        false,
-        true,
-    );
+    mark_design(&space.memory(), space.base, registry[1].pointer(), true);
     with_store_contended(|| unsafe {
         around::<9>([registry[0].pointer(), registry[1].pointer(), 0, 0], moved)
     });
@@ -707,16 +710,17 @@ fn a_contended_move_of_a_new_unprepared_saved_operand_retains_every_binding_occu
         reads: std::cell::Cell::new(0),
     };
     let mut changes = Vec::new();
-    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(0));
-    assert!(changes.iter().any(|row| row.removed));
-    assert!(changes.last().unwrap().snapshot.is_some());
+    // The rebound destination is read at the boundary; the consumed source never is.
+    assert_eq!(drain_with(&memory, space.base, 7, &mut changes), Ok(1));
+    assert_eq!(changes.len(), 2);
+    assert!(changes[0].removed && changes[0].variant == registry[1].id);
+    assert!(changes[1].snapshot.is_some() && changes[1].variant == registry[1].id);
     assert!(!needs_full());
     let rebound =
         native::RegistryRow::read(&space.memory(), space.base, registry[0].pointer()).unwrap();
     let mut survivors = vec![rebound];
     survivors.extend_from_slice(&registry[2..]);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &survivors));
-    assert_eq!(memory.reads.get(), 0);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
 }
 #[test]
@@ -741,14 +745,19 @@ fn a_consuming_move_and_an_unrelated_saved_edit_keep_binding_events_and_exact_ro
     pauses[0].wait();
     assert_eq!(moving.join().unwrap(), 19);
     let mut changes = Vec::new();
-    drain(space.base, 7, &mut changes).unwrap();
+    // Tombstones in event order, then the rebound destination and the edit in design id order.
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(2));
     assert_eq!(changes.len(), 4);
     assert!(changes[0].removed && changes[1].removed);
     assert_eq!(
         [changes[0].variant, changes[1].variant],
         [registry[0].id, registry[1].id]
     );
-    assert_eq!(changes[3].variant, registry[1].id);
+    assert_eq!(
+        [changes[2].variant, changes[3].variant],
+        [registry[1].id, registry[2].id]
+    );
+    assert_eq!(changes[3].snapshot.as_ref().unwrap().stats[0], 33);
     {
         let store = STORE.get().unwrap().lock().unwrap();
         assert_eq!(store.watched[&registry[0].pointer()].id, registry[1].id);
@@ -833,16 +842,18 @@ fn parent_snapshot_refuses_a_consuming_move(operand: usize) {
     ];
     let moving = std::thread::spawn(move || unsafe { around::<9>(args, moved) });
     pause.wait();
-    // Both primary receivers differ. The child's snapshot additionally reads
-    // the still-consuming parent's identity, so that dependency must refuse.
+    // A mark claims nothing; the boundary refuses the child of a consumed parent.
     collector_test_support::with_allocations_denied(|| {
-        observe(&space.memory(), space.base, child, false, false);
+        mark_design(&space.memory(), space.base, child, false);
     });
-    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 1);
+    assert_eq!(COMPETING_WRITER_REJECTIONS.load(Ordering::Relaxed), 0);
     assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 0);
     pause.wait();
     moving.join().unwrap();
-    assert!(drain(space.base, 7, &mut Vec::new()).is_err());
+    assert_eq!(
+        drain(space.base, 7, &mut Vec::new()),
+        Err("variant parent identity has a consumed saved binding")
+    );
 }
 
 #[test]
@@ -988,15 +999,9 @@ fn contended_draft_destruction_needs_neither_a_native_read_nor_a_full_census() {
 fn publication_after_a_contended_retirement_retains_both_occurrences() {
     let (space, registry, baseline) = setup(1);
     with_store_contended(|| retire(&space.memory(), space.base, registry[0].pointer()));
-    observe(
-        &space.memory(),
-        space.base,
-        registry[0].pointer(),
-        false,
-        true,
-    );
+    mark_design(&space.memory(), space.base, registry[0].pointer(), true);
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
     assert_eq!(changes.len(), 2);
     assert!(changes[0].removed && changes[1].snapshot.is_some());
     assert!(!needs_full());
@@ -1009,14 +1014,8 @@ fn a_new_saved_binding_logs_retirement_after_its_first_boundary() {
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
     prepare(&registry[..1], &baseline);
-    observe(
-        &space.memory(),
-        space.base,
-        registry[1].pointer(),
-        false,
-        true,
-    );
-    assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(0));
+    mark_design(&space.memory(), space.base, registry[1].pointer(), true);
+    assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
     with_store_contended(|| retire(&space.memory(), space.base, registry[1].pointer()));
     let memory = OnlyDesign {
         space: &space,
@@ -1191,15 +1190,9 @@ fn contended_draft_destruction_does_not_poison_an_unrelated_saved_publication() 
         retire(&space.memory(), space.base, usize::MAX);
     });
     assert!(!repair::pending());
-    observe(
-        &space.memory(),
-        space.base,
-        registry[1].pointer(),
-        false,
-        true,
-    );
+    mark_design(&space.memory(), space.base, registry[1].pointer(), true);
     let mut changes = Vec::new();
-    assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
     assert_eq!(REFUSED_INTERVALS.load(Ordering::Relaxed), 0);
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry));
 }
@@ -1233,13 +1226,7 @@ fn a_contended_new_saved_retirement_logs_without_reading_dead_storage() {
     let baseline = acquire(&space, &registry[..1]);
     begin_read();
     prepare(&registry[..1], &baseline);
-    observe(
-        &space.memory(),
-        space.base,
-        registry[1].pointer(),
-        false,
-        true,
-    );
+    mark_design(&space.memory(), space.base, registry[1].pointer(), true);
     with_store_contended(|| retire(&space.memory(), space.base, registry[1].pointer()));
     struct Dead;
     impl Memory for Dead {
@@ -1248,9 +1235,10 @@ fn a_contended_new_saved_retirement_logs_without_reading_dead_storage() {
         }
     }
     let mut changes = Vec::new();
+    // Retired before its first boundary, the new design leaves only its tombstone.
     assert_eq!(drain_with(&Dead, space.base, 7, &mut changes), Ok(0));
-    assert_eq!(changes.len(), 2);
-    assert!(changes[0].snapshot.is_some() && changes[1].removed);
+    assert_eq!(changes.len(), 1);
+    assert!(changes[0].removed && changes[0].variant == registry[1].id);
     assert!(!needs_full());
     assert_published_equals_fresh(baseline, changes, acquire(&space, &registry[..1]));
 }

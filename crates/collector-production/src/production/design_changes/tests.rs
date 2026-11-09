@@ -73,93 +73,6 @@ pub(super) fn fixture() -> Vec<u8> {
     );
     bytes
 }
-pub(super) fn edit(bytes: &mut [u8], text: u8, range: i64) {
-    let at = kit::VARIANT - kit::BASE;
-    bytes[at + native::DISPLAY_NAME] = text;
-    bytes[at + native::DISPLAY_NAME + 16..at + native::DISPLAY_NAME + 24]
-        .copy_from_slice(&1_u64.to_le_bytes());
-    bytes[at + native::MAP_RANGE_STAT..at + native::MAP_RANGE_STAT + 8]
-        .copy_from_slice(&range.to_le_bytes());
-}
-pub(super) fn append(batch: &mut Batch, bytes: &[u8], sequence: u64, removed: bool) {
-    let memory = engine_native::memory::SliceMemory {
-        base: kit::BASE,
-        bytes,
-    };
-    let start = batch.log.spans.len();
-    collector_test_support::with_allocations_denied(|| {
-        stage(&mut batch.log, &memory, 0, kit::VARIANT)
-    })
-    .unwrap();
-    let end = batch.log.spans.len();
-    batch.events.push(Event {
-        kind: Kind::Design,
-        sequence,
-        hour: 7,
-        pointer: kit::VARIANT,
-        variant: 0xfedc_ba98_0000_0046,
-        flags: None,
-        removed,
-        start,
-        end,
-    });
-}
-
-#[test]
-fn variant_events_keep_multiple_same_hour_edits_and_final_removal_without_callback_allocation() {
-    let mut batch = Batch::empty();
-    batch.prepare(4, 256, ROOT_BYTES * 16);
-    let mut bytes = fixture();
-    edit(&mut bytes, b'A', -100);
-    append(&mut batch, &bytes, 1, false);
-    edit(&mut bytes, b'B', 200);
-    append(&mut batch, &bytes, 2, false);
-    append(&mut batch, &bytes, 3, true);
-    // Later contents at the same native addresses cannot change owned events.
-    edit(&mut bytes, b'C', 300);
-    let mut rows = Vec::new();
-    decode_batch(&batch, 0, 7, &mut rows).unwrap();
-    assert_eq!(rows.len(), 3);
-    assert_eq!(
-        rows[..2]
-            .iter()
-            .map(|r| r
-                .snapshot
-                .as_ref()
-                .unwrap()
-                .definition
-                .display_name
-                .as_slice())
-            .collect::<Vec<_>>(),
-        [b"A", b"B"]
-    );
-    assert_eq!(
-        rows[..2]
-            .iter()
-            .map(|r| r.snapshot.as_ref().unwrap().stats[0])
-            .collect::<Vec<_>>(),
-        [-100, 200]
-    );
-    assert!(!rows[0].removed && !rows[1].removed && rows[2].removed);
-    assert!(rows[2].snapshot.is_none());
-    assert!(!unchanged(
-        snapshots::Change::Row(&rows[2]),
-        Some(snapshots::Change::Row(&rows[1])),
-        None
-    ));
-    let mut duplicate = rows[1].clone();
-    duplicate.sequence = 4;
-    duplicate.removed = false;
-    assert!(unchanged(
-        snapshots::Change::Row(&duplicate),
-        Some(snapshots::Change::Row(&rows[1])),
-        None
-    ));
-    for row in rows {
-        rows::RowCodec::check_key_fields(&row).unwrap();
-    }
-}
-
 #[test]
 fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
     let mut bytes = fixture();
@@ -236,34 +149,10 @@ fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
             }
         }
     }
-    let mut batch = Batch::empty();
-    batch.prepare(1, 256, ROOT_BYTES * 20);
-    collector_test_support::with_allocations_denied(|| {
-        stage(&mut batch.log, &World(&bytes), 0, kit::VARIANT)
-    })
-    .unwrap();
-    batch.events.push(Event {
-        kind: Kind::Design,
-        sequence: 1,
-        hour: 7,
-        pointer: kit::VARIANT,
-        variant: 0xfedc_ba98_0000_0046,
-        flags: None,
-        removed: false,
-        start: 0,
-        end: batch.log.spans.len(),
-    });
+    let value = snapshot(&World(&bytes), 0, 7, kit::VARIANT, false).unwrap();
+    // The interned source keeps the value read, whatever the game writes after.
     put(&mut bytes, 0x9308, &99_000_i64.to_le_bytes());
-    let mut rows = Vec::new();
-    decode_batch(&batch, 0, 7, &mut rows).unwrap();
-    let state = rows[0]
-        .snapshot
-        .as_ref()
-        .unwrap()
-        .definition
-        .design
-        .require("design")
-        .unwrap();
+    let state = value.definition.design.require("design").unwrap();
     assert_eq!(state.named_bonuses, [17, 7, u32::MAX, 7]);
     assert_eq!(state.named_sources.len(), 2);
     assert_eq!(state.named_sources[0], state.named_sources[1]);
@@ -286,37 +175,6 @@ fn variant_named_sources_keep_country_scope_duplicates_and_owned_values() {
     assert_eq!((named.owner, named.handle), (2, 7));
     assert_eq!(named.name, b"name");
     assert_eq!(named.description, b"description");
-}
-
-#[test]
-fn variant_raw_capacity_pressure_refuses_instead_of_allocating_or_losing_coverage_silently() {
-    let bytes = fixture();
-    let memory = engine_native::memory::SliceMemory {
-        base: kit::BASE,
-        bytes: &bytes,
-    };
-    let mut batch = Batch::empty();
-    assert!(
-        collector_test_support::with_allocations_denied(|| stage(
-            &mut batch.log,
-            &memory,
-            0,
-            kit::VARIANT
-        ))
-        .is_err()
-    );
-    assert!(batch.events.is_empty());
-    batch.prepare(1, 64, ROOT_BYTES * 4);
-    batch.clear();
-    assert!(
-        collector_test_support::with_allocations_denied(|| stage(
-            &mut batch.log,
-            &memory,
-            0,
-            kit::VARIANT
-        ))
-        .is_ok()
-    );
 }
 
 #[test]
@@ -691,7 +549,6 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
     assert_eq!(rows[36].display_name, b"last");
     assert!(rows[35].display_name.is_empty());
     let flags = Captured {
-        repaired: 0,
         rows: vec![history[2].clone()],
         snapshots: snapshots::Shared::default(),
         outcome: Outcome::Rows { len: 1 },
@@ -716,7 +573,6 @@ fn variant_observed_edits_replace_only_the_changed_design_and_keep_last_edit() {
 #[test]
 fn variant_frame_reset_withdraws_old_observations_and_keeps_reusable_storage() {
     let mut captured = Captured {
-        repaired: 0,
         rows: vec![rows::VariantChangeRow {
             sequence: 1,
             hour: 7,
@@ -807,10 +663,11 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
         batch: Batch::empty(),
         spare: Batch::empty(),
         watched: HashMap::with_capacity(10_000),
+        published: Published::default(),
         interests: sources::Interests::default(),
         epoch: EPOCH.load(Ordering::Acquire),
     };
-    store.batch.prepare(1, 0, 0);
+    store.batch.prepare(1);
     for index in 1..=5_000 {
         store.watched.insert(
             index,
@@ -850,7 +707,7 @@ fn base_destruction_uses_only_the_prepared_binding_and_clock_without_shifting_or
 }
 
 #[test]
-fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
+fn variant_rejected_writer_rechecks_saved_membership_after_an_admitted_move() {
     use std::sync::Barrier;
 
     unsafe extern "system-unwind" fn move_design(
@@ -928,8 +785,8 @@ fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
         .watched
         .contains_key(&destination);
 
-    // The rejected scalar enters while the move has retired its receiver,
-    // then keeps its native store behind the move's completed snapshot.
+    // The rejected writer enters while the move has retired its receiver and
+    // stores only after the move has rebound it.
     let scalar_pause = Barrier::new(2);
     let scalar_args = [destination, &scalar_pause as *const Barrier as usize, 0, 0];
     let scalar = std::thread::spawn(move || {
@@ -973,23 +830,27 @@ fn variant_rejected_scalar_rechecks_saved_membership_after_an_admitted_move() {
     {
         let store = STORE.get().unwrap().lock().unwrap();
         assert_eq!(store.batch.failure, None);
-        assert_eq!(store.batch.events.len(), 3);
+        // Only the move's two tombstones; the rejected writer left a mark, not an event.
+        assert_eq!(store.batch.events.len(), 2);
+        assert!(store.batch.events.iter().all(|event| event.removed));
         assert!(repair::pending());
-        let event = store.batch.events.last().unwrap();
-        assert_eq!(event.pointer, destination);
-        assert!(!event.removed);
-        let snapshot =
-            crate::raw::Recorded::build_range(&store.batch.log, event.start..event.end).unwrap();
-        assert_eq!(
-            engine_native::read::<u8>(&snapshot, destination + native::HIGHLIGHT),
-            Some(0)
-        );
         assert_eq!(
             engine_native::read::<u8>(&space.memory(), destination + native::HIGHLIGHT),
             Some(1)
         );
     }
-    assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
+    let mut changes = Vec::new();
+    assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+    assert_eq!(changes.len(), 3);
+    assert!(changes[0].removed && changes[1].removed);
+    assert_eq!(
+        [changes[0].variant, changes[1].variant],
+        [registry[0].id, registry[1].id]
+    );
+    // The rebound receiver is read after the rejected store.
+    assert_eq!(changes[2].variant, registry[1].id);
+    let snapshot = changes[2].snapshot.as_ref().unwrap();
+    assert_eq!(snapshot.definition.design.require("design").unwrap().highlight, 1);
     assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 0);
     assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 0);
 }
@@ -1287,115 +1148,6 @@ fn shared_variant_projection_reuses_quiet_groups_and_keeps_identical_frame_bytes
     }
 }
 
-#[test]
-fn private_snapshots_read_outside_store_and_intervening_observers_use_the_exact_serial_fallback() {
-    use std::cell::Cell;
-    struct Fixture<'a> {
-        bytes: &'a [u8],
-        interfere: bool,
-        injected: Cell<bool>,
-        locked: Cell<usize>,
-    }
-    impl Memory for Fixture<'_> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if let Some(mutex) = STORE.get() {
-                let free = mutex.try_lock().is_ok();
-                if !free {
-                    self.locked.set(self.locked.get() + 1);
-                }
-                if self.interfere && free && !self.injected.replace(true) {
-                    drop(callback_store(mutex));
-                }
-            }
-            if address == engine_native::cgame_state::SINGLETON_RVA.0 && output.len() == 8 {
-                output.copy_from_slice(&0x12000_u64.to_le_bytes());
-                true
-            } else if address == 0x12000 + engine_native::cgame_state::CURRENT_HOUR
-                && output.len() == 4
-            {
-                output.copy_from_slice(&7_i32.to_le_bytes());
-                true
-            } else {
-                engine_native::memory::SliceMemory {
-                    base: kit::BASE,
-                    bytes: self.bytes,
-                }
-                .copy(address, output)
-            }
-        }
-    }
-    fn store() -> Store {
-        let mut batch = Batch::empty();
-        batch.prepare(8, 1024, ROOT_BYTES * 32);
-        let mut watched = HashMap::new();
-        watched.insert(
-            kit::VARIANT,
-            Watch {
-                id: 0xfedc_ba98_0000_0046,
-                pointer: kit::VARIANT,
-                flags: [0; 3],
-                dirty: false,
-            },
-        );
-        let mut interests = sources::Interests::default();
-        interests.prepare(1024).unwrap();
-        interests.prepare_organisations(1024).unwrap();
-        Store {
-            batch,
-            spare: Batch::empty(),
-            watched,
-            interests,
-            epoch: EPOCH.load(Ordering::Acquire),
-        }
-    }
-    let mut bytes = fixture();
-    edit(&mut bytes, b'A', 17);
-    let fixture = Fixture {
-        bytes: &bytes,
-        interfere: false,
-        injected: Cell::new(false),
-        locked: Cell::new(0),
-    };
-    writers::prepare(8).unwrap();
-    let mut reference = store();
-    observe_locked(&mut reference, &fixture, 0, kit::VARIANT, false, false);
-    let mut expected = Vec::new();
-    decode_batch(&reference.batch, 0, 7, &mut expected).unwrap();
-    assert_eq!(expected.len(), 1);
-    assert!(STORE.set(Mutex::new(store())).is_ok());
-    storage::census(8, 1024, ROOT_BYTES * 32, 1024, ROOT_BYTES * 32);
-    presize();
-    collector_test_support::with_allocations_denied(|| {
-        observe(&fixture, 0, kit::VARIANT, false, false)
-    });
-    assert_eq!(
-        fixture.locked.get(),
-        0,
-        "the common path must not read native memory under STORE"
-    );
-    let interfering = Fixture {
-        interfere: true,
-        ..fixture
-    };
-    collector_test_support::with_allocations_denied(|| {
-        observe(&interfering, 0, kit::VARIANT, false, false)
-    });
-    assert!(interfering.injected.get());
-    assert!(
-        interfering.locked.get() > 0,
-        "the intervening observer must select the serial fallback"
-    );
-    let store = STORE.get().unwrap().lock().unwrap();
-    assert!(store.batch.failure.is_none());
-    let mut actual = Vec::new();
-    decode_batch(&store.batch, 0, 7, &mut actual).unwrap();
-    assert_eq!(actual.len(), 2);
-    for row in actual {
-        assert_eq!(row.snapshot, expected[0].snapshot);
-    }
-    assert!(!MISSED.load(Ordering::Acquire));
-}
-
 fn burst_definition(id: u64, name: &[u8]) -> rows::VariantDefinitionRow {
     rows::VariantDefinitionRow {
         id,
@@ -1675,6 +1427,7 @@ fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision
                 batch: Batch::empty(),
                 spare: Batch::empty(),
                 watched: HashMap::new(),
+                published: Published::default(),
                 interests: sources::Interests::default(),
                 epoch: EPOCH.load(Ordering::Acquire),
             };
@@ -1685,8 +1438,8 @@ fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision
             ENABLED.store(true, Ordering::Release);
             begin_read();
             if warm {
-                let mut work = cold_storage(&registry, &variants).unwrap();
-                work.capture(3, &mut |parts| {
+                let mut work = cold_storage(&registry).unwrap();
+                work.capture(&mut |parts| {
                     Ok(std::thread::scope(|scope| {
                         let jobs: Vec<_> = parts
                             .into_iter()
@@ -1707,7 +1460,7 @@ fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision
                 assert!(!SOURCE_BASELINE.load(Ordering::Acquire));
                 assert!(!LIVENESS_BASELINE.load(Ordering::Acquire));
             }
-            prepare_partitioned(&registry, &variants, 3, &mut |mut parts| {
+            prepare_partitioned(&registry, &variants, &mut |mut parts| {
                 for part in &mut parts {
                     part.capture();
                 }
@@ -1720,14 +1473,8 @@ fn cold_storage_warmup_keeps_the_serial_census_capacity_and_certificate_decision
                 .map(|watch| (watch.id, watch.pointer, watch.flags))
                 .collect();
             watches.sort_unstable();
-            let capacities = [&store.batch, &store.spare].map(|batch| {
-                (
-                    batch.events.capacity(),
-                    batch.log.spans.capacity(),
-                    batch.log.bytes.capacity(),
-                    batch.failure,
-                )
-            });
+            let capacities = [&store.batch, &store.spare]
+                .map(|batch| (batch.events.capacity(), batch.failure));
             let certificate = (
                 SAVED_BASELINE.load(Ordering::Acquire),
                 SOURCE_BASELINE.load(Ordering::Acquire),

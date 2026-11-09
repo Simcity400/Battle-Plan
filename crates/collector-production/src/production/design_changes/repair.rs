@@ -8,6 +8,10 @@ static MARKS: WatchRegistry = WatchRegistry::marking();
 static PENDING: AtomicBool = AtomicBool::new(false);
 static REPAIRING: AtomicBool = AtomicBool::new(false);
 static ADDED: AtomicBool = AtomicBool::new(false);
+static DIRTY: Mutex<Option<std::collections::HashSet<usize>>> = Mutex::new(None);
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 pub(super) fn pending() -> bool {
     PENDING.load(Ordering::Acquire) || REPAIRING.load(Ordering::Acquire)
@@ -75,20 +79,34 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
     if store.epoch != EPOCH.load(Ordering::Acquire) {
         return Err("variant repair epoch changed");
     }
-    let mut pointers = std::collections::HashSet::new();
+    // The dirty set keeps its storage across boundaries; each holds the hour's marks only.
+    let mut pointers = lock(&DIRTY).take().unwrap_or_default();
+    pointers.clear();
     engine_allocation::reserve_set(&mut pointers, MARKS.registered() + store.watched.len())
         .map_err(|_| "variant repair allocation failed")?;
     // Publication can add a saved design since the last prepared slots. Until
     // this boundary registers it, a lost callback cannot have marked its slot.
     // Repair those new bindings too, but never dereference retired pointers.
-    for pointer in store.watched.keys() {
+    let mut published = std::mem::take(&mut store.published.pointers);
+    if std::mem::take(&mut store.published.overflowed) {
+        published.clear();
+        engine_allocation::reserve(&mut published, store.watched.len())
+            .map_err(|_| "variant repair allocation failed")?;
+        published.extend(store.watched.keys().copied());
+    }
+    for &pointer in &published {
+        if !store.watched.contains_key(&pointer) {
+            continue;
+        }
         let (_, fresh) = MARKS
-            .register(*pointer)
+            .register(pointer)
             .ok_or("variant repair receiver registration failed")?;
         if pending && fresh {
-            pointers.insert(*pointer);
+            pointers.insert(pointer);
         }
     }
+    published.clear();
+    store.published.pointers = published;
     MARKS
         .take(|pointer| {
             pointers.insert(pointer);
@@ -108,66 +126,83 @@ pub(super) fn take(batch: &mut Batch) -> Result<Repairs, &'static str> {
     // Keep binding tombstones, shared-source and author-liveness occurrences;
     // terminal repair is applied after those independent ordered events.
     batch.events.retain(|event| {
-        !matches!(event.kind, Kind::Design | Kind::Scalar(_))
+        !matches!(event.kind, Kind::Design)
             || event.removed
             || !pointers.contains(&event.pointer)
     });
     repairs.watches.sort_unstable_by_key(|watch| watch.id);
+    *lock(&DIRTY) = Some(pointers);
     repairs.admitted = true;
     Ok(repairs)
+}
+/// A boundary that applied every marked design's current state leaves it carried by the census
+/// again, as an observed edit's design is; a refused boundary leaves it for the census to read.
+pub(super) fn settle(watches: &[Watch]) {
+    let Some(store) = STORE.get() else {
+        return;
+    };
+    let mut store = store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for watch in watches {
+        if let Some(current) = store
+            .watched
+            .get_mut(&watch.pointer)
+            .filter(|current| current.id == watch.id)
+        {
+            current.dirty = false;
+        }
+    }
+}
+/// A marked design's live reads, refusing any read inside a design another occurrence of this
+/// hour consumed (`removed`), except the receiver's own root.
+pub(super) struct Surviving<'a, M> {
+    pub source: &'a M,
+    pub removed: &'a [usize],
+    pub receiver: usize,
+    pub consumed: std::cell::Cell<bool>,
+}
+impl<M: Memory> Memory for Surviving<'_, M> {
+    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
+        if !output.is_empty()
+            && self.removed.iter().any(|&pointer| {
+                pointer != self.receiver
+                    && (address
+                        .checked_sub(pointer)
+                        .is_some_and(|offset| offset < ROOT_BYTES)
+                        || pointer
+                            .checked_sub(address)
+                            .is_some_and(|offset| offset < output.len()))
+            })
+        {
+            self.consumed.set(true);
+            return false;
+        }
+        self.source.copy(address, output)
+    }
 }
 /// A lost edit can reach a parent absent from the preceding held state.
 /// Guard the reader itself, not a separate earlier sample of PARENT: native
 /// receiver changes must never make repair authenticate consumed storage.
+/// `walk` is this design's walk and decode a lane already took through the same guard.
 pub(super) fn snapshot(
     memory: &impl Memory,
     base: usize,
     hour: i32,
     pointer: usize,
-    events: &[Event],
-) -> Result<rows::VariantSnapshot, &'static str> {
-    // A consuming move can retire then rebind this repair's own receiver.
-    // Its current Watch certifies the root, not any other consumed parent.
-    if !events
-        .iter()
-        .any(|event| event.removed && event.pointer != pointer)
-    {
-        return super::snapshot(memory, base, hour, pointer, true);
-    }
-    struct Surviving<'a, M> {
-        source: &'a M,
-        events: &'a [Event],
-        receiver: usize,
-        consumed: std::cell::Cell<bool>,
-    }
-    impl<M: Memory> Memory for Surviving<'_, M> {
-        fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-            if !output.is_empty()
-                && self.events.iter().any(|event| {
-                    event.removed
-                        && event.pointer != self.receiver
-                        && (address
-                            .checked_sub(event.pointer)
-                            .is_some_and(|offset| offset < ROOT_BYTES)
-                            || event
-                                .pointer
-                                .checked_sub(address)
-                                .is_some_and(|offset| offset < output.len()))
-                })
-            {
-                self.consumed.set(true);
-                return false;
-            }
-            self.source.copy(address, output)
-        }
-    }
+    removed: &[usize],
+    walk: Option<(Box<RawWalk>, Box<snapshots::Decoded>)>,
+) -> Result<snapshots::Decoded, &'static str> {
     let surviving = Surviving {
         source: memory,
-        events,
+        removed,
         receiver: pointer,
         consumed: std::cell::Cell::new(false),
     };
-    let result = super::snapshot(&surviving, base, hour, pointer, true);
+    let result = match walk {
+        Some((walk, decoded)) => super::complete_decoded(&surviving, base, true, &walk, *decoded),
+        None => super::decode_snapshot(&surviving, base, hour, pointer, true),
+    };
     if surviving.consumed.get() {
         unobserved!();
         return Err("variant parent identity has a consumed saved binding");
@@ -232,6 +267,7 @@ mod tests {
                     batch: Batch::empty(),
                     spare: Batch::empty(),
                     watched: watches,
+                    published: Published::default(),
                     interests: sources::Interests::default(),
                     epoch: EPOCH.load(Ordering::Acquire),
                 }))

@@ -1379,6 +1379,10 @@ impl Role {
 }
 
 pub(crate) const ROLE_COUNT: usize = 81;
+/// The last Variants drain's wall, for naming a slow hour.
+pub(crate) static VARIANT_DRAIN_TICKS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) const ROLES: [Role; ROLE_COUNT] = [
     Role::Characters,
     Role::CountryLeaderRoles,
@@ -1970,6 +1974,7 @@ fn run_with_memory(
                 }
             });
             request.changes_ticks = sampling::qpc().saturating_sub(begin).max(0) as u64;
+            VARIANT_DRAIN_TICKS.store(request.changes_ticks, std::sync::atomic::Ordering::Relaxed);
             request.changes_finished = true;
             // The campaign registry includes variants absent from units,
             // production and stockpiles. Keep all entries and duplicates.

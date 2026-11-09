@@ -83,15 +83,30 @@ pub(super) fn seed(
     let count = variants.definitions.outcome.len();
     interests.prepare_organisations(count.saturating_mul(2).max(1))?;
     for row in &variants.definitions.rows[..count] {
-        let handle = row.design.design_team;
-        if handle == 0 {
-            continue;
-        }
-        let present = cache().entries.contains_key(&handle);
-        if row.source_links.is_some() || !present {
-            sample(row)?;
-            interests.organisation(handle, row.organisation_pointer)?;
-        }
+        seed_row(row, interests)?;
+    }
+    Ok(())
+}
+/// [`seed`] for one design read on its own.
+pub(super) fn seed_one(
+    row: &native::DefinitionRow<Arc<rows::VariantDesignState>>,
+    interests: &mut sources::Interests,
+) -> Result<(), &'static str> {
+    interests.prepare_organisations(2)?;
+    seed_row(row, interests)
+}
+fn seed_row(
+    row: &native::DefinitionRow<Arc<rows::VariantDesignState>>,
+    interests: &mut sources::Interests,
+) -> Result<(), &'static str> {
+    let handle = row.design.design_team;
+    if handle == 0 {
+        return Ok(());
+    }
+    let present = cache().entries.contains_key(&handle);
+    if row.source_links.is_some() || !present {
+        sample(row)?;
+        interests.organisation(handle, row.organisation_pointer)?;
     }
     Ok(())
 }
@@ -158,7 +173,6 @@ fn event(
         hour,
         pointer,
         variant: handle,
-        flags: None,
         removed: false,
         start: 0,
         end: 0,

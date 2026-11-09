@@ -7,12 +7,12 @@ mod forward;
 pub(super) mod held;
 pub(super) mod liveness;
 mod repair;
-mod scalar;
+mod witness;
 mod snapshots;
 mod storage;
 pub use snapshots::speculative::Part as SnapshotPart;
 pub use storage::SetupPart as ColdSetupPart;
-pub use storage::{ScratchPoolAccounting, account_scratch, presize};
+pub use storage::presize;
 /// The Variants lanes that run a burst's speculative full-decode walks.
 pub struct Speculation<'a> {
     pub lanes: usize,
@@ -221,7 +221,6 @@ fn world_enabled(enabled: bool) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kind {
     Design,
-    Scalar(scalar::Field),
     Source,
     SourceRemoved,
     Provider(u32),
@@ -235,7 +234,6 @@ struct Event {
     hour: i32,
     pointer: usize,
     variant: u64,
-    flags: Option<[u8; 3]>,
     removed: bool,
     start: usize,
     end: usize,
@@ -244,8 +242,6 @@ struct Batch {
     log: RawLog<1>,
     events: Vec<Event>,
     required_events: usize,
-    required_spans: usize,
-    required_bytes: usize,
     failure: Option<&'static str>,
 }
 impl Batch {
@@ -254,8 +250,6 @@ impl Batch {
             log: RawLog::new(0, 0),
             events: Vec::new(),
             required_events: 0,
-            required_spans: 0,
-            required_bytes: 0,
             failure: None,
         }
     }
@@ -264,12 +258,8 @@ impl Batch {
         self.events.clear();
         self.failure = None;
         self.required_events = 0;
-        self.required_spans = 0;
-        self.required_bytes = 0;
     }
-    fn prepare(&mut self, events: usize, spans: usize, bytes: usize) {
-        self.log.grow();
-        self.log.presize(spans, bytes);
+    fn prepare(&mut self, events: usize) {
         if events > self.events.capacity() {
             let additional = events - self.events.len();
             let _ = engine_allocation::reserve(&mut self.events, additional);
@@ -283,10 +273,18 @@ struct Watch {
     flags: [u8; 3],
     dirty: bool,
 }
+/// Designs published into `watched` since the boundary last registered them, in storage
+/// prepared at the census; a full list leaves the boundary to scan every watched design.
+#[derive(Default)]
+struct Published {
+    pointers: Vec<usize>,
+    overflowed: bool,
+}
 struct Store {
     batch: Batch,
     spare: Batch,
     watched: HashMap<usize, Watch>,
+    published: Published,
     interests: sources::Interests,
     epoch: u64,
 }
@@ -294,6 +292,59 @@ static RECOVER: AtomicBool = AtomicBool::new(true);
 static RECOVERY_READ: AtomicBool = AtomicBool::new(true);
 pub fn enabled() -> bool {
     ENABLED.load(Ordering::Acquire)
+}
+/// The last drain's size and walls, for naming a slow hour.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrainProfile {
+    /// Noted occurrences: organisation liveness, source notes and removals.
+    pub events: u32,
+    /// Marked designs the boundary read.
+    pub designs: u32,
+    /// Source writes, and those of a watched source.
+    pub source_writes: u32,
+    pub source_notes: u32,
+    pub events_ns: u64,
+    /// The boundary reads of the marked designs, with their completion and shared effects.
+    pub reads_ns: u64,
+    /// Marked designs whose witness read back the same, and walks the lanes delivered; then
+    /// completion in design order: decodes the lanes did not run, and the shared effects.
+    pub unchanged: u32,
+    pub lane_walks: u32,
+    pub complete_ns: [u64; 2],
+    /// The reads by stage: the lanes' reads, the ordered loop, then the held state's update.
+    pub stages_ns: [u64; 3],
+    /// Before the reads (marks, bindings, lifetimes), then the design-context capture.
+    pub boundary_ns: [u64; 2],
+    /// Parts the reads ran in, and their summed and slowest walls.
+    pub lanes: u32,
+    pub lane_ns: [u64; 2],
+}
+static DRAIN_PROFILE: Mutex<DrainProfile> = Mutex::new(DrainProfile {
+    events: 0,
+    designs: 0,
+    source_writes: 0,
+    source_notes: 0,
+    events_ns: 0,
+    reads_ns: 0,
+    unchanged: 0,
+    lane_walks: 0,
+    complete_ns: [0; 2],
+    stages_ns: [0; 3],
+    boundary_ns: [0; 2],
+    lanes: 0,
+    lane_ns: [0; 2],
+});
+fn drain_profile_mut() -> std::sync::MutexGuard<'static, DrainProfile> {
+    DRAIN_PROFILE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Takes the last drain's profile; the next hour starts from zero.
+pub fn drain_profile() -> DrainProfile {
+    std::mem::take(&mut *drain_profile_mut())
+}
+fn elapsed_ns(begin: std::time::Instant) -> u64 {
+    u64::try_from(begin.elapsed().as_nanos()).unwrap_or(u64::MAX)
 }
 pub fn needs_full() -> bool {
     enabled() && RECOVERY_READ.load(Ordering::Acquire)
@@ -338,9 +389,6 @@ pub fn boundary(invalidate: bool) {
 
 fn u64_at(log: &RawLog<1>, offset: usize) -> u64 {
     u64::from_le_bytes(log.bytes[offset..offset + 8].try_into().unwrap())
-}
-fn u32_at(log: &RawLog<1>, offset: usize) -> u32 {
-    u32::from_le_bytes(log.bytes[offset..offset + 4].try_into().unwrap())
 }
 fn take(
     log: &mut RawLog<1>,
@@ -390,261 +438,6 @@ fn array(
     Ok((start, source.count))
 }
 
-/// Record the resolver's original requests, so decode never substitutes a
-/// later reference-registry state for this design's serialization witness.
-struct Staging<'a, M> {
-    log: std::cell::RefCell<&'a mut RawLog<1>>,
-    source: &'a M,
-}
-impl<M: Memory> Memory for Staging<'_, M> {
-    fn copy(&self, address: usize, output: &mut [u8]) -> bool {
-        let mut log = self.log.borrow_mut();
-        let Some(start) = log.take_bulk(self.source, address, output.len(), 1) else {
-            return false;
-        };
-        output.copy_from_slice(&log.bytes[start..start + output.len()]);
-        true
-    }
-}
-fn reference(
-    log: &mut RawLog<1>,
-    memory: &impl Memory,
-    base: usize,
-    handle: u64,
-) -> Result<Option<usize>, &'static str> {
-    let pointer = engine_native::creference_registry::resolve(
-        &Staging {
-            log: std::cell::RefCell::new(&mut *log),
-            source: memory,
-        },
-        base,
-        handle,
-    )?;
-    if let Some(pointer) = pointer {
-        take(log, memory, pointer, 16)?;
-        take(
-            log,
-            memory,
-            pointer
-                .checked_add(engine_production::nindustrial_organisation_corganisation::OWNER)
-                .ok_or("design organisation owner address overflow")?,
-            4,
-        )?;
-    }
-    Ok(pointer)
-}
-
-/// No allocation or native calls. Every pointer remains private to this raw
-/// observation and is followed only while the enclosing writer is quiescent.
-fn stage_interests(
-    log: &mut RawLog<1>,
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    mut interests: Option<&mut sources::Interests>,
-) -> Result<(), &'static str> {
-    let root = take(log, memory, pointer, native::STATS)?;
-    let tail = take(
-        log,
-        memory,
-        pointer
-            .checked_add(native::MISSION_GROUP_DATA)
-            .ok_or("variant change address overflow")?,
-        ROOT_BYTES - native::MISSION_GROUP_DATA,
-    )?;
-    let field = |offset: usize| {
-        if offset < native::STATS {
-            root + offset
-        } else {
-            tail + offset - native::MISSION_GROUP_DATA
-        }
-    };
-    let design_team = u64_at(log, field(native::DESIGN_TEAM));
-    if design_team != 0 {
-        let organisation = reference(log, memory, base, design_team)?;
-        if let Some(interests) = interests.as_mut() {
-            interests.organisation(design_team, organisation)?;
-        }
-    }
-    if u32_at(log, field(native::NAMED_BONUSES) + 12) != 0 {
-        take(
-            log,
-            memory,
-            pointer
-                .checked_add(native::STATS)
-                .ok_or("variant change address overflow")?,
-            native::STAT_COUNT * 8,
-        )?;
-        let staged = Staging {
-            log: std::cell::RefCell::new(&mut *log),
-            source: memory,
-        };
-        let provider = native::visit_named_sources(&staged, base, pointer, |pointer, _, _| {
-            let mut log = staged.log.borrow_mut();
-            let source = take(&mut log, memory, pointer, native::NAMED_BONUS_STRIDE)?;
-            string(&mut log, memory, source + native::NAMED_BONUS_NAME)?;
-            string(&mut log, memory, source + native::NAMED_BONUS_DESCRIPTION)?;
-            array(&mut log, memory, source + 8 + native::BONUS_STATS, 16)?;
-            array(&mut log, memory, source + 8 + native::BONUS_TERRAIN, 8)?;
-            Ok(())
-        })?;
-        if let Some((owner, status)) = provider
-            && let Some(interests) = interests.as_mut()
-        {
-            interests.insert(sources::Key::Provider(status), owner)?;
-        }
-    }
-    for (offset, size) in [
-        (native::MAP_RANGE_STAT, 32),
-        (native::MAXIMUM_SPEED_CACHE_CANDIDATE, 8),
-        (native::RELIABILITY_CACHE_CANDIDATE, 8),
-        (native::AIR_DEFENSE_CACHE_CANDIDATE, 24),
-        (native::BUILD_COST_CACHE_CANDIDATE, 8),
-    ] {
-        take(
-            log,
-            memory,
-            pointer
-                .checked_add(offset)
-                .ok_or("variant change address overflow")?,
-            size,
-        )?;
-    }
-    if u64_at(log, root)
-        != engine_sites::at(base, native::VTABLE_RVA)
-            .ok_or("variant change module address overflow")? as u64
-        || u32_at(log, field(native::TYPE)) != native::REFERENCE_TYPE
-    {
-        return Err("variant change identity mismatch");
-    }
-    for offset in [
-        native::DISPLAY_NAME,
-        native::VARIANT_NAME,
-        native::EXPLICIT_ENTITY,
-        native::ICON_OVERRIDE_TOKEN,
-    ] {
-        string(log, memory, field(offset))?;
-    }
-    let definition = u64_at(log, field(native::DEFINITION)) as usize;
-    take(log, memory, definition, 12)?;
-    let archetype = take(
-        log,
-        memory,
-        definition
-            .checked_add(engine_native::cequipment_type::ARCHETYPE)
-            .ok_or("variant change address overflow")?,
-        8,
-    )?;
-    let archetype = u64_at(log, archetype) as usize;
-    take(log, memory, archetype, 12)?;
-    take(
-        log,
-        memory,
-        archetype
-            .checked_add(engine_native::cequipment_type::DESIGN_COST_MODIFIER)
-            .ok_or("variant change type context address overflow")?,
-        4,
-    )?;
-    let parent = u64_at(log, field(native::PARENT)) as usize;
-    if parent != 0 {
-        take(log, memory, parent, 16)?;
-    }
-    let group = u64_at(log, field(native::DIVISION_NAMES_GROUP)) as usize;
-    if group != 0 {
-        let group = take(log, memory, group, 40)?;
-        string(log, memory, group + 8)?;
-    }
-    let (modules, count) = array(log, memory, field(native::MODULES) + 8, 16)?;
-    for ordinal in 0..count as usize {
-        let module = u64_at(log, modules + ordinal * 16 + 8) as usize;
-        take(log, memory, module, 12)?;
-        take(
-            log,
-            memory,
-            module
-                .checked_add(engine_native::cequipment_module::DESIGN_COST_MODIFIER)
-                .ok_or("variant change module context address overflow")?,
-            4,
-        )?;
-        take(
-            log,
-            memory,
-            module
-                .checked_add(engine_native::cequipment_module::ACTIVE)
-                .ok_or("variant change address overflow")?,
-            1,
-        )?;
-    }
-    let (upgrades, count) = array(log, memory, field(native::UPGRADES) + 8, 16)?;
-    for ordinal in 0..count as usize {
-        let upgrade = u64_at(log, upgrades + ordinal * 16) as usize;
-        take(log, memory, upgrade, 12)?;
-        if ordinal == 0 {
-            take(
-                log,
-                memory,
-                upgrade
-                    .checked_add(engine_native::cequipment_upgrade::COST_CURRENCY)
-                    .ok_or("upgrade currency address overflow")?,
-                4,
-            )?;
-        }
-    }
-    let (missions, count) = array(log, memory, field(native::MISSION_GROUP_DATA), 40)?;
-    for ordinal in 0..count as usize {
-        array(log, memory, missions + ordinal * 40 + 16, 16)?;
-    }
-    let (excluded, count) = array(log, memory, field(native::MODULE_MISSION_EXCLUSIONS), 16)?;
-    for ordinal in 0..count as usize {
-        take(
-            log,
-            memory,
-            u64_at(log, excluded + ordinal * 16) as usize,
-            12,
-        )?;
-    }
-    for (offset, stride) in [
-        (native::NAMED_BONUSES, 4),
-        (native::TERRAIN_ATTRITION, 8),
-        (native::NICHES, 4),
-        (native::BUILD_RESOURCES, 16),
-        (native::DESIGN_TEAM_BONUS, 16),
-    ] {
-        array(log, memory, field(offset), stride)?;
-    }
-    let (sources, count) = array(log, memory, field(native::BONUS_SOURCES), 8)?;
-    for ordinal in 0..count as usize {
-        let source = u64_at(log, sources + ordinal * 8) as usize;
-        if let Some(interests) = interests.as_mut() {
-            interests.insert(sources::Key::Direct(source), 0)?;
-        }
-        let size = native::bonus_source_size(memory, base, source)?;
-        let source = take(log, memory, source, size)?;
-        array(log, memory, source + native::BONUS_STATS, 16)?;
-        array(log, memory, source + native::BONUS_TERRAIN, 8)?;
-        let idea = if size > native::BONUS_IDEA {
-            u64_at(log, source + native::BONUS_IDEA) as usize
-        } else {
-            0
-        };
-        if idea != 0 {
-            let idea = take(log, memory, idea, engine_native::cidea::TOKEN + 32)?;
-            string(log, memory, idea + engine_native::cidea::TOKEN)?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn stage(
-    log: &mut RawLog<1>,
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-) -> Result<(), &'static str> {
-    stage_interests(log, memory, base, pointer, None)
-}
-
 /// Called after a complete census on its acquisition worker. Capacity derives
 /// from that census's owned values, including every nested native occurrence.
 #[cfg(test)]
@@ -654,131 +447,25 @@ pub(super) fn prepare(registry: &[native::RegistryRow], variants: &Variants) {
 pub(super) fn prepare_partitioned(
     registry: &[native::RegistryRow],
     variants: &Variants,
-    lanes: usize,
     acquire: &mut impl FnMut(Vec<storage::SetupPart>) -> Result<Vec<storage::SetupPart>, &'static str>,
 ) {
     prepare_with(registry, variants, || {
-        storage::presize_partitioned(lanes, acquire)
+        storage::presize_partitioned(acquire)
     });
 }
+/// Hook events the census sizes for: a hook cannot allocate, the boundary's source log can.
 struct ColdDemand {
     events: usize,
-    spans: usize,
-    bytes: usize,
-    single_spans: usize,
-    single_bytes: usize,
 }
 impl ColdDemand {
     fn record(&self) {
-        storage::census(
-            self.events,
-            self.spans,
-            self.bytes,
-            self.single_spans,
-            self.single_bytes,
-        );
+        storage::census(self.events);
     }
 }
-fn cold_demand(registry: &[native::RegistryRow], variants: &Variants) -> Option<ColdDemand> {
-    let mut bytes = registry.len().saturating_mul(ROOT_BYTES + 36);
-    let mut spans = registry.len().saturating_mul(21);
-    let (mut single_spans, mut single_bytes) = (21, ROOT_BYTES + 36);
-    let (mut module_at, mut upgrade_at) = (0, 0);
-    for row in variants
-        .definitions
-        .rows
-        .iter()
-        .take(variants.definitions.outcome.len())
-    {
-        let (before_spans, before_bytes) = (spans, bytes);
-        bytes = bytes.saturating_add(
-            row.display_name.len
-                + row.variant_name.len
-                + row.explicit_entity.len
-                + row.icon.len
-                + 4,
-        );
-        let state = &row.design;
-        if state.design_team != 0 {
-            spans = spans.saturating_add(16);
-            bytes = bytes.saturating_add(512);
-            if row.organisation_pointer.is_some() {
-                spans = spans.saturating_add(2);
-                bytes = bytes.saturating_add(20);
-            }
-        }
-        bytes = bytes.saturating_add(
-            usize::from(!state.named_bonuses.is_empty()) * native::STAT_COUNT * 8
-                + state.design_team_bonus.len() * 16
-                + state.named_bonuses.len() * 4
-                + state.module_mission_exclusions.len() * 16
-                + state.terrain_attrition.len() * 8
-                + state.niches.len() * 4
-                + state.build_resources.len() * 16,
-        );
-        let Ok((source_bytes, source_spans)) =
-            super::bonus_snapshots::raw_demand(&state.bonus_sources)
-        else {
-            return None;
-        };
-        bytes = bytes.saturating_add(source_bytes);
-        spans = spans.saturating_add(source_spans);
-        let Ok((source_bytes, source_spans)) =
-            super::bonus_snapshots::raw_demand(&state.named_sources)
-        else {
-            return None;
-        };
-        bytes = bytes.saturating_add(source_bytes);
-        spans = spans.saturating_add(source_spans);
-        for mission in &state.mission_stats {
-            spans = spans.saturating_add(1);
-            bytes = bytes.saturating_add(40 + mission.stats.len() * 16);
-        }
-        bytes = bytes.saturating_add(
-            state
-                .division_names_group
-                .as_ref()
-                .map_or(0, |s| 41 + s.len())
-                + usize::from(state.parent.is_some()) * 16,
-        );
-        let first_module = module_at;
-        let first_upgrade = upgrade_at;
-        while variants
-            .modules
-            .rows
-            .get(module_at)
-            .is_some_and(|entry| entry.variant == row.identity.id)
-        {
-            module_at += 1;
-        }
-        while variants
-            .upgrades
-            .rows
-            .get(upgrade_at)
-            .is_some_and(|entry| entry.variant == row.identity.id)
-        {
-            upgrade_at += 1;
-        }
-        single_spans = single_spans.max(
-            21 + spans - before_spans + (module_at - first_module) * 3 + upgrade_at - first_upgrade,
-        );
-        single_bytes = single_bytes.max(
-            ROOT_BYTES + 36 + bytes - before_bytes
-                + (module_at - first_module) * 33
-                + (upgrade_at - first_upgrade) * 28,
-        );
-    }
-    let modules = variants.modules.outcome.len();
-    let upgrades = variants.upgrades.outcome.len();
-    spans = spans.saturating_add(modules.saturating_mul(3) + upgrades);
-    bytes = bytes.saturating_add(modules.saturating_mul(33) + upgrades.saturating_mul(28));
-    Some(ColdDemand {
+fn cold_demand(registry: &[native::RegistryRow]) -> ColdDemand {
+    ColdDemand {
         events: registry.len().saturating_mul(2).max(1),
-        spans,
-        bytes,
-        single_spans,
-        single_bytes,
-    })
+    }
 }
 fn cold_store() -> &'static Mutex<Store> {
     STORE.get_or_init(|| {
@@ -786,6 +473,7 @@ fn cold_store() -> &'static Mutex<Store> {
             batch: Batch::empty(),
             spare: Batch::empty(),
             watched: HashMap::new(),
+            published: Published::default(),
             interests: sources::Interests::default(),
             epoch: EPOCH.load(Ordering::Acquire),
         })
@@ -796,20 +484,16 @@ pub struct ColdStorage(ColdDemand);
 impl ColdStorage {
     pub fn capture(
         &mut self,
-        lanes: usize,
         acquire: &mut impl FnMut(
             Vec<storage::SetupPart>,
         ) -> Result<Vec<storage::SetupPart>, &'static str>,
     ) {
         cold_store();
         self.0.record();
-        storage::presize_partitioned(lanes, acquire);
+        storage::presize_partitioned(acquire);
     }
 }
-pub(super) fn cold_storage(
-    registry: &[native::RegistryRow],
-    variants: &Variants,
-) -> Option<ColdStorage> {
+pub(super) fn cold_storage(registry: &[native::RegistryRow]) -> Option<ColdStorage> {
     let cold = STORE.get().is_none_or(|store| {
         store
             .lock()
@@ -819,16 +503,11 @@ pub(super) fn cold_storage(
             .capacity()
             == 0
     });
-    cold.then(|| cold_demand(registry, variants).map(ColdStorage))
-        .flatten()
+    cold.then(|| ColdStorage(cold_demand(registry)))
 }
 
 fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: impl FnOnce()) {
-    let Some(demand) = cold_demand(registry, variants) else {
-        RECOVER.store(true, Ordering::Release);
-        unobserved!();
-        return;
-    };
+    let demand = cold_demand(registry);
     let store = cold_store();
     demand.record();
     let epoch = EPOCH.load(Ordering::Acquire);
@@ -862,12 +541,19 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
         sizing();
     }
     let prepared = (|| {
+        if RECOVER.load(Ordering::Acquire) {
+            // A recovery reseeds held state that no walk recorded a witness for.
+            witness::release();
+        }
         writers::prepare(registry.len().saturating_mul(2).max(1))?;
         let mut identities = HashMap::new();
         let mut watched = HashMap::new();
         engine_allocation::reserve_map(&mut identities, registry.len())
             .map_err(|_| "variant change identity allocation failed")?;
         engine_allocation::reserve_map(&mut watched, registry.len().saturating_mul(2).max(1))
+            .map_err(|_| "variant change watch allocation failed")?;
+        let mut published = Published::default();
+        engine_allocation::reserve(&mut published.pointers, registry.len().max(1))
             .map_err(|_| "variant change watch allocation failed")?;
         for (source, definition) in registry.iter().zip(&variants.definitions.rows) {
             if identities.insert(source.id, source.pointer()).is_some()
@@ -920,14 +606,15 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
             sources::release();
             liveness::release();
             held::release();
+            witness::release();
         }
         repair::prepare(&watched)?;
         held::seed(registry, variants, &watched)?;
         liveness::seed(variants, &mut interests)?;
         sources::seed(variants, &mut interests)?;
-        Ok((watched, interests))
+        Ok((watched, published, interests))
     })();
-    let (mut watched, mut interests) = match prepared {
+    let (mut watched, mut published, mut interests) = match prepared {
         Ok(prepared) => prepared,
         Err(reason) => {
             store
@@ -938,7 +625,6 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
             return;
         }
     };
-    snapshots::prune(&watched);
     {
         let mut store = store
             .lock()
@@ -955,6 +641,7 @@ fn prepare_with(registry: &[native::RegistryRow], variants: &Variants, sizing: i
             store.batch.clear();
         }
         std::mem::swap(&mut store.watched, &mut watched);
+        std::mem::swap(&mut store.published, &mut published);
         std::mem::swap(&mut store.interests, &mut interests);
         store.epoch = epoch;
         SAVED_POPULATION.store(store.watched.len(), Ordering::Release);
@@ -993,198 +680,38 @@ impl Drop for BaselineAttempt {
     }
 }
 
-fn observe(memory: &impl Memory, base: usize, pointer: usize, removed: bool, published: bool) {
+/// A design write marks its receiver; the boundary reads every marked design once, live. A
+/// published design joins the watched set with its identity, the only read in the callback.
+fn mark_design(memory: &impl Memory, base: usize, pointer: usize, published: bool) {
     let Some(mutex) = STORE.get() else {
         unobserved!();
         return;
     };
-    let Some(mut scratch) = storage::scratch() else {
-        let mut store = callback_store(mutex);
-        if store.epoch == EPOCH.load(Ordering::Acquire) {
-            observe_locked(&mut store, memory, base, pointer, removed, published);
-        }
-        return;
-    };
-    let (epoch, revision) = {
-        let mut store = callback_store(mutex);
-        if store.epoch != EPOCH.load(Ordering::Acquire) {
-            return;
-        }
-        if let Some(watch) = store.watched.get_mut(&pointer) {
-            watch.dirty = true;
-        } else if !published {
-            return;
-        }
-        (store.epoch, STAGING_REVISION.load(Ordering::Relaxed))
-    };
-    let staged = stage_private(&mut scratch, memory, base, pointer);
     let mut store = callback_store(mutex);
-    if store.epoch != epoch || epoch != EPOCH.load(Ordering::Acquire) {
+    if store.epoch != EPOCH.load(Ordering::Acquire) {
         return;
     }
-    if let Err(StageFailure::Refused(reason)) = staged {
-        store.batch.failure = Some(reason);
-        return;
-    }
-    // Any intervening observer, including an uninterested source, keeps the serial path's order.
-    if STAGING_REVISION.load(Ordering::Relaxed) != revision.wrapping_add(1)
-        || scratch.log.overflowed
-        || staged.is_err()
-    {
-        observe_locked(&mut store, memory, base, pointer, removed, published);
-        return;
-    }
-    let (identity, flags, hour) = staged.unwrap();
-    if let Some(watch) = store.watched.get_mut(&pointer) {
-        if watch.id != identity {
-            store.batch.failure = Some("variant identity changed without observed replacement");
+    if !store.watched.contains_key(&pointer) {
+        if !published {
             return;
         }
-        watch.flags = flags;
-    } else if published {
+        let identity = match native::identity(memory, base, pointer) {
+            Ok(identity) => identity,
+            Err(reason) => {
+                store.batch.failure = Some(reason);
+                return;
+            }
+        };
         if store.watched.len() == store.watched.capacity() {
             store.batch.failure = Some("variant change watch capacity exhausted");
             return;
         }
         repair::added();
-        store.watched.insert(
-            pointer,
-            Watch {
-                id: identity,
-                pointer,
-                flags,
-                dirty: true,
-            },
-        );
-        SAVED_POPULATION.fetch_max(store.watched.len(), Ordering::AcqRel);
-    } else {
-        return;
-    }
-    store.batch.required_events = store.batch.required_events.saturating_add(1);
-    storage::occurrence(&mut store.batch, &scratch.log);
-    let result = (|| {
-        if store.batch.events.len() == store.batch.events.capacity() {
-            return Err("variant change event capacity exhausted");
+        if store.published.pointers.len() < store.published.pointers.capacity() {
+            store.published.pointers.push(pointer);
+        } else {
+            store.published.overflowed = true;
         }
-        for (key, (owner, _)) in &scratch.interests.entries {
-            store.interests.insert(*key, *owner)?;
-        }
-        for (handle, pointer) in &scratch.interests.organisations {
-            store
-                .interests
-                .organisation(*handle, (*pointer != 0).then_some(*pointer))?;
-        }
-        let (start, end) = storage::append(&mut store.batch.log, &scratch.log)?;
-        store.batch.events.push(Event {
-            kind: Kind::Design,
-            sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            hour,
-            pointer,
-            variant: identity,
-            flags: None,
-            removed,
-            start,
-            end,
-        });
-        Ok(())
-    })();
-    if let Err(reason) = result {
-        store.batch.failure = Some(reason);
-    }
-}
-#[derive(Clone, Copy, Debug)]
-enum StageFailure {
-    Retry,
-    Refused(&'static str),
-}
-impl From<&'static str> for StageFailure {
-    fn from(_: &'static str) -> Self {
-        Self::Retry
-    }
-}
-fn stage_private(
-    scratch: &mut storage::Scratch,
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-) -> Result<(u64, [u8; 3], i32), StageFailure> {
-    let identity = native::identity(memory, base, pointer)?;
-    let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
-        .ok_or("variant change clock unreadable")?;
-    let hour = (state as usize)
-        .checked_add(engine_native::cgame_state::CURRENT_HOUR)
-        .and_then(|at| engine_native::read(memory, at))
-        .ok_or("variant change hour unreadable")?;
-    let flags = pointer
-        .checked_add(native::CAN_UPGRADE_TYPE)
-        .and_then(|at| engine_native::read(memory, at))
-        .ok_or("variant change flags unreadable")?;
-    let parent = pointer
-        .checked_add(native::PARENT)
-        .and_then(|at| engine_native::read::<u64>(memory, at))
-        .ok_or("variant change parent unreadable")?;
-    let claim = if parent != 0 {
-        let claim = writers::enter(parent as usize, None, writers::Footprint::Identity).ok_or(
-            StageFailure::Refused("variant parent snapshot has a competing writer"),
-        )?;
-        if !claim.admitted() {
-            return Err(StageFailure::Refused(
-                "variant parent snapshot has a competing writer",
-            ));
-        }
-        Some(claim)
-    } else {
-        None
-    };
-    let result = stage_interests(
-        &mut scratch.log,
-        memory,
-        base,
-        pointer,
-        Some(&mut scratch.interests),
-    );
-    if claim.is_some_and(writers::Flight::finish) {
-        return Err(StageFailure::Refused(
-            "variant parent snapshot has a competing writer",
-        ));
-    }
-    result?;
-    Ok((identity, flags, hour))
-}
-fn observe_locked(
-    store: &mut Store,
-    memory: &impl Memory,
-    base: usize,
-    pointer: usize,
-    removed: bool,
-    published: bool,
-) {
-    let watched = store.watched.get_mut(&pointer).map(|watch| {
-        watch.dirty = true;
-        *watch
-    });
-    if !published && watched.is_none() {
-        return;
-    }
-    let identity = match native::identity(memory, base, pointer) {
-        Ok(id) => id,
-        Err(reason) => {
-            store.batch.failure = Some(reason);
-            return;
-        }
-    };
-    if let Some(watch) = watched {
-        if watch.id != identity {
-            store.batch.failure = Some("variant identity changed without observed replacement");
-            return;
-        }
-    } else if published {
-        if store.watched.len() == store.watched.capacity() {
-            store.batch.failure = Some("variant change watch capacity exhausted");
-            return;
-        }
-        repair::added();
         store.watched.insert(
             pointer,
             Watch {
@@ -1196,91 +723,8 @@ fn observe_locked(
         );
         SAVED_POPULATION.fetch_max(store.watched.len(), Ordering::AcqRel);
     }
-    store.batch.required_events = store.batch.required_events.saturating_add(1);
-    if store.batch.events.len() == store.batch.events.capacity() {
-        store.batch.failure = Some("variant change event capacity exhausted");
-        return;
-    }
-    let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|p| engine_native::read::<u64>(memory, p))
-    else {
-        store.batch.failure = Some("variant change clock unreadable");
-        return;
-    };
-    let Some(hour) = (state as usize)
-        .checked_add(engine_native::cgame_state::CURRENT_HOUR)
-        .and_then(|p| engine_native::read(memory, p))
-    else {
-        store.batch.failure = Some("variant change hour unreadable");
-        return;
-    };
-    if let Some(flags) = pointer
-        .checked_add(native::CAN_UPGRADE_TYPE)
-        .and_then(|p| engine_native::read::<[u8; 3]>(memory, p))
-    {
-        if let Some(watch) = store.watched.get_mut(&pointer) {
-            watch.flags = flags;
-        }
-    } else {
-        store.batch.failure = Some("variant change flags unreadable");
-        return;
-    }
-    // The snapshot authenticates its parent's identity as well as this
-    // receiver. Protect that short read against a foreign move/destruction,
-    // without excluding unrelated writers for the whole original's duration.
-    let Some(parent) = pointer
-        .checked_add(native::PARENT)
-        .and_then(|address| engine_native::read::<u64>(memory, address))
-    else {
-        store.batch.failure = Some("variant change parent unreadable");
-        return;
-    };
-    let parent_claim = if parent != 0 {
-        let Some(claim) = writers::enter(parent as usize, None, writers::Footprint::Identity)
-        else {
-            return;
-        };
-        if !claim.admitted() {
-            store.batch.failure = Some("variant parent snapshot has a competing writer");
-            return;
-        }
-        Some(claim)
-    } else {
-        None
-    };
-    let start = store.batch.log.spans.len();
-    let Store {
-        batch, interests, ..
-    } = &mut *store;
-    let before_spans = batch.log.spans.len();
-    let before_bytes = batch.log.bytes.len();
-    let staged = stage_interests(&mut batch.log, memory, base, pointer, Some(interests));
-    batch.required_spans = batch
-        .required_spans
-        .saturating_add(batch.log.spans.len() - before_spans);
-    batch.required_bytes = batch
-        .required_bytes
-        .saturating_add(batch.log.bytes.len() - before_bytes);
-    match staged {
-        Ok(()) => {
-            let end = store.batch.log.spans.len();
-            store.batch.events.push(Event {
-                kind: Kind::Design,
-                sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
-                hour,
-                pointer,
-                variant: identity,
-                flags: None,
-                removed,
-                start,
-                end,
-            });
-        }
-        Err(reason) => store.batch.failure = Some(reason),
-    }
-    if parent_claim.is_some_and(writers::Flight::finish) {
-        store.batch.failure = Some("variant parent snapshot has a competing writer");
-    }
+    drop(store);
+    repair::mark(pointer);
 }
 
 /// Genuine overlapping native edits retain receiver marks. Membership/lifetime
@@ -1354,7 +798,6 @@ fn retire_from(store: &mut Store, memory: &impl Memory, base: usize, pointer: us
         hour,
         pointer,
         variant: watch.id,
-        flags: None,
         removed: true,
         start: 0,
         end: 0,
@@ -1378,63 +821,6 @@ pub fn active() -> usize {
     ACTIVE.load(Ordering::SeqCst)
         + super::design_template_changes::active()
         + collector_observers::world_input_changes::design_forwarder_active()
-}
-
-fn flag_change(memory: &impl Memory, base: usize, pointer: usize) {
-    let Some(store) = STORE.get() else {
-        unobserved!();
-        return;
-    };
-    let mut store = callback_store(store);
-    if store.epoch != EPOCH.load(Ordering::Acquire) {
-        return;
-    }
-    let Some(watch) = store.watched.get_mut(&pointer) else {
-        return;
-    };
-    let Some(flags) = pointer
-        .checked_add(native::CAN_UPGRADE_TYPE)
-        .and_then(|p| engine_native::read::<[u8; 3]>(memory, p))
-    else {
-        watch.dirty = true;
-        store.batch.failure = Some("variant eligibility flags unreadable");
-        return;
-    };
-    if watch.flags == flags {
-        return;
-    }
-    watch.dirty = true;
-    let variant = watch.id;
-    store.batch.required_events = store.batch.required_events.saturating_add(1);
-    if store.batch.events.len() == store.batch.events.capacity() {
-        store.batch.failure = Some("variant change event capacity exhausted");
-        return;
-    }
-    let Some(state) = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-        .and_then(|p| engine_native::read::<u64>(memory, p))
-    else {
-        store.batch.failure = Some("variant change clock unreadable");
-        return;
-    };
-    let Some(hour) = (state as usize)
-        .checked_add(engine_native::cgame_state::CURRENT_HOUR)
-        .and_then(|p| engine_native::read(memory, p))
-    else {
-        store.batch.failure = Some("variant change hour unreadable");
-        return;
-    };
-    store.watched.get_mut(&pointer).unwrap().flags = flags;
-    store.batch.events.push(Event {
-        kind: Kind::Design,
-        sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
-        hour,
-        pointer,
-        variant,
-        flags: Some(flags),
-        removed: false,
-        start: 0,
-        end: 0,
-    });
 }
 
 use collector_hooks::hook::Hook;
@@ -1689,27 +1075,16 @@ fn returned(memory: &impl Memory, base: usize, site: usize, pointer: usize, firs
                     unobserved!();
                     return;
                 };
-                flag_change(memory, base, pointer as usize);
+                mark_design(memory, base, pointer as usize, false);
             }
         }
         Receiver::Removed => {}
-        _ if pointer != 0 => {
-            if let Some(field) = scalar::field(site) {
-                scalar::observe(memory, base, pointer, field);
-            } else if mutation.witness.is_some_and(|w| {
-                (native::CAN_UPGRADE_TYPE..=native::CAN_UPGRADE_MODULES).contains(&w)
-            }) {
-                flag_change(memory, base, pointer);
-            } else {
-                observe(
-                    memory,
-                    base,
-                    pointer,
-                    false,
-                    matches!(mutation.receiver, Receiver::Published),
-                );
-            }
-        }
+        _ if pointer != 0 => mark_design(
+            memory,
+            base,
+            pointer,
+            matches!(mutation.receiver, Receiver::Published),
+        ),
         _ => {}
     }
 }
@@ -1878,7 +1253,7 @@ unsafe fn around_with_identities<const SITE: usize>(
         });
     if let Some(bindings) = move_bindings {
         if bindings.iter().any(Option::is_some) {
-            observe(&memory, base, first, false, true);
+            mark_design(&memory, base, first, true);
         }
     } else if selected && changed {
         returned(&memory, base, SITE, pointer, first);
@@ -1893,7 +1268,7 @@ unsafe fn around_with_identities<const SITE: usize>(
                     unknown_receiver!();
                 } else if owner != pointer {
                     if admitted {
-                        scalar::observe(&memory, base, owner, scalar::Field::MaxVersion);
+                        mark_design(&memory, base, owner, false);
                     } else {
                         dirty_receiver(owner);
                     }
@@ -1905,7 +1280,7 @@ unsafe fn around_with_identities<const SITE: usize>(
     if create_scope {
         let created = CREATED.get();
         if created != 0 {
-            observe(&memory, base, created, false, true);
+            mark_design(&memory, base, created, true);
         }
     }
     // A conflict stays latched until every participant exits, including a
@@ -2250,6 +1625,7 @@ fn drain_speculating(
     snapshots: &mut snapshots::Shared,
     speculation: Option<&mut Speculation<'_>>,
 ) -> Result<usize, &'static str> {
+    let start = std::time::Instant::now();
     output.clear();
     snapshots.clear();
     let revision = REVISION.load(Ordering::Acquire);
@@ -2266,6 +1642,7 @@ fn drain_speculating(
         std::mem::swap(batch, spare);
         std::mem::replace(spare, Batch::empty())
     };
+    drain_profile_mut().events = batch.events.len() as u32;
     let result = (|| {
         if !ENABLED.load(Ordering::Acquire) {
             return Err("variant change hooks unavailable");
@@ -2284,67 +1661,162 @@ fn drain_speculating(
         if let Some(reason) = batch.failure {
             return Err(reason);
         }
+        source_hooks::materialize(&mut batch, memory, base)?;
         let repairs = repair::take(&mut batch)?;
-        // These bindings may have changed during the lost edit. Shared-source
-        // occurrences must not act on their obsolete dependencies; the fresh
-        // terminal read installs their current bindings below.
-        for watch in &repairs.watches {
-            sources::remove(watch.id);
-        }
         // Reject consumed parent identities against the preceding held state,
         // before a terminal read can follow dead storage or replace that proof.
         held::check_lifetimes(&batch.events)?;
-        let mut retained = snapshots::retained(epoch, base);
-        let mut cache = snapshots::Cache::with_retained(&mut retained);
-        decode_batch_with_cache(
-            &batch,
+        let tail = std::time::Instant::now();
+        let mut removed = engine_allocation::vec(batch.events.len())
+            .map_err(|_| "variant repair allocation failed")?;
+        removed.extend(
+            batch
+                .events
+                .iter()
+                .filter(|event| event.removed)
+                .map(|event| event.pointer),
+        );
+        {
+            let mut profile = drain_profile_mut();
+            profile.designs = repairs.watches.len() as u32;
+            profile.source_notes = source_hooks::NOTES.swap(0, Ordering::Relaxed) as u32;
+            profile.source_writes = source_hooks::WRITES.swap(0, Ordering::Relaxed) as u32;
+        }
+        // The lanes read every marked design; completion and its shared effects stay in design
+        // order, for the next tick's hooks and this boundary's context and census reads.
+        let stage = std::time::Instant::now();
+        drain_profile_mut().boundary_ns[0] = elapsed_ns(start);
+        let witnesses = witness::take(&repairs.watches, &removed);
+        let mut reads = snapshots::speculative::read_marked(
+            speculation,
             base,
             hour,
-            output,
-            snapshots,
-            &mut cache,
-            speculation,
+            &repairs.watches,
+            witnesses,
+            &removed,
         )?;
-        // Terminal repairs have no copied capacity witness; discard their earlier cached states.
-        for watch in &repairs.watches {
-            cache.remove(watch.id);
+        // One design-MIO watch boundary for every design this boundary walks, as each walk's
+        // stats read every MIO afresh.
+        let walked = repairs.watches.len()
+            - reads
+                .values()
+                .filter(|read| matches!(read, snapshots::speculative::Read::Unchanged(_)))
+                .count();
+        if walked != 0 {
+            collector_observers::world_input_changes::prepare_design_mios(walked, true);
         }
-        cache.finish(&batch);
-        drop(cache);
-        drop(retained);
-        liveness::refresh_context(memory, base, &batch.events)?;
+        drain_profile_mut().stages_ns[0] = elapsed_ns(stage);
+        // A marked design's bindings may have changed during the hour: shared-source
+        // occurrences must not act on them. A walk installs its current ones; an unchanged
+        // witness proves its own the same, so it gets them back after the occurrences.
         for watch in &repairs.watches {
-            let value = repair::snapshot(memory, base, hour, watch.pointer, &batch.events)?;
-            if value.definition.id != watch.id {
+            sources::suspend(watch.id)?;
+        }
+        let begin = std::time::Instant::now();
+        decode_events(&batch, base, output)?;
+        drain_profile_mut().events_ns = elapsed_ns(begin);
+        for watch in &repairs.watches {
+            if matches!(
+                reads.get(&watch.pointer),
+                Some(snapshots::speculative::Read::Unchanged(_))
+            ) {
+                sources::resume(watch.id)?;
+            }
+        }
+        liveness::refresh_context(memory, base, &batch.events)?;
+        let stage = std::time::Instant::now();
+        engine_allocation::reserve(output, repairs.watches.len())
+            .map_err(|_| "variant repair allocation failed")?;
+        snapshots.reserve(walked)?;
+        engine_allocation::reserve(&mut batch.events, repairs.watches.len())
+            .map_err(|_| "variant repair allocation failed")?;
+        // Optional: a refused allocation keeps no witness, so every next touch walks.
+        let mut kept =
+            engine_allocation::advisory(|| engine_allocation::vec(repairs.watches.len())).ok();
+        let (mut unchanged, mut lane_walks) = (0, 0);
+        for watch in &repairs.watches {
+            use snapshots::speculative::Read;
+            let (walk, recorded) = match reads.remove(&watch.pointer) {
+                Some(Read::Unchanged(witness)) => {
+                    // Byte-identical: no decode and no effect but its own liveness, as it reads.
+                    // The touch still enters the hour's ledger, with its current upgrade flags.
+                    liveness::change(witness.team.0, witness.team.1)?;
+                    if let Some(kept) = kept.as_mut() {
+                        kept.push((watch.pointer, witness));
+                    }
+                    unchanged += 1;
+                    batch.events.push(Event {
+                        kind: Kind::Design,
+                        sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                        hour,
+                        pointer: watch.pointer,
+                        variant: watch.id,
+                        removed: false,
+                        start: 0,
+                        end: 0,
+                    });
+                    output.push(rows::VariantChangeRow {
+                        sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                        hour,
+                        variant: watch.id,
+                        flags: Some(watch.flags),
+                        ..Default::default()
+                    });
+                    continue;
+                }
+                Some(Read::Walked(walk, decoded, recorded)) => (Some((walk, decoded)), recorded),
+                _ => (None, None),
+            };
+            lane_walks += u32::from(walk.is_some());
+            let decoded = repair::snapshot(memory, base, hour, watch.pointer, &removed, walk)?;
+            if decoded.value.definition.id != watch.id {
                 return Err("variant repair identity changed without observed replacement");
             }
-            repair::complete(watch, &value)?;
-            engine_allocation::reserve(output, 1)
-                .map_err(|_| "variant repair allocation failed")?;
-            engine_allocation::reserve(&mut batch.events, 1)
-                .map_err(|_| "variant repair allocation failed")?;
+            repair::complete(watch, &decoded.value)?;
+            if let Some(mut recorded) = recorded {
+                let state = decoded
+                    .value
+                    .definition
+                    .design
+                    .require("VariantChanges.design")
+                    .map_err(|_| "variant repair lacks design state")?;
+                recorded.team = (state.design_team, state.design_team_serialized);
+                if let Some(kept) = kept.as_mut() {
+                    kept.push((watch.pointer, recorded));
+                }
+            }
             batch.events.push(Event {
                 kind: Kind::Design,
                 sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
                 hour,
                 pointer: watch.pointer,
                 variant: watch.id,
-                flags: None,
                 removed: false,
                 start: 0,
                 end: 0,
             });
-            output.push(rows::VariantChangeRow {
-                sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+            // Shared, so the held state takes the interned design rather than a deep copy.
+            snapshots.push(
+                output.len() + snapshots.len(),
+                OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
                 hour,
-                variant: watch.id,
-                snapshot: Some(value),
-                ..Default::default()
-            });
+                watch.id,
+                std::sync::Arc::new(decoded),
+            )?;
         }
+        {
+            let mut profile = drain_profile_mut();
+            profile.unchanged = unchanged;
+            profile.lane_walks = lane_walks;
+            profile.stages_ns[1] = elapsed_ns(stage);
+        }
+        let stage = std::time::Instant::now();
         held::apply_shared(&batch.events, output, snapshots)?;
         held::check_lifetimes(&batch.events)?;
+        sources::drop_suspended();
         sources::prune_interests()?;
+        drain_profile_mut().stages_ns[2] = elapsed_ns(stage);
+        drain_profile_mut().reads_ns = elapsed_ns(tail);
         if active() != 0
             || revision != REVISION.load(Ordering::Acquire)
             || epoch != EPOCH.load(Ordering::Acquire)
@@ -2354,6 +1826,11 @@ fn drain_speculating(
             unobserved!();
             return Err("variant change proof changed during boundary acquisition");
         }
+        // Only a boundary that stands keeps its witnesses and settles its designs' census carry.
+        if let Some(kept) = kept {
+            witness::keep_all(kept);
+        }
+        repair::settle(&repairs.watches);
         if repairs.lost != 0 {
             REPAIRED_INTERVALS.fetch_add(1, Ordering::Relaxed);
             REPAIRED_RECEIVERS.fetch_add(repairs.watches.len() as u64, Ordering::Relaxed);
@@ -2361,8 +1838,10 @@ fn drain_speculating(
         Ok(repairs.lost)
     })();
     if let Err(reason) = result {
-        // A failed drain must not preserve states whose shrink observations were discarded.
-        snapshots::release();
+        // A refused boundary walked none of its changed designs; their old witnesses must not
+        // outlive the held state a recovery may now replace.
+        witness::release();
+        sources::drop_suspended();
         diagnostics::refused();
         diagnostics::refusal(reason);
         REFUSED_INTERVALS.fetch_add(1, Ordering::Relaxed);
@@ -2453,6 +1932,14 @@ impl DefinitionState {
     }
 }
 
+fn upgrade_flags(row: &rows::VariantDefinitionRow) -> Option<[u8; 3]> {
+    let state = row.design.require("VariantDefinitions.design").ok()?;
+    Some([
+        state.can_upgrade_type,
+        state.can_upgrade_variant,
+        state.can_upgrade_modules,
+    ])
+}
 fn project_definitions(
     history: snapshots::History<'_>,
     projection: Option<&Projection<'_>>,
@@ -2524,6 +2011,12 @@ fn project_definitions(
                         .map_err(|_| "variant source change lacks design state")?;
                     replace_sources(state, sources)?;
                 } else if let Some(flags) = event.flags {
+                    let previous = edits
+                        .binary_search_by_key(&index, |(index, _)| *index)
+                        .map_or(&baseline[index], |position| &edits[position].1);
+                    if upgrade_flags(previous) == Some(flags) {
+                        continue;
+                    }
                     if edits
                         .binary_search_by_key(&index, |(index, _)| *index)
                         .is_err()
@@ -2601,6 +2094,9 @@ fn project_definitions(
                 continue;
             }
             if let Some(flags) = event.flags {
+                if result.get(event.variant).and_then(upgrade_flags) == Some(flags) {
+                    continue;
+                }
                 let row = result
                     .get_mut(event.variant)
                     .ok_or("variant flags name an unknown design")?;
@@ -2683,7 +2179,6 @@ unsafe extern "system-unwind" fn entry<const SITE: usize>(
 /// `boundary` before dispatch, then `capture` before deciding `needs_full` and
 /// acquiring the registry. Restore both outputs before their consumers publish.
 pub struct Captured {
-    repaired: usize,
     rows: Vec<rows::VariantChangeRow>,
     snapshots: snapshots::Shared,
     pub(super) outcome: Outcome,
@@ -2698,7 +2193,6 @@ pub struct Captured {
 impl Captured {
     pub fn vacant() -> Self {
         Self {
-            repaired: 0,
             rows: Vec::new(),
             snapshots: snapshots::Shared::default(),
             outcome: Outcome::Unavailable {
@@ -2810,7 +2304,6 @@ impl Captured {
         let memory = unsafe { engine_native::memory::LiveMemory::new() };
         self.fog = super::design_fog::capture(&memory, base);
         self.liveness = liveness::Observation::refused();
-        self.repaired = 0;
         let result = drain_speculating(
             &memory,
             base,
@@ -2819,13 +2312,14 @@ impl Captured {
             &mut self.snapshots,
             speculation,
         )
-        .and_then(|repaired| {
-            self.repaired = repaired;
+        .and_then(|_| {
             self.liveness = liveness::observation()?;
             self.dictionary = super::bonus_snapshots::snapshot()?;
             Ok(())
         });
+        let begin = std::time::Instant::now();
         (self.context, self.templates) = context(&memory).unwrap_or_default();
+        drain_profile_mut().boundary_ns[1] = elapsed_ns(begin);
         self.context_acquired = true;
         self.outcome = match result {
             Ok(()) => Outcome::Rows {
@@ -2863,10 +2357,6 @@ impl Captured {
     ) -> TableInput {
         if let Outcome::Unavailable { reason } = self.outcome {
             return unavailable(reason).into();
-        }
-        if self.repaired != 0 {
-            return unavailable("variant terminal repairs cannot reconstruct lost occurrences")
-                .into();
         }
         if history.is_empty() {
             return TableView::Complete(rows::TableRows::VariantChanges(Vec::new())).into();
@@ -2991,6 +2481,7 @@ impl Drop for Hooks {
                 batch: Batch::empty(),
                 spare: Batch::empty(),
                 watched: HashMap::new(),
+                published: Published::default(),
                 interests: sources::Interests::default(),
                 epoch: EPOCH.load(Ordering::Acquire),
             };
@@ -3002,7 +2493,7 @@ impl Drop for Hooks {
         sources::release();
         liveness::release();
         held::release();
-        snapshots::release();
+        witness::release();
         super::design_context::invalidate();
     }
 }
@@ -3011,140 +2502,75 @@ impl Drop for Hooks {
 fn decode_batch(
     batch: &Batch,
     base: usize,
-    hour: i32,
+    _hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
 ) -> Result<(), &'static str> {
-    let mut snapshots = snapshots::Shared::default();
-    decode_batch_shared(batch, base, hour, output, &mut snapshots)?;
-    snapshots.materialize(output)
+    decode_events(batch, base, output)
 }
-#[cfg(test)]
-fn decode_batch_shared(
+/// The hour's noted occurrences in observation order: organisation liveness, sources and
+/// removals. A design's state is the boundary's read of it, never an occurrence.
+fn decode_events(
     batch: &Batch,
     base: usize,
-    hour: i32,
     output: &mut Vec<rows::VariantChangeRow>,
-    snapshots: &mut snapshots::Shared,
 ) -> Result<(), &'static str> {
-    decode_batch_with_cache(
-        batch,
-        base,
-        hour,
-        output,
-        snapshots,
-        &mut snapshots::Cache::default(),
-        None,
-    )
-}
-fn decode_batch_with_cache(
-    batch: &Batch,
-    base: usize,
-    hour: i32,
-    output: &mut Vec<rows::VariantChangeRow>,
-    snapshots: &mut snapshots::Shared,
-    cache: &mut snapshots::Cache<'_>,
-    speculation: Option<&mut Speculation<'_>>,
-) -> Result<(), &'static str> {
-    snapshots.reserve(batch.events.len())?;
-    if let Some(speculation) = speculation {
-        // Pure walks for the burst's likely misses run on the lanes first; the ordered
-        // pass below still makes every hit/miss decision and every shared effect.
-        cache.speculate(batch, base, hour, speculation);
-    }
     let mut preceding_sequence = 0;
-    for (index, event) in batch.events.iter().enumerate() {
+    for event in &batch.events {
         if event.sequence == 0 || event.sequence <= preceding_sequence {
             return Err("variant occurrences are not in native observation order");
         }
         preceding_sequence = event.sequence;
-        if let Kind::Organisation(live) = event.kind {
-            liveness::change(event.variant, live)?;
-            engine_allocation::reserve(output, 1)
-                .map_err(|_| "design liveness event allocation failed")?;
-            output.push(rows::VariantChangeRow {
-                sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-                hour: event.hour,
-                organisation: Some(rows::VariantOrganisationChange {
-                    organisation: event.variant,
-                    live,
-                }),
-                ..Default::default()
-            });
-            continue;
-        }
-        if let Kind::Scalar(field) = event.kind {
-            let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
-            let scalar = scalar::decode(&memory, event.pointer, field)?;
-            engine_allocation::reserve(output, 1)
-                .map_err(|_| "variant scalar allocation failed")?;
-            output.push(rows::VariantChangeRow {
-                sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-                hour: event.hour,
-                variant: event.variant,
-                scalar: Some(scalar),
-                ..Default::default()
-            });
-            continue;
-        }
-        if event.kind != Kind::Design {
-            if matches!(event.kind, Kind::SourceRemoved | Kind::ProviderReset(_)) {
-                sources::decode(
-                    event,
-                    &engine_native::memory::SliceMemory {
-                        base: 0,
-                        bytes: &[],
-                    },
-                    base,
-                    output,
-                )?;
-            } else {
+        match event.kind {
+            Kind::Organisation(live) => {
+                liveness::change(event.variant, live)?;
+                engine_allocation::reserve(output, 1)
+                    .map_err(|_| "design liveness event allocation failed")?;
+                output.push(rows::VariantChangeRow {
+                    sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                    hour: event.hour,
+                    organisation: Some(rows::VariantOrganisationChange {
+                        organisation: event.variant,
+                        live,
+                    }),
+                    ..Default::default()
+                });
+            }
+            Kind::SourceRemoved | Kind::ProviderReset(_) => sources::decode(
+                event,
+                &engine_native::memory::SliceMemory {
+                    base: 0,
+                    bytes: &[],
+                },
+                base,
+                output,
+            )?,
+            Kind::Source | Kind::Provider(_) => {
                 let memory = crate::raw::Recorded::build_range(&batch.log, event.start..event.end)?;
                 sources::decode(event, &memory, base, output)?;
             }
-            continue;
+            Kind::Design if event.removed => {
+                witness::remove(event.pointer);
+                super::design_context::remove(event.variant)?;
+                sources::remove(event.variant);
+                engine_allocation::reserve(output, 1)
+                    .map_err(|_| "variant removal allocation failed")?;
+                output.push(rows::VariantChangeRow {
+                    sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
+                    hour: event.hour,
+                    variant: event.variant,
+                    removed: true,
+                    ..Default::default()
+                });
+            }
+            Kind::Design => return Err("variant design occurrence outside a boundary read"),
         }
-        if let Some(flags) = event.flags {
-            engine_allocation::reserve(output, 1)
-                .map_err(|_| "variant change allocation failed")?;
-            output.push(rows::VariantChangeRow {
-                sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-                hour: event.hour,
-                variant: event.variant,
-                flags: Some(flags),
-                ..Default::default()
-            });
-            continue;
-        }
-        if event.removed {
-            cache.remove(event.variant);
-            super::design_context::remove(event.variant)?;
-            sources::remove(event.variant);
-            engine_allocation::reserve(output, 1)
-                .map_err(|_| "variant removal allocation failed")?;
-            output.push(rows::VariantChangeRow {
-                sequence: OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-                hour: event.hour,
-                variant: event.variant,
-                removed: true,
-                ..Default::default()
-            });
-            continue;
-        }
-        cache.at(index);
-        let snapshot = cache.decode(batch, event, base, hour, snapshots)?;
-        snapshots.push(
-            output.len() + snapshots.len(),
-            OUTPUT_SEQUENCE.fetch_add(1, Ordering::Relaxed),
-            event.hour,
-            event.variant,
-            snapshot,
-        )?;
     }
     Ok(())
 }
 
 /// The boundary repair uses the same reader, conversion and dependency demand
 /// as an observed full snapshot, but never presents it as a native occurrence.
+#[cfg(test)]
 fn snapshot(
     memory: &impl Memory,
     base: usize,
@@ -3362,15 +2788,9 @@ fn intern_definitions(
     }
     result
 }
-/// The ordered step of a full decode: the walks' shared effects in the order an inline
-/// capture runs them (interning, then the design-MIO watch boundary and each MIO read),
-/// then conversion and the snapshot's own observation.
-fn complete_snapshot(
-    memory: &impl Memory,
-    base: usize,
-    fresh: bool,
-    walk: &mut RawWalk,
-) -> Result<snapshots::Decoded, &'static str> {
+/// A walk's completion with no shared effect: interning (keyed by content, so in any order),
+/// the definition's decode and the snapshot's assembly. The lanes run it beside the drain.
+fn decode_walk(walk: &mut RawWalk) -> Result<snapshots::Decoded, &'static str> {
     let mut captured = DecodeScratch::take();
     let interned = intern_definitions(&mut captured.definitions, &mut walk.definitions);
     std::mem::swap(&mut captured.definition_bytes, &mut walk.definition_bytes);
@@ -3379,34 +2799,18 @@ fn complete_snapshot(
         captured.definition_bytes.len = 0;
         captured.definition_bytes.required = 0;
     }
-    if walk.details {
-        collector_observers::world_input_changes::prepare_design_mios(walk.sources, true);
-        for _ in 0..walk.stats.outcome.len() {
-            collector_observers::world_input_changes::record_daily(
-                collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
-                false,
-                true,
-            );
-        }
-    }
     std::mem::swap(&mut captured.modules, &mut walk.modules);
     std::mem::swap(&mut captured.stats, &mut walk.stats);
     std::mem::swap(&mut captured.upgrades, &mut walk.upgrades);
-    let result = finish_snapshot(&mut captured, memory, base, fresh);
+    let result = assemble_snapshot(&mut captured);
     std::mem::swap(&mut captured.definition_bytes, &mut walk.definition_bytes);
     std::mem::swap(&mut captured.modules, &mut walk.modules);
     std::mem::swap(&mut captured.stats, &mut walk.stats);
     std::mem::swap(&mut captured.upgrades, &mut walk.upgrades);
     result
 }
-fn finish_snapshot(
-    captured: &mut Variants,
-    memory: &impl Memory,
-    base: usize,
-    fresh: bool,
-) -> Result<snapshots::Decoded, &'static str> {
-    let definition = definitions(&captured.definitions, &captured.definition_bytes);
-    let definition = match definition {
+fn assemble_snapshot(captured: &mut Variants) -> Result<snapshots::Decoded, &'static str> {
+    let definition = match definitions(&captured.definitions, &captured.definition_bytes) {
         TableView::Complete(rows::TableRows::VariantDefinitions(mut rows)) if rows.len() == 1 => {
             rows.remove(0)
         }
@@ -3418,7 +2822,6 @@ fn finish_snapshot(
     {
         return Err("variant change children decode failed");
     }
-    let context = observe_snapshot(captured, memory, base, fresh)?;
     let snapshot = rows::VariantSnapshot {
         definition: definition.into(),
         modules: captured.modules.rows[..captured.modules.outcome.len()]
@@ -3445,8 +2848,33 @@ fn finish_snapshot(
         value: snapshot,
         // The next decode's mapping overwrites this slot whole.
         definition: std::mem::take(&mut captured.definitions.rows[0]),
-        context: Some(context),
     })
+}
+/// A walk decoded in design order, then its shared effects.
+fn complete_snapshot(
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+    walk: &mut RawWalk,
+) -> Result<snapshots::Decoded, &'static str> {
+    let begin = std::time::Instant::now();
+    let decoded = decode_walk(walk);
+    drain_profile_mut().complete_ns[0] += elapsed_ns(begin);
+    complete_decoded(memory, base, fresh, walk, decoded?)
+}
+/// A decoded walk's shared effects, in design order: the design-MIO record, its source
+/// bindings, author liveness and design-context demand.
+fn complete_decoded(
+    memory: &impl Memory,
+    base: usize,
+    fresh: bool,
+    walk: &RawWalk,
+    decoded: snapshots::Decoded,
+) -> Result<snapshots::Decoded, &'static str> {
+    let begin = std::time::Instant::now();
+    let result = observe_walk(memory, base, fresh, walk, &decoded.definition);
+    drain_profile_mut().complete_ns[1] += elapsed_ns(begin);
+    result.map(|()| decoded)
 }
 fn decode_snapshot(
     memory: &impl Memory,
@@ -3459,25 +2887,41 @@ fn decode_snapshot(
     walk_snapshot(memory, base, hour, pointer, &mut walk)?;
     complete_snapshot(memory, base, fresh, &mut walk)
 }
-fn observe_snapshot(
-    captured: &Variants,
+fn observe_walk(
     memory: &impl Memory,
     base: usize,
     fresh: bool,
-) -> Result<super::design_context::Event, &'static str> {
+    walk: &RawWalk,
+    definition: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
+) -> Result<(), &'static str> {
+    if walk.details {
+        for _ in 0..walk.stats.outcome.len() {
+            collector_observers::world_input_changes::record_daily(
+                collector_observers::world_input_changes::Domain::DesignIndustrialOrganisation,
+                false,
+                true,
+            );
+        }
+    }
     if fresh {
         let mut store = STORE
             .get()
             .ok_or("variant change observer not prepared")?
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        sources::repair(&captured.definitions.rows[0], &mut store.interests)?;
-        liveness::seed(captured, &mut store.interests)?;
+        sources::repair(definition, &mut store.interests)?;
+        liveness::seed_one(definition, &mut store.interests)?;
     } else {
-        sources::track(&captured.definitions.rows[0])?;
+        sources::track(definition)?;
     }
-    liveness::sample(&captured.definitions.rows[0])?;
-    super::design_context::event(memory, base, captured)
+    liveness::sample(definition)?;
+    super::design_context::event(
+        memory,
+        base,
+        definition,
+        &walk.modules.rows[..walk.modules.outcome.len()],
+        walk.upgrades.rows[..walk.upgrades.outcome.len()].first(),
+    )
 }
 
 #[cfg(test)]

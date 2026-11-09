@@ -1,4 +1,5 @@
-//! Source occurrences use the same prepared raw log as accepted design edits.
+//! A watched source's write is noted in the callback; the boundary copies each noted source
+//! once, as it ends the hour.
 use super::*;
 use collector_hooks::hook::Hook;
 use native::source_mutations::{BONUS_BODY, IDEA_SOURCES, MUTATIONS};
@@ -108,7 +109,11 @@ fn provider(log: &mut RawLog<1>, memory: &impl Memory, pointer: usize) -> Result
     }
     Ok(())
 }
+/// Source writes this hour, and those of a watched source.
+pub(super) static WRITES: AtomicU64 = AtomicU64::new(0);
+pub(super) static NOTES: AtomicU64 = AtomicU64::new(0);
 pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, retired: bool) {
+    WRITES.fetch_add(1, Ordering::Relaxed);
     if matches!(key, sources::Key::Direct(0) | sources::Key::Provider(0)) {
         unknown_receiver!();
         return;
@@ -123,6 +128,7 @@ pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, reti
     let Some(owner) = store.interests.changed(key) else {
         return;
     };
+    NOTES.fetch_add(1, Ordering::Relaxed);
     store.batch.required_events = store.batch.required_events.saturating_add(1);
     if store.batch.events.len() == store.batch.events.capacity() {
         store.batch.failure = Some("design source event capacity exhausted");
@@ -148,39 +154,90 @@ pub(super) fn observe(memory: &impl Memory, base: usize, key: sources::Key, reti
     };
     let result = (|| {
         let hour = clock(memory, base)?;
-        if let sources::Key::Provider(pointer) = key {
-            let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
-                .and_then(|at| engine_native::read::<u64>(memory, at))
-                .ok_or("design provider world unreadable")? as usize;
-            let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
-            let country = countries.resolve(owner)?;
-            if engine_native::cproduction_status::manager(memory, base, country)? != pointer {
-                return Err("design provider address reused outside its owner lifetime");
-            }
-        }
-        let start = store.batch.log.spans.len();
-        if !retired {
-            match key {
-                sources::Key::Direct(_) => direct(&mut store.batch.log, memory, base, pointer)?,
-                sources::Key::Provider(_) => provider(&mut store.batch.log, memory, pointer)?,
-            }
-        }
-        let end = store.batch.log.spans.len();
         store.batch.events.push(Event {
             kind,
             sequence: SEQUENCE.fetch_add(1, Ordering::Relaxed),
             hour,
             pointer,
             variant: 0,
-            flags: None,
             removed: false,
-            start,
-            end,
+            start: 0,
+            end: 0,
         });
         Ok(())
     })();
     if let Err(reason) = result {
         store.batch.failure = Some(reason);
+    }
+}
+/// The hour's noted sources, read once at the boundary: of each source's notes only the last
+/// write survives, after any retirement, and is copied live into the batch's log.
+pub(super) fn materialize(
+    batch: &mut Batch,
+    memory: &impl Memory,
+    base: usize,
+) -> Result<(), &'static str> {
+    let key = |event: &Event| match event.kind {
+        Kind::Source | Kind::SourceRemoved => Some((false, event.pointer)),
+        Kind::Provider(_) | Kind::ProviderReset(_) => Some((true, event.pointer)),
+        _ => None,
+    };
+    let mut last = HashMap::new();
+    engine_allocation::reserve_map(&mut last, batch.events.len())
+        .map_err(|_| "design source note allocation failed")?;
+    for (index, event) in batch.events.iter().enumerate() {
+        if let Some(key) = key(event) {
+            last.insert(key, index);
+        }
+    }
+    let mut index = 0;
+    batch.events.retain(|event| {
+        let keep = !matches!(event.kind, Kind::Source | Kind::Provider(_))
+            || key(event).and_then(|key| last.get(&key)) == Some(&index);
+        index += 1;
+        keep
+    });
+    // The presized log first; a short one doubles until the hour's sources fit.
+    let mut log = std::mem::replace(&mut batch.log, RawLog::new(0, 0));
+    log.clear();
+    let (mut spans, mut bytes) = (log.spans.capacity().max(64), log.bytes.capacity().max(4096));
+    loop {
+        let copied = (|| {
+            for event in &mut batch.events {
+                let start = log.spans.len();
+                match event.kind {
+                    Kind::Source => direct(&mut log, memory, base, event.pointer)?,
+                    Kind::Provider(owner) => {
+                        let state = engine_sites::at(base, engine_native::cgame_state::SINGLETON_RVA)
+                            .and_then(|at| engine_native::read::<u64>(memory, at))
+                            .ok_or("design provider world unreadable")? as usize;
+                        let countries = engine_native::ccountry::Reader::new(memory, base, state)?;
+                        let country = countries.resolve(owner)?;
+                        if engine_native::cproduction_status::manager(memory, base, country)?
+                            != event.pointer
+                        {
+                            return Err("design provider address reused outside its owner lifetime");
+                        }
+                        provider(&mut log, memory, event.pointer)?;
+                    }
+                    _ => continue,
+                }
+                (event.start, event.end) = (start, log.spans.len());
+            }
+            Ok(())
+        })();
+        match copied {
+            Ok(()) => {
+                batch.log = log;
+                return Ok(());
+            }
+            Err(_) if log.overflowed => {
+                spans = spans.checked_mul(2).ok_or("design source copy size overflow")?;
+                bytes = bytes.checked_mul(2).ok_or("design source copy size overflow")?;
+                log = RawLog::new(spans, bytes);
+            }
+            Err(reason) => return Err(reason),
+        }
     }
 }
 pub(super) fn reset_provider(memory: &impl Memory, base: usize, pointer: usize) {

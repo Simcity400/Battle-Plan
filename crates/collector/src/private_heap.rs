@@ -12,7 +12,7 @@ use std::{
     ptr,
     sync::{
         OnceLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
 };
 use windows_sys::Win32::{
@@ -24,7 +24,7 @@ use windows_sys::Win32::{
         },
         Threading::{
             AcquireSRWLockExclusive, GetCurrentProcessorNumber, ReleaseSRWLockExclusive, SRWLOCK,
-            SRWLOCK_INIT,
+            SRWLOCK_INIT, TryAcquireSRWLockExclusive,
         },
     },
 };
@@ -101,6 +101,23 @@ impl List {
     };
 }
 
+/// QPC ticks collector threads spent blocked on a shard or depot lock since attach.
+static BLOCKED_TICKS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn blocked_ticks() -> i64 {
+    BLOCKED_TICKS.load(Ordering::Relaxed) as i64
+}
+
+/// Lock exclusively, timing only a contended acquisition.
+fn acquire(lock: *mut SRWLOCK) {
+    if unsafe { TryAcquireSRWLockExclusive(lock) } {
+        return;
+    }
+    let begin = crate::clock::qpc();
+    unsafe { AcquireSRWLockExclusive(lock) };
+    BLOCKED_TICKS.fetch_add((crate::clock::qpc() - begin).max(0) as u64, Ordering::Relaxed);
+}
+
 /// One class's full batches that shards passed on.
 struct Stack {
     top: *mut u8,
@@ -128,7 +145,7 @@ impl Depot {
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut Stack) -> R) -> R {
-        unsafe { AcquireSRWLockExclusive(self.lock.get()) };
+        acquire(self.lock.get());
         let result = f(unsafe { &mut *self.stack.get() });
         unsafe { ReleaseSRWLockExclusive(self.lock.get()) };
         result
@@ -215,7 +232,7 @@ impl Shard {
     }
 
     fn with<R>(&self, f: impl FnOnce(&mut [List; CLASSES]) -> R) -> R {
-        unsafe { AcquireSRWLockExclusive(self.lock.get()) };
+        acquire(self.lock.get());
         let result = f(unsafe { &mut *self.lists.get() });
         unsafe { ReleaseSRWLockExclusive(self.lock.get()) };
         result

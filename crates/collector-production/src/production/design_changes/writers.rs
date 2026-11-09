@@ -229,9 +229,6 @@ impl Flight {
     /// Conflict inspection and release are one cut. Otherwise a foreign
     /// writer could enter after inspection but before release, when a saved
     /// destruction's binding is already gone and looks like an excluded draft.
-    pub(super) fn finish(mut self) -> bool {
-        self.close().0
-    }
     pub(super) fn finish_with_dependency(mut self) -> (bool, bool) {
         self.close()
     }
@@ -313,7 +310,7 @@ mod tests {
                 )
                 .unwrap();
                 assert!(flight.admitted());
-                assert!(!flight.finish());
+                assert!(!flight.finish_with_dependency().0);
             }
         });
         let state = WRITERS.get().unwrap().lock().unwrap();
@@ -348,7 +345,7 @@ mod tests {
                 worker.join().unwrap(),
                 Err("variant receiver claims have a running writer")
             );
-            assert!(!flight.finish());
+            assert!(!flight.finish_with_dependency().0);
             ACTIVE.fetch_sub(1, Ordering::SeqCst);
         });
         prepare(capacity + 1).unwrap();
@@ -370,10 +367,10 @@ mod tests {
                 // ordinary writer, without another receiver-map allocation.
                 let witness = enter(pointer, None, Footprint::Identity).unwrap();
                 assert!(witness.admitted());
-                assert!(!witness.finish());
+                assert!(!witness.finish_with_dependency().0);
             }
             for flight in flights.drain(..) {
-                assert!(!flight.finish());
+                assert!(!flight.finish_with_dependency().0);
             }
         });
         let state = WRITERS.get().unwrap().lock().unwrap();
@@ -397,7 +394,7 @@ mod tests {
             assert_eq!(nested.finish_with_dependency(), (false, false));
             assert!(enter(capacity + 1, None, Footprint::Design).is_none());
             for flight in flights.drain(..) {
-                assert!(!flight.finish());
+                assert!(!flight.finish_with_dependency().0);
             }
             // Once an overflow has raised demand, spare slots cannot reopen
             // admission before the existing quiescent preparation succeeds.
@@ -406,7 +403,7 @@ mod tests {
         prepare(capacity + 1).unwrap();
         let flight = enter(1, None, Footprint::Design).unwrap();
         assert!(flight.admitted());
-        assert!(!flight.finish());
+        assert!(!flight.finish_with_dependency().0);
     }
 
     #[test]
@@ -425,7 +422,7 @@ mod tests {
             };
             assert_eq!(missing.finish_with_dependency(), (true, true));
             for flight in flights.drain(..) {
-                assert!(!flight.finish());
+                assert!(!flight.finish_with_dependency().0);
             }
         });
         assert!(MISSED.load(Ordering::Acquire));

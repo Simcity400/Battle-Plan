@@ -919,78 +919,24 @@ pub(super) fn remove(variant: u64) -> Result<(), &'static str> {
     cache().remove(variant)
 }
 
-pub(super) struct Event {
-    demand: Result<(u64, u32, Vec<u32>, Option<u32>), &'static str>,
-}
-impl Event {
-    pub(super) fn allocated_bytes(&self) -> usize {
-        self.demand
-            .as_ref()
-            .map_or(0, |(_, _, keys, _)| keys.capacity() * size_of::<u32>())
-    }
-    pub(super) fn reusable(&self) -> bool {
-        self.demand.is_ok()
-    }
-    pub(super) fn apply(&self) {
-        self.apply_to(&mut cache());
-    }
-    fn apply_to(&self, cache: &mut Cache) {
-        let result = (|| {
-            let (id, country, observed, owner) = self.demand.as_ref().map_err(|reason| *reason)?;
-            if let Some(old) = cache.designs.get_mut(id)
-                && old.country == *country
-                && old.keys == *observed
-            {
-                old.generation = cache.generation;
-                return cache.replace_organisation(*id, *owner);
-            }
-            let mut keys = std::mem::take(&mut cache.spare_keys);
-            keys.clear();
-            engine_allocation::reserve(&mut keys, observed.len())
-                .map_err(|_| "design context allocation failed")?;
-            keys.extend_from_slice(observed);
-            cache.replace(*id, *country, keys)?;
-            cache.replace_organisation(*id, *owner)
-        })();
-        if let Err(reason) = result {
-            cache.snapshot = None;
-            cache.failure = Some(reason);
-            cache.failures = cache.failures.saturating_add(1);
-        }
-    }
-}
+/// Records the demand of a design the boundary read: its owner's country and context keys.
 pub(super) fn event(
     memory: &impl Memory,
     base: usize,
-    variants: &Variants,
-) -> Result<Event, &'static str> {
-    let Some(definition) = variants.definitions.rows.first() else {
-        return Err("design context event has no definition");
-    };
+    definition: &cequipment_variant::DefinitionRow<Arc<rows::VariantDesignState>>,
+    modules: &[equipment_module_container::Row],
+    first_upgrade: Option<&cequipment_upgrades_instance::Row>,
+) -> Result<(), &'static str> {
     let mut cache = cache();
-    let result = (|| {
-        let owner = organisation_owner(memory, base, definition)?;
-        cache.track(
-            memory,
-            definition,
-            &variants.modules.rows[..variants.modules.outcome.len()],
-            variants.upgrades.rows[..variants.upgrades.outcome.len()].first(),
-            owner,
-        )?;
-        let demand = cache
-            .designs
-            .get(&definition.identity.id)
-            .ok_or("design context event demand missing")?;
-        let keys = engine_allocation::copy_vec(&demand.keys)
-            .map_err(|_| "design context allocation failed")?;
-        Ok((definition.identity.id, demand.country, keys, owner))
-    })();
+    let result = organisation_owner(memory, base, definition).and_then(|owner| {
+        cache.track(memory, definition, modules, first_upgrade, owner)
+    });
     if let Err(reason) = result {
         cache.snapshot = None;
         cache.failure = Some(reason);
         cache.failures = cache.failures.saturating_add(1);
     }
-    Ok(Event { demand: result })
+    Ok(())
 }
 /// Current author liveness can change its country demand independently of the
 /// frozen design lookup witness. Reuse the boundary's resolved raw reference.
@@ -1129,59 +1075,6 @@ pub(super) fn template_input(snapshot: &Snapshot) -> TableInput {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn unchanged_event_demand_refreshes_its_generation_without_copying_scratch_keys() {
-        let mut cache = Cache::default();
-        cache.replace(1, 1_500, vec![1, 3, 5]).unwrap();
-        cache.replace_organisation(1, Some(1_501)).unwrap();
-        cache.spare_keys = Vec::new();
-        cache.generation += 1;
-        let event = Event {
-            demand: Ok((1, 1_500, vec![1, 3, 5], Some(1_501))),
-        };
-        collector_test_support::with_allocations_denied(|| event.apply_to(&mut cache));
-        assert!(cache.failure.is_none());
-        assert_eq!(cache.designs[&1].generation, cache.generation);
-        assert!(cache.spare_keys.is_empty());
-        assert_eq!(cache.countries[&1_500].len(), 3);
-        assert_eq!(cache.countries[&1_501][&ORGANISATION_CHANGE_FACTOR], 1);
-    }
-
-    #[test]
-    fn copied_event_demands_follow_repeated_replacements_and_keep_context_refusals() {
-        let mut expected = Cache::default();
-        let mut observed = Cache::default();
-        for step in 0..6_000 {
-            let id = step % 1_500 + 1;
-            let country = (step % 1_500 + step / 1_500) as u32 + 1;
-            let keys = vec![COMMON_COST_FACTOR, AIR_COST_FACTOR + step as u32 % 2];
-            let owner = (step % 3 != 0).then_some(country + 1_500);
-            expected.replace(id, country, keys.clone()).unwrap();
-            expected.replace_organisation(id, owner).unwrap();
-            Event {
-                demand: Ok((id, country, keys, owner)),
-            }
-            .apply_to(&mut observed);
-        }
-        assert_eq!(observed.countries, expected.countries);
-        assert_eq!(observed.template_demands, expected.template_demands);
-        assert_eq!(observed.organisation_demands, expected.organisation_demands);
-        assert_eq!(observed.designs.len(), expected.designs.len());
-        for (id, expected) in &expected.designs {
-            let actual = &observed.designs[id];
-            assert_eq!(
-                (actual.country, &actual.keys),
-                (expected.country, &expected.keys)
-            );
-        }
-        let refused = Event {
-            demand: Err("synthetic design context refusal"),
-        };
-        assert!(!refused.reusable());
-        refused.apply_to(&mut observed);
-        assert_eq!(observed.failure, Some("synthetic design context refusal"));
-    }
-
     use std::cell::Cell;
     struct World {
         bytes: Vec<u8>,

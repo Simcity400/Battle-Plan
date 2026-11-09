@@ -42,7 +42,7 @@ impl Work {
             Self::Setup(part) => part.capture(),
             Self::Snapshots(part) => part.capture(),
             Self::Storage { part, workers } => {
-                part.capture(workers.lanes(), &mut |parts| {
+                part.capture(&mut |parts| {
                     workers.setup(parts, memory, base)
                 });
             }
@@ -315,6 +315,10 @@ impl Dispatch {
         {
             local.capture(memory, base);
             output.push(local);
+        }
+        // Parts no worker has started yet run here rather than wait behind busier jobs.
+        for ticket in pending.tickets.iter().flatten() {
+            executor.run_unclaimed_child(*ticket);
         }
         for index in 0..pending.tickets.len() {
             let ticket = pending.tickets[index].take().unwrap();

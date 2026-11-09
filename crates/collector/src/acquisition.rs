@@ -400,6 +400,21 @@ impl State {
         Some(self.claim(shared, position))
     }
 
+    /// A worker parent's own child, still unclaimed; worker-only children included, as the
+    /// parent is a worker.
+    fn take_child<J, R>(&mut self, shared: &Shared<J, R>, ticket: Ticket) -> Option<Claim> {
+        let slot = self.slots.get(ticket.slot)?;
+        if slot.generation != ticket.generation
+            || slot.phase != Phase::Queued
+            || shared.words[ticket.slot].load(Ordering::Acquire)
+                != word(ticket.generation, PENDING)
+        {
+            return None;
+        }
+        let position = self.ready.iter().position(|&index| index == ticket.slot)?;
+        Some(self.claim(shared, position))
+    }
+
     fn stop<J, R>(&mut self, shared: &Shared<J, R>) {
         self.stop = true;
         self.cancel_queued(shared);
@@ -1315,6 +1330,22 @@ impl<J: Send + 'static, R: Copy + Send + 'static> Pool<J, R> {
             JOIN_WALL_MAX_NS.fetch_max(wall, Ordering::Relaxed);
         }
         collected
+    }
+    /// A worker parent runs its own child inline while no worker has claimed it; whether it
+    /// ran. Its completion is then collected as any other.
+    pub(crate) fn run_unclaimed_child(&self, ticket: Ticket) -> bool {
+        if ticket.pool != self.shared.id
+            || self.shared.words.get(ticket.slot).map(|value| value.load(Ordering::Acquire))
+                != Some(word(ticket.generation, PENDING))
+        {
+            return false;
+        }
+        let claim = self.shared.lock().take_child(&self.shared, ticket);
+        let Some(claim) = claim else {
+            return false;
+        };
+        self.shared.execute(claim, true, false);
+        true
     }
     pub(crate) fn finish_worker_into(
         &self,

@@ -476,7 +476,7 @@ impl Variants {
         {
             let storage = overlap.as_ref().and_then(|_| {
                 design_changes::enabled()
-                    .then(|| design_changes::cold_storage(&registry[..len], self))
+                    .then(|| design_changes::cold_storage(&registry[..len]))
                     .flatten()
             });
             let mut seed = || {
@@ -490,7 +490,7 @@ impl Variants {
                 seed();
             }
             if design_changes::enabled() {
-                design_changes::prepare_partitioned(&registry[..len], self, lanes, &mut setup);
+                design_changes::prepare_partitioned(&registry[..len], self, &mut setup);
                 self.baseline_admitted = full && design_changes::baseline_admitted();
                 self.liveness = design_changes::liveness::observation()
                     .unwrap_or_else(|_| design_changes::liveness::Observation::refused());

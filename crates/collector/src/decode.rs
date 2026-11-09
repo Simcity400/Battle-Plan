@@ -751,6 +751,7 @@ pub(crate) fn drain_for_test(shared: &Shared, memo: &mut AirBasesMemo) {
 /// family to its pool. Dropping this envelope without recycling used to
 /// allocate a fresh payload on the game thread on every subsequent hour.
 fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut AirBasesMemo) {
+    sampling::frame_stage(job.index, sampling::FrameStage::Decoding);
     let failure_scope = failure::Scope::frame(failure::Frame {
         index: job.index,
         seq: job.seq,
@@ -868,6 +869,7 @@ fn process_owned_job(shared: &Shared, mut job: DecodeJob, air_bases_memo: &mut A
         frame.pool_bytes = shared.pool_total();
     }
     failure::stage("publish ready", None);
+    sampling::frame_stage(job.index, sampling::FrameStage::Ready);
     let published = publish_ready(
         &shared.ready,
         job.index,

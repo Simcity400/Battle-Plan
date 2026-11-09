@@ -16,12 +16,6 @@ pub(super) struct Interests {
     pub(super) organisation_pointers: HashMap<usize, u64>,
 }
 impl Interests {
-    pub(super) fn allocated_bytes(&self) -> usize {
-        self.entries.capacity() * std::mem::size_of::<(Key, (u32, bool))>()
-            + self.dirty_authors.capacity() * std::mem::size_of::<u64>()
-            + self.organisations.capacity() * std::mem::size_of::<(u64, usize)>()
-            + self.organisation_pointers.capacity() * std::mem::size_of::<(usize, u64)>()
-    }
     pub fn prepare(&mut self, entries: usize) -> Result<(), &'static str> {
         engine_allocation::reserve_map(&mut self.entries, entries)
             .map_err(|_| "design source watch allocation failed")
@@ -174,11 +168,11 @@ fn track_in(
     held: &mut HashMap<u64, Binding>,
     interests: &mut Interests,
     row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
-) -> Result<(), &'static str> {
+) -> Result<bool, &'static str> {
     let Some(links) = &row.source_links else {
         return held
             .contains_key(&row.identity.id)
-            .then_some(())
+            .then_some(false)
             .ok_or("carried design lacks its source binding");
     };
     for source in &links.direct {
@@ -189,14 +183,25 @@ fn track_in(
     }
     bind(held, row)
 }
+/// Whether the design's binding changed: only a changed binding can leave an interest unused.
+/// A suspended binding comes back first, so reinstalling the same one changes nothing.
 fn bind(
     held: &mut HashMap<u64, Binding>,
     row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
-) -> Result<(), &'static str> {
+) -> Result<bool, &'static str> {
+    if !held.contains_key(&row.identity.id)
+        && let Some(binding) = suspended()
+            .as_mut()
+            .and_then(|suspended| suspended.remove(&row.identity.id))
+    {
+        engine_allocation::reserve_map(held, 1)
+            .map_err(|_| "design source binding allocation failed")?;
+        held.insert(row.identity.id, binding);
+    }
     let Some(links) = &row.source_links else {
         return held
             .contains_key(&row.identity.id)
-            .then_some(())
+            .then_some(false)
             .ok_or("carried design lacks its source binding");
     };
     let state = row.design.as_ref();
@@ -208,7 +213,7 @@ fn bind(
             && binding.references.direct == state.bonus_sources
             && binding.references.named == state.named_sources
     }) {
-        return Ok(());
+        return Ok(false);
     }
     let mut vacant = Binding::default();
     let binding = held.get_mut(&row.identity.id).unwrap_or(&mut vacant);
@@ -239,7 +244,7 @@ fn bind(
     if !held.contains_key(&row.identity.id) {
         held.insert(row.identity.id, vacant);
     }
-    Ok(())
+    Ok(true)
 }
 pub(super) fn track(
     row: &native::DefinitionRow<std::sync::Arc<rows::VariantDesignState>>,
@@ -248,8 +253,9 @@ pub(super) fn track(
     engine_allocation::reserve_map(&mut held, 1)
         .map_err(|_| "design source binding allocation failed")?;
     // Native staging already registered these interests.
-    bind(&mut held, row)?;
-    TRIM.store(true, Ordering::Release);
+    if bind(&mut held, row)? {
+        TRIM.store(true, Ordering::Release);
+    }
     Ok(())
 }
 /// A terminal repair did not pass through native staging. Register its freshly
@@ -266,8 +272,9 @@ pub(super) fn repair(
     let mut held = bindings();
     engine_allocation::reserve_map(&mut held, 1)
         .map_err(|_| "design source binding allocation failed")?;
-    track_in(&mut held, interests, row)?;
-    TRIM.store(true, Ordering::Release);
+    if track_in(&mut held, interests, row)? {
+        TRIM.store(true, Ordering::Release);
+    }
     Ok(())
 }
 static TRIM: AtomicBool = AtomicBool::new(false);
@@ -333,10 +340,54 @@ pub(super) fn author_designs(handle: u64) -> Result<Vec<u64>, &'static str> {
     Ok(designs)
 }
 pub(super) fn remove(variant: u64) {
-    bindings().remove(&variant);
-    TRIM.store(true, Ordering::Release);
+    if bindings().remove(&variant).is_some() {
+        TRIM.store(true, Ordering::Release);
+    }
+}
+/// Bindings a boundary set aside until its reads reinstall them; nothing else sees them.
+static SUSPENDED: Mutex<Option<HashMap<u64, Binding>>> = Mutex::new(None);
+fn suspended() -> std::sync::MutexGuard<'static, Option<HashMap<u64, Binding>>> {
+    SUSPENDED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+/// Removes `variant`'s binding until a read reinstalls it or [`drop_suspended`] runs.
+pub(super) fn suspend(variant: u64) -> Result<(), &'static str> {
+    let mut held = bindings();
+    let mut suspended = suspended();
+    let suspended = suspended.get_or_insert_with(HashMap::new);
+    engine_allocation::reserve_map(suspended, 1)
+        .map_err(|_| "design source binding allocation failed")?;
+    if let Some(binding) = held.remove(&variant) {
+        suspended.insert(variant, binding);
+    }
+    Ok(())
+}
+/// Reinstalls `variant`'s suspended binding, which its unchanged read proved current.
+pub(super) fn resume(variant: u64) -> Result<(), &'static str> {
+    let mut held = bindings();
+    let Some(binding) = suspended()
+        .as_mut()
+        .and_then(|suspended| suspended.remove(&variant))
+    else {
+        return Ok(());
+    };
+    engine_allocation::reserve_map(&mut held, 1)
+        .map_err(|_| "design source binding allocation failed")?;
+    held.insert(variant, binding);
+    Ok(())
+}
+/// The suspended bindings no read reinstalled are removed; their interests may be unused.
+pub(super) fn drop_suspended() {
+    if let Some(suspended) = suspended().as_mut()
+        && !suspended.is_empty()
+    {
+        suspended.clear();
+        TRIM.store(true, Ordering::Release);
+    }
 }
 pub(super) fn release() {
+    drop(suspended().take());
     bindings().clear();
 }
 
@@ -436,7 +487,7 @@ fn decode_in(
                 }
             }
         }
-        Kind::Design | Kind::Scalar(_) | Kind::Organisation(_) => return Ok(()),
+        Kind::Design | Kind::Organisation(_) => return Ok(()),
     }
     affected.sort_unstable();
     for id in affected {
@@ -481,7 +532,6 @@ mod tests {
             hour: 7,
             pointer,
             variant: 0,
-            flags: None,
             removed: false,
             start: 0,
             end: 0,
@@ -683,26 +733,6 @@ mod tests {
             rows::RowCodec::check_key_fields(row).unwrap();
         }
         assert_ne!(output[2].sources, output[3].sources);
-    }
-    #[test]
-    fn interest_capacity_counts_every_map_and_the_dirty_author_set_after_clear() {
-        let mut interests = Interests::default();
-        assert_eq!(interests.allocated_bytes(), 0);
-        interests.prepare(7).unwrap();
-        interests.prepare_organisations(11).unwrap();
-        let expected = interests.entries.capacity() * std::mem::size_of::<(Key, (u32, bool))>()
-            + interests.dirty_authors.capacity() * std::mem::size_of::<u64>()
-            + interests.organisations.capacity() * std::mem::size_of::<(u64, usize)>()
-            + interests.organisation_pointers.capacity() * std::mem::size_of::<(usize, u64)>();
-        assert!(interests.dirty_authors.capacity() > 0);
-        interests.insert(Key::Direct(0x1000), 5).unwrap();
-        interests.organisation(1, Some(0x2000)).unwrap();
-        interests.author_changed(1);
-        interests.entries.clear();
-        interests.dirty_authors.clear();
-        interests.organisations.clear();
-        interests.organisation_pointers.clear();
-        assert_eq!(interests.allocated_bytes(), expected);
     }
     #[test]
     fn prepared_hash_watches_keep_owner_lifetimes_without_native_reads_or_allocation() {

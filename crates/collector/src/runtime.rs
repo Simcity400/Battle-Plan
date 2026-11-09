@@ -1305,8 +1305,6 @@ fn run(
         .map_err(|_| "clock preparation allocation failed")?;
     let shared = Arc::new(shared);
     processor.account_writer(Arc::clone(&shared.pool_bytes));
-    let accounting = Arc::downgrade(&shared);
-    crate::design_changes::account_scratch(accounting);
     progress.step("shared_started", None);
     let mut spool_state = SpoolState {
         sizing,
@@ -2949,6 +2947,8 @@ fn decode_status_from(shared: Option<&Shared>) -> impl serde::Serialize + '_ {
     }));
     #[cfg(feature = "worker_sampler")]
     let base = base.join(status!({"worker_sampler": crate::worker_sampler::status()}));
+    #[cfg(feature = "phase_cpu")]
+    let base = base.join(status!({"phase_cpu": crate::spool_phases::status()}));
     #[cfg(feature = "advisor_profile")]
     let base = base.join(
         status!({"advisor_profile": crate::extended::characters::advisors::profile::status()}),
@@ -4341,6 +4341,12 @@ fn spool_loop(
         priority.follow_pipeline(&shared.frame_priority, crate::frame_priority::Role::Spool);
         let mut received = false;
         while let Some(index) = shared.ready.pop() {
+            sampling::frame_stage(index, sampling::FrameStage::Spool);
+            let watch = crate::slow_hours::SpoolWatch::start();
+            let watched_hour = unsafe { &*shared.frames[index].load(Ordering::Acquire) }
+                .clock
+                .as_ref()
+                .map(|clock| clock.hour);
             received = true;
             if crate::allocation::failed() {
                 return Err("collector allocation failed");
@@ -4517,11 +4523,17 @@ fn spool_loop(
                 last_warning = Some(error_reason(error, "command capture publication failed"));
             }
             history_requests.poll(&mut processor, &shared.history_frames);
+            if let Some(slow) = watch.finish(watched_hour, |ticks| shared.ns(ticks)) {
+                processor
+                    .slow_spool_frame(slow)
+                    .map_err(|_| "spool slow-frame allocation failed")?;
+            }
             // A sustained backlog must not starve sizing, the flush or the status.
             if reported.elapsed() >= Duration::from_secs(1) {
                 break;
             }
         }
+        let between = crate::slow_hours::SpoolWatch::start();
         crate::allocation::attempted_hour(None);
         if crate::allocation::failed() {
             return Err("collector allocation failed");
@@ -4585,6 +4597,11 @@ fn spool_loop(
                 )
                 .map_err(|e| error_reason(e, "status hand-over allocation failed"))?;
             reported = Instant::now();
+        }
+        if let Some(slow) = between.finish(None, |ticks| shared.ns(ticks)) {
+            processor
+                .slow_spool_frame(slow)
+                .map_err(|_| "spool slow-frame allocation failed")?;
         }
         if shared.stop_spool.load(Ordering::Acquire) {
             if !shared.ready.is_empty() {
@@ -4899,6 +4916,7 @@ impl SizingShared {
 
     /// The spool prepares only its owned frame, then publishes it under a short monotonic merge.
     fn recycle_frame(&self, shared: &Shared, index: usize) {
+        sampling::frame_stage(index, sampling::FrameStage::Recycle);
         let mut proposal = *lock(&self.capacities);
         // A live read: between ticks only. The sizing thread presizes combats every pass, so
         // a frame returned during a tick still grows to the latest live demand.

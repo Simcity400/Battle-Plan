@@ -121,45 +121,6 @@ pub(super) fn latest(a: &Snapshot, b: &Snapshot) -> Snapshot {
     }
 }
 
-pub(super) fn raw_demand(ids: &[u64]) -> Result<(usize, usize), &'static str> {
-    if ids.is_empty() {
-        return Ok((0, 0));
-    }
-    let cache = cache();
-    let (mut bytes, mut spans) = (0_usize, 0_usize);
-    for id in ids {
-        let source = cache
-            .indices
-            .get(id)
-            .map(|index| &cache.entries[*index].source)
-            .ok_or("design bonus snapshot reference missing")?;
-        if let Some(named) = &source.named {
-            // Source payload plus the demanded country's registry/identity
-            // requests. Unseen growth refuses and grows the existing raw log.
-            spans = spans.saturating_add(24);
-            bytes = bytes.saturating_add(
-                512 + named.name.len()
-                    + named.description.len()
-                    + source.stats.len() * 16
-                    + source.terrain_attrition.len() * 8,
-            );
-            continue;
-        }
-        spans = spans.saturating_add(5);
-        bytes = bytes.saturating_add(
-            cequipment_variant::BONUS_IDEA
-                + 16
-                + source.stats.len() * 16
-                + source.terrain_attrition.len() * 8
-                + source
-                    .idea
-                    .as_ref()
-                    .map_or(0, |name| engine_native::cidea::TOKEN + 33 + name.len()),
-        );
-    }
-    Ok((bytes, spans))
-}
-
 pub(super) fn release() {
     if let Some(cache) = CACHE.get() {
         *cache

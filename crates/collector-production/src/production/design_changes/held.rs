@@ -144,6 +144,8 @@ pub(super) fn seed(
         }) {
             continue;
         }
+        // A witness proves the state its walk held; a census read replaces that state.
+        super::witness::remove(source.pointer());
         held.insert(source.id, (source.pointer(), Arc::clone(&row.design)));
     }
     Ok(())
@@ -158,7 +160,7 @@ pub(super) fn apply_shared(
     }
     if events
         .iter()
-        .filter(|event| matches!(event.kind, Kind::Design | Kind::Scalar(_)))
+        .filter(|event| matches!(event.kind, Kind::Design))
         .count()
         != rows
             .iter()
@@ -187,7 +189,7 @@ fn apply_to_shared(
 ) -> Result<(), &'static str> {
     let mut events = events
         .iter()
-        .filter(|event| matches!(event.kind, Kind::Design | Kind::Scalar(_)));
+        .filter(|event| matches!(event.kind, Kind::Design));
     for change in snapshots.iter(rows) {
         let row = match change? {
             snapshots::Change::Snapshot(snapshot) => {
@@ -218,6 +220,8 @@ fn apply_to_shared(
             state.named_sources = engine_allocation::copy_vec(&sources.named)
                 .map_err(|_| "variant source change allocation failed")?;
             let pointer = *pointer;
+            // The design's witness proves its last walk's sources, which this change replaced.
+            super::witness::remove(pointer);
             held.insert(row.variant, (pointer, Arc::new(state)));
             continue;
         }
@@ -252,6 +256,14 @@ fn apply_to_shared(
                 .ok_or("variant held eligibility has no preceding state")?;
             if *pointer != event.pointer {
                 return Err("variant held eligibility address mismatch");
+            }
+            let current = [
+                previous.can_upgrade_type,
+                previous.can_upgrade_variant,
+                previous.can_upgrade_modules,
+            ];
+            if current == flags {
+                continue;
             }
             let mut state = rows::NativeValue::try_clone(previous.as_ref())
                 .map_err(|_| "variant held state allocation failed")?;
@@ -309,69 +321,6 @@ pub(super) fn release() {
 mod tests {
     use super::*;
     #[test]
-    fn repeated_shared_snapshots_keep_history_immutable_without_deep_held_clones() {
-        let state = Arc::new(rows::VariantDesignState {
-            manpower: 99,
-            niches: vec![1, 7, 11],
-            ..Default::default()
-        });
-        let mut definition = native::DefinitionRow::default();
-        definition.identity.id = 1;
-        definition.design = Arc::clone(&state);
-        let decoded = Arc::new(snapshots::Decoded {
-            value: rows::VariantSnapshot::default(),
-            definition,
-            context: None,
-        });
-        let event = Event {
-            kind: Kind::Design,
-            sequence: 1,
-            hour: 7,
-            pointer: 100,
-            variant: 1,
-            flags: None,
-            removed: false,
-            start: 0,
-            end: 0,
-        };
-        let events = vec![event; 5_000];
-        let rows = Vec::new();
-        let mut shared = snapshots::Shared::default();
-        for index in 0..events.len() {
-            shared.push(index, 1, 7, 1, Arc::clone(&decoded)).unwrap();
-        }
-        let untouched = Arc::new(rows::VariantDesignState::default());
-        let mut held = HashMap::with_capacity(2);
-        held.insert(2, (200, Arc::clone(&untouched)));
-        collector_test_support::with_allocations_denied(|| {
-            apply_to_shared(&mut held, &events, &rows, &shared)
-        })
-        .unwrap();
-        assert!(Arc::ptr_eq(&held[&1].1, &state));
-        assert!(Arc::ptr_eq(&held[&2].1, &untouched));
-        let flags = rows::VariantChangeRow {
-            sequence: 2,
-            hour: 7,
-            variant: 1,
-            flags: Some([1, 2, 3]),
-            ..Default::default()
-        };
-        apply_to(
-            &mut held,
-            &[Event {
-                flags: Some([1, 2, 3]),
-                ..event
-            }],
-            &[flags],
-        )
-        .unwrap();
-        assert_eq!(held[&1].1.can_upgrade_modules, 3);
-        assert_eq!(state.can_upgrade_modules, 0);
-        assert_eq!(state.niches, [1, 7, 11]);
-        assert!(Arc::ptr_eq(&held[&2].1, &untouched));
-    }
-
-    #[test]
     fn scalar_events_keep_untouched_designs_and_name_only_edits_share_deep_storage() {
         let previous = Arc::new(rows::VariantDesignState {
             manpower: 99,
@@ -382,12 +331,11 @@ mod tests {
             (2, (200, Arc::clone(&previous))),
         ]);
         let event = Event {
-            kind: Kind::Scalar(scalar::Field::Name),
+            kind: Kind::Design,
             sequence: 1,
             hour: 7,
             pointer: 100,
             variant: 1,
-            flags: None,
             removed: false,
             start: 0,
             end: 0,
@@ -437,7 +385,6 @@ mod tests {
             hour: 7,
             pointer: 100,
             variant: 1,
-            flags: Some([1, 2, 3]),
             removed: false,
             start: 0,
             end: 0,
@@ -487,7 +434,6 @@ mod tests {
             }],
             &[rows::VariantChangeRow {
                 removed: true,
-                flags: None,
                 ..row
             }],
         )
@@ -565,6 +511,7 @@ mod census_tests {
                     batch: Batch::empty(),
                     spare: Batch::empty(),
                     watched: watches,
+                    published: Published::default(),
                     interests,
                     epoch: EPOCH.load(Ordering::Acquire),
                 }))
@@ -707,24 +654,14 @@ mod census_tests {
         let removed = sources[2];
         let at = changed.pointer() + native::AUTO_UPGRADED - space.bytes.as_ptr() as usize;
         space.bytes[at] = 1;
-        // Even an exhausted scalar log marks its receiver before it refuses.
-        // Unrelated deep state keeps its independent dependency proof.
-        scalar::observe(
-            &space.memory(),
-            space.base,
-            changed.pointer(),
-            scalar::Field::AutoUpgraded,
-        );
+        // The boundary reads the marked design; unrelated deep state keeps its proof.
+        mark_design(&space.memory(), space.base, changed.pointer(), false);
         let mut changes = Vec::new();
-        assert_eq!(
-            drain(space.base, 7, &mut changes),
-            Err("variant scalar event capacity exhausted")
-        );
-        assert!(needs_full());
-        assert_eq!(
-            *LAST_REFUSAL.lock().unwrap(),
-            Some("variant scalar event capacity exhausted")
-        );
+        assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+        assert_eq!(changes.len(), 1);
+        let snapshot = changes[0].snapshot.as_ref().unwrap();
+        assert_eq!(snapshot.definition.design.require("design").unwrap().auto_upgraded, 1);
+        assert!(!needs_full());
         let sources: Vec<_> = sources
             .into_iter()
             .filter(|source| source.id != removed.id)
@@ -838,6 +775,32 @@ mod census_tests {
         }
     }
     #[test]
+    fn an_unchanged_marked_design_keeps_its_binding_and_carry_and_enters_the_ledger() {
+        let (space, sources, _) = setup();
+        let design = sources[1];
+        mark_design(&space.memory(), space.base, design.pointer(), false);
+        let mut changes = Vec::new();
+        assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
+        assert!(changes[0].snapshot.is_some());
+        let certified = {
+            let store = STORE.get().unwrap().lock().unwrap();
+            sources::certified_bindings().unchanged(design.id, &store.interests)
+        };
+        // The same bytes again: its witness reads back the same, so nothing is decoded.
+        mark_design(&space.memory(), space.base, design.pointer(), false);
+        assert_eq!(drain(space.base, 8, &mut changes), Ok(1));
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].snapshot.is_none());
+        let store = STORE.get().unwrap().lock().unwrap();
+        let watch = store.watched[&design.pointer()];
+        assert_eq!(changes[0].flags, Some(watch.flags));
+        assert!(!watch.dirty);
+        assert_eq!(
+            sources::certified_bindings().unchanged(design.id, &store.interests),
+            certified
+        );
+    }
+    #[test]
     fn variant_census_rejects_unforwarded_shared_refresh_before_inner_rebuild() {
         let (space, sources, _) = setup();
         BASE.store(space.base, Ordering::Release);
@@ -935,15 +898,11 @@ mod census_tests {
         BASE.store(space.base, Ordering::Release);
         let refresh = shared_bonus_refresh();
         observe_world_forwarder(true);
-        scalar::observe(
-            &space.memory(),
-            space.base,
-            sources[1].pointer(),
-            scalar::Field::AutoUpgraded,
-        );
+        // The census-only fixture has no event storage, so this tombstone refuses locally.
+        assert!(retire(&space.memory(), space.base, sources[1].pointer()));
         assert_eq!(
             drain(space.base, 7, &mut Vec::new()),
-            Err("variant scalar event capacity exhausted")
+            Err("variant removal event capacity exhausted")
         );
         assert!(!SAVED_BASELINE.load(Ordering::Acquire));
         assert!(
@@ -953,6 +912,9 @@ mod census_tests {
         let revision = REVISION.load(Ordering::Acquire);
         assert_eq!(unsafe { refresh(sources[0].pointer(), 0, 23, 0) }, 19);
         assert!(REVISION.load(Ordering::Acquire) > revision);
+        // The forwarded refresh marked its receiver; the next boundary reads it.
+        assert!(census().is_none());
+        assert_eq!(drain(space.base, 7, &mut Vec::new()), Ok(1));
         let recovered = acquire(&space.memory(), space.base, &sources, true);
         assert_eq!(recovered.definitions.rows[0].design.design_team_traits, 23);
         assert!(Arc::ptr_eq(
@@ -1094,13 +1056,12 @@ mod census_tests {
     #[test]
     fn failed_variant_recovery_revokes_proofs_before_the_next_native_interval() {
         let (space, sources, _) = setup();
-        scalar::observe(
-            &space.memory(),
-            space.base,
-            sources[0].pointer(),
-            scalar::Field::AutoUpgraded,
+        // The census-only fixture has no event storage, so this tombstone refuses locally.
+        assert!(retire(&space.memory(), space.base, sources[0].pointer()));
+        assert_eq!(
+            drain(space.base, 7, &mut Vec::new()),
+            Err("variant removal event capacity exhausted")
         );
-        assert!(drain(space.base, 7, &mut Vec::new()).is_err());
         let failing = Meter {
             space: &space,
             bytes: Cell::new(0),
@@ -1131,25 +1092,19 @@ mod census_tests {
         );
     }
     #[test]
-    fn variant_store_collision_preserves_the_scalar_occurrence() {
+    fn variant_store_collision_keeps_the_design_mark() {
         let (space, sources, _) = setup();
-        // The census-only fixture has no staging; prepare this one-byte event.
-        STORE.get().unwrap().lock().unwrap().batch.prepare(1, 1, 1);
         super::super::tests::with_store_contended(|| {
-            scalar::observe(
-                &space.memory(),
-                space.base,
-                sources[0].pointer(),
-                scalar::Field::AutoUpgraded,
-            );
+            mark_design(&space.memory(), space.base, sources[0].pointer(), false);
         });
         let mut changes = Vec::new();
-        assert_eq!(drain(space.base, 7, &mut changes), Ok(0));
+        assert_eq!(drain(space.base, 7, &mut changes), Ok(1));
         assert_eq!(changes.len(), 1);
-        assert!(changes[0].scalar.is_some());
+        assert_eq!(changes[0].variant, sources[0].id);
+        assert!(changes[0].snapshot.is_some());
         assert_eq!(MISSED_REFUSALS.load(Ordering::Relaxed), 0);
         assert_eq!(RUNNING_REFUSALS.load(Ordering::Relaxed), 0);
-        assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 0);
+        assert_eq!(REPAIRED_RECEIVERS.load(Ordering::Relaxed), 1);
         assert_eq!(LOCK_CONTENTIONS.load(Ordering::Relaxed), 1);
         assert!(!needs_full());
     }

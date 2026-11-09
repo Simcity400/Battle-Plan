@@ -1613,8 +1613,20 @@ impl<B: SegmentBackend> Campaign<B> {
 
 /// A daily table that truncated waits for its slot otherwise; a static table
 /// that failed would wait for the next full hour.
+#[cfg(test)]
 fn needs_retry(tables: &[TableInput; TABLE_COUNT]) -> bool {
-    TableId::ALL.into_iter().any(|table| {
+    retry_table(tables).is_some()
+}
+
+/// Why the spool last asked for a full hour, for naming that hour: a table index plus one, or
+/// [`RETRY_SLICED`] or [`RETRY_VALIDATION`].
+pub(crate) static RETRY_CAUSE: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
+pub(crate) const RETRY_SLICED: u16 = u16::MAX;
+pub(crate) const RETRY_VALIDATION: u16 = u16::MAX - 1;
+
+/// The first table [`needs_retry`] finds incomplete.
+fn retry_table(tables: &[TableInput; TABLE_COUNT]) -> Option<TableId> {
+    TableId::ALL.into_iter().find(|&table| {
         let input = &tables[table.index()];
         match replay_data::cadence::cadence(table) {
             replay_data::cadence::Cadence::Static => !matches!(
@@ -1771,6 +1783,11 @@ impl PreparedFrame {
 /// Everything success accounting needs after the capture slot has been reused.
 struct CapturedStatistics {
     total_ns: u64,
+    hour: Option<i32>,
+    seq: u64,
+    phases: crate::sampling::HourPhases,
+    /// The longest table reads, kept for an hour over budget only.
+    tables: Option<[(TableId, u64); 4]>,
     pool_bytes: u64,
     dropped_frames: u64,
     truncated_tables: usize,
@@ -1801,21 +1818,31 @@ impl CapturedStatistics {
         }))
         .filter(|outcome| matches!(outcome, Outcome::Truncated { .. }))
         .count();
+        #[cfg(feature = "phase_cpu")]
+        crate::spool_phases::add_table_ns(&captured.table_ns);
         Ok(Self {
             total_ns: captured.total_ns,
+            hour: captured.clock.as_ref().map(|clock| clock.hour),
+            seq: captured.capture_seq,
+            phases: captured.phases,
+            tables: crate::slow_hours::over_budget(captured.total_ns, &captured.phases)
+                .then(|| crate::slow_hours::top_tables(&captured.table_ns)),
             pool_bytes: captured.pool_bytes,
             dropped_frames: captured.dropped_frames,
             truncated_tables,
         })
     }
 
-    fn record(self, stats: &mut Statistics) {
+    fn record(self, stats: &mut Statistics) -> io::Result<()> {
         stats.total_ns = self.total_ns;
         stats.callback.record_ns(self.total_ns);
-        stats.callback_tail.record(self.total_ns);
+        stats
+            .callback_tail
+            .record(self.total_ns, self.hour, self.seq, &self.phases, self.tables)?;
         stats.pool_bytes = self.pool_bytes;
         stats.dropped_frames = self.dropped_frames;
         stats.truncated_tables = self.truncated_tables;
+        Ok(())
     }
 }
 
@@ -2486,7 +2513,7 @@ impl Processor {
             &campaign.projection_scratch,
         );
         span.finish();
-        let (mut source, _) = decoded_with_costs(
+        let (mut source, _pack_ticks) = decoded_with_costs(
             captured,
             clock.borrowed(),
             branch,
@@ -2500,6 +2527,8 @@ impl Processor {
                 helper,
             },
         );
+        #[cfg(feature = "phase_cpu")]
+        crate::spool_phases::add_pack_ticks(&_pack_ticks);
         let span = crate::spool_phases::SPOOL.span(crate::spool_phases::Phase::Merge);
         if crate::allocation::failed() {
             return Err(io::ErrorKind::OutOfMemory.into());
@@ -2548,7 +2577,13 @@ impl Processor {
             captured.extended.fuel_awards(),
             &mut source.tables,
         )?;
-        let retry_full = needs_retry(&source.tables) || sliced_retry;
+        let retry = retry_table(&source.tables);
+        if let Some(table) = retry {
+            RETRY_CAUSE.store(table.index() as u16 + 1, std::sync::atomic::Ordering::Relaxed);
+        } else if sliced_retry {
+            RETRY_CAUSE.store(RETRY_SLICED, std::sync::atomic::Ordering::Relaxed);
+        }
+        let retry_full = retry.is_some() || sliced_retry;
         campaign
             .try_apply_staggered_inputs(&mut source, captured.extended.country_intel_sample())?;
         campaign.assemble_reserved_intel_sample(&mut source);
@@ -2739,6 +2774,9 @@ impl Processor {
             return result;
         }
         crate::allocation::attempted_hour(None);
+        if work.validation_refused {
+            RETRY_CAUSE.store(RETRY_VALIDATION, std::sync::atomic::Ordering::Relaxed);
+        }
         self.retry_full |= retry_full || work.validation_refused;
         self.unpublished_families |= work.validation_families;
         self.unknown_pending = 0;
@@ -2798,7 +2836,7 @@ impl Processor {
         stats.campaign = Some(engine_allocation::string(&id)?);
         stats.last_hour = Some(clock.hour);
         stats.player = viewed;
-        sampled.record(stats);
+        sampled.record(stats)?;
         if let Some((old_id, old_branch, hour, previous_qpc)) = &stats.previous
             && old_id == &id
             && *old_branch == branch
@@ -3531,6 +3569,13 @@ impl Processor {
             }
         }
         retired
+    }
+
+    pub(crate) fn slow_spool_frame(
+        &mut self,
+        frame: crate::slow_hours::SpoolFrame,
+    ) -> io::Result<()> {
+        self.stats.callback_tail.record_spool(frame)
     }
 
     pub fn take_retry_full(&mut self) -> bool {
@@ -5962,7 +6007,7 @@ mod tests {
         assert_eq!(actual.tables, expected.tables);
         assert_eq!(actual.metrics, expected.metrics);
         let mut stats = Statistics::default();
-        sampled.record(&mut stats);
+        sampled.record(&mut stats).unwrap();
         assert_eq!(stats.total_ns, 123);
         assert_eq!(stats.pool_bytes, 789);
         assert_eq!(stats.dropped_frames, 2);

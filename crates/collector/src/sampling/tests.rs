@@ -2627,6 +2627,7 @@ fn cancelled_no_frame_acquisition_marks_naval_sources_unavailable_before_reuse()
                 entry: Some(clock(41, 7).borrowed()),
                 entry_ticks: 0,
                 dispatched: 0,
+                phases: HourPhases::default(),
             },
         );
     }
