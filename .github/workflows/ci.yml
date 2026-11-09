@@ -1,7 +1,10 @@
 name: CI
 
 # What a pull request must pass: the UI typecheck, the repository's dependency checks and
-# `cargo check` of every crate and target. Product tests are not run here; they run daily on the
+# `cargo check` of every crate and target, and the repository checks (no machine paths, game
+# citations, lint-suppression reasons, the agent-context budget; a maintainer adds the label
+# `agent-context-increase` and reruns the job to accept growth of the budget).
+# Product tests are not run here; they run daily on the
 # maintainer's machine. The label `release-preview` also builds, signs and verifies the installer
 # as release-build.yml does for a release, publishing nothing.
 #
@@ -75,6 +78,53 @@ jobs:
               - "tools/check-feature-unification.py"
               - "tools/with-machine-locks.sh"
               - ".github/workflows/ci.yml"
+
+  repository:
+    name: Repository checks
+    if: >-
+      (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository)
+      && (github.event.action != 'labeled' || github.event.label.name == 'release-preview')
+    runs-on: [self-hosted, windows, release]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # The label is read when the job runs: a rerun's event still carries the labels it started with.
+      pull-requests: read
+    env:
+      BASE: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+      PR: ${{ github.event.pull_request.number }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      # The whole history, so the base branch is there to compare with.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Machine paths
+        run: python tools/check-machine-paths.py
+      - name: Citations
+        run: python tools/check-citations.py
+      - name: Agent context
+        run: |
+          args=()
+          if [[ -n "$BASE" ]]; then
+            args+=(--against "$BASE")
+            labels=$(python - <<'PY'
+          import json, os, urllib.request
+          request = urllib.request.Request(
+              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/issues/{os.environ['PR']}/labels",
+              headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}"},
+          )
+          print(" ".join(label["name"] for label in json.load(urllib.request.urlopen(request))))
+          PY
+            )
+            [[ " $labels " == *" agent-context-increase "* ]] && args+=(--allow-increase)
+          fi
+          python tools/check-agent-context.py "${args[@]}"
+      - name: Suppression reasons
+        if: github.event_name == 'pull_request'
+        run: python tools/check-suppressions.py --against "$BASE"
 
   ui:
     name: UI typecheck
@@ -175,7 +225,7 @@ jobs:
   check:
     name: Check
     if: always() && (github.event.action != 'labeled' || github.event.label.name == 'release-preview')
-    needs: [changes, ui, rust, preview-version, release-preview]
+    needs: [changes, repository, ui, rust, preview-version, release-preview]
     # A fork's pull request reaches only this, on GitHub's runner, and is refused.
     runs-on: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","windows","release"]') || 'ubuntu-24.04' }}
     timeout-minutes: 5

@@ -900,8 +900,8 @@ fn awarded_days_and_their_reasons_carry_across_gaps_and_runs() {
 
 #[test]
 fn an_off_slot_read_a_cession_and_a_gap_settle_as_the_scan_does() {
-    // Reads at the slot every day, and off it at +30 (a day after the first, inside a day of
-    // the second); the second country's state passes to the first at +47; +90 and +91 are a gap.
+    // Reads at the slot every day, and off it at hour 30 (a day after the first, inside a day of
+    // the second); the second country's state passes to the first at hour 47; hours 90 and 91 are a gap.
     let base = fuel_slot(1000) - 17;
     let inputs: Vec<Hourly> = (0..=121)
         .filter(|offset| ![90, 91].contains(offset))

@@ -1322,8 +1322,8 @@ mod tests {
             failed_hour: Some(20),
         });
         committed_record(2, 220, true);
-        let directory = std::path::Path::new(r"captures\spool-writer");
-        std::fs::create_dir_all(directory).unwrap();
+        let directory = std::env::temp_dir().join("hoi4-spool-writer");
+        std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join(format!("terminal-bundle-{}.bin", std::process::id()));
         let file = File::create(&path).unwrap();
         prepare(&file, 17, 123);

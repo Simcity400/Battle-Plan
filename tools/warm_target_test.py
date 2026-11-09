@@ -56,7 +56,7 @@ class DepInfo(unittest.TestCase):
 
 class Paths(unittest.TestCase):
     def test_shaped_checkout_matches_length_and_depth(self):
-        like = "C:\\Users\\Example\\.t3\\worktrees\\battle-plan\\t3-44dbad32"
+        like = "C:\\Users\\Example\\.t3\\worktrees\\project\\t3-44dbad32"
         path = wt.shaped_checkout("C:\\seed", like)
         self.assertEqual((len(path), path.count("\\")), (len(like), like.count("\\")))
         self.assertTrue(path.startswith("C:\\seed\\"))

@@ -1,0 +1,6 @@
+# Path globs tools/check-machine-paths.py exempts, each from one kind: checkout or home.
+# These scripts exist to configure this machine's daily task, runner and build folders.
+tools/daily_tests.py checkout
+tools/daily_tests_test.py checkout
+tools/e2e/suite.py checkout
+tools/release-runner.ps1 checkout

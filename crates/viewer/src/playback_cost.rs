@@ -11,7 +11,7 @@ use std::{
     time::Instant,
 };
 
-const CAPTURES: &str = r"captures";
+const CAPTURES: &str = "BATTLE_PLAN_CAPTURES";
 const ROWS: &[(&str, &str, f64)] = &[
     (
         "territory",
@@ -255,10 +255,10 @@ fn run(args: &[OsString]) -> io::Result<()> {
             .parent()
             .ok_or_else(|| invalid("Output needs a parent"))?,
     )?;
-    if !parent.starts_with(fs::canonicalize(CAPTURES)?) {
-        return Err(invalid(
-            "--out must be a new directory under captures",
-        ));
+    let captures = std::env::var_os(CAPTURES)
+        .ok_or_else(|| invalid("Set BATTLE_PLAN_CAPTURES to the folder --out must be under"))?;
+    if !parent.starts_with(fs::canonicalize(captures)?) {
+        return Err(invalid("--out must be a new directory under BATTLE_PLAN_CAPTURES"));
     }
     fs::create_dir(output)?;
     let output = fs::canonicalize(output)?;

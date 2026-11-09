@@ -184,7 +184,7 @@ fn processor() -> (Processor, Arc<Mutex<Store>>) {
     let store = Arc::new(Mutex::new(Store::default()));
     let session = super::tests::session();
     let processor = Processor {
-        root: PathBuf::from("captures/spool-writer/synthetic").join(format!(
+        root: std::env::temp_dir().join("hoi4-spool-writer-synthetic").join(format!(
             "{}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)

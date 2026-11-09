@@ -38,7 +38,7 @@ struct Options {
 impl Options {
     fn parse() -> io::Result<Self> {
         let mut result = Self {
-            input: PathBuf::from(r"captures\core-gate1"),
+            input: PathBuf::new(),
             out: PathBuf::new(),
             memory: 3_000_000_000,
             disk: 1_000_000_000_000,
@@ -83,7 +83,8 @@ impl Options {
                 _ => return Err(invalid(format!("unknown option {arg}"))),
             }
         }
-        if result.out.as_os_str().is_empty()
+        if result.input.as_os_str().is_empty()
+            || result.out.as_os_str().is_empty()
             || result.passes < 3
             || result.readers < 8
             || result.lanes == 0
@@ -93,7 +94,7 @@ impl Options {
             || result.blocks.is_empty()
         {
             return Err(invalid(
-                "use --out <new directory>; at least three passes and eight readers, positive budgets and block sizes are required",
+                "use --input <gate corpus> and --out <new directory>; at least three passes and eight readers, positive budgets and block sizes are required",
             ));
         }
         Ok(result)

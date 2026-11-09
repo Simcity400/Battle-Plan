@@ -135,7 +135,7 @@ fn manifests_that_disagree_with_the_schema_are_refused() {
         "a read bit past the tables"
     );
     // The same bit, written past the writer's check. Tables 0 and 2 read set the read word
-    // apart from the present word, which sections of tables 0 and 1 make 0b011.
+    // apart from the present word, which sections of tables 0 and 1 make the three low bits set.
     let distinct = Manifest {
         read: vec![0b101],
         ..manifest()

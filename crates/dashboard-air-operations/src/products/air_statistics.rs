@@ -1,7 +1,7 @@
 //! Current annual-ring air-statistics buckets, not loss events or differences.
 //! Names: `TAG@slot|<regionId>|c<channel>` for all 24 raw signed channels,
 //! `TAG@slot|<regionId>|slot` and `TAG@slot|<regionId>|wrapped` for ring state.
-//! Queries return only the selected pair (`c<i>`, `c<i+12>`) and ring state.
+//! Queries return only the selected pair (`c<i>` and the column twelve places after it) and ring state.
 //! A known hour without a row is absent, not a recorded zero.
 
 use dashboard_base::products::built::Built;

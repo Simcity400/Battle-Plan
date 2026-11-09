@@ -8,7 +8,7 @@ use std::{
 
 fn folder() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let parent = PathBuf::from(r"captures\core-spool\synthetic");
+    let parent = std::env::temp_dir().join("hoi4-core-spool-synthetic");
     fs::create_dir_all(&parent).unwrap();
     loop {
         let path = parent.join(format!(

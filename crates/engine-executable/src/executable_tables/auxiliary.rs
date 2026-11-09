@@ -2633,7 +2633,7 @@ mod tests {
 
     #[test]
     fn selector_refuses_a_branch_out_of_its_function() {
-        // jmp +0x10, past the end of the function.
+        // A short jump of 0x10 bytes, past the end of the function.
         let image = image(&[0xeb, 0x10, 0xc3]);
         assert!(
             Dispatch::new(&image, 0x1000)

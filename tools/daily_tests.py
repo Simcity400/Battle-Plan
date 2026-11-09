@@ -91,6 +91,9 @@ def steps():
         ("Build dependencies", "build-dependencies", check("check-build-dependencies"), None),
         ("Content dependencies", "content-dependencies", check("check-content-dependencies"), None),
         ("Feature unification", "feature-unification", check("check-feature-unification"), None),
+        ("Machine paths", "machine-paths", check("check-machine-paths"), None),
+        ("Citations", "citations", check("check-citations"), None),
+        ("Agent context", "agent-context", check("check-agent-context"), None),
         ("Acceptance app build", "e2e-build", [python, "tools/e2e/suite.py", "build", "--out", str(E2E_APP)], None),
         ("Acceptance suite", "e2e", acceptance, ("e2e-build", "ui-install")),
     ]

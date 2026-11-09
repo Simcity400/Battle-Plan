@@ -83,7 +83,7 @@ struct Options {
 }
 fn options() -> io::Result<Options> {
     let mut o = Options {
-        out: r"captures\core-indexes\bench".into(),
+        out: env::temp_dir().join("hoi4-core-indexes-bench"),
         hours: 113_869,
         countries: 1500,
         readers_budget: 900_000_000,

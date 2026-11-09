@@ -13,7 +13,7 @@ impl Scratch {
             .unwrap()
             .as_nanos();
         Self(
-            PathBuf::from(r"captures\core-indexes\tests").join(format!(
+            std::env::temp_dir().join("hoi4-core-indexes").join(format!(
                 "{}-{stamp}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)

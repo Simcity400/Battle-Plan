@@ -12,7 +12,7 @@ fn writer_allowances() -> core_spool::Allowances {
 }
 fn output() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = PathBuf::from(r"captures\core-spool\gate-synthetic");
+    let root = std::env::temp_dir().join("hoi4-core-spool-gate-synthetic");
     fs::create_dir_all(&root).unwrap();
     loop {
         let path = root.join(format!(

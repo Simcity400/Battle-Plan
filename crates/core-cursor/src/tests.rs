@@ -1092,8 +1092,8 @@ fn shaped_fixture(
     memory: &Memory,
 ) -> (Arc<crate::reference::ShapedLog>, std::path::PathBuf) {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let root = std::path::Path::new("captures/core-cursor");
-    std::fs::create_dir_all(root).unwrap();
+    let root = std::env::temp_dir().join("hoi4-core-cursor");
+    std::fs::create_dir_all(&root).unwrap();
     let path = root.join(format!(
         "unit-{}-{}-{}.checkpoints",
         std::process::id(),

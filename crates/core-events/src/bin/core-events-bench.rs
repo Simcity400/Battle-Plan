@@ -499,7 +499,7 @@ fn main() -> io::Result<()> {
     let mut args = std::env::args_os().skip(1);
     let output = PathBuf::from(
         args.next()
-            .unwrap_or_else(|| r"captures\core-events".into()),
+            .unwrap_or_else(|| std::env::temp_dir().join("hoi4-core-events-bench").into_os_string()),
     );
     let hours = args
         .next()

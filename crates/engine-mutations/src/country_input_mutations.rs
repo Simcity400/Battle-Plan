@@ -1405,7 +1405,7 @@ pub const MUTATIONS: [(MutationSite, Receiver, Tables); 98] = [
     // Province modifier removal (manager, province, static modifier, rebuild): the
     // remove_province_modifier effect and building repair take a modifier out of the
     // province's list and rebuild its accumulator. Tests the province before
-    // storing RBP at RSP+0x18.
+    // storing RBP into the stack frame.
     (
         MutationSite {
             name: "weather_remove_province_modifier",

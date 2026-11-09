@@ -18,8 +18,8 @@ use std::io::Cursor;
 pub fn folder() -> std::path::PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let root = std::path::Path::new("captures/core-gate-spools/tests");
-    std::fs::create_dir_all(root).unwrap();
+    let root = std::env::temp_dir().join("hoi4-core-gate-spools");
+    std::fs::create_dir_all(&root).unwrap();
     loop {
         let path = root.join(format!(
             "{}-{}",

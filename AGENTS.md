@@ -1,59 +1,122 @@
 # Working on Battle Plan
 
+Battle Plan records the game campaigns and replays them in a Windows desktop app. The recording is the product: if it is wrong or silently incomplete, everything built on it is wrong.
+
+Prefer simple systems and honest data. Understand the real constraint, then build the smallest model that makes correct behaviour unsurprising. Don't keep complexity because it exists, and don't add machinery because it looks thorough. Fight scope creep: do the task, completely, and no more.
+
+If a rule here fights the task in front of you, say so and get a human sign-off before breaking it.
+
+## Asking the user
+
+- Never put a question in an ordinary reply: it is not seen and will not be answered. Ask only with the question tool (`AskUserQuestion`), and make each question stand on its own.
+
+## Glossary
+
+Use these words for these things.
+
+- **you** is the agent reading this file. **we** and **maintainers** are the people building Battle Plan. **user** is the person recording and watching campaigns.
+- **game** is the supported strategy game. **mod stack** is the mods and DLC a recording was made with.
+- **collector** is `collector.dll`, loaded into the game; it only reads game memory. **recorder** is the command-line recorder (`recorder.exe`) or the tray app (`battle-plan-recorder.exe`) that attaches the collector and writes the recording.
+- **spool** is the recoverable file written while recording. **recording** (or **replay**) is the published, indexed `.battleplan` file. **branch** is a continuous stretch of history; a load, a new session or a jump in time starts a new one.
+- **prepared data** is disposable history and map checkpoints made from a recording in the background. It is never the source of truth.
+- **viewer** is the map. **dashboard** is the chart, table and timeline overview. **desktop app** is the Tauri shell around both (`replay-desktop.exe`).
+- **Boat** is the remote VM that compiles Rust for us (`tools/boat.py`).
+
+## Ways to hurt yourself
+
+1. **Killing by pattern.** Never `Stop-Process -Name`, `taskkill /IM`, or kill a PID you found by matching a name, path or worktree string. Your own process has this worktree's path in its arguments, and other agents' builds, Boat runs, dev servers, the game and the recorder run on this machine at the same time. Kill only a PID you captured at spawn.
+2. **Touching real user data.** `%LOCALAPPDATA%\HOI4Replay` (captures, replay library, prepared data), the game install and the Paradox user folder are the user's. Read them or copy from them. Never write to them, clean them up or delete from them, and never point the recorder at them with its default output: pass your own `--out`. Test against a copy in your own capture folder.
+3. **Baking in the machine.** Never commit a machine path, user name, port or host name. Take folders from arguments, settings or the environment (`BATTLE_PLAN_CAPTURES` for capture folders). `tools/check-machine-paths.py` fails any path naming this machine; only the runner scripts listed in `tools/machine-paths.allow` are exempt.
+4. **Leaving a mess.** Make worktrees with T3 Code, or `git worktree add` beside the existing ones, never in a temp folder or inside the repo. A new worktree runs `tools/setup_worktree.py` (`npm ci`) in the background: while `.t3/setup-running` names a live process, wait for it; `.t3/setup-failed` holds the error. When you are done, delete the worktree, branch, build folder and captures.
+5. **Shared state.** Never use plain `git stash`; the stash is shared.
+
 ## The game
 
 - Match the game's behaviour exactly. Never capture or compute more harshly than the game does.
 - The collector only reads game memory: never call game functions, and copy what you need before the game moves on.
 - Never show missing data as zero, and never fill a gap with a guess.
-- Keep the game out of the repo: no installed content, addresses, decompiler names, or copied game code, shaders, scripts or text. Name offsets for what they are.
+- Keep the game out of the repo: no installed content, addresses, decompiler names, or copied game code, shaders, scripts or text. Name offsets for what they are. `tools/check-citations.py` fails addresses, offsets and decompiler names.
 - Read game data from the user's installation at run time. Installed content are read-only.
 - A recording carries every game fact it needs (definitions, localisation, executable tables, map layout), so playback never takes facts from the installed game. Art comes from the current installation, labelled as current; missing art is a named placeholder.
 - An unrecognised game build is a warning, never a refusal. Each build-specific part verifies itself and is withheld by name if it fails.
 - Mods are first-class: read content through the recorded mod stack, hard-code nothing from vanilla, and refuse anything unsupported by name.
 - Game sites are `engine_sites::Rva` keys (positions in the reference build) resolved only through the located image (`engine_sites::at`, `hook`, `which`), never as base + offset. After adding, moving or removing a key, run `python tools/sites.py generate`; on a new game build, `python tools/sites.py relocate` reports what still locates.
 
+## Hit every surface
+
+The most common defect here is a change that works on the path you tested and is missing everywhere else. Before calling work done, walk this list and say which entries applied:
+
+- **Format ends.** A recording-format change touches the collector, the recorder, the replay reader and writer, prepared data, the viewer, the dashboard and the UI together, in one PR. No backwards compatibility: recordings keep playing across game updates, but a format change needs no upgrader; it refuses older recordings by name.
+- **Entry points.** A stat reachable from one dashboard widget is usually also wanted in the map viewer, other widgets, the tray app and the command-line recorder. Fixing one is not fixing the feature.
+- **Missing data.** Every new reading has a "not recorded" state, and every consumer shows it as missing, never as zero or blank.
+- **Mods and versions.** Check vanilla against a mod stack and different DLC sets. Every new read has a named refusal for the unsupported content it cannot handle.
+
+## How it works
+
+1. The recorder finds the running game, checks the executable, and loads the collector.
+2. Every game hour the collector reads the game's state; hooks catch events between hours. Readings are copied out at once and encoded in the background into the spool.
+3. When recording stops, the spool is published as an indexed, compressed `.battleplan`. Continuity gaps become new branches, never invented history.
+4. The desktop app opens recordings, and the dashboard and viewer share one playback clock. Prepared data is built in the background, pauses while the game runs, and can be cleared without touching a recording.
+
+## Where code lives
+
+All Rust is in `crates/`; names group by prefix.
+
+- `engine-*`: pinned game layouts, guarded memory reads and the hourly sampling boundary.
+- `collector-*`: the readers loaded into the game, one crate per domain.
+- `recorder*`: the recorder, the tray app, replay recovery and finalization. `recorder-oracle-*` and `recorder-derived` check recordings offline against text saves and derivations.
+- `core-*`, `replay`, `replay-columnar`, `replay-data`, `store`: the spool, the recording container, the columnar change grammar, shared rows and codecs, and prepared-data packs.
+- `installed-content-*`: readers for the user's game and mod files at run time.
+- `viewer-*`, `map-*`, `shader-pipeline`: the map. `dashboard-*`: dashboard products over the contract in `dashboard-core`, which names no product.
+- `desktop`, `app-update` and `ui/`: the Tauri shell, its updater and the React UI. `tools/`: Boat, smoke, daily tests, the release and leak checks, the acceptance suite (`tools/e2e`) and the repo checks.
+- `test-unify` has no code. `[workspace.dependencies]` between its markers in `Cargo.toml` is generated by `tools/check-feature-unification.py --fix`: never hand-edit it.
+
 ## Building
 
 - Desktop app: `npm.cmd ci`, then `npm.cmd run dev` (add `-- -- -- "<replay>"` to open one). Release build: `npm.cmd run build:desktop`.
 - Command-line recorder: `python tools/boat.py build --out <dir> --release -p recorder -p collector`.
 - Only Rust compiles go to Boat, never this machine. The one exception is the self-hosted GitHub Actions runner (`tools/release-runner.ps1`): it alone compiles here, for release builds and PR checks. Run `tools/boat.py` from inside your worktree; don't drive `boat` by hand or pass `-j`. Exit 75 means Boat itself failed: run it again.
-  - Check: `python tools/boat.py check --all-targets -p <crate>...` for the crates you changed only. Never the whole workspace, never their dependents.
+  - Check: `python tools/boat.py check --all-targets -p <crate>...` for the crates you changed only. Never the whole workspace, never their dependents. `tools/check_changed.py` works out those crates for you.
   - Build: `python tools/boat.py build --out <dir> --release -p <crate> --bin <name>`, only when you need to run that binary.
 - Everything else runs here: `npm.cmd run check:ui` for the UI, and Python checks and scripts directly.
-- Check once, when the work is done, not as you go. Work that passed needs no second check before merging.
-- Only run builds when you actually need it.
-- Never run checks if you're going to have to build anyway
+
+## Verifying
+
+- Run `python tools/check_changed.py` once, when the work is done, not as you go. It checks only what your changes touch: the changed crates on Boat, the UI, and the repo checks. Work that passed needs no second check. If you are going to build anyway, skip it. CI runs `cargo check --workspace` on the runner, so you never do.
+- Test behaviour that can break: format readers and writers, recovery, parsing of game and mod files, and the logic a bug fix changed. Leave out what the types already guarantee and tests that mirror the implementation.
+- Extend before you add: put the case in an existing test where one fits. Test at the lowest layer that fails on `main`, not again in a wrapper.
+- A logic, data or format bug gets a failing test first, then the fix. A recording bug gets a `recorder-oracle-*` case that fails before the fix. A purely visual bug gets before/after captures and no test.
+- Tests never wait on sleeps or wall-clock time. Flaky tests are fixed, not retried. A skipped test needs a tracking issue on the line above: `// quarantine: #1234 why`.
+- Never run a suite. Run only the test you added or changed, and only where it runs without a local Rust compile (Python and UI tests). Rust tests are written but not run here.
+- Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00. That run is the judge.
+- A user-visible UI change gets one pass in the running app (`npm.cmd run dev`), done once by the primary agent after integrating. Subagents don't launch their own.
 
 ## Code
 
-- Make everything as fast and efficient as it can be. Design every part, new or changed, as the best solution built from scratch, not a patch on what is there.
+- Design every part, new or changed, as the best solution built from scratch, not a patch on what is there, and make it as fast and efficient as it can be.
 - Design for 1,500 countries. No caps we made up.
-- Change file-format readers, writers and users together. No backwards compatibility. Recordings must keep playing across game updates, but a recording-format change needs no upgrader: it refuses older recordings by name.
-- Don't write READMEs or other docs.
-- Only comment what reading the code can't tell you: a quirk, or something an agent must know. Keep it to one short line. Licence notices stay.
+- Default to no comment. Only comment what reading the code can't tell you: a quirk, or something an agent must know. Keep it to one short line. Licence notices stay.
+- A lint suppression (`#[allow]`, `#[expect]`) gives `reason = "..."`. `tools/check-suppressions.py` fails a change that adds one without.
 
-## Tests
+## Pull requests
 
-- Don't run tests, not even before merging. Tests run once a day on this machine: the Windows task `Battle Plan daily tests` runs `tools/daily_tests.py` on `main` at 03:00.
+- Never make a PR unless the developer asks for one. A task that says to land work counts as asking.
+- One request is one complete PR. Never leave residuals unless you are actually blocked, and then state what and why.
+- Titles are plain language led by the area, as in the log: `Columnar writer: PATCH keeps list runs behind a changed count`. The body says the problem in a sentence or two, then how you fixed it, and ends with the model and harness that did the work.
+- UI changes need before/after images, and motion or timing a short video. Upload them to the PR; never commit PR-only screenshots or assets.
+- Every PR is reviewed by gpt 6.1 sol xhigh in a loop until ready to merge. Verify each finding against the source: fix real ones, dismiss false ones with a written reason, push back on scope creep.
+- When babysitting, call `watch_pull_request` and end your turn. Don't poll or sleep. Stop when checks and reviews are green on the latest commit.
 
-## Asking the user
+## Documentation
 
-- Ask the user only with the question tool. A question written in an ordinary reply is never seen.
-
-## Sharing this machine
-
-- Never use plain `git stash`; the stash is shared.
+- Don't write READMEs or other docs. When a change makes existing doc text wrong, fix or delete that text.
+- Plans, research notes and scratch files stay outside the worktree. Never commit them.
+- This file has a size budget. After editing it, run `python tools/check-agent-context.py --write`. CI fails any growth unless a maintainer adds the label `agent-context-increase`, so cut text before adding it.
 
 ## Running the game
 
 - One agent runs the game at a time. Create the folder `%TEMP%\claude\hoi4_game.lock` before launching and delete it when done. A lock older than 90 minutes is stale.
 - Load straight into a save with `tools\smoke.ps1 -Action Launch -ContinueLastSave`, never through the main menu unless you need a new save.
-
-## Pull requests
-
-- One complete PR per task. Never leave residuals unless you are actually blocked and state what and why is blocked.
-- After merging, delete your branch, worktree, build folder and captures.
-- All pull requests must be reviewed by gpt 6.1 sol xhigh in a loop until ready to merge. Don't be afraid to push back and avoid scope creep.
 
 ## Reverse engineering
 

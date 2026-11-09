@@ -1,10 +1,18 @@
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 export const repository = fileURLToPath(new URL('../..', import.meta.url));
+const underCaptures = (...parts) => {
+  if (!(process.env.BATTLE_PLAN_CAPTURES ?? process.env.HOI4_CAPTURES)) throw new Error('Set BATTLE_PLAN_CAPTURES to the folder holding the parity fixtures');
+  return [(process.env.BATTLE_PLAN_CAPTURES ?? process.env.HOI4_CAPTURES), ...parts].join('/');
+};
 export const fixture = {
-  recording: 'captures/widgetsyear/library/GER 1943-10-24 to 1944-10-24.hoi4replay',
-  bridge: (process.env.BATTLE_PLAN_PARITY_BRIDGE ?? process.env.HOI4_PARITY_BRIDGE) || 'captures/bridge-release/dashboard-bridge.exe',
-  shaderTools: 'captures/bridge-release/shader-tools',
-  cache: (process.env.BATTLE_PLAN_PARITY_CACHE ?? process.env.HOI4_PARITY_CACHE) || 'captures/parity-baselines',
+  get recording() {
+    const current = underCaptures('widgetsyear/library/GER 1943-10-24 to 1944-10-24.battleplan');
+    return existsSync(current) ? current : underCaptures('widgetsyear/library/GER 1943-10-24 to 1944-10-24.hoi4replay');
+  },
+  get bridge() { return (process.env.BATTLE_PLAN_PARITY_BRIDGE ?? process.env.HOI4_PARITY_BRIDGE) || underCaptures('bridge-release/dashboard-bridge.exe'); },
+  get shaderTools() { return underCaptures('bridge-release/shader-tools'); },
+  get cache() { return (process.env.BATTLE_PLAN_PARITY_CACHE ?? process.env.HOI4_PARITY_CACHE) || underCaptures('parity-baselines'); },
   gameDir: (process.env.BATTLE_PLAN_GAME_DIR ?? process.env.HOI4_GAME_DIR) || '', userDir: (process.env.BATTLE_PLAN_USER_DIR ?? process.env.HOI4_USER_DIR) || '',
   nativeSeed: (process.env.BATTLE_PLAN_PARITY_NATIVE_SEED ?? process.env.HOI4_PARITY_NATIVE_SEED) || process.env.LOCALAPPDATA,
   preparedSeed: (process.env.BATTLE_PLAN_PARITY_PREPARED_SEED ?? process.env.HOI4_PARITY_PREPARED_SEED) || null,

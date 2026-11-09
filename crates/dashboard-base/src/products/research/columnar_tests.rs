@@ -38,12 +38,12 @@ const BASE: i32 = 1000 * 24;
 const TAG: &str = "GER";
 
 /// GER (raw ids 11 and 9001, canonical slot 7) is read every four hours, each read carried into
-/// the hours after it, until +32; that read is held through +61, so its one-day carry ends
-/// inside the silence. Its first slot researches tech 1 until the read at +12, then tech 2
-/// (completed at the read at +32); its second slot researches tech 3
-/// from +12. Progress moves at every read. Its grant inventory, read with its slots, names a
-/// restriction token; the tokens are unavailable from +50 to +52, for another reason at +52. GER
-/// is renamed GEX from +74 to +76. Hours +24 and +25 are a gap.
+/// the hours after it, until hour 32; that read is held through hour 61, so its one-day carry ends
+/// inside the silence. Its first slot researches tech 1 until the read at hour 12, then tech 2
+/// (completed at the read at hour 32); its second slot researches tech 3
+/// from hour 12. Progress moves at every read. Its grant inventory, read with its slots, names a
+/// restriction token; the tokens are unavailable from hour 50 to hour 52, for another reason at hour 52. GER
+/// is renamed GEX from hour 74 to hour 76. Hours 24 and 25 are a gap. Hours count from `BASE`.
 fn frame_at(hour: i32) -> DecodedFrame {
     let at = hour - BASE;
     let read_at = if (33..62).contains(&at) {
@@ -143,7 +143,7 @@ fn frame_at(hour: i32) -> DecodedFrame {
         row.index = inventory;
         row.ordinal = ordinal as u32;
     }
-    // Each held slot's speed breakdown, its category speed raised at the read at +20, and the
+    // Each held slot's speed breakdown, its category speed raised at the read at hour 20, and the
     // country's own scope; in key order around the inventory.
     let scope = |index: u32, handle: u32, rows: &[(u8, i64, u32)]| -> Vec<R> {
         (0..)

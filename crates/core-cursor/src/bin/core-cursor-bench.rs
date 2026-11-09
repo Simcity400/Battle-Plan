@@ -572,7 +572,7 @@ fn concurrent(
     Ok(pass && memory.peak() <= memory.limit())
 }
 fn main() -> io::Result<()> {
-    let mut output = PathBuf::from("captures/core-cursor");
+    let mut output = std::env::temp_dir().join("hoi4-core-cursor-bench");
     let mut hours = 43_200;
     let mut seek_count = 16usize;
     let mut arguments = std::env::args().skip(1);

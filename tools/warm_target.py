@@ -1,8 +1,8 @@
 """Start a worktree's cargo target directory from a warm seed build (Python 3.11+, Windows).
 
-    python tools/warm_target.py seed --root seed --like <a worktree path>
-    python tools/warm_target.py warm --root seed
-    python tools/warm_target.py check --root seed --target-dir <dir>
+    python tools/warm_target.py seed --root <seed folder> --like <a worktree path>
+    python tools/warm_target.py warm --root <seed folder>
+    python tools/warm_target.py check --root <seed folder> --target-dir <dir>
 
 `seed` checks out a commit S in the seed's own checkout, builds it with the usual commands and
 records S, the toolchain, the lockfile hash and every place the build wrote the seed's paths.

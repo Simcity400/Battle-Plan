@@ -34,6 +34,8 @@ node_modules/
 /.aws/
 /.ssh/
 /captures/
+/builds/
+/.t3/
 /ui/_harness*
 *.bak
 *.bak-*

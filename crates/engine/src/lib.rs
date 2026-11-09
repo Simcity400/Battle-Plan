@@ -1,5 +1,4 @@
 //! Pinned engine layouts, guarded reads and the measured hourly sampling boundary.
-//! See the engine README for the source map and reader rules.
 
 pub use engine_air_history::air_history_mutations;
 pub use engine_air_history::air_kamikaze;

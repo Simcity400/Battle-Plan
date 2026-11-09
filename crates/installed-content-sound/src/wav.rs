@@ -577,7 +577,7 @@ mod tests {
     }
 
     /// One mono IMA ADPCM block: a zero predictor at step index 0, then
-    /// nibbles of +7 steps, so the samples rise from zero.
+    /// nibbles of positive 7 steps, so the samples rise from zero.
     fn ima_adpcm() -> (Vec<u8>, u16) {
         let block_align: u16 = 36;
         let per_block: u16 = (block_align - 4) * 2 + 1;

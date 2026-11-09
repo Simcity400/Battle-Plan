@@ -38,7 +38,8 @@ impl Drop for TestThreads {
 
 #[test]
 fn worker_sampler_settings_defaults_options_and_refusals() {
-    let directory = Path::new(r"captures\astra\worker-sampler");
+    let directory = std::env::temp_dir().join("hoi4-worker-sampler");
+    let directory = directory.as_path();
     let defaults = Settings::parse(None, directory).unwrap();
     assert!(defaults.enabled);
     assert_eq!(defaults.interval_us, DEFAULT_INTERVAL_US);
