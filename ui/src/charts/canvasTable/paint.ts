@@ -88,7 +88,7 @@ interface RowState { row: PaintRow; y: Tween; alpha: Tween; bars: Tween[] | null
  * where it was, and bars grow, on the timings the DOM table's styles give them. Every row
  * glides; only rows in view are handed out, their cells read (`PaintRow.cells` may be lazy). */
 export class TableMotion {
-  private readonly rows = new Map<string, RowState>();
+  private rows = new Map<string, RowState>();
   private moment: PaintMoment | null = null;
   private readonly shown: FrameRow[] = [];
   private readonly seen = new Set<string>();
@@ -97,16 +97,20 @@ export class TableMotion {
   show(moment: PaintMoment, now: number, motion: Motion, first: boolean): void {
     if (moment === this.moment) return;
     this.moment = moment;
+    const previous = this.rows;
+    if (first) this.rows = new Map();
     const seen = this.seen;
     seen.clear();
     moment.rows.forEach((row, slot) => {
       seen.add(row.key);
-      let state = this.rows.get(row.key);
-      if (!state || state.leaving !== null) {
-        const alpha = first ? tween(1, now) : { from: 0, to: 1, start: now, duration: motion.enter, curve: GLIDE };
+      let state = previous.get(row.key);
+      if (!state || state.leaving !== null || first) {
+        const alpha = first ? state?.alpha ?? tween(1, now) : { from: 0, to: 1, start: now, duration: motion.enter, curve: GLIDE };
+        if (first) settle(alpha, 1, now);
         if (state) { state.row = row; settle(state.y, slot, now); state.alpha = alpha; state.bars = null; state.entered = first || !motion.enter ? null : now; state.leaving = null; }
-        else this.rows.set(row.key, state = { row, y: tween(slot, now), alpha, bars: null, entered: first || !motion.enter ? null : now, leaving: null,
-          out: { row, y: slot, alpha: 1, flash: 0, bars: [], leaving: false } });
+        else state = { row, y: tween(slot, now), alpha, bars: null, entered: first || !motion.enter ? null : now, leaving: null,
+          out: { row, y: slot, alpha: 1, flash: 0, bars: [], leaving: false } };
+        this.rows.set(row.key, state);
         return;
       }
       state.row = row;
@@ -131,6 +135,7 @@ export class TableMotion {
     let moving = false;
     const shown = this.shown;
     shown.length = 0;
+    if (!this.moment) return { rows: shown, moving: false };
     for (const [key, state] of this.rows) {
       const alpha = valueAt(state.alpha, now);
       if (state.leaving !== null && alpha <= 0.001) { this.rows.delete(key); continue; }
@@ -154,7 +159,8 @@ export class TableMotion {
     return { rows: shown, moving };
   }
 
-  reset(): void { this.rows.clear(); this.moment = null; }
+  /** Resets the next presentation while retaining each row's allocations. */
+  restart(): void { this.moment = null; }
 }
 
 /** Decoded flag pictures by URL: a flag is drawn once its picture is decoded, and a row keeps

@@ -62,6 +62,11 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const spoken = useRef<HTMLTableSectionElement>(null);
   const spokenRead = useRef<{ moment: PaintMoment<Data>; key: string } | null>(null);
+  const spokenRows = useRef<{ row: HTMLTableRowElement; cells: Text[] }[]>([]);
+  const motionRead = useRef<TableMotion | null>(null);
+  const textRead = useRef<{ tokens: typeof tokens; widths: TextWidths } | null>(null);
+  const paintWake = useRef<(() => void) | null>(null);
+  const flagRead = useRef<{ bind: CanvasTableProps<Data>['bind']; pictures: FlagPictures } | null>(null);
   const live = useRef<HTMLParagraphElement>(null);
   const latest = useRef(props);
   latest.current = props;
@@ -74,7 +79,7 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
   const geometry = useRef<(() => void) | null>(null);
   // The sorted column never hides: the order it sets must stay in sight.
   const order = columns.filter(column => column.kind === 'numeric' && column.key !== props.sort?.column).map(column => column.key).reverse();
-  const fitKey = JSON.stringify([order, density]);
+  const fitKey = JSON.stringify(order);
   const held = fit.key === fitKey ? fit.fit : FULL_FIT;
   const cellOf = new Map(columns.filter(column => column.kind !== 'country').map((column, index) => [column.key, index]));
   const shownColumns = columns.filter(column => !held.hidden.includes(column.key));
@@ -89,7 +94,8 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
 
   useLayoutEffect(() => {
     const element = canvas.current, scroller = root.current, header = head.current, sample = probe.current?.rows[0];
-    if (!active || !element || !scroller || !header || !sample) return;
+    if (!active) { motionRead.current = null; flagRead.current = null; textRead.current = null; return; }
+    if (!element || !scroller || !header || !sample) return;
     const context = element.getContext('2d');
     if (!context) return;
     let look: TableLook;
@@ -118,9 +124,15 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
       });
       return { needs, measured };
     };
-    let text = new TextWidths();
-    const motion = new TableMotion();
-    const flags = new FlagPictures(() => wake());
+    if (textRead.current?.tokens !== tokens) textRead.current = { tokens, widths: new TextWidths() };
+    let text = textRead.current.widths;
+    const motion = motionRead.current ??= new TableMotion();
+    motion.restart();
+    if (!flagRead.current || flagRead.current.bind !== props.bind) {
+      const pictures: FlagPictures = new FlagPictures(() => { if (flagRead.current?.pictures === pictures) paintWake.current?.(); });
+      flagRead.current = { bind: props.bind, pictures };
+    }
+    const flags = flagRead.current.pictures;
     const surface = watchCanvasSize(element, () => wake());
     let scrollTop = scroller.scrollTop, hover: string | null = null, focus: string | null = null, first = true;
     let shown: PaintMoment<Data> | null = null, grown = widths, rowCount = -1;
@@ -163,18 +175,25 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
       if (!body || (moment === spokenRead.current?.moment && speechKey === spokenRead.current.key) || clock.getSnapshot().playing) return;
       spokenRead.current = { moment, key: speechKey };
       const rows = moment.rows;
-      const previous = [...body.rows], added = document.createDocumentFragment();
-      for (let index = previous.length - 1; index >= rows.length; index--) previous[index].remove();
+      const previous = spokenRows.current, added = document.createDocumentFragment();
+      while (previous.length > rows.length) previous.pop()!.row.remove();
       rows.forEach((row, index) => {
-        const tr = previous[index] ?? document.createElement('tr');
+        let rendered = previous[index];
+        if (!rendered) {
+          rendered = { row: document.createElement('tr'), cells: [] };
+          previous.push(rendered); added.appendChild(rendered.row);
+        }
+        const { row: tr, cells } = rendered;
+        const data = row.cells;
         const values = [...(rank ? [row.rank === undefined ? '' : String(row.rank)] : []),
           ...columns.map((column, at) => column.kind === 'country' ? `${row.country?.name ?? ''}${row.country && flagText(row.country) ? ` (${flagText(row.country)})` : ''}`
-            : row.cells[speechColumns[at]]?.text ?? '')];
-        const cells = [...tr.cells];
-        while (cells.length > values.length) cells.pop()!.remove();
-        while (cells.length < values.length) { const cell = document.createElement('td'); tr.appendChild(cell); cells.push(cell); }
-        values.forEach((value, at) => { if (cells[at].textContent !== value) cells[at].textContent = value; });
-        if (!previous[index]) added.appendChild(tr);
+            : data[speechColumns[at]]?.text ?? '')];
+        while (cells.length > values.length) cells.pop()!.parentElement!.remove();
+        while (cells.length < values.length) {
+          const cell = document.createElement('td'), text = document.createTextNode('');
+          cell.appendChild(text); tr.appendChild(cell); cells.push(text);
+        }
+        values.forEach((value, at) => { if (cells[at].data !== value) cells[at].data = value; });
       });
       body.appendChild(added);
     };
@@ -235,6 +254,7 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     };
     const loop = liveLoop(clock, paint);
     const wake = () => { dirty = true; loop.wake(); };
+    paintWake.current = wake;
     const measure = () => {
       const styled = styleDue;
       const nextLook = styled ? readLook(sample, scroller) : look;
@@ -257,7 +277,6 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
         look = nextLook;
         painting ??= { context, look, columns: boxes, widths: text, flags, width: 0, height: 0, scrollTop, hover, focus, focusColour: tokens.accent,
           delta: key => { const change = ranks.get(key); return change && change.until > painting.now ? change.delta : 0; }, now: 0 };
-        if (styled) text = new TextWidths();
         headerNeeds = needs; boxes = measured;
         headerHeight = headHeight; availableHeight = height;
         if (rowCount >= 0) size();
@@ -280,7 +299,10 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     const fontsLoaded = (event: FontFaceSetLoadEvent) => {
       const families = new Set(look ? [look.font, look.numericFont, look.rankFont, look.deltaFont]
         .flatMap(font => fontFamilies(font.slice(font.indexOf('px ') + 3))) : []);
-      if (!look || loadedFontFamily(event, families)) restyled();
+      if (!look || loadedFontFamily(event, families)) {
+        text = new TextWidths(); textRead.current = { tokens, widths: text };
+        restyled();
+      }
     };
     document.fonts?.addEventListener('loadingdone', fontsLoaded);
     restyle.observe(document.documentElement, { attributes: true });
@@ -343,6 +365,7 @@ export default function CanvasTable<Data>(props: CanvasTableProps<Data>) {
     invalidate();
     return () => {
       cancelGeometry(measure); geometry.current = null;
+      if (paintWake.current === wake) paintWake.current = null;
       loop.stop(); stopSource(); surface.disconnect(); clearTimeout(rankTimer); resized.disconnect(); restyle.disconnect(); hideTooltip(owner);
       document.fonts?.removeEventListener('loadingdone', fontsLoaded);
       scroller.removeEventListener('scroll', scrolled);

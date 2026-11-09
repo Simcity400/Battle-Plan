@@ -59,7 +59,8 @@ export default function HeatChart(props: HeatChartProps) {
   const [labelWidth, setLabelWidth] = useState(0);
   const [hoverRow, setHoverRow] = useState<number | null>(null);
   const labels = useMemo(() => props.labelCatalogue ?? props.rows.map(row => row.label), [props.labelCatalogue, props.rows]);
-  const labelCache = useRef<{ font: string; labels: Map<string, number> }>({ font: '', labels: new Map() });
+  const labelCache = useRef<{ font: string; labels: Map<string, number>; fitted: Map<string, { room: number; text: string }> }>(
+    { font: '', labels: new Map(), fitted: new Map() });
   const window = heatWindow(props.rows.length, viewport.scroll, viewport.height, minimumRow, top, bottom);
   const visible = useMemo(() => props.rows.slice(window.first, window.end), [props.rows, window.first, window.end]);
   const history = props.periods;
@@ -85,8 +86,9 @@ export default function HeatChart(props: HeatChartProps) {
     const context = document.createElement('canvas').getContext('2d');
     if (!context) return;
     context.font = font(tokens, tokens.fontSize.small, 500);
-    if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, labels: new Map() };
+    if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, labels: new Map(), fitted: new Map() };
     const measure = () => {
+      if (labelCache.current.font !== context.font) labelCache.current = { font: context.font, labels: new Map(), fitted: new Map() };
       const widths = labelCache.current.labels;
       const width = fitLabelWidth(labels, label => {
         let width = widths.get(label);
@@ -98,7 +100,9 @@ export default function HeatChart(props: HeatChartProps) {
     const families = new Set(fontFamilies(tokens.font));
     const loaded = (event: FontFaceSetLoadEvent) => {
       if (!loadedFontFamily(event, families)) return;
-      labelCache.current.labels.clear(); invalidateGeometry(measure);
+      labelCache.current.labels.clear(); labelCache.current.fitted.clear(); invalidateGeometry(measure);
+      // Font metrics can change while the clamped label column keeps the same width.
+      setViewport(previous => ({ ...previous }));
     };
     document.fonts?.addEventListener('loadingdone', loaded);
     invalidateGeometry(measure);
@@ -145,6 +149,7 @@ export default function HeatChart(props: HeatChartProps) {
       if (!held || held.rows !== visible || held.periods !== history || held.read !== historyRead)
         historyRuns.current = held = { rows: visible, periods: history, read: historyRead, runs: visible.map(row => cellRuns(row, history, historyRead)) };
       const drawnRows = held.runs;
+      const cellsFrame = { ...frame, plotTop: frame.plotTop - window.offset, plotHeight: visible.length * window.rowHeight };
       for (const period of gaps) {
         drawRecordedGap(ctx, frame, tokens, period.firstHour, period.lastHour, state.playhead);
       }
@@ -153,8 +158,7 @@ export default function HeatChart(props: HeatChartProps) {
         fillPendingBand(ctx, tokens, frame.toX(from), frame.toX(to), frame.plotTop, frame.plotHeight);
       drawnRows.forEach((runs, index) => {
         const drawCell = ({ period, cell }: ReturnType<typeof cellRuns>[number]) => {
-          const rect = cellRect(period, index, visible.length, { ...frame, plotTop: frame.plotTop - window.offset,
-            plotHeight: visible.length * window.rowHeight }, frame.x[0], frame.x[1], state.playhead);
+          const rect = cellRect(period, index, visible.length, cellsFrame, frame.x[0], frame.x[1], state.playhead);
           if (!rect) return;
           if (cell.filtered) {
             ctx.strokeStyle = tokens.border; ctx.lineWidth = tokens.lineWidth.grid;
@@ -194,9 +198,21 @@ export default function HeatChart(props: HeatChartProps) {
     ctx.save(); ctx.beginPath(); ctx.rect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight); ctx.clip();
     ctx.clearRect(0, frame.plotTop, frame.plotLeft - VALUE_LABEL_GAP, frame.plotHeight);
     ctx.font = font(tokens, tokens.fontSize.small, 500); ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillStyle = tokens.text;
-    visible.forEach((row, index) => ctx.fillText(ellipsise(row.label, frame.plotLeft - VALUE_LABEL_GAP * 2,
-      text => ctx.measureText(text).width), frame.plotLeft - VALUE_LABEL_GAP,
-      frame.plotTop + (index + 0.5) * window.rowHeight - window.offset));
+    if (labelCache.current.font !== ctx.font) labelCache.current = { font: ctx.font, labels: new Map(), fitted: new Map() };
+    const { labels: widths, fitted } = labelCache.current;
+    const room = frame.plotLeft - VALUE_LABEL_GAP * 2;
+    visible.forEach((row, index) => {
+      let label = fitted.get(row.label);
+      if (!label || label.room !== room) {
+        let width = widths.get(row.label);
+        if (width === undefined) { width = ctx.measureText(row.label).width; widths.set(row.label, width); }
+        const fullWidth = width;
+        label = { room, text: ellipsise(row.label, room, text => text === row.label ? fullWidth : ctx.measureText(text).width) };
+        fitted.set(row.label, label);
+      }
+      ctx.fillText(label.text, frame.plotLeft - VALUE_LABEL_GAP,
+        frame.plotTop + (index + 0.5) * window.rowHeight - window.offset);
+    });
     ctx.restore();
   };
   return <div className="heat-chart"><div ref={surface} className="heat-chart-surface" onScroll={scroll}

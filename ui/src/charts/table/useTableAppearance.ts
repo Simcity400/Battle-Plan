@@ -2,6 +2,7 @@ import { useLayoutEffect, useState } from 'react';
 import type { RefObject } from 'react';
 import { APPEARANCE_EVENT } from '../../shell/appearance/events.ts';
 import { sameRevision } from '../memoRows.tsx';
+import { fontFamilies, loadedFontFamily } from '../fonts';
 
 function typography() {
   if (typeof document === 'undefined' || typeof getComputedStyle !== 'function') return { tableSize: 12, headerSize: 11, tableFont: 'sans-serif', wrapping: true };
@@ -23,9 +24,7 @@ export function useTableAppearance(element: RefObject<HTMLElement | null>) {
     setAppearance(before => ({ ...before, ...initial }));
     const update = (event: Event) => {
       const next = { ...typography(), ...heights() };
-      const family = (name: string) => name.replace(/["']/g, '').trim().toLowerCase();
-      const families = new Set(next.tableFont.split(',').map(family));
-      const loaded = event.type === 'loadingdone' && (event as FontFaceSetLoadEvent).fontfaces.some(face => families.has(family(face.family)));
+      const loaded = event.type === 'loadingdone' && loadedFontFamily(event as FontFaceSetLoadEvent, new Set(fontFamilies(next.tableFont)));
       setAppearance(before => {
         const measured = { ...next, fonts: before.fonts + (loaded ? 1 : 0) };
         return sameRevision(Object.values(before), Object.values(measured)) ? before : measured;
