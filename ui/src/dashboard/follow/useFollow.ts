@@ -1,4 +1,4 @@
-import { startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { RefObject } from 'react';
 import { perfLog } from '../../shell/perf.ts';
 import type { PlaybackController } from '../playback';
@@ -77,32 +77,28 @@ export interface Followed {
  * request path is kept for a value follow does not serve (deleted with P11, when format 12 is the only one). */
 export const followsHead = (followed: Followed) => followed.status === 'followed';
 
-/** How often the fallback's clock moves its widget while playing. */
-const FALLBACK_PACE_MS = 250;
-
 /** The fallback's clock, beside `followsHead` and deleted with it: the hour a widget asks by for a value
- * follow does not serve. Each widget paces its own from the clock's frames, at most every
- * `FALLBACK_PACE_MS` while playing and at once when the clock stops, steps or seeks; no tick is shared
- * by the page. Off, the hour is read as rendered and nothing renders for it. */
+ * follow does not serve. While playing it moves only in the page's structure slot (`structureOpen`), with every other
+ * structure of the page; at once when the clock stops, steps or seeks. Off, the hour is read as rendered and nothing
+ * renders for it. */
 export function useFallbackHour(clock: PlaybackController, on = true): number {
   const widget = measuredWidget();
   countWork(widget, 'render');
   const [paced, setPaced] = useState<{ clock: PlaybackController; hour: number } | null>(null);
   useEffect(() => {
     if (!on) return;
-    let last = Number.NaN, told = -Infinity;
+    let last = Number.NaN, held: (() => void) | null = null;
     const tell = () => {
       const { hour, playing } = clock.getSnapshot();
       if (hour === last) return;
-      const now = performance.now();
-      if (playing && now - told < FALLBACK_PACE_MS) return;
-      last = hour; told = now;
+      if (!structureOpen(playing)) { held ??= atNextSlot(() => { held = null; tell(); }); return; }
+      last = hour;
       countWork(widget, 'hour');
-      startTransition(() => setPaced(before => before?.clock === clock && before.hour === hour ? before : { clock, hour }));
+      setPaced(before => before?.clock === clock && before.hour === hour ? before : { clock, hour });
     };
     tell();
     const stop = clock.subscribeFrame(tell);
-    return () => { stop(); setPaced(null); };
+    return () => { stop(); held?.(); setPaced(null); };
   }, [clock, on, widget]);
   return on && paced?.clock === clock ? paced.hour : clock.getHour();
 }

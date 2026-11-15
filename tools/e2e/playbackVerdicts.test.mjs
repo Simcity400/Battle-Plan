@@ -172,6 +172,10 @@ function syntheticLog() {
   // The planted commit and request, long after the anchor.
   const planted = records.find(record => record.t === 'frame' && record.at > 3000);
   Object.assign(planted, { commits: 1, zones: { 'widget:w1': 1 } });
+  // Two structure slots: one leaves its frame on time, one holds it back; neither is a commit caused by a value.
+  const slotFrames = records.filter(record => record.t === 'frame' && record.at > 3200);
+  Object.assign(slotFrames[0], { slot: { ms: 2, commits: 1, widgets: { 'widget:w2': 5 } } });
+  Object.assign(records.find(record => record.t === 'frame' && record.dt === 40), { slot: { ms: 30, commits: 1, widgets: { 'widget:w1': 40, 'widget:w2': 3 } } });
   records.push({ t: 'q', at: planted.at + 2, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 1 });
   // Asked at the play anchor and while paused: not judged; a cached answer and the follow protocol are no requests.
   records.push({ t: 'q', at: 1005, cmd: 'dashboard_product', product: 'series-state', outcome: 'ok', ms: 1 },
@@ -192,6 +196,9 @@ test('the dashboard analyser finds exactly the late frame, the commit and the re
   assert.equal(frames.worst.frame, lateFrame);
   const commits = rows.filter(row => row.bar === 'React commits caused by a value');
   assert.deepEqual(commits.map(row => [row.page, row.values.count]), [['Politics', 1], ['Politics: Political power', 1]]);
+  const slots = rows.find(row => row.bar === 'structure slots fit their frame');
+  assert.deepEqual([slots.verdict, slots.values], [FAIL, { slots: 2, over: 1 }]);
+  assert.match(slots.note, /Political power 40, w2 3|Political power 40, .* 3/, slots.note);
   const requests = rows.filter(row => row.bar === 'requests for values at the head');
   assert.deepEqual(requests.map(row => [row.page, row.values.count, row.verdict]), [['Politics', 1, FAIL]]);
   assert.equal(rows.find(row => row.bar === 'chart tile requests').verdict, PASS);

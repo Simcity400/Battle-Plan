@@ -16,6 +16,8 @@ function focusHooks() {
   const same = (a: readonly unknown[], b: readonly unknown[]) => a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   return {
     begin() { cursor = 0; },
+    // As React's memo for a fake that renders every component each time: the component itself.
+    memo<T>(component: T) { return component; },
     useState(initial?: unknown) {
       const index = cursor++;
       if (!slots.has(index)) slots.set(index, initial);

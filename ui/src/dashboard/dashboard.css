@@ -3,10 +3,10 @@
 /* Header bar: country · playback · tools, with the timeline along its lower edge. */
 .header-workspace-bar {
   /* The flag shows at the content's large flag size, centred in the bar's height. The first row ends on the
-     timeline's line, so the controls centre between the bar's top and the line. The tools keep a fixed width
-     in and out of editing, so playback, centred between the country and the tools, never moves. */
+     timeline's line, so the controls centre between the bar's top and the line. The country's track and the
+     tools keep fixed widths whatever the name and editing state, so playback, centred between them, never moves. */
   --header-flag-width: 82px; --header-flag-inset: 12px;
-  position: relative; display: grid; grid-template-columns: minmax(0, max-content) minmax(12px, 1fr) auto minmax(12px, 1fr) max-content; grid-template-rows: 69px 13px;
+  position: relative; display: grid; grid-template-columns: minmax(0, 240px) minmax(12px, 1fr) auto minmax(12px, 1fr) max-content; grid-template-rows: 69px 13px;
   grid-template-areas: 'country . playback . tools' 'timeline timeline timeline timeline timeline'; align-items: center; column-gap: 4px;
   padding: 0 14px 0 calc(var(--header-flag-inset) + var(--header-flag-width) + 8px);
 }

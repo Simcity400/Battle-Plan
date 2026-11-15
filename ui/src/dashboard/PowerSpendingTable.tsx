@@ -25,7 +25,7 @@ import { resolveWindow } from './model';
 import { contentSet, resolveOptions, setToken, toggleContentSet } from './options';
 import { usePlaybackMotion } from './playback';
 import { categoryChoices, groupSummary, mergedIdeaTooltips, monthFigures, monthItems, monthLabel, namesCovered, powerGains, spendingCostNotes, spendingCountryRequests,
-  spendingGapNote, spendingGaps, spendingGroups, spendingRowsAhead, spendingTableRows } from './powerSpending.ts';
+  spendingGapNote, spendingGaps, spendingGroups, spendingRowsAhead, spendingTableRows, stableSpendingRows } from './powerSpending.ts';
 import type { PowerCurrency, SpendingTableRow, SpendingWindow } from './powerSpending';
 import { NO_SPENDING_CATEGORIES, normalizePowerSpendingOptions, POWER_SPENDING_OPTIONS, spendingSort } from './powerSpendingOptions';
 import { formatPower, formatSpent, powerDecimals } from './powerDecimals';
@@ -87,7 +87,15 @@ export default function PowerSpendingTable({ currency, widget, runtime, active, 
     }
   }, [widget.id, widget.options?.filterMode, widget.options?.categories, categories, normalized.migrated, repairSelection, setOptions]);
   const chosen = useMemo(() => contentSet(categories).filter(value => value !== NO_SPENDING_CATEGORIES), [categories]);
-  const rows = useMemo(() => ledgers && drawn ? spendingTableRows(ledgers, drawn, categories, selection) : NO_ROWS, [ledgers, drawn, categories, selection]);
+  // Each block makes every row anew; a row that draws the same keeps the object the table drew, so only new and changed
+  // rows render in the slot.
+  const heldRows = useRef<ReadonlyMap<string, SpendingTableRow>>(new Map());
+  const rows = useMemo(() => {
+    if (!ledgers || !drawn) return NO_ROWS;
+    const made = stableSpendingRows(heldRows.current, spendingTableRows(ledgers, drawn, categories, selection));
+    heldRows.current = new Map(made.map(row => [row.key, row]));
+    return made;
+  }, [ledgers, drawn, categories, selection]);
   const trackHour = useCallback((clockHour: number) => hourAt(clockHour) ?? Number.NaN, [hourAt]);
   const reveal = useRevealClock(runtime.clock, following, trackHour);
   const tableReveal = useMemo(() => reveal ? { clock: reveal, at: (row: SpendingTableRow) => row.payment?.read ?? -Infinity } : undefined, [reveal]);

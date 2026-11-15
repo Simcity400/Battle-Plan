@@ -186,7 +186,7 @@ fn frame(branch: u64, hour: i32) -> DecodedFrame {
     DecodedFrame { branch, hour, tables: tables.map(Into::into), metrics }
 }
 
-fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
+pub(crate) fn segment(branch: u64, first: i32, hours: i32) -> Vec<Record> {
     let session = SessionStart {
         id: branch,
         process_id: 1,

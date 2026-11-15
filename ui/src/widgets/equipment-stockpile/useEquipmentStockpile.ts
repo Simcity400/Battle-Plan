@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Live } from '../../charts/live';
 import type { Span } from '../../charts/series';
 import type { DashboardClient } from '../../dashboard/client';
@@ -41,25 +41,32 @@ export function useStockpileCatalogue(client: DashboardClient, track: BoundTrack
   }, track?.source);
 }
 
-/** `live`'s values as a render reads them: the newest when the component renders, and a render at most four times a
- * second while they move (taken in the page's structure slot), so what a render derives from them (which rows show, their order, a
- * drill's figures) follows the head without a commit each frame. */
+/** `live`'s values as a render reads them: read when `live` is new, when the widget comes into or out of view, and after
+ * `live` tells of a change; else the values held, so a render for another reason never hands down new values and what
+ * derives from them (which rows show, their order, a drill's figures, the diagnostics) stands. While they move, a render
+ * at most four times a second (taken in the page's structure slot), so they follow the head without a commit each frame. */
 export function usePacedValues<T>(live: Live<T>, active: boolean): T {
   const [, setRevision] = useState(0);
+  const held = useRef<{ live: Live<T>; active: boolean; value: T; stale: boolean } | null>(null);
+  const before = held.current;
+  if (!before || before.live !== live || before.active !== active || before.stale) {
+    const value = live.read();
+    held.current = { live, active, value: before?.live === live && Object.is(before.value, value) ? before.value : value, stale: false };
+  }
   useEffect(() => {
     if (!active) return;
-    let shown = live.read(), timer: (() => void) | undefined;
+    let timer: (() => void) | undefined;
     const commit = () => { timer = undefined; setRevision(revision => revision + 1); };
     const stop = live.subscribe(() => {
-      const now = live.read();
-      if (now === shown || timer !== undefined) return;
-      shown = now;
+      const shown = held.current;
+      if (!shown || shown.live !== live || shown.stale || Object.is(live.read(), shown.value)) return;
+      shown.stale = true;
       if (structureOpen()) commit();
       else timer = atNextSlot(commit);
     });
     return () => { stop(); timer?.(); };
   }, [live, active]);
-  return live.read();
+  return held.current!.value;
 }
 
 /** One holder's stockpile at the hour `widget` shows (`equipment-stockpile-at`): followed at the head as a pushed panel

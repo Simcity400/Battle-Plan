@@ -42,6 +42,17 @@ test('a request\'s reply gives each cell its value by its formula, and a missing
   assert.throws(() => liveSection({ live: section([{ ...countries, follow: 7 }, { ...coal, values: [1, 1] }]) }), /malformed/, 'a UI id is never a group\'s');
 });
 
+test('a reply or a panel naming no cells, or failing, reads the same values every time, as unmoved cells do', () => {
+  const none = repliedCells({ warnings: [] });
+  assert.equal(none.read(), none.read(), 'a reply naming no cells');
+  const quiet = { group: () => undefined, subscribe: () => () => {} };
+  const empty = followedCells({ ...quiet, section: () => null });
+  assert.equal(empty.read(), empty.read(), 'a panel with no section yet');
+  const failing = followedCells({ ...quiet, section: () => { throw new Error('The panel is malformed'); } });
+  assert.equal(failing.read(), failing.read(), 'a panel whose section fails');
+  assert.equal(failing.read().missing(liveKey('100', 'power')), 'The panel is malformed');
+});
+
 /** A panel message: panel `id`'s reply naming its power cells followed under `follow`. */
 function panel(id: number, hour: number, rows: string[], follow: number, made?: number): Uint8Array {
   const data = { rows, ...(made === undefined ? {} : { made }), live: { groups: [{ table: 2, columns: [2], keys: rows, follow }], rows, kinds: [{ id: 'power', op: 'value', scale: 1 }],

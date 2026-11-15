@@ -43,8 +43,11 @@ test('a log committing new rows reads no layout back, in the commit or the frame
 // page has just been laid out (its observers) or as the reader scrolls.
 test('a virtual list committing new rows reads no layout back, in the commit or the frames after', async t => {
   await withNativePage('paint-virtual', '/ui/src/charts/paintCost.dom.fixture.tsx', page => page.stage('virtual', async () => {
-    const played = await page.evaluate<{ layout: number; shown: number }>('window.paintCost.virtualCommits(20)');
-    t.diagnostic(`${played.layout} layout reads; ${played.shown} rows shown`);
+    const played = await page.evaluate<{ layout: number; commits: number; shown: number }>('window.paintCost.virtualCommits(20)');
+    t.diagnostic(`${played.layout} layout reads; ${played.commits} commits; ${played.shown} rows shown`);
+    // Run 16's National focus: two more after each, the new rows' index starting without the list's gap, and a view
+    // moved one row inside the rows already drawn.
+    assert.ok(played.commits <= 20, `one commit a change of rows, none for the gap or a scroll inside the rows drawn: ${played.commits} in 20`);
     assert.ok(played.shown > 5, `the list shows the rows in its view: ${played.shown}`);
     assert.equal(played.layout, 0, `no layout read back while committing: ${played.layout} reads in 20 commits`);
   }));
@@ -163,6 +166,18 @@ test('a table whose live bars move every frame lays nothing out for them', async
       assert.ok(played.bars >= 10, `the table shows its bars: ${played.bars}`);
       assert.deepEqual(bars, [], 'a bar moving lays nothing out');
     } finally { session.close(); }
+  }, 120_000));
+});
+
+// The bars' glide is the frame engine's: no CSS transition (a layer and a restyle each frame per bar). Its timing (ease,
+// time, frames through its way) is asserted with an injected clock in engine/glide.test.ts; here only the integration.
+test('a live table bar moves to a new value drawn by the engine, only rising, with no CSS transition on it', async () => {
+  await withNativePage('paint-glide', '/ui/src/charts/paintCost.dom.fixture.tsx', page => page.stage('glide', async () => {
+    const played = await page.evaluate<{ before: number; samples: number[]; transition: string }>('window.paintCost.barGlide()');
+    assert.ok(Math.abs(played.before - 0.2) < 1e-9, `the bar shows its value at rest: ${played.before}`);
+    assert.ok(!played.transition.split(', ').some(name => ['transform', 'all'].includes(name)), `no transform transition: ${played.transition}`);
+    assert.ok(played.samples.every((value, at) => at === 0 || value >= played.samples[at - 1] - 1e-9), 'it only rises toward the new value');
+    assert.ok(Math.abs(played.samples.at(-1)! - 0.8) < 1e-9, `it ends at the new value: ${played.samples.at(-1)}`);
   }, 120_000));
 });
 

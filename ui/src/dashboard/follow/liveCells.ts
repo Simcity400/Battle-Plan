@@ -207,9 +207,10 @@ export function sectionGroups(section: LiveSection, group: (id: number) => Group
 }
 
 const NONE = 'This reply names no live cells';
-const STILL: Live<LiveValues<number>> = { read: () => noValues(NONE), subscribe: () => () => {} };
+const NO_CELLS = noValues(NONE);
 
 const still = (values: LiveValues<number>): Live<LiveValues<number>> => ({ read: () => values, subscribe: () => () => {} });
+const STILL = still(NO_CELLS);
 
 /** A request's reply's cells, which never move. */
 export function repliedCells(reply: unknown): Live<LiveValues<number>> {
@@ -231,11 +232,16 @@ export interface CellsSource {
 /** A panel's cells read as a chart paints: the same values until its section or one of its groups moves. */
 export function followedCells(source: CellsSource): Live<LiveValues<number>> {
   let made: { section: LiveSection | null; groups: GroupValues[]; stamp: number; values: LiveValues<number> } | null = null;
+  let failed: { reason: string; values: LiveValues<number> } | null = null;
   return {
     read: () => {
       let section: LiveSection | null;
-      try { section = source.section(); } catch (error) { return noValues(error instanceof Error ? error.message : String(error)); }
-      if (!section) return noValues(NONE);
+      try { section = source.section(); } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        if (failed?.reason !== reason) failed = { reason, values: noValues(reason) };
+        return failed.values;
+      }
+      if (!section) return NO_CELLS;
       const groups = made?.section === section ? made.groups : sectionGroups(section, source.group);
       // A followed group that had not landed yet when the section was resolved is looked up again.
       const fresh = section.groups.some((spec, at) => spec.follow !== undefined && groups[at]!.version === 0 && source.group(spec.follow) !== groups[at])

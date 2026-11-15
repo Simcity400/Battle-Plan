@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createContext, use, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import { inFrame } from '../../dashboard/frameUpdates.ts';
 import { useContextMenu } from '../../components/ContextMenu';
@@ -12,7 +12,9 @@ import { useWhyCommit } from '../../dashboard/widgetPerf.ts';
 import type { Live, LiveValues } from '../live';
 import { scheduler } from '../scheduler';
 import type { FrameTask } from '../scheduler';
-import { BarCell, barScale, textCell } from '../../dashboard/follow/painters.ts';
+import { BarCell, textCell } from '../../dashboard/follow/painters.ts';
+import { barGlides, rowGlides } from '../../engine/glide.ts';
+import { rowFades } from '../../engine/entry.ts';
 import type { TextCell } from '../../dashboard/follow/painters';
 import type { TooltipContent } from '../tooltip';
 import { movingRowClass, useRowMotion } from '../useRowMotion';
@@ -203,6 +205,11 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const committedWindow = useRef<{ items: typeof items; keys: ReadonlySet<string>; departing: ReadonlySet<string> } | null>(null);
   const motionNow = useMotionNow();
   const glideMs = easeTau(tokens.motion, motionNow(hoursPerSecond), tokens.reducedMotion) * 2.5;
+  // Bars glide only while playing and without reduced motion, read when a live bar is painted.
+  const barGlideMs = tokens.reducedMotion || motionNow(hoursPerSecond) === undefined ? 0 : BAR_GLIDE_MS;
+  const barMotion = useRef({ reduced: tokens.reducedMotion, given: hoursPerSecond });
+  barMotion.current = { reduced: tokens.reducedMotion, given: hoursPerSecond };
+  const barGlide = useCallback(() => barMotion.current.reduced || motionNow(barMotion.current.given) === undefined ? 0 : BAR_GLIDE_MS, [motionNow]);
   const ordering = `${groupBy ? 'grouped/' : ''}${tree ? 'tree/' : ''}${unsorted ? 'given' : sortKey(sort)}`;
   // Rank markers against the ranks last committed, so a new order shows them in the frame it is drawn.
   const committedRanks = useRef<{ ordering: string; ranks: ReadonlyMap<string, RankChange> }>({ ordering: '', ranks: NO_RANKS });
@@ -300,6 +307,10 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   // rendered, so a render keeps a running entry) and the body's height are painted at the clock's hour.
   const body = useRef<HTMLTableSectionElement>(null);
   const revealed = useRef<{ full: readonly number[]; held: Held; header: number; cut: number; hour: number } | null>(null);
+  /** The rows' glide time for what the engine places now. */
+  const rowGlide = useRef(0);
+  /** Each mounted row's slot and rank as the last render ordered them: what the commit writes into the rows. */
+  const drawnSlots = useRef<ReadonlyMap<string, { slot: number; rank: number }>>(new Map());
   const enterRows = useRef(!tokens.reducedMotion);
   enterRows.current = !tokens.reducedMotion;
   const paintRevealed = useCallback((enter: boolean) => {
@@ -310,16 +321,35 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     for (const row of tbody.children as HTMLCollectionOf<HTMLElement>) {
       const slot = now.held.slots.get(row.dataset.tableRow ?? '');
       if (slot == null) continue;
-      row.style.transform = `translateY(${shown[slot] - now.header}px)`;
+      rowGlides.to(row.style, shown[slot] - now.header, rowGlide.current);
       const ahead = now.held.reveal[slot] > now.hour, was = row.dataset.reveal;
       if (ahead) { if (was !== 'ahead') { row.dataset.reveal = 'ahead'; row.inert = true; } }
-      else if (was === 'ahead') { if (enter) row.dataset.reveal = 'in'; else delete row.dataset.reveal; row.inert = false; }
+      else if (was === 'ahead') { if (enter) { row.dataset.reveal = 'in'; rowFades.enter(row); } else delete row.dataset.reveal; row.inert = false; }
     }
   }, []);
+  // Each commit, every mounted row takes its place through the engine's row glide (never a CSS transition, never a
+  // transform React writes): held ahead at the clock's hour, else at its slot. Measured corrections take theirs at once.
+  rowGlide.current = measuring ? 0 : glideMs;
   useLayoutEffect(() => {
     revealed.current = held && revealCut !== null && hourHeld.current !== null
       ? { full: fullOffsets, held, header: view.headerHeight, cut: revealCut, hour: hourHeld.current } : null;
+    // Held ahead, the clock's hour places each row and marks those it has not reached, before anything reads that mark.
     if (revealed.current) paintRevealed(false);
+    for (const row of body.current?.children as HTMLCollectionOf<HTMLElement> | undefined ?? []) {
+      const drawn = drawnSlots.current.get(row.dataset.tableRow ?? '');
+      if (!drawn) continue;
+      // A row's place in the order is written here, not rendered, so a new order renders no row (`placedRevision`).
+      const index = String(drawn.slot + 2);
+      if (row.getAttribute('aria-rowindex') !== index) row.setAttribute('aria-rowindex', index);
+      const rankCell = row.firstElementChild;
+      if (rank && !rankMarkers && rankCell?.classList.contains('table-rank') && rankCell.textContent !== String(drawn.rank)) rankCell.textContent = String(drawn.rank);
+      if (!revealed.current && drawn.slot < offsets.length) rowGlides.to(row.style, offsets[drawn.slot] - view.headerHeight, rowGlide.current);
+      // A row rendered entering enters once, one rendered leaving fades out once, and one kept again turns back, drawn by the engine.
+      // A row held ahead of the clock enters when it is revealed (`paintRevealed`), not while it waits unseen.
+      if (row.classList.contains('is-entering') && row.dataset.reveal !== 'ahead' && !enteredRows.has(row)) { enteredRows.add(row); rowFades.enter(row); }
+      if (row.classList.contains('is-leaving')) rowFades.leave(row);
+      else rowFades.stay(row);
+    }
   });
   useLayoutEffect(() => {
     if (!revealBy) return;
@@ -347,6 +377,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   const barRevision = useRevision(shownColumns.filter(column => column.bar != null).flatMap(column => [column.key, maxima.get(column.key)]));
   const update = {};
   const revisions = new Map(mounted.map(row => [row.key, rowRevision?.(row.item.value) ?? [update]]));
+  drawnSlots.current = new Map(mounted.map(row => [row.key, { slot: row.slot, rank: row.item.rank }]));
   const headers = shownColumns.map(column => column.sortable === false || unsorted ? column.header
     : <>{column.header}{(sort.column === column.key || column.width === 'max-content') && <span className="table-sort" aria-hidden="true"
       style={{ visibility: sort.column === column.key ? undefined : 'hidden' }}> {sort.direction === 'descending' ? '\u25be' : '\u25b4'}</span>}</>);
@@ -612,8 +643,8 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
       if (!column) continue;
       const bar = element.closest('.table-cell')?.querySelector<HTMLElement>('.table-cellbar');
       const fromKey = element.dataset.tableLiveFrom;
-      const from = fromKey ? { key: fromKey, bar: bar ? new BarCell(bar.style, true) : null, element, tone: undefined } : null;
-      cells.push({ key: element.dataset.tableLive!, column, text: textCell(element), bar: bar && !column.barOf ? new BarCell(bar.style, true) : null, from });
+      const from = fromKey ? { key: fromKey, bar: bar ? new BarCell(bar.style, true, barGlide) : null, element, tone: undefined } : null;
+      cells.push({ key: element.dataset.tableLive!, column, text: textCell(element), bar: bar && !column.barOf ? new BarCell(bar.style, true, barGlide) : null, from });
     }
     liveCells.current = cells;
     livePaint.current?.(true);
@@ -651,9 +682,9 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
   }, [order, fitScope, fit, grid, view.width, headerKeys, rowHeight, fonts]);
   const naturalContent = (column: TableColumn<T>, content: ReactNode) => column.width === 'max-content'
     ? <span className="table-natural" data-table-natural={column.key}>{content}</span> : content;
-  return <div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
+  return <BarGlideMs value={barGlideMs}><div ref={scroll} className={`chart-table${density === 'compact' ? ' is-compact' : ''}${wrapping ? ' is-wrapped' : ''}${measuring ? ' is-measuring' : ''}`}
     style={{ '--table-columns': grid, '--table-row-height': view.rowHeight > 0 ? `${view.rowHeight}px` : undefined,
-      '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms`, '--table-bar-glide': tokens.reducedMotion || motionNow(hoursPerSecond) === undefined ? '0ms' : '300ms' } as CSSProperties}
+      '--table-header-height': `${view.headerHeight || 24}px`, '--table-cell-y': rowHeight == null ? undefined : '0px', '--row-glide': `${glideMs}ms` } as CSSProperties}
     onWheel={() => { focusAnchor.current = false; }} onPointerDown={() => { focusAnchor.current = false; }}
     onScroll={event => { const element = event.currentTarget; const top = element.scrollTop; bottomAnchor.current = element.scrollHeight - element.clientHeight - top < 1; setView(before => before.top === top ? before : { ...before, top }); }} onPointerLeave={() => { if (activeTip.current?.origin === 'pointer') clearTip(); }}>
     <table ref={tableElement} aria-label={label} aria-rowcount={ordered.length + 1} role={tree ? 'treegrid' : undefined}>
@@ -718,15 +749,17 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
           onPointerDown: () => { keyboardMenu.current = false; },
         };
         const isMuted = muted?.(row.item.value);
-        const revision = [...revisions.get(row.key)!, layoutKeys, cellBars, rank, rankMarkers, row.item.rank, change, change && marker!.until,
-          barRevision, row.phase, row.slot, offsets[row.slot] - view.headerHeight, liveColumns,
+        // Its slot and rank are written by the commit (`drawnSlots`): a row moved in the order renders again only to draw a
+        // rank marker.
+        const placedRevision = rankMarkers ? [row.item.rank, row.slot] : NO_PLACE;
+        const revision = [...revisions.get(row.key)!, layoutKeys, cellBars, rank, rankMarkers, ...placedRevision, change, change && marker!.until,
+          barRevision, row.phase, liveColumns,
           node?.level, node?.size, node?.position, node?.group, node?.count, node?.open, description?.key === row.key,
           isMuted, !!onRowClick];
         return memoRow(row.key, revision, handlers => <tr data-table-row={row.key} className={`${movingRowClass(row)}${isMuted ? ' is-muted' : ''}${node?.group ? ' is-group' : ''}${opens || (onRowClick && !node?.group) ? ' is-activatable' : ''}`} tabIndex={row.phase === 'leaving' ? -1 : 0}
           aria-hidden={row.phase === 'leaving' || undefined} aria-rowindex={row.slot + 2}
           aria-level={node?.level} aria-setsize={node?.size} aria-posinset={node?.position} aria-expanded={opens ? node.open : undefined}
           aria-describedby={description?.key === row.key ? `${owner}-description` : undefined}
-          style={{ transform: `translateY(${offsets[row.slot] - view.headerHeight}px)` }}
           {...handlers}>
           {rank && <td className="table-rank">{row.item.rank}{rankMarkers && change !== 0 && <span key={marker!.until} className={`table-delta ${change > 0 ? 'is-positive' : 'is-negative'}`}>{change > 0 ? '▲' : '▼'}{Math.abs(change)}</span>}</td>}
           {shownColumns.map((column, index) => {
@@ -757,7 +790,7 @@ export default function Table<T>({ label, rows, columns, rowKey, rowRevision, ti
     </table>
     {description && <span id={`${owner}-description`} className="sr-only">{description.text}</span>}
     {contextMenu.menu}
-  </div>;
+  </div></BarGlideMs>;
 }
 
 /** A nested row's first cell, indented by depth; a group header row carries the timeline lanes' disclosure mark. */
@@ -782,11 +815,24 @@ function paintFrom<T>(from: FromCell, column: TableColumn<T>, value: SortValue |
   from.tone = tone;
 }
 
+const NO_PLACE: readonly unknown[] = [];
+/** Rows whose entry the engine has started, so a later commit never starts it again. */
+const enteredRows = new WeakSet<HTMLElement>();
+
+/** How long a bar in a table glides to a new length: the table's (`BAR_GLIDE_MS` while playing; none paused, or with
+ * reduced motion). */
+const BarGlideMs = createContext(0);
+/** The bars' glide while playing, as their CSS transition was. */
+const BAR_GLIDE_MS = 300;
+
 export function CellBar({ value, maximum, children }: {
   value: number | bigint | null; maximum: number | bigint; children: ReactNode;
 }) {
-  return <span className="table-cell">{value !== null && <i className="table-cellbar" aria-hidden="true"
-    style={{ transform: barScale(`${barFraction(value, maximum) * 100}%`) }} />}<span>{children}</span></span>;
+  const glide = use(BarGlideMs);
+  const bar = useRef<HTMLElement>(null);
+  const fraction = value === null ? null : barFraction(value, maximum);
+  useLayoutEffect(() => { if (bar.current && fraction !== null) barGlides.to(bar.current.style, fraction, glide); }, [fraction, glide]);
+  return <span className="table-cell">{fraction !== null && <i ref={bar} className="table-cellbar" aria-hidden="true" />}<span>{children}</span></span>;
 }
 
 export function CountryCell({ name, nameFailure, flag, flagReason, flagDetail, flagPending }: {

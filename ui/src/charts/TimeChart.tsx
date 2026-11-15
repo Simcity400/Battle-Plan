@@ -237,6 +237,9 @@ export default function TimeChart(props: TimeChartProps) {
     let clusterText = '';
     // The view last reported: a handler hears only a new range (or, when it changes, the current one).
     let reported: { handler: (x: Range) => void; x: Range } | null = null;
+    // The report waiting for its update: a view easing every frame moves its range, never queues another (one held a
+    // slot while playing, not one a frame).
+    let telling: { handler: (x: Range) => void; x: Range } | null = null;
     let eased: { x: [number, number]; y: [number, number] } | null = null;
     let frame: PlotFrame | null = null;
     // What the series canvas shows, by everything its painting reads: a frame with the same
@@ -383,8 +386,12 @@ export default function TimeChart(props: TimeChartProps) {
       overlayContext?.setTransform(size.scaleX, 0, 0, size.scaleY, 0, 0);
       shown.current = { x, until };
       if (p.onViewChange && (p.onViewChange !== reported?.handler || x[0] !== reported.x[0] || x[1] !== reported.x[1])) {
-        const told = reported = { handler: p.onViewChange, x };
-        inFrame(() => told.handler(told.x));
+        reported = { handler: p.onViewChange, x };
+        if (telling) telling = reported;
+        else {
+          telling = reported;
+          inFrame(() => { const told = telling; telling = null; if (told) told.handler(told.x); });
+        }
       }
       // Whole hours, and while the view keeps moving (playback, a pan or zoom) at most
       // one request per interval, the newest view sent when it ends: not one per

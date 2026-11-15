@@ -164,7 +164,7 @@ export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrac
     && item.hour >= track.branch.firstHour && item.hour <= track.branch.lastHour), [wanted, track]);
   const read = useCountryFactsRead(client, track, available, active, NAMES, maxHours, attempt);
   const previous = useRef<ReadonlyMap<string, NameRead>>(new Map());
-  // The last name read for each country: while its name at a new hour is read, that one shows, never "loading".
+  // The last name or refusal read for each country: while its name at a new hour is read, that one shows, never "loading".
   // Held per client as the reads are: another client's names are never shown for this one's.
   const lastRead = useRef<{ client: DashboardClient | null; track: string; names: Map<string, NameRead> }>({ client: null, track: '', names: new Map() });
   const trackKey = track ? JSON.stringify([track.source.id, track.source.revision, track.branch.id]) : '';
@@ -175,7 +175,7 @@ export function useCountryNamesAt(client: DashboardClient, track: Pick<BoundTrac
     const next = new Map(wanted.map(item => {
       const key = nameKey(item.hour, item.tag), before = previous.current.get(key);
       let value = nameReadFrom(read.get(key), active && requested.has(key));
-      if (value.kind === 'value') held.set(item.tag, value);
+      if (value.kind === 'value' || value.kind === 'failed') held.set(item.tag, value);
       else if (value.kind === 'loading') value = held.get(item.tag) ?? value;
       return [key, sameNameRead(before, value) ? before! : value] as const;
     }));

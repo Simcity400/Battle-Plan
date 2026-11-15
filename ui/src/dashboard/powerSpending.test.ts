@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { engineHour } from './calendar.ts';
-import { groupAt, ledgerOf, monthFigures, powerGain, spendingGaps, spendingGroups, spendingItems, spendingTableRows, validatePowerSpending } from './powerSpending.ts';
+import { groupAt, ledgerOf, monthFigures, powerGain, spendingGaps, spendingGroups, spendingItems, spendingTableRows, stableSpendingRows, validatePowerSpending } from './powerSpending.ts';
 import { spendingChunks, structureAt, structureHours, structureParts, SPENDING_CHUNK_HOURS } from './powerSpending.ts';
 import { daysIn, firstPaid, groupCostNotes, groupSummary, paymentsIn, powerGains, sameSpendingItems, spendingCostNotes, spendingSummary } from './powerSpending.ts';
 import { namesCovered, spendingCountryRequests, spendingRowsAhead } from './powerSpending.ts';
@@ -52,6 +52,18 @@ test('the table folds a recurring category into a month whose figures grow with 
   assert.deepEqual(payments.map(row => [row.amount, row.partial]), [[5000000n, false], [7000000n, true]], 'a payment whose charge was not recorded is partial, never guessed');
   assert.deepEqual(spendingTableRows(ledgers, { from: null, hour: day(4, 1) }, 'dailyCosts').map(row => row.category), ['dailyCosts']);
   assert.deepEqual(spendingTableRows(ledgers, { from: day(2, 1), hour: day(4, 1) }, '').map(row => row.amount), [7000000n], 'a range lists what was paid in it');
+});
+
+test('a block made again keeps each row that draws the same, so the table renders only new and changed rows', () => {
+  const ledgers = [ledgerOf('GER', 'Political', chunks())];
+  const before = spendingTableRows(ledgers, { from: null, hour: day(4, 1) }, '');
+  const again = stableSpendingRows(new Map(before.map(row => [row.key, row])), spendingTableRows(ledgers, { from: null, hour: day(4, 1) }, ''));
+  assert.ok(again.every((row, at) => row === before[at]), 'the same block: every row the very object drawn before');
+  const earlier = spendingTableRows(ledgers, { from: null, hour: day(1, 2) }, '');
+  const later = stableSpendingRows(new Map(earlier.map(row => [row.key, row])), spendingTableRows(ledgers, { from: null, hour: day(4, 1) }, ''));
+  const month = later.find(row => row.month !== null)!;
+  assert.notEqual(month, earlier.find(row => row.key === month.key), 'a month that read more days is a new row');
+  assert.ok(later.filter(row => !earlier.some(held => held.key === row.key)).length > 0, 'payments the later block holds are new rows');
 });
 
 test('the breakdown reads each group at any hour from its cumulated entries, and gains and gaps name what is unknown', () => {

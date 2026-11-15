@@ -46,6 +46,7 @@ export const TODAY = {
   memory: 'cursor 1,228 MB; process 4.7 GB',
   webview: 'not measured',
   commits: 'one transition per 250 ms tick',
+  slots: 'not measured',
   requests: '26 a second for seven widgets',
   age: 'up to 360 h (a 250 ms tick)',
 };
@@ -432,8 +433,8 @@ export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {
   // A window (epoch ms) keeps the timed records inside it; what a record states for the session (widgets, follows, losses) stays.
   const records = window ? log.records.filter(record => !TIMED.has(record.t) || (record.at >= window.from && record.at <= window.to)) : log.records;
   const whole = wholeLog(log, records, expect);
-  const bars = ['webview frame interval', 'long animation frames', 'React commits caused by a value', 'requests for values at the head', 'list requests ahead of the head',
-    'chart tile requests', 'a followed value\'s age'];
+  const bars = ['webview frame interval', 'long animation frames', 'React commits caused by a value', 'structure slots fit their frame', 'requests for values at the head',
+    'list requests ahead of the head', 'chart tile requests', 'a followed value\'s age'];
   const ticks = records.filter(record => record.t === 'tick').sort((a, b) => a.at - b.at);
   const titles = new Map(records.filter(record => record.t === 'widget').map(record => [record.id, record.title]));
   const follow = followAccount(records, titles);
@@ -487,6 +488,21 @@ export function dashboardRows(log, { page = 'page', refreshHz = null, expect = {
     note: `play, pause, speed and seek own the ${ANCHOR_SETTLE_MS} ms after them`, values: { count: [...commits.values()].reduce((sum, entry) => sum + entry.count, 0) } }));
   for (const [zone, entry] of commits) rows.push(row({ page: `${page}: ${zoneName(zone)}`, run: 'perf log', bar: 'React commits caused by a value', measured: `${entry.count} in ${entry.frames.length} frames`,
     limit: 'none while playing', verdict: FAIL, worst: at(entry.frames[0]), today: TODAY.commits, values: { count: entry.count } }));
+
+  // The page's structure slot (`slot` on a frame: every held structure of the page, committed once a quarter second in a
+  // task between frames) must hold no frame back: the frame drawn after it is dropped when its interval is over
+  // `intervalWorst` refreshes. A widget rendering in a slot that dropped its frame is named with its components rendered.
+  const slots = judged.filter(frame => frame.slot);
+  const missed = slots.filter(frame => frame.dt > DASHBOARD.intervalWorst * interval);
+  const worstSlot = worstOf(slots, frame => frame.dt);
+  const blamed = new Map();
+  for (const frame of missed) for (const [zone, count] of Object.entries(frame.slot.widgets ?? {})) blamed.set(zone, (blamed.get(zone) ?? 0) + count);
+  const named = [...blamed].sort((a, b) => b[1] - a[1]).map(([zone, count]) => `${zoneName(zone)} ${count}`);
+  rows.push(row({ page, run: 'perf log', bar: 'structure slots fit their frame',
+    measured: slots.length ? `${missed.length} of ${slots.length} slots dropped their frame; slot p95 ${fixed(rank(slots.map(frame => frame.slot.ms), 0.95), 1)} ms, worst interval ${fixed(worstSlot.dt / interval, 2)}`
+      : `no slot in ${judged.length} frames`,
+    limit: `no slot's frame over ${DASHBOARD.intervalWorst} intervals (${fixed(DASHBOARD.intervalWorst * interval, 2)} ms)`, verdict: missed.length ? FAIL : PASS, worst: at(missed[0] ?? null), today: TODAY.slots,
+    note: named.length ? `components rendered in the slots that dropped a frame: ${named.join(', ')}` : '', values: { slots: slots.length, over: missed.length } }));
 
   const requests = records.filter(record => record.t === 'q' && !record.cache && record.cmd !== undefined && !FOLLOW_PRODUCTS.has(record.product)
     && inStretch(record.at) && !settling(record.at));

@@ -15,16 +15,16 @@
 .focus-now-left strong { font-family: var(--font-display); font-size: calc(var(--font-size-display) * 1.57143); font-weight: 700; letter-spacing: -.02em; }
 .focus-now-left small { color: var(--muted); font-size: 0.6875rem; font-weight: 500; }
 .focus-progress { position: absolute; left: 12px; right: 12px; bottom: 10px; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--text) 12%, transparent); }
-/* The fill scales and the knob's track (`i`, as wide as the bar) slides: a moving bar never lays out the page. */
+/* The fill scales and the knob's track (`i`, as wide as the bar) slides, both glided by the frame engine (`progressFill`,
+   `progressKnob`): a moving bar never lays out the page, and carries no transition. */
 .focus-progress > span {
   position: absolute; inset: 0; border-radius: 999px; background: var(--accent);
-  transform-origin: left; transform: scaleX(var(--focus-progress)); transition: transform 600ms var(--ease);
+  transform-origin: left; transform: scaleX(0);
 }
-.focus-progress > i { position: absolute; inset: 0; pointer-events: none; transform: translateX(calc((var(--focus-progress) - 1) * 100%)); transition: transform 600ms var(--ease); }
+.focus-progress > i { position: absolute; inset: 0; pointer-events: none; transform: translateX(-100%); }
 .focus-progress > i::after { content: ''; position: absolute; right: -4px; top: -2px; width: 8px; height: 8px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 40%); }
 .is-paused .focus-progress > span { background: var(--warning); box-shadow: none; }
 .is-paused .focus-progress > i { display: none; }
-[data-motion='reduced'] .focus-progress > :is(span, i) { transition: none; }
 
 /* History */
 .focus-scroll { flex: 1; min-height: 0; overflow: auto; padding: 0 6px 6px; scrollbar-gutter: stable; }

@@ -108,6 +108,8 @@ export class PerfRecorder {
   private zones = new Map<string, number>();
   /** Why each widget's commits since the last frame record began (`CommitCauses`), counted. */
   private causes = new Map<string, Map<string, number>>();
+  /** The structure slots taken since the last frame record: their ms, commits, and components rendered by widget. */
+  private slots: { ms: number; commits: number; widgets: Map<string, number>; why: Map<string, Map<string, number>> } | null = null;
   /** Milliseconds each widget spent painting, by the animation frame's time it painted for (`OUTSIDE`: no frame's). */
   private paints = new Map<number, Map<string, number>>();
   private playing = false;
@@ -147,15 +149,18 @@ export class PerfRecorder {
         const work = this.work.size ? Object.fromEntries(this.work) : undefined;
         const zones = this.zones.size ? Object.fromEntries(this.zones) : undefined;
         const why = this.causes.size ? Object.fromEntries([...this.causes].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) : undefined;
+        const slot = this.slots && { ms: round(this.slots.ms), commits: this.slots.commits, widgets: Object.fromEntries(this.slots.widgets),
+          why: Object.fromEntries([...this.slots.why].map(([zone, causes]) => [zone, Object.fromEntries(causes)])) };
         this.work.clear();
         this.zones.clear();
         this.causes.clear();
+        this.slots = null;
         const painted = this.takePaints(this.lastFrame);
         const record: PerfRecord = { t: 'frame', at: epoch(now), dt: round(now - this.lastFrame), playing: this.playing,
-          late: round(performance.now() - now), commits: takeCommits(), ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...painted };
+          late: round(performance.now() - now), commits: takeCommits(), ...(work && { work }), ...(zones && { zones }), ...(why && { why }), ...(slot && { slot }), ...painted };
         const main = mains.get(this.lastFrame);
         if (main !== undefined) { mains.delete(this.lastFrame); this.push({ ...record, main }); } else this.waiting.push({ record, of: this.lastFrame });
-      } else { takeCommits(); this.zones.clear(); this.causes.clear(); this.paints.clear(); }
+      } else { takeCommits(); this.zones.clear(); this.causes.clear(); this.paints.clear(); this.slots = null; }
       this.lastFrame = now;
       rendered.port2.postMessage(now);
       this.frameRequest = requestAnimationFrame(frame);
@@ -241,6 +246,20 @@ export class PerfRecorder {
     let widgets = this.paints.get(frame);
     if (!widgets) this.paints.set(frame, widgets = new Map());
     widgets.set(widget, (widgets.get(widget) ?? 0) + ms);
+  }
+
+  /** The page's structure slot was taken in `ms`, committing `commits` times, each widget rendering `widgets` components:
+   * written with the next frame record (`slot`, with each widget's commit causes as `why`), whose `main` it is part of. */
+  slot(ms: number, commits: number, widgets: ReadonlyMap<string, number>, causes: ReadonlyMap<string, ReadonlyMap<string, number>>): void {
+    const held = this.slots ??= { ms: 0, commits: 0, widgets: new Map(), why: new Map() };
+    held.ms += ms;
+    held.commits += commits;
+    for (const [widget, count] of widgets) held.widgets.set(widget, (held.widgets.get(widget) ?? 0) + count);
+    for (const [zone, named] of causes) {
+      let into = held.why.get(zone);
+      if (!into) held.why.set(zone, into = new Map());
+      for (const [cause, count] of named) into.set(cause, (into.get(cause) ?? 0) + count);
+    }
   }
 
   /** The hour whose values a widget now shows; null while it shows none (loading, or values still read). */

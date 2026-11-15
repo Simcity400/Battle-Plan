@@ -98,8 +98,9 @@ pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
     let mut stretches: Vec<Stretch> = Vec::new();
     let mut unheld: Vec<Unheld> = Vec::new();
     for (at, piece) in timeline.pieces.iter().enumerate() {
+        // The recorded pages, by segment: the replay's own index names each page's timeline.
         let mut blocks: Vec<_> = replay
-            .index
+            .pages()
             .iter()
             .filter(|block| block.branch == piece.segment && block.last_hour >= piece.first_hour && block.first_hour <= piece.last_hour)
             .collect();
@@ -127,7 +128,7 @@ pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
                 unheld.push(Unheld {
                     first: previous.last + 1,
                     last: first - 1,
-                    reason: gap_reason(replay, piece.segment, previous.last + 1),
+                    reason: gap_reason(replay, id, previous.last + 1),
                 });
             }
             stretches.push(Stretch { run: block.run, first, last, join });
@@ -143,7 +144,7 @@ pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
         unheld.insert(0, Unheld {
             first,
             last: stretches[0].first - 1,
-            reason: gap_reason(replay, timeline.pieces[0].segment, first),
+            reason: gap_reason(replay, id, first),
         });
     }
     let end = stretches[stretches.len() - 1].last;
@@ -151,18 +152,18 @@ pub fn resolve(replay: &Replay, id: u64) -> io::Result<Timeline> {
         unheld.push(Unheld {
             first: end + 1,
             last,
-            reason: gap_reason(replay, timeline.pieces[timeline.pieces.len() - 1].segment, end + 1),
+            reason: gap_reason(replay, id, end + 1),
         });
     }
     Ok(Timeline { id, first, last, stretches, unheld })
 }
 
-/// The recording's reason for the gap of `segment` holding `hour`.
-fn gap_reason(replay: &Replay, segment: u64, hour: i32) -> String {
+/// The recording's reason for the gap of timeline `id` holding `hour`.
+fn gap_reason(replay: &Replay, id: u64, hour: i32) -> String {
     replay
         .gaps
         .iter()
-        .find(|gap| gap.branch == segment && gap.first_hour <= hour && hour <= gap.last_hour)
+        .find(|gap| gap.branch == id && gap.first_hour <= hour && hour <= gap.last_hour)
         .map_or_else(|| "The recording holds no hour here".to_owned(), |gap| gap.reason.clone())
 }
 
@@ -193,5 +194,19 @@ mod tests {
         assert_eq!(timeline.reason(260), "The recorder lost these hours");
         assert_eq!(timeline.unheld_within(240, 270), vec![Unheld { first: 250, last: 270, reason: "The recorder lost these hours".into() }]);
         assert_eq!(timeline.at(200).map(|stretch| stretch.join), Some(Join::Load { parent: 199 }));
+    }
+
+    #[test]
+    fn a_history_of_several_segments_holds_every_segment_s_hours() {
+        use crate::fixture::segment;
+        // Three sessions: 2 goes on from 1, 3 after play the recorder missed; one history, id 1.
+        let records = [segment(1, 100, 50), segment(2, 150, 50), segment(3, 250, 50)];
+        let replay = Replay::from_records(b"tiles".to_vec(), &records).unwrap().into_timelines(&Default::default()).unwrap();
+        let pieces: Vec<_> = replay.timelines().unwrap().get(1).unwrap().pieces.iter().map(|piece| piece.segment).collect();
+        assert_eq!(pieces, [1, 2, 3]);
+        let resolved = resolve(&replay, 1).unwrap();
+        let stretches: Vec<_> = resolved.stretches.iter().map(|stretch| (stretch.first, stretch.last, stretch.join)).collect();
+        assert_eq!(stretches, [(100, 149, Join::Start), (150, 199, Join::Load { parent: 149 }), (250, 299, Join::Break)]);
+        assert_eq!(resolved.unheld, [Unheld { first: 200, last: 249, reason: "Not recorded: this play happened while the recorder wasn't watching".into() }]);
     }
 }

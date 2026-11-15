@@ -27,9 +27,10 @@
 .table-delta.is-positive { color: var(--positive); }
 .table-delta.is-negative { color: var(--error); }
 .table-cell { position: relative; display: inline-block; min-width: 64px; }
-/* Full width, shown its length by a scale (`barScale`): the glide runs on the compositor and lays nothing out. */
+/* Full width, shown its length by a scale the frame engine glides (`barGlides`): no transition, so no layer of its own
+   and no restyle each frame, and nothing laid out. */
 .table-cellbar { position: absolute; right: 0; top: 50%; width: 100%; height: 16px; margin-top: -8px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 16%, transparent);
-  transform: scaleX(0); transform-origin: right center; transition: transform var(--table-bar-glide); }
+  transform: scaleX(0); transform-origin: right center; }
 .chart-table .align-start .table-cellbar { left: 0; right: auto; transform-origin: left center; }
 .table-cell > span { position: relative; padding-right: 4px; }
 .table-country { display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%; vertical-align: top; }
@@ -46,8 +47,12 @@
 .chart-table.is-wrapped td.table-rank { white-space: nowrap; overflow-wrap: normal; }
 .chart-table.is-wrapped .table-country > span { white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
 
-/* Measured layout corrections are immediate; recorded rank changes still glide. */
-.chart-table.is-measuring .moving-row { transition-property: opacity; }
+/* A table's rows glide, enter and leave by the frame engine (`rowGlides`, `rowFades`), never by a CSS transition or
+   animation: each of those made a compositor layer restyled every frame while playing. An entering row's flash reads
+   the variable the engine writes. */
+.chart-table .moving-row { transition: none; }
+.chart-table .moving-row.is-entering, .chart-table .moving-row[data-reveal='in'] { animation: none; }
+.chart-table .moving-row.is-entering::after, .chart-table .moving-row[data-reveal='in']::after { animation: none; opacity: var(--row-flash-opacity, 0); }
 
 /* Nested rows: each level indents by the timeline lanes' indent, and a group header row's
    disclosure mark takes that indent, so its text lines up with the rows under it. */

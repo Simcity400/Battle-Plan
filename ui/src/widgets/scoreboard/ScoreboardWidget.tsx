@@ -45,6 +45,7 @@ const rowKey = (row: BoardRow) => row.key;
 const familyKey = (family: ScoreboardFamily) => `${family.kind}\u0000${family.measure}`;
 const tagOf = (key: string) => key.slice(0, key.lastIndexOf('\u0000'));
 const silent = (reason: string): Live<LiveValues<SortValue>> => { const values = noValues(reason); return { read: () => values, subscribe: () => () => {} }; };
+const NOT_READ_YET = noValues('Not read yet');
 
 /** Countries side by side across the measures chosen, at the playhead or a pinned hour. At the head the rows (a top N
  * followed by rank, or the chosen countries) are structure and every value is painted from followed series; at a pinned
@@ -116,7 +117,7 @@ export default function ScoreboardWidget({ widget, runtime, active, onDiagnostic
   const sources = useMemo(() => {
     const out = new Map<string, Live<LiveValues<bigint>> & { entry: () => FollowEntry | null }>();
     if (store) families.forEach((family, at) => out.set(familyKey(family), handedLive(store, () => columnsNow.current, at, handed, familyKey(family),
-      entry => liveFollowed(store, entry, (held: FollowEntry) => followedValues(held.answer)), () => noValues('Not read yet'))));
+      entry => liveFollowed(store, entry, (held: FollowEntry) => followedValues(held.answer)), () => NOT_READ_YET)));
     return out;
   }, [store, familiesText, handed]); // eslint-disable-line react-hooks/exhaustive-deps
   // A new source for each set of members: the table sorts the rows it is given by the values now, in the commit that

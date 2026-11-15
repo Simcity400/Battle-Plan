@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
+import { slotCommits } from '../shell/commitCount.ts';
+import { perfLog } from '../shell/perf.ts';
 import { busy } from '../shell/busy.ts';
 import { engine } from '../engine/frame.ts';
 import type { EngineTask } from '../engine/frame.ts';
@@ -19,19 +22,43 @@ let dueAt = 0;
 /** In flight while runs are held for a slot. */
 let holding: (() => void) | null = null;
 
-/** The slot's runs, in the commit phase of the first frame at or past its start: every held structure of the page in one
- * task, after the frame has painted, so React commits once a slot and never between frames. */
+/** The slot, in the commit phase of the first frame at or past its start: its runs are taken in one task posted from
+ * there, which runs once that frame is drawn, so the page's structure commits once a slot, between frames, never inside
+ * one. The task commits what it takes before it ends (`flushSync`): its time and each widget's part of it go to the perf
+ * log, with the frame drawn after it, whose interval shows whether the slot held that frame back. */
 function slotFrame(frame: { now: number }): boolean {
   if (frame.now < dueAt) return true;
   slotTask?.stop();
   slotTask = null;
+  if (!posted) { posted = true; afterFrame(takeSlot); }
+  return false;
+}
+
+/** Whether the slot's task is posted and has not run. */
+let posted = false;
+
+function takeSlot(): void {
+  posted = false;
   const runs = [...due];
   due.clear();
   const end = holding;
   holding = null;
-  try { inStructureSlot(() => { for (const run of runs) run(); }); } finally { end?.(); }
-  return false;
+  const started = performance.now();
+  try {
+    const taken = slotCommits(() => flushSync(() => inStructureSlot(() => { for (const run of runs) run(); })));
+    perfLog?.slot(performance.now() - started, taken.commits, taken.widgets, taken.causes);
+  } finally { end?.(); }
 }
+
+/** Runs `run` in a task of its own, after the current one: posted from a frame, once that frame is drawn. */
+const afterFrame: (run: () => void) => void = typeof MessageChannel === 'function' ? (() => {
+  const channel = new MessageChannel();
+  const queued: (() => void)[] = [];
+  channel.port1.onmessage = () => { for (const run of queued.splice(0)) run(); };
+  // Outside a page (node), an open port would keep the process alive.
+  (channel.port1 as { unref?: () => void }).unref?.();
+  return (run: () => void) => { queued.push(run); channel.port2.postMessage(0); };
+})() : run => { setTimeout(run, 0); };
 
 let slotOpen = false;
 

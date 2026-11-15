@@ -17,6 +17,8 @@ import type { OccupiedState } from './occupiedStatesData';
 import '../../styles.css';
 import { setPageClock } from '../../dashboard/structurePace.ts';
 
+// The bars land on their value at once: eight frames are shorter than the glide.
+document.documentElement.dataset.motion = 'reduced';
 const native = window.requestAnimationFrame.bind(window);
 const frame = () => new Promise<void>(resolve => native(() => resolve()));
 async function settle(frames = 8) { for (let at = 0; at < frames; at++) await frame(); }

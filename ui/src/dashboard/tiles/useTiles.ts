@@ -10,6 +10,7 @@ import { tileHead } from './head.ts';
 import { TileView, tileCache, unrecordedReason } from './view.ts';
 import { prepareGate, preparing } from '../prepare.ts';
 import type { TiledLine, TileViewport } from './view.ts';
+import { inFrame } from '../frameUpdates.ts';
 
 /** A declared series' tiles: the recording, history and family asked, the tags drawn (each over its `within`
  * spans when given) and the history's last hour. */
@@ -62,7 +63,9 @@ export function useTiles(client: DashboardClient, series: TileSeries | null, act
       const now = { lines: tiles.current !== null, error: tiles.error };
       if (live && shown && shown.lines === now.lines && Object.is(shown.error, now.error)) return;
       shown = now;
-      setState({ key, lines: tiles.current, error: tiles.error });
+      // A landing renders with the page's data updates: in the structure slot while playing, never in a commit of its own.
+      const landed = { key, lines: tiles.current, error: tiles.error };
+      inFrame(() => setState(landed));
     });
     view.current = tiles;
     if (viewport.current) tiles.setView(viewport.current);

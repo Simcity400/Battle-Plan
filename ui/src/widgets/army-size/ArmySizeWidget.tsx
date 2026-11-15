@@ -52,6 +52,9 @@ import { overlayCountryIdentities } from '../../dashboard/countryIdentity';
 import { useHeadHour } from './headHour.ts';
 import { followedArmy, liveArmy, replyEntries } from './liveArmy.ts';
 import type { LiveArmy } from './liveArmy';
+import { useChangedState } from '../../dashboard/changedState.ts';
+
+const sameWarnings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((warning, at) => warning === b[at]);
 
 const NO_WARNINGS: string[] = [];
 
@@ -102,7 +105,8 @@ export default function ArmySizeWidget({ widget, runtime, active, countrySlot = 
   const reportShown = useShownHour();
   const [drillOrigin, setDrillOrigin] = useState<{ tag: string; hour: number } | null>(null);
   const drillAnchor = useRef<HTMLDivElement>(null);
-  const [drillWarnings, setDrillWarnings] = useState<string[]>([]);
+  // The breakdown reports its warnings as a new array each time its replies move: equal warnings render nothing.
+  const [drillWarnings, setDrillWarnings] = useChangedState<string[]>([], sameWarnings);
   const countFor = options.countFor as ArmyAttribution;
   const track = runtime.tracks.find(item => item.id === widget.trackIds[0]);
   const savedSelection = armyCountrySelection(widget, track);

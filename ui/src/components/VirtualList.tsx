@@ -2,6 +2,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, HTMLAttributes, ReactNode, RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import { VirtualListIndex } from './virtualListIndex';
+import { atNextSlot, structureOpen } from '../dashboard/structurePace.ts';
+
+/** How long after the reader's own input a scroll is still theirs (a smooth scroll runs on), and the input it is. */
+const READER_MS = 1000;
+const READER_EVENTS = ['wheel', 'pointerdown', 'touchmove', 'keydown'] as const;
 
 /** Native sequential stops, rather than every programmatically focusable node. */
 function focusables(node: HTMLElement) {
@@ -129,8 +134,10 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       pending.add(details); restoring.set(node, pending); details.open = open;
     });
   };
+  // The list's measured gap carried into a new index: one started without it would place every row again a commit later.
+  const gapShown = useRef(0);
   const index = useMemo(() => {
-    const next = new VirtualListIndex(items.length, estimate);
+    const next = new VirtualListIndex(items.length, estimate, gapShown.current);
     keys.forEach((key, i) => { const height = measurements.get(key); if (height) next.set(i, height); });
     return next;
   }, [keys, estimate, items.length, measurements]);
@@ -141,17 +148,24 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
   const focusFrame = useRef(0);
   // What the geometry reads between commits: the latest rows and their index.
   const placing = useRef({ index, keys, estimate, offset, flowWhenFits });
-  const gapShown = useRef(0);
-  /** The rows the measured view shows, from the view as last measured: no layout read. */
+  /** Renders when the rows drawn no longer cover the measured view, from the view as last measured: no layout read. A
+   * view moved inside the rows drawn around it renders nothing. */
   const place = () => {
     const { index, keys, offset, flowWhenFits } = placing.current;
     const { top, height } = view.current;
     const pad = paddingShown.current, rows = offset + pad.top;
     const flows = flowWhenFits && rows + index.offset(keys.length) + pad.bottom <= height;
-    const [first, last] = flows ? [0, keys.length] : index.range(top - rows, height);
+    const [first, last] = flows ? [0, keys.length] : index.range(top - rows, height, 0);
     const shown = shownRows.current;
-    if (shown.flow !== flows || shown.start !== first || shown.end !== last) setViewed(count => count + 1);
+    if (shown.flow === flows && first >= shown.start && last <= shown.end) return;
+    // Other rows are structure: while playing, taken in the page's slot unless the reader is scrolling.
+    if (structureOpen() || performance.now() - readerAt.current < READER_MS) setViewed(count => count + 1);
+    else heldPlace.current ??= atNextSlot(() => { heldPlace.current = null; placeLatest.current(); });
   };
+  /** When the reader last moved the list (wheel, pointer, touch, keys), and a place held for the slot meanwhile. */
+  const readerAt = useRef(-Infinity);
+  const heldPlace = useRef<(() => void) | null>(null);
+  useEffect(() => () => { heldPlace.current?.(); }, []);
   const placeLatest = useRef(place);
   placeLatest.current = place;
   // The view's geometry is read only when the page has just been laid out (as its observer reports a size) or as the
@@ -184,6 +198,8 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
     };
     measure();
     scroller.addEventListener('scroll', measure, { passive: true });
+    const reader = () => { readerAt.current = performance.now(); };
+    for (const type of READER_EVENTS) scroller.addEventListener(type, reader, { passive: true });
     const size = new ResizeObserver(entries => {
       const box = entries.find(entry => entry.target === scroller)?.borderBoxSize?.[0];
       if (box) scrollerHeight = box.blockSize;
@@ -205,7 +221,11 @@ export function VirtualList<T>({ items, itemKey, estimate, label, className, sty
       if (next !== spaced) { spaced = next; afterLayout(); }
     }) : null;
     spacing?.observe(list, { attributes: true, attributeFilter: ['class', 'style'] });
-    return () => { scroller.removeEventListener('scroll', measure); size.disconnect(); spacing?.disconnect(); laidOut?.disconnect(); };
+    return () => {
+      scroller.removeEventListener('scroll', measure);
+      for (const type of READER_EVENTS) scroller.removeEventListener(type, reader);
+      size.disconnect(); spacing?.disconnect(); laidOut?.disconnect();
+    };
   }, [scroller, measurements]);
   useLayoutEffect(() => {
     const list = root.current;

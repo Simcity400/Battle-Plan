@@ -4,6 +4,7 @@
 import { formatAmount } from '../../charts/valueAxis.ts';
 import { CELL, cellNumber, cellState, cellValue, rowReason } from './message.ts';
 import type { FollowedAnswer, FollowedRows } from './message.ts';
+import { barGlides } from '../../engine/glide.ts';
 
 /** A text a painter writes: its node and what it shows, kept here so a frame reads nothing back
  * from the page and writes only what changed, in place (replacing an element's text node costs
@@ -36,24 +37,25 @@ export function textCell(element: HTMLElement): TextCell {
 }
 
 /** A full-width bar shown `width` (a percentage) long by a compositor scale: it glides without laying the page out. */
-export const barScale = (width: string) => `scaleX(${(parseFloat(width) || 0) / 100})`;
-
-/** A bar's length, written only when it changed: as its width, or (`scaled`) as `barScale`. */
+/** A bar's length, written only when it changed: as its width, or (`scaled`) as a scale along x that the engine glides
+ * there over `glide()` ms (`barGlides`), never by a CSS transition. */
 export class BarCell {
   width: string;
   private readonly style: { width: string; transform?: string };
   private readonly scaled: boolean;
+  private readonly glide: () => number;
 
-  constructor(style: { width: string; transform?: string }, scaled = false) {
+  constructor(style: { width: string; transform?: string }, scaled = false, glide: () => number = () => 0) {
     this.style = style;
     this.scaled = scaled;
+    this.glide = glide;
     this.width = scaled ? '' : style.width;
   }
 
   put(width: string): void {
     if (this.width === width) return;
     this.width = width;
-    if (this.scaled) this.style.transform = barScale(width); else this.style.width = width;
+    if (this.scaled) barGlides.to(this.style, (parseFloat(width) || 0) / 100, this.glide()); else this.style.width = width;
   }
 }
 

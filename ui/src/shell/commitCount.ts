@@ -22,10 +22,30 @@ let attribute: ((zones: ReadonlySet<string>, causes: CommitCauses) => void) | nu
 /** Causes named while rendering since the last commit, by zone. */
 let noted = new Map<string, Map<string, number>>();
 
+/** What the page's structure slot commits (`slotCommits`): its commits, and the components each widget rendered in them.
+ * They are the slot's, never counted as commits of a frame. */
+export interface SlotCommits { commits: number; widgets: Map<string, number>; causes: Map<string, Map<string, number>> }
+let slot: SlotCommits | null = null;
+
 // A production React build reports each commit only to a DevTools hook, read once as react-dom loads.
 const host = globalThis as { __REACT_DEVTOOLS_GLOBAL_HOOK__?: unknown };
 if (host.__REACT_DEVTOOLS_GLOBAL_HOOK__ === undefined) {
   host.__REACT_DEVTOOLS_GLOBAL_HOOK__ = { supportsFiber: true, inject: () => 1, onCommitFiberRoot: (_renderer: number, root: { current: Fiber }) => {
+    if (slot) {
+      slot.commits++;
+      if (attribute) {
+        const causes = noted;
+        noted = new Map();
+        renderedZones(root.current, causes);
+        for (const [zone, named] of causes) {
+          let held = slot.causes.get(zone);
+          if (!held) slot.causes.set(zone, held = new Map());
+          for (const [cause, count] of named) held.set(cause, (held.get(cause) ?? 0) + count);
+        }
+        widgetWork(root.current, slot.widgets);
+      }
+      return;
+    }
     commits++;
     if (!attribute) return;
     const causes = noted;
@@ -75,6 +95,30 @@ function causeOf(fiber: Fiber): string {
     changed.push(`props ${keys.join(',') || 'new'}`);
   }
   return `${name} ${changed.join(' ') || 'rendered'}`;
+}
+
+/** Runs `run`, the page's structure slot, and returns what React committed inside it. */
+export function slotCommits(run: () => void): SlotCommits {
+  const outer = slot;
+  const taken: SlotCommits = { commits: 0, widgets: new Map(), causes: new Map() };
+  slot = taken;
+  try { run(); } finally { slot = outer; }
+  return taken;
+}
+
+/** Into `widgets`, how many components of each widget rendered in the commit under `root`: production React keeps no
+ * time per component, so the count stands for each widget's share of the commit. */
+function widgetWork(root: Fiber, widgets: Map<string, number>): void {
+  const stack: [Fiber, string][] = [[root, 'unnamed']];
+  for (let next = stack.pop(); next; next = stack.pop()) {
+    const [fiber, zone] = next;
+    for (let child = fiber.child; child; child = child.sibling) {
+      const named = zones.get(child.elementType) ?? zones.get(child.type)
+        ?? (widgetContext !== null && child.type === widgetContext ? `widget:${String((child.memoizedProps as { value?: unknown }).value)}` : zone);
+      if ((child.flags & PERFORMED_WORK) !== 0 && renders(child)) widgets.set(named, (widgets.get(named) ?? 0) + 1);
+      if (child.subtreeFlags & PERFORMED_WORK) stack.push([child, named]);
+    }
+  }
 }
 
 /** The React commits since the last call. */

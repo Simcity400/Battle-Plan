@@ -388,6 +388,22 @@ export function spendingTableRows(ledgers: readonly PowerLedger[], window: Spend
   return rows;
 }
 
+/** `rows` with each row the table drew before (`held`, by key) kept where it draws the same: the same figures, the same
+ * payment and the same days of a month. A block of a following table makes every row anew; kept rows render nothing. */
+export function stableSpendingRows(held: ReadonlyMap<string, SpendingTableRow>, rows: readonly SpendingTableRow[]): SpendingTableRow[] {
+  return rows.map(row => {
+    const before = held.get(row.key);
+    return before && sameSpendingRow(before, row) ? before : row;
+  });
+}
+
+function sameSpendingRow(a: SpendingTableRow, b: SpendingTableRow): boolean {
+  return a.tag === b.tag && a.hour === b.hour && a.month === b.month && a.label === b.label && a.icon === b.icon && a.category === b.category
+    && a.categoryName === b.categoryName && a.identified === b.identified && a.days === b.days && a.amount === b.amount && a.partial === b.partial
+    && a.order === b.order && a.payment === b.payment && a.monthDays.length === b.monthDays.length
+    && a.monthDays.every((day, at) => day === b.monthDays[at]);
+}
+
 /** A folded month's amount by item through `hour`, largest first. */
 export function monthItems(row: SpendingTableRow, hour: number, from: number | null = null): [string, bigint][] {
   const byItem = new Map<string, bigint>();

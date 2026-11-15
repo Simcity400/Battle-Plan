@@ -1,15 +1,14 @@
 import { failureText, failureDetails, failureKey, type Failure } from '../../dashboard/queryError.ts';
 import { VirtualList } from '../../components/VirtualList';
 import ArtFallback from '../../components/ArtFallback';
-import { useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { formatDate, gameDate } from '../../dashboard/calendar';
 import type { WidgetProps } from '../../dashboard/definitions';
 import { defaultCountryTag } from '../../dashboard/countrySelection';
 import { resolveWindow } from '../../dashboard/model';
 import { useHeadHour } from '../army-size/headHour';
-import { setAttr, setHidden, setStyle, setText } from '../../charts/domText';
+import { setAttr, setHidden, setText } from '../../charts/domText';
 import { useProduct } from '../../dashboard/products';
 import { contentTitle, contentTitleHint } from '../../dashboard/contentTitles';
 import { useContentRevision } from '../../dashboard/contentRevision';
@@ -28,6 +27,7 @@ import { Icon } from '../../components/Icons';
 import { useContextMenu } from '../../components/ContextMenu';
 import { rowJumpProps } from '../../charts/jump';
 import './nationalFocus.css';
+import { progressFill, progressKnob, reducedMotion } from '../../engine/glide.ts';
 
 const NO_WARNINGS: string[] = [];
 const sameAsks = (held: NameAt[], next: NameAt[]) => held.length === next.length && held.every((ask, at) => ask.tag === next[at].tag && ask.hour === next[at].hour) ? held : next;
@@ -50,10 +50,26 @@ export function FocusFailureNotices({ errors }: { errors: readonly Failure[] }) 
   return errors.map(error => <span key={failureKey(error)} data-detail={error.message}>{failureText(error, 'Couldn’t load focus details.')}</span>);
 }
 
-export function FocusCompletion({ entry, art, reason, failure, failures, titleFailure, pending, description, open, onToggle }: {
+interface CompletionProps {
   entry: FocusEntry; art?: Artwork; reason?: string; failure?: Failure; failures?: readonly Failure[]; titleFailure?: Failure; pending?: boolean; description?: string | null;
   open: boolean; onToggle: (open: boolean) => void;
-}) {
+}
+
+const failuresKey = (failures: readonly Failure[] | undefined) => failures?.map(failureKey).join('\u0000') ?? '';
+const sameArt = (a: Artwork | undefined, b: Artwork | undefined) => a === b || !!a && !!b && a.token === b.token && a.name === b.name
+  && a.icon === b.icon && a.description === b.description && a.baseDurationDays === b.baseDurationDays;
+
+/** Whether a completed focus's row draws the same: a segment while following hands every row new objects, and only the
+ * rows whose focus, date, art or texts changed render again. Its toggle differs only with the widget's identity, which
+ * remounts the list. */
+function sameCompletion(a: CompletionProps, b: CompletionProps): boolean {
+  return a.entry.ordinal === b.entry.ordinal && a.entry.token === b.entry.token && a.entry.completedByHour === b.entry.completedByHour
+    && sameArt(a.art, b.art) && a.reason === b.reason && a.pending === b.pending && a.description === b.description && a.open === b.open
+    && (a.failure ? failureKey(a.failure) : '') === (b.failure ? failureKey(b.failure) : '') && (a.titleFailure ? failureKey(a.titleFailure) : '') === (b.titleFailure ? failureKey(b.titleFailure) : '')
+    && failuresKey(a.failures) === failuresKey(b.failures);
+}
+
+export const FocusCompletion = memo(function FocusCompletion({ entry, art, reason, failure, failures, titleFailure, pending, description, open, onToggle }: CompletionProps) {
   const errors = focusErrors(failure, failures);
   const date = entry.completedByHour == null ? null : gameDate(entry.completedByHour);
   return <details data-detail={failureDetails(errors)} className="focus-details" open={open} onToggle={event => onToggle(event.currentTarget.open)}>
@@ -74,7 +90,10 @@ export function FocusCompletion({ entry, art, reason, failure, failures, titleFa
       {description && <p>{description}</p>}
     </div>
   </details>;
-}
+}, sameCompletion);
+
+/** The progress bar's glide to a new reading. */
+const FOCUS_GLIDE_MS = 600;
 
 /** Live or pinned: the focus being worked on, with the game's progress line along its lower edge. The
  * progress is painted each frame from `progress`, never rendered for. */
@@ -105,7 +124,11 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
       }
       setHidden(bar.current, now.fraction === null);
       setAttr(bar.current, 'aria-valuenow', String(Math.round((now.fraction ?? 0) * 100)));
-      setStyle(bar.current, '--focus-progress', String(now.fraction ?? 0));
+      // The fill and the knob glide by the engine, as their 600 ms transition did, never by a CSS transition.
+      const [fill, knob] = bar.current ? [...bar.current.children] as HTMLElement[] : [];
+      const glide = reducedMotion() ? 0 : FOCUS_GLIDE_MS;
+      if (fill) progressFill.to(fill.style, now.fraction ?? 0, glide);
+      if (knob) progressKnob.to(knob.style, now.fraction ?? 0, glide);
       setText(banked.current, now.banked ?? '');
     };
     paint();
@@ -133,7 +156,7 @@ export function CurrentFocus({ order, art, progress, live, reason, failure, fail
       <strong ref={value}>{shown.left?.value}</strong><small ref={unit}>{shown.left?.unit}</small>
     </span>}
     {timed && <span ref={bar} className="focus-progress" role="progressbar" aria-label={`${name} progress`} aria-valuemin={0} aria-valuemax={100} hidden={shown.fraction === null}
-      aria-valuenow={Math.round((shown.fraction ?? 0) * 100)} style={{ '--focus-progress': shown.fraction ?? 0 } as CSSProperties}><span /><i /></span>}
+      aria-valuenow={Math.round((shown.fraction ?? 0) * 100)}><span /><i /></span>}
   </div>;
 }
 

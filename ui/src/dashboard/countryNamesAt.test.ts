@@ -117,5 +117,20 @@ test('dated names retain explicit loading, absence, failure and stable completed
     await new Promise<void>(resolve => setImmediate(resolve));
     const failed = render(true, failedClient).get(nameKey(10, 'present'));
     assert.deepEqual(failed, { kind: 'failed', failure: refusal });
+    // Playing on, a later hour shows the last read while it loads: a refusal stays until a name comes, never the name before it.
+    let refuse = false;
+    const playing = { product: (input: ProductRequest) => refuse ? Promise.reject(refusal)
+      : Promise.resolve({ ...input, data: { styles: [{ tag: 'present', name: 'Named' }] } }) } as unknown as DashboardClient;
+    const at = async (hour: number) => {
+      wanted.splice(0, wanted.length, { hour, tag: 'present' });
+      const loading = render(true, playing).get(nameKey(hour, 'present')); fixture.commit();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      const read = render(true, playing).get(nameKey(hour, 'present')); fixture.commit();
+      return { loading, read };
+    };
+    assert.deepEqual((await at(12)).read, { kind: 'value', value: 'Named' });
+    refuse = true;
+    assert.deepEqual(await at(13), { loading: { kind: 'value', value: 'Named' }, read: { kind: 'failed', failure: refusal } });
+    assert.deepEqual((await at(14)).loading, { kind: 'failed', failure: refusal });
   } finally { fixture.dispose(); delete host.__nameReadHooks; await vite.close(); }
 });

@@ -278,28 +278,38 @@ const api = {
     return result;
   },
   /** A virtual list (National focus, a ruling party's people, Research) committed `count` times with rows it had not
-   * shown, as a structure change while playing commits it: the layout read back while committing and in the frames after. */
+   * shown, as a structure change while playing commits it, its view then scrolled one row on (a following list keeping
+   * its newest row in view): the layout read back while committing and in the frames after, and the list's commits. */
   async virtualCommits(count: number) {
     const root = place('virtual', 400, 320);
+    let commits = 0;
     function Rows({ at }: { at: number }) {
       const scroll = useRef<HTMLDivElement>(null);
       const rows = feedRows.slice(at * 5, at * 5 + 300);
-      return <div ref={scroll} style={{ overflow: 'auto', height: '100%' }}>
-        <VirtualList items={rows} itemKey={row => row.key} estimate={28} scrollRef={scroll} label="Virtual"
-          style={{ display: 'flex', flexDirection: 'column', rowGap: '2px', padding: '4px' }}>{row => <div style={{ height: 28 }}>{row.item}</div>}</VirtualList>
+      return <div ref={scroll} data-case="virtual-scroll" style={{ overflow: 'auto', height: '100%' }}>
+        <Profiler id="virtual" onRender={() => { commits++; }}>
+          <VirtualList items={rows} itemKey={row => row.key} estimate={28} scrollRef={scroll} label="Virtual"
+            style={{ display: 'flex', flexDirection: 'column', rowGap: '2px', padding: '4px' }}>{row => <div style={{ height: 28 }}>{row.item}</div>}</VirtualList>
+        </Profiler>
       </div>;
     }
     root.render(<Rows at={0} />);
     for (let at = 0; at < 30; at++) await frame();
     asked.layout = 0;
+    commits = 0;
     counting = true;
     for (let at = 1; at <= count; at++) {
       root.render(<Rows at={at} />);
       await frame();
       await frame();
+      // A scroll's own read of the view (its event) is the reader's, not the commit's.
+      counting = false;
+      document.querySelector<HTMLElement>('[data-case="virtual-scroll"]')!.scrollTop += 30;
+      await frame();
+      counting = true;
     }
     counting = false;
-    const result = { layout: asked.layout, shown: document.querySelectorAll('[data-widget="virtual"] [data-virtual-key]').length };
+    const result = { layout: asked.layout, commits, shown: document.querySelectorAll('[data-widget="virtual"] [data-virtual-key]').length };
     root.unmount();
     document.querySelector('[data-widget="virtual"]')?.remove();
     return result;
@@ -323,6 +333,31 @@ const api = {
     for (let at = 1; at <= frames; at++) { live.set(scores(at)); await frame(); }
     performance.mark(marks.to);
     return { bars: document.querySelectorAll('[data-widget="bars"] .table-cellbar').length };
+  },
+  /** A live table whose first row's value steps once while playing: its bar's scale on each frame after the step until it
+   * reaches the new value (frames, never elapsed time, end the wait), and the transition its bar carries. The glide's
+   * timing is the engine's, tested with its own clock in engine/glide.test.ts. */
+  async barGlide() {
+    type Row = { key: string; name: string };
+    const rows: Row[] = Array.from({ length: 6 }, (_, at) => ({ key: `r${at}`, name: `Country ${at}` }));
+    const columns: TableColumn<Row>[] = [
+      { key: 'name', header: 'Country', label: 'Country', width: '160px', value: row => row.name },
+      { key: 'score', header: 'Score', label: 'Score', width: '160px', numeric: true, bar: 1000, value: () => 0, paint: value => `${Math.round(Number(value))}` },
+    ];
+    const live = new LiveCell<LiveValues<SortValue>>(valuesOf(new Map(rows.map(row => [liveKey(row.key, 'score'), 200])), 'not recorded'));
+    place('glide', 420, 400).render(<Table label="Glide" rows={rows} columns={columns} rowKey={row => row.key} sort={{ column: 'name', direction: 'ascending' }}
+      hoursPerSecond={1440} live={live} />);
+    for (let at = 0; at < 30; at++) await frame();
+    const bar = document.querySelector<HTMLElement>('[data-widget="glide"] tr[data-table-row="r0"] .table-cellbar')!;
+    const scaleOf = () => Number(/scaleX\(([^)]+)\)/.exec(bar.style.transform)?.[1] ?? NaN);
+    const before = scaleOf();
+    live.set(valuesOf(new Map(rows.map((row, index) => [liveKey(row.key, 'score'), index === 0 ? 800 : 200])), 'not recorded'));
+    const samples: number[] = [];
+    for (let at = 0; at < 600 && samples.at(-1) !== 0.8; at++) { await frame(); samples.push(scaleOf()); }
+    const style = getComputedStyle(bar), durations = style.transitionDuration.split(',').map(value => parseFloat(value));
+    // The properties that move it in time: those with a duration (the default, `all 0s`, moves nothing).
+    const transition = style.transitionProperty.split(',').map(name => name.trim()).filter((_, at) => (durations[at % durations.length] ?? 0) > 0).join(', ');
+    return { before, samples, transition };
   },
   /** Two widgets on one playing clock, one off screen until the end: the frames each widget's listener heard, and the
    * painting each was timed for. */
