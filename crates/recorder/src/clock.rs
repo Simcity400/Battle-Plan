@@ -121,7 +121,7 @@ pub(crate) fn command(args: Vec<OsString>) -> Result<(), String> {
             .and_then(|()| out.flush())
             .map_err(|e| e.to_string())
     };
-    let probe = match Probe::open(pid) {
+    let probe = match Probe::open_pid(pid) {
         Ok(probe) => probe,
         Err(error) => {
             if probe_withheld(&error) {

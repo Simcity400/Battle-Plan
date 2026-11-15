@@ -1,11 +1,15 @@
 //! The in-process recording API the tray recorder drives. The command line
 //! runs the same capture through [`crate::recording`].
 use crate::{
-    recording::{self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED, TWO_GAMES},
+    recording::{self, COLLECTOR_LOADED, CaptureOptions, GAME_CLAIMED},
     windows::{Process, ProcessMemory},
 };
 use replay_data::{identity::IdentityCodec, scope::CaptureMode};
 use std::path::{Path, PathBuf};
+
+pub use recorder_platform::games::{
+    Discovery, GameProcess, ProcessState, SeveralGames, choose_game,
+};
 
 pub use crate::recording::{
     CaptureOutcome, Control, Omission, Refusal, SavedWaiting, SetAside, Stage, UnloadObservation,
@@ -45,11 +49,19 @@ pub struct Recording<'a> {
     pub names_wanted: &'a dyn Fn() -> bool,
 }
 
-/// Attach to `pid`, record until `control` stops it or the game exits, then
+/// The game process discovery selected, opened for recording.
+pub struct OpenedGame(Process);
+
+/// Opens the selected game with injection rights; `None` once its PID names another process.
+pub fn open_game(game: &GameProcess) -> Result<Option<OpenedGame>, String> {
+    Ok(Process::open_selected(game, true)?.map(OpenedGame))
+}
+
+/// Attach to `game`, record until `control` stops it or the game exits, then
 /// finalize (or discard, when the user chose Discard). A session that reached
 /// no spool ends with no recordings rather than an error.
 pub fn record(
-    pid: u32,
+    game: OpenedGame,
     recording: &Recording<'_>,
     control: &Control,
     stage: &dyn Fn(Stage<'_>),
@@ -73,7 +85,7 @@ pub fn record(
         #[cfg(feature = "alloc-fault-injection")]
         alloc_fault: None,
     };
-    recording::capture(pid, &options, control, stage)
+    recording::capture(game.0, &options, control, stage)
 }
 
 /// The campaign a running game has loaded, its current hour and the load
@@ -98,9 +110,20 @@ pub struct Probe {
 impl Probe {
     /// Find the game's image base and locate its sites. On a build other than the recognised
     /// one the campaign is read only once its struct layouts verify.
-    pub fn open(pid: u32) -> Result<Self, String> {
-        let process = Process::open(pid, false)?;
-        let base = crate::game_sites::module_base(&process, pid)?;
+    pub fn open(game: &GameProcess) -> Result<Self, String> {
+        Self::read(
+            Process::open_selected(game, false)?
+                .ok_or("the selected game exited; its PID names another process")?,
+        )
+    }
+
+    /// The process a caller names by PID, as the smoke driver does.
+    pub fn open_pid(pid: u32) -> Result<Self, String> {
+        Self::read(Process::open(pid, false)?)
+    }
+
+    fn read(process: Process) -> Result<Self, String> {
+        let base = crate::game_sites::module_base(&process, process.pid)?;
         crate::game_sites::locate(&process.path, base)?
             .layouts()
             .map_err(|withheld| format!("{PROBE_WITHHELD}: {withheld}"))?;
@@ -199,14 +222,9 @@ fn agreed_campaign(first: &[u8], second: &[u8]) -> Option<String> {
         .flatten()
 }
 
-/// The one running game, none, or the refusal for more than one.
-pub fn single_game() -> Result<Option<u32>, String> {
-    recording::checked_single_game()
-}
-
-/// The game process's start time, which identifies it across PID reuse.
-pub fn game_start_time(pid: u32) -> Result<u64, String> {
-    Ok(Process::open(pid, false)?.start_time)
+/// Every game process, frozen and exiting ones too; [`choose_game`] picks the one to record.
+pub fn game_processes() -> Result<Vec<GameProcess>, String> {
+    crate::windows::game_processes()
 }
 
 pub fn default_capture_directory() -> PathBuf {
@@ -229,8 +247,6 @@ pub fn probe_withheld(error: &str) -> bool {
 pub fn problem_text(error: &str, started: bool) -> &'static str {
     if error.contains("withheld: the game build is unrecognised") {
         "This game build isn't recognised, so nothing it holds could be checked for recording. Nothing recorded."
-    } else if error == TWO_GAMES {
-        "More than one game is running. Close the extra game to record."
     } else if error == COLLECTOR_LOADED || error == GAME_CLAIMED {
         "Another recorder is attached to this game."
     } else if error.starts_with("recording completion is partial")
@@ -317,10 +333,6 @@ mod tests {
 
     #[test]
     fn capture_refusals_read_as_plain_problems() {
-        assert_eq!(
-            problem_text(TWO_GAMES, false),
-            "More than one game is running. Close the extra game to record."
-        );
         for attached in [COLLECTOR_LOADED, GAME_CLAIMED] {
             assert_eq!(
                 problem_text(attached, false),

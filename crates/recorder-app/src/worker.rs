@@ -8,8 +8,8 @@ use crate::{
     targets, tray,
 };
 use recorder::controller::{
-    self, CaptureOutcome, Control, LoadedCampaign, Omission, Probe, Recording, Refusal, SetAside,
-    Stage, Waiting,
+    self, CaptureOutcome, Control, Discovery, GameProcess, LoadedCampaign, Omission, Probe,
+    Recording, Refusal, SetAside, Stage, Waiting,
 };
 use replay::{campaign::Replay, recorder_settings::RecorderSettings, recording_files};
 use replay_data::scope::CaptureMode;
@@ -237,6 +237,7 @@ fn save_root(settings: &RecorderSettings) -> Result<PathBuf, String> {
 
 /// A probe withheld on an unrecognised build stays withheld for the process; other failures retry at the next poll.
 struct GameProbe {
+    pid: u32,
     start: u64,
     probe: Result<Probe, String>,
 }
@@ -290,6 +291,56 @@ impl Held {
     }
 }
 
+/// The game processes last listed, frozen or not, by PID and start time.
+#[derive(Default)]
+struct Present(Vec<(u32, u64)>);
+
+impl Present {
+    /// Takes a new listing; whether a process listed before has left it, which is its exit.
+    fn update(&mut self, found: &[GameProcess]) -> bool {
+        let now: Vec<(u32, u64)> = found
+            .iter()
+            .map(|game| (game.pid, game.start_time))
+            .collect();
+        let left = self.0.iter().any(|seen| !now.contains(seen));
+        self.0 = now;
+        left
+    }
+
+    fn contains(&self, pid: u32, start: u64) -> bool {
+        self.0.contains(&(pid, start))
+    }
+
+    /// Takes a new listing and its choice: what they mean for the record loop before it probes or
+    /// attaches to `followed`, the game it follows.
+    fn look(
+        &mut self,
+        found: &[GameProcess],
+        choice: &Discovery,
+        followed: Option<(u32, u64)>,
+        ended_abandoned: bool,
+        retry_due: bool,
+    ) -> Look {
+        let left = self.update(found);
+        Look {
+            pass: !ended_abandoned || left || retry_due,
+            gone: matches!(choice, Discovery::None)
+                && followed.is_none_or(|(pid, start)| !self.contains(pid, start)),
+        }
+    }
+}
+
+/// What one process listing means for the record loop.
+#[derive(Debug, PartialEq, Eq)]
+struct Look {
+    /// Run the abandoned-session pass: at the first look, once a listed process has left, or
+    /// when a retry is due.
+    pass: bool,
+    /// No game is chosen and the followed one has left the listing, frozen or not: its probe,
+    /// hold and hand-over go.
+    gone: bool,
+}
+
 /// How a session ended, for the record loop.
 struct Ended {
     /// Do not attach to this game again automatically, and until when.
@@ -321,6 +372,14 @@ impl Ended {
     fn held() -> Self {
         Self {
             hold: Some(Hold::Game),
+            ..Self::again()
+        }
+    }
+
+    /// Nothing attached: the record loop looks again at once.
+    fn again() -> Self {
+        Self {
+            hold: None,
             last_load: None,
             rerouted: false,
             handover: None,
@@ -743,6 +802,7 @@ impl Recorder {
         // one left busy or failed is looked at again while idle, each time a little later.
         let mut ended_abandoned = false;
         let mut abandoned_retry = AbandonedRetry::default();
+        let mut present = Present::default();
         loop {
             {
                 let inner = self.lock();
@@ -770,7 +830,30 @@ impl Recorder {
                 RecorderSettings::default()
             });
             let manual = std::mem::take(&mut self.lock().record_requested);
-            match controller::single_game() {
+            let listed = controller::game_processes().map(|found| {
+                let choice = controller::choose_game(&found);
+                let followed = game.as_ref().map(|game| (game.pid, game.start));
+                let look = present.look(
+                    &found,
+                    &choice,
+                    followed,
+                    ended_abandoned,
+                    abandoned_retry.due(),
+                );
+                (choice, look)
+            });
+            if let Ok((_, look)) = &listed {
+                if look.pass {
+                    abandoned_retry.after(self.end_abandoned(app, &settings));
+                    ended_abandoned = true;
+                }
+                if look.gone {
+                    held = None;
+                    handover = None;
+                    game = None;
+                }
+            }
+            match listed.map(|(choice, _)| choice) {
                 Err(error) => self.idle(
                     app,
                     &settings,
@@ -781,91 +864,86 @@ impl Recorder {
                         detail: error,
                     }),
                 ),
-                Ok(None) => {
-                    if !ended_abandoned || game.is_some() || abandoned_retry.due() {
-                        abandoned_retry.after(self.end_abandoned(app, &settings));
-                        ended_abandoned = true;
+                Ok(Discovery::None) => self.idle(app, &settings, false, None, None),
+                Ok(Discovery::Several(several)) => self.idle(
+                    app,
+                    &settings,
+                    true,
+                    None,
+                    Some(Problem {
+                        text: several.to_string(),
+                        detail: several.to_string(),
+                    }),
+                ),
+                Ok(Discovery::One(selected)) => {
+                    let start = selected.start_time;
+                    if manual || held.as_ref().is_some_and(|held| held.start != start) {
+                        held = None;
                     }
-                    held = None;
-                    handover = None;
-                    game = None;
-                    self.idle(app, &settings, false, None, None);
-                }
-                Ok(Some(pid)) => match controller::game_start_time(pid) {
-                    // The process is going away; look again shortly.
-                    Err(_) => {}
-                    Ok(start) => {
-                        if !ended_abandoned
-                            || game.as_ref().is_some_and(|game| game.start != start)
-                            || abandoned_retry.due()
+                    if !game.as_ref().is_some_and(|game| game.settled(start)) {
+                        // On an unrecognised build the probe is withheld; capture still attaches.
+                        let probe = Probe::open(&selected);
+                        if let Err(error) = &probe
+                            && game.as_ref().is_none_or(|game| {
+                                game.start != start || game.probe.as_ref().err() != Some(error)
+                            })
                         {
-                            abandoned_retry.after(self.end_abandoned(app, &settings));
-                            ended_abandoned = true;
+                            eprintln!("The running game could not be read: {error}");
                         }
-                        if manual || held.as_ref().is_some_and(|held| held.start != start) {
-                            held = None;
-                        }
-                        if !game.as_ref().is_some_and(|game| game.settled(start)) {
-                            // On an unrecognised build the probe is withheld; capture still attaches.
-                            let probe = Probe::open(pid);
-                            if let Err(error) = &probe
-                                && game.as_ref().is_none_or(|game| {
-                                    game.start != start || game.probe.as_ref().err() != Some(error)
-                                })
-                            {
-                                eprintln!("The running game could not be read: {error}");
-                            }
-                            game = Some(GameProbe { start, probe });
-                        }
-                        let probe = game.as_ref().and_then(|game| game.probe.as_ref().ok());
-                        let loaded = probe.and_then(Probe::loaded);
-                        // Record pressed for a campaign that turned out to belong in
-                        // another folder carries over to its session there.
-                        if handover.as_ref().is_some_and(|(game, _)| *game != start) {
-                            handover = None;
-                        }
-                        let manual = manual
-                            || loaded.as_ref().is_some_and(|loaded| {
-                                handover
-                                    .take_if(|(_, campaign)| *campaign == loaded.campaign)
-                                    .is_some()
-                            });
-                        // A refused load is routed by what the game has loaded.
-                        // If that cannot be read, attaching at the menu again would
-                        // only meet the same refusal, so the game is held instead.
-                        if std::mem::take(&mut rerouted) && loaded.is_none() && !manual {
-                            held = Some(Held::game(start));
-                        }
-                        if held
+                        game = Some(GameProbe {
+                            pid: selected.pid,
+                            start,
+                            probe,
+                        });
+                    }
+                    let probe = game.as_ref().and_then(|game| game.probe.as_ref().ok());
+                    let loaded = probe.and_then(Probe::loaded);
+                    // Record pressed for a campaign that turned out to belong in
+                    // another folder carries over to its session there.
+                    if handover.as_ref().is_some_and(|(game, _)| *game != start) {
+                        handover = None;
+                    }
+                    let manual = manual
+                        || loaded.as_ref().is_some_and(|loaded| {
+                            handover
+                                .take_if(|(_, campaign)| *campaign == loaded.campaign)
+                                .is_some()
+                        });
+                    // A refused load is routed by what the game has loaded.
+                    // If that cannot be read, attaching at the menu again would
+                    // only meet the same refusal, so the game is held instead.
+                    if std::mem::take(&mut rerouted) && loaded.is_none() && !manual {
+                        held = Some(Held::game(start));
+                    }
+                    if held
+                        .as_ref()
+                        .is_some_and(|held| held.released_by(loaded.as_ref(), &settings))
+                    {
+                        held = None;
+                    }
+                    let wanted = match &loaded {
+                        Some(loaded) => settings.records_campaign(&loaded.campaign),
+                        None => settings.record_every_campaign,
+                    };
+                    if held.is_none() && (manual || wanted) {
+                        let started = loaded
                             .as_ref()
-                            .is_some_and(|held| held.released_by(loaded.as_ref(), &settings))
-                        {
-                            held = None;
-                        }
-                        let wanted = match &loaded {
-                            Some(loaded) => settings.records_campaign(&loaded.campaign),
-                            None => settings.record_every_campaign,
-                        };
-                        if held.is_none() && (manual || wanted) {
-                            let started = loaded
-                                .as_ref()
-                                .map(|loaded| (loaded.campaign.clone(), loaded.load));
-                            let ended = self.capture(app, pid, &settings, manual, loaded, probe);
-                            held = ended.hold.map(|hold| match hold {
-                                Hold::Game => Held::game(start),
-                                // The load recorded when Stop came; one loaded while it saved records.
-                                Hold::Load => Held {
-                                    start,
-                                    stopped: Some(ended.last_load.or(started)),
-                                },
-                            });
-                            rerouted = ended.rerouted;
-                            handover = ended.handover.map(|campaign| (start, campaign));
-                            continue;
-                        }
-                        self.idle(app, &settings, true, loaded.as_ref(), None);
+                            .map(|loaded| (loaded.campaign.clone(), loaded.load));
+                        let ended = self.capture(app, selected, &settings, manual, loaded, probe);
+                        held = ended.hold.map(|hold| match hold {
+                            Hold::Game => Held::game(start),
+                            // The load recorded when Stop came; one loaded while it saved records.
+                            Hold::Load => Held {
+                                start,
+                                stopped: Some(ended.last_load.or(started)),
+                            },
+                        });
+                        rerouted = ended.rerouted;
+                        handover = ended.handover.map(|campaign| (start, campaign));
+                        continue;
                     }
-                },
+                    self.idle(app, &settings, true, loaded.as_ref(), None);
+                }
             }
             self.wait(Duration::from_secs(1));
         }
@@ -956,12 +1034,21 @@ impl Recorder {
     fn capture(
         &self,
         app: &AppHandle,
-        pid: u32,
+        selected: GameProcess,
         settings: &RecorderSettings,
         manual: bool,
         loaded: Option<LoadedCampaign>,
         probe: Option<&Probe>,
     ) -> Ended {
+        let game = match controller::open_game(&selected) {
+            Ok(Some(game)) => game,
+            // Its PID names another process now: discovery looks again.
+            Ok(None) => return Ended::again(),
+            Err(error) => {
+                self.fail(app, error, false);
+                return Ended::held();
+            }
+        };
         let folders = (|| -> Result<(PathBuf, PathBuf, PathBuf), String> {
             let root = save_root(settings)?;
             let target = match &loaded {
@@ -1149,7 +1236,7 @@ impl Recorder {
             auto_save: &auto_save,
             names_wanted: &|| self.lock().panel_open,
         };
-        let result = controller::record(pid, &recording, &self.control, &stage);
+        let result = controller::record(game, &recording, &self.control, &stage);
         let mut ended = finished.into_inner().unwrap_or_else(|| {
             self.finish(app, result.as_ref().map_err(String::as_str), started.get())
         });
@@ -1560,6 +1647,78 @@ mod tests {
 
     const CAMPAIGN: &str = "00000000-0000-4000-8000-000000000000";
     const OTHER: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn game(pid: u32, start_time: u64, state: controller::ProcessState) -> GameProcess {
+        GameProcess {
+            pid,
+            start_time,
+            state,
+        }
+    }
+
+    #[test]
+    fn a_stopped_load_stays_held_while_its_game_freezes_and_resumes() {
+        use controller::ProcessState::{Frozen, Running};
+        let on = RecorderSettings {
+            record_every_campaign: true,
+            ..RecorderSettings::default()
+        };
+        let mut present = Present::default();
+        let mut held = Some(Held {
+            start: 70,
+            stopped: Some(Some((CAMPAIGN.to_owned(), 100))),
+        });
+        for found in [
+            [game(7, 70, Running)],
+            [game(7, 70, Frozen)],
+            [game(7, 70, Running)],
+        ] {
+            let choice = controller::choose_game(&found);
+            let look = present.look(&found, &choice, Some((7, 70)), true, false);
+            if look.gone {
+                held = None;
+            }
+        }
+        // Held, the same load does not attach again by itself.
+        assert!(
+            held.is_some_and(|held| !held.released_by(Some(&loaded(CAMPAIGN, 100)), &on)),
+            "a freeze released the user's Stop"
+        );
+    }
+
+    #[test]
+    fn a_frozen_orphans_game_leaving_the_listing_requests_recovery() {
+        use controller::ProcessState::Frozen;
+        let mut present = Present::default();
+        let orphan = [game(9, 90, Frozen)];
+        let choice = controller::choose_game(&orphan);
+        assert!(present.look(&orphan, &choice, None, false, false).pass);
+        // That first pass found the orphan's collector still mapped: settled, with no retry.
+        assert!(!present.look(&orphan, &choice, None, true, false).pass);
+        let look = present.look(&[], &Discovery::None, None, true, false);
+        assert!(look.pass, "the orphan's game exited, freeing its session");
+    }
+
+    #[test]
+    fn the_abandoned_session_pass_runs_with_no_game_or_two_running_games() {
+        use controller::ProcessState::{Exiting, Frozen, Running};
+        let mut present = Present::default();
+        let exiting = [game(5, 50, Exiting)];
+        let choice = controller::choose_game(&exiting);
+        assert!(!present.look(&exiting, &choice, None, true, false).pass);
+        assert!(present.look(&[], &Discovery::None, None, true, false).pass);
+        assert!(present.look(&[], &Discovery::None, None, true, true).pass);
+
+        let mut present = Present::default();
+        let two = [game(1, 10, Running), game(2, 20, Running)];
+        let three = [two[0], two[1], game(3, 30, Frozen)];
+        let several = controller::choose_game(&three);
+        let still = controller::choose_game(&two);
+        assert!(present.look(&three, &several, None, false, false).pass);
+        assert!(!present.look(&three, &several, None, true, false).pass);
+        assert!(present.look(&two, &still, None, true, false).pass);
+        assert!(present.look(&two, &still, None, true, true).pass);
+    }
 
     #[test]
     fn unload_followup_keeps_saved_state_and_prior_failures_without_losing_record_requests() {

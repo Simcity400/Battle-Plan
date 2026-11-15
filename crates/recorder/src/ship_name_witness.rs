@@ -11,6 +11,7 @@ use engine_dlc::cdlc_manager;
 use engine_executable::build::hash_executable;
 use engine_native::{Memory, capture_text::Owned, cfleet, cgame_state, cship, read, walk::Outcome};
 use installed_content_core::content::{GatherOptions, gather};
+use recorder_platform::games::{Discovery, choose_game};
 use replay::campaign::{Replay, SeekResult};
 use replay_data::{
     identity::{COVERAGE_POLICY_VERSION, Dlc, Identity, Mod, SampleBoundary, Verification},
@@ -348,13 +349,21 @@ fn mounts(
 }
 
 fn capture(options: Options) -> Result<(), String> {
-    let pid = match windows::games()?.as_slice() {
-        [pid] => *pid,
-        [] => return Err("no hoi4.exe is running; load and pause a game first".into()),
-        _ => return Err("multiple hoi4.exe processes are unsupported".into()),
-    };
     // Read-only rights; no injection, game calls, writes or thread suspension.
-    let process = Process::open(pid, false)?;
+    let process = loop {
+        let game = match choose_game(&windows::game_processes()?) {
+            Discovery::One(game) => game,
+            Discovery::None => {
+                return Err("no hoi4.exe is running; load and pause a game first".into());
+            }
+            Discovery::Several(several) => return Err(several.to_string()),
+        };
+        // `None`: its PID names another process now, so discovery looks again.
+        if let Some(process) = Process::open_selected(&game, false)? {
+            break process;
+        }
+    };
+    let pid = process.pid;
     let tables = engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|e| e.to_string())?;
     let exe = tables.identity().clone();
@@ -448,13 +457,6 @@ fn capture(options: Options) -> Result<(), String> {
         content.order_note.as_deref(),
     ) {
         report.refusals.push(reason);
-    }
-    match windows::games() {
-        Ok(games) if games.as_slice() == [pid] => {}
-        Ok(_) => report
-            .refusals
-            .push("game process changed during the witness".into()),
-        Err(reason) => report.refusals.push(reason),
     }
     match process.handle.signaled() {
         Ok(false) => {}

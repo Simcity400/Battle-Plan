@@ -14,6 +14,7 @@ use installed_content_core::{
 };
 use installed_content_localisation::localisation::Localisation;
 use history_requests::HistoryRequest;
+use recorder_platform::games::{Discovery, GameProcess, OtherGames, choose_game};
 use replay::recorder_settings::RecorderSettings;
 use replay_data::identity::IdentityCodec;
 use replay_data::{identity::SessionStart, scope::CaptureMode};
@@ -1261,8 +1262,6 @@ fn inspect_characters(args: &[OsString]) -> Result<(), String> {
     )
 }
 
-pub(crate) const TWO_GAMES: &str =
-    "two hoi4.exe processes are unsupported; no second process will be recorded";
 pub(crate) const COLLECTOR_LOADED: &str =
     "collector.dll is already loaded in this process; detach its recorder first";
 pub(crate) const GAME_CLAIMED: &str =
@@ -1275,12 +1274,25 @@ fn game_claim(pid: u32, start_time: u64) -> String {
 const COLLECTOR_UNLOAD_WARNING: &str =
     "collector unload is unconfirmed; quit the game before recording again";
 
-pub(crate) fn checked_single_game() -> Result<Option<u32>, String> {
-    match windows::games()?.as_slice() {
-        [] => Ok(None),
-        [pid] => Ok(Some(*pid)),
-        _ => Err(TWO_GAMES.into()),
+/// The one running game, none, or the live games to choose between.
+pub(crate) fn discover_game() -> Result<Discovery, String> {
+    Ok(choose_game(&windows::game_processes()?))
+}
+
+/// One look at the chosen game while its content is scanned; `found` is the discovery, when due.
+fn watch_chosen(
+    pid: u32,
+    exited: bool,
+    found: Option<&[GameProcess]>,
+    others: &mut OtherGames,
+) -> Result<(), String> {
+    if exited {
+        return Err("game exited while content identity was being gathered".into());
     }
+    if let Some(notice) = found.and_then(|found| others.notice(pid, found, windows::local_clock)) {
+        eprintln!("{notice}");
+    }
+    Ok(())
 }
 
 const ORPHAN_ELSEWHERE: &str = "collector.dll is loaded from a session in another capture folder; record into that folder to take it over";
@@ -1671,15 +1683,33 @@ fn record(options: Options) -> Result<(), String> {
     })?;
     println!("Paradox user folder: {}", user.display());
     println!("Waiting for hoi4.exe. Recording is passive; Ctrl+C detaches and finalizes.");
+    let mut several_named = None;
     loop {
         if CONSOLE.stopping() {
             return Ok(());
         }
-        let Some(pid) = checked_single_game()? else {
-            std::thread::sleep(Duration::from_secs(2));
+        let game = match discover_game()? {
+            Discovery::One(game) => game,
+            Discovery::None => {
+                several_named = None;
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+            Discovery::Several(several) => {
+                if several_named.as_ref() != Some(&several) {
+                    eprintln!("{several}");
+                    several_named = Some(several);
+                }
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+        several_named = None;
+        // Its PID names another process now: look again.
+        let Some(process) = Process::open_selected(&game, true)? else {
             continue;
         };
-        let outcome = capture(pid, &cli_capture(&options, &user), &CONSOLE, &|stage| {
+        let outcome = capture(process, &cli_capture(&options, &user), &CONSOLE, &|stage| {
             if let Stage::Unloading(observation) = stage {
                 if let Err(error) = observation.finish() {
                     eprintln!("Collector warning: {error}");
@@ -2017,8 +2047,9 @@ impl StatusReads {
     }
 }
 
+/// Records the game `process`, opened with injection rights as the process discovery selected.
 pub(crate) fn capture(
-    pid: u32,
+    process: Process,
     options: &CaptureOptions<'_>,
     control: &Control,
     stage: &dyn Fn(Stage<'_>),
@@ -2043,7 +2074,7 @@ pub(crate) fn capture(
     } = *options;
     stage(Stage::Preparing);
     fs::create_dir_all(target).map_err(|error| failure_text(target, error))?;
-    let process = Process::open(pid, true)?;
+    let pid = process.pid;
     let tables = engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
     let exe = tables.identity().clone();
@@ -2129,16 +2160,16 @@ pub(crate) fn capture(
     println!("Verifying installed content hashes in the background...");
     let scan = ContentScan::start(gather_options);
     let mut next_discovery = Instant::now();
+    let mut others = OtherGames::default();
     let watch = || {
-        if process.handle.signaled()? {
-            return Err("game exited while content identity was being gathered".into());
-        }
-        if Instant::now() >= next_discovery {
-            if checked_single_game()? != Some(pid) {
-                return Err("game changed while content identity was being gathered".into());
-            }
+        let exited = process.handle.signaled()?;
+        let found = if !exited && Instant::now() >= next_discovery {
             next_discovery = Instant::now() + Duration::from_secs(2);
-        }
+            windows::game_processes().ok()
+        } else {
+            None
+        };
+        watch_chosen(pid, exited, found.as_deref(), &mut others)?;
         std::thread::sleep(Duration::from_millis(100));
         Ok(())
     };
@@ -2321,9 +2352,6 @@ pub(crate) fn capture(
         None => DetachOnDrop::arm(&config, cancel_file)?,
     };
     if !taking_over {
-        checked_single_game()?
-            .filter(|&found| found == pid)
-            .ok_or("game changed before injection")?;
         process.inject(&dll, || control.stopping())?;
     }
     let error_path = bin.join("collector.error.txt");
@@ -2402,7 +2430,6 @@ pub(crate) fn capture(
     let mut stop_qpc = None;
     let mut stop_observed = false;
     let mut stop_load = None;
-    let mut second_reported = false;
     let mut next_discovery = Instant::now();
     control.accept_requests();
     // The campaign and load the game has loaded, from the one attached for, whatever their
@@ -2462,11 +2489,12 @@ pub(crate) fn capture(
             break;
         }
         if Instant::now() >= next_discovery {
-            let second = windows::games()?.iter().any(|&other| other != pid);
-            if second && !second_reported {
-                eprintln!("A second hoi4.exe is unsupported and will not be recorded.");
+            if let Some(notice) = windows::game_processes()
+                .ok()
+                .and_then(|found| others.notice(pid, &found, windows::local_clock))
+            {
+                eprintln!("{notice}");
             }
-            second_reported = second;
             next_discovery = Instant::now() + Duration::from_secs(2);
         }
         if status_reads.print_due(Instant::now()) {
@@ -4521,7 +4549,10 @@ impl UnloadObservation {
                     Ok(process) => {
                         CollectorPresence::observe_until(Some(&process), &self.dll, deadline)
                     }
-                    Err(_) if windows::games().is_ok_and(|games| !games.contains(&self.pid)) => {
+                    Err(_)
+                        if windows::game_present(self.pid, self.process_start)
+                            .is_ok_and(|present| !present) =>
+                    {
                         CollectorPresence::exited()
                     }
                     Err(_) => CollectorPresence {
@@ -4643,13 +4674,13 @@ fn collector_config(directory: &Path) -> Result<(Value, SessionStart), String> {
 
 fn ensure_finalizable(directory: &Path) -> Result<(Option<Process>, SessionStart), String> {
     let (config, session) = collector_config(directory)?;
-    if !windows::games()?.contains(&session.process_id) {
+    if !windows::game_present(session.process_id, session.process_start_time)? {
         HistoryRequest::retire_session(directory, false, true);
         return Ok((None, session));
     }
     let process = match Process::open(session.process_id, false) {
         Ok(process) => process,
-        Err(_) if !windows::games()?.contains(&session.process_id) => {
+        Err(_) if !windows::game_present(session.process_id, session.process_start_time)? => {
             HistoryRequest::retire_session(directory, false, true);
             return Ok((None, session));
         }
@@ -5065,14 +5096,14 @@ fn collector_gone(
 
 /// Whether the session's game still runs; a process that cannot be told apart from it does.
 fn game_alive(session: &SessionStart) -> Result<bool, String> {
-    if !windows::games()?.contains(&session.process_id) {
+    if !windows::game_present(session.process_id, session.process_start_time)? {
         return Ok(false);
     }
     match Process::open(session.process_id, false) {
         Ok(process) => {
             Ok(process.start_time == session.process_start_time && !process.handle.signaled()?)
         }
-        Err(_) => Ok(windows::games()?.contains(&session.process_id)),
+        Err(_) => windows::game_present(session.process_id, session.process_start_time),
     }
 }
 
@@ -5922,6 +5953,31 @@ mod tests {
         assert!(cancel.is_file());
         drop(events);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_second_live_game_never_ends_the_content_scan_of_the_chosen_game() {
+        use recorder_platform::games::ProcessState::Running;
+        let chosen = GameProcess {
+            pid: 58524,
+            start_time: 2,
+            state: Running,
+        };
+        let other = GameProcess {
+            pid: 75600,
+            start_time: 1,
+            state: Running,
+        };
+        let mut others = OtherGames::default();
+        assert_eq!(
+            watch_chosen(chosen.pid, false, Some(&[other, chosen]), &mut others),
+            Ok(())
+        );
+        assert_eq!(watch_chosen(chosen.pid, false, None, &mut others), Ok(()));
+        assert_eq!(
+            watch_chosen(chosen.pid, true, Some(&[chosen]), &mut others),
+            Err("game exited while content identity was being gathered".to_owned())
+        );
     }
 
     /// A session this build cannot speak to is not taken over: its collector is asked to detach

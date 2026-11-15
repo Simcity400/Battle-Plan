@@ -1,3 +1,4 @@
+use crate::games::{GameProcess, Thread, classify};
 use std::{
     ffi::{OsStr, OsString, c_void},
     io,
@@ -7,16 +8,24 @@ use std::{
     ptr,
     time::{Duration, Instant},
 };
-use windows_sys::Win32::{
-    Foundation::*,
-    System::{
-        Diagnostics::{
-            Debug::{ReadProcessMemory, WriteProcessMemory},
-            ToolHelp::*,
+use windows_sys::{
+    Wdk::System::{
+        SystemInformation::{NtQuerySystemInformation, SystemProcessInformation},
+        Threading::{NtQueryInformationProcess, ProcessBasicInformation},
+    },
+    Win32::{
+        Foundation::*,
+        System::{
+            Diagnostics::{
+                Debug::{ReadProcessMemory, WriteProcessMemory},
+                ToolHelp::*,
+            },
+            LibraryLoader::*,
+            Memory::*,
+            Threading::*,
+            Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime},
+            WindowsProgramming::{SYSTEM_PROCESS_INFORMATION, SYSTEM_THREAD_INFORMATION},
         },
-        LibraryLoader::*,
-        Memory::*,
-        Threading::*,
     },
 };
 
@@ -56,25 +65,141 @@ fn text(value: &[u16]) -> OsString {
     OsString::from_wide(&value[..value.iter().position(|&v| v == 0).unwrap_or(value.len())])
 }
 
-pub fn games() -> Result<Vec<u32>, String> {
-    let snapshot = Handle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })?;
-    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
-    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-    let mut found = unsafe { Process32FirstW(snapshot.0, &mut entry) };
-    let mut pids = Vec::new();
-    while found != 0 {
-        if text(&entry.szExeFile)
+/// Every process named `hoi4.exe`, whatever its state.
+pub fn game_processes() -> Result<Vec<GameProcess>, String> {
+    game_processes_named("hoi4.exe")
+}
+
+/// Whether the game process that started at `start_time` is still listed, even frozen or exiting.
+pub fn game_present(pid: u32, start_time: u64) -> Result<bool, String> {
+    Ok(game_processes()?
+        .iter()
+        .any(|game| game.pid == pid && game.start_time == start_time))
+}
+
+/// Every process with the image name `name`, ignoring case, from one system process listing.
+pub fn game_processes_named(name: &str) -> Result<Vec<GameProcess>, String> {
+    let listing = system_processes()?;
+    let base = listing.as_ptr().cast::<u8>();
+    let mut found = Vec::new();
+    let mut offset = 0;
+    loop {
+        // SAFETY: the system filled the buffer with entries chained by NextEntryOffset, each
+        // followed by its NumberOfThreads thread rows.
+        let entry = unsafe { &*base.add(offset).cast::<SYSTEM_PROCESS_INFORMATION>() };
+        let image = &entry.ImageName;
+        if !image.Buffer.is_null()
+            && OsString::from_wide(unsafe {
+                std::slice::from_raw_parts(image.Buffer, usize::from(image.Length) / 2)
+            })
             .to_string_lossy()
-            .eq_ignore_ascii_case("hoi4.exe")
+            .eq_ignore_ascii_case(name)
         {
-            pids.push(entry.th32ProcessID);
+            let threads = unsafe {
+                std::slice::from_raw_parts(
+                    ptr::from_ref(entry)
+                        .add(1)
+                        .cast::<SYSTEM_THREAD_INFORMATION>(),
+                    entry.NumberOfThreads as usize,
+                )
+            };
+            let threads: Vec<Thread> = threads
+                .iter()
+                .map(|thread| Thread {
+                    state: thread.ThreadState,
+                    wait_reason: thread.WaitReason,
+                })
+                .collect();
+            let pid = entry.UniqueProcessId as usize as u32;
+            let (deleting, signalled) = exit_facts(pid);
+            found.push(GameProcess {
+                pid,
+                // Reserved1 bytes 24..32 are CreateTime, the FILETIME GetProcessTimes gives.
+                start_time: u64::from_le_bytes(entry.Reserved1[24..32].try_into().unwrap()),
+                state: classify(&threads, deleting, signalled),
+            });
         }
-        found = unsafe { Process32NextW(snapshot.0, &mut entry) };
+        if entry.NextEntryOffset == 0 {
+            return Ok(found);
+        }
+        offset += entry.NextEntryOffset as usize;
     }
-    if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
-        return Err(io::Error::last_os_error().to_string());
+}
+
+/// The system process listing, in a buffer aligned for its entries.
+fn system_processes() -> Result<Vec<u64>, String> {
+    let mut needed = 0u32;
+    let mut buffer: Vec<u64> = Vec::new();
+    loop {
+        let bytes = (buffer.len() * size_of::<u64>()) as u32;
+        let status = unsafe {
+            NtQuerySystemInformation(
+                SystemProcessInformation,
+                buffer.as_mut_ptr().cast(),
+                bytes,
+                &mut needed,
+            )
+        };
+        match status {
+            0 if !buffer.is_empty() => return Ok(buffer),
+            0 | STATUS_INFO_LENGTH_MISMATCH => {
+                buffer = vec![0; (needed as usize).div_ceil(size_of::<u64>()).max(1)];
+            }
+            status => return Err(format!("listing processes failed with status {status:#x}")),
+        }
     }
-    Ok(pids)
+}
+
+/// Whether the process is being deleted and whether it has exited; one that is gone has both.
+fn exit_facts(pid: u32) -> (bool, bool) {
+    let raw = unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        )
+    };
+    let Ok(handle) = Handle::new(raw) else {
+        // The PID names no process any more; access denied leaves only the threads to tell.
+        let gone = unsafe { GetLastError() } == ERROR_INVALID_PARAMETER;
+        return (gone, gone);
+    };
+    #[repr(C)]
+    struct ExtendedBasicInformation {
+        size: usize,
+        basic: [usize; 6],
+        flags: u32,
+    }
+    const PROCESS_DELETING: u32 = 1 << 2;
+    let mut information = ExtendedBasicInformation {
+        size: size_of::<ExtendedBasicInformation>(),
+        basic: [0; 6],
+        flags: 0,
+    };
+    let deleting = unsafe {
+        NtQueryInformationProcess(
+            handle.0,
+            ProcessBasicInformation,
+            ptr::from_mut(&mut information).cast(),
+            size_of::<ExtendedBasicInformation>() as u32,
+            ptr::null_mut(),
+        )
+    } == 0
+        && information.flags & PROCESS_DELETING != 0;
+    (deleting, handle.signaled().unwrap_or(false))
+}
+
+/// A FILETIME's local hour and minute.
+pub fn local_clock(filetime: u64) -> Option<(u16, u16)> {
+    let universal = FILETIME {
+        dwLowDateTime: filetime as u32,
+        dwHighDateTime: (filetime >> 32) as u32,
+    };
+    let mut utc = SYSTEMTIME::default();
+    let mut local = SYSTEMTIME::default();
+    (unsafe { FileTimeToSystemTime(&universal, &mut utc) } != 0
+        && unsafe { SystemTimeToTzSpecificLocalTime(ptr::null(), &utc, &mut local) } != 0)
+        .then_some((local.wHour, local.wMinute))
 }
 
 pub struct Module {
@@ -192,6 +317,15 @@ impl Process {
             start_time: (u64::from(times[0].dwHighDateTime) << 32)
                 | u64::from(times[0].dwLowDateTime),
         })
+    }
+
+    /// Opens the process discovery selected; `None` once its PID names another process or none.
+    pub fn open_selected(game: &GameProcess, inject: bool) -> Result<Option<Self>, String> {
+        match Self::open(game.pid, inject) {
+            Ok(process) => Ok((process.start_time == game.start_time).then_some(process)),
+            Err(_) if !game_present(game.pid, game.start_time)? => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub fn has_module(&self, path: &Path) -> Result<bool, String> {
@@ -500,6 +634,117 @@ mod tests {
         drop(first);
         let again = Claim::take(&name).unwrap();
         assert!(again.is_some());
+    }
+
+    #[test]
+    fn a_selected_process_opens_only_while_it_has_the_selected_start_time() {
+        let pid = std::process::id();
+        let start_time = Process::open(pid, false).unwrap().start_time;
+        let selected = GameProcess {
+            pid,
+            start_time,
+            state: crate::games::ProcessState::Running,
+        };
+        let opened = Process::open_selected(&selected, false).unwrap();
+        assert_eq!(opened.map(|process| process.start_time), Some(start_time));
+        // The PID now names a process that started at another time: not the one selected.
+        for start_time in [start_time - 1, start_time + 1] {
+            let reused = GameProcess {
+                start_time,
+                ..selected
+            };
+            assert!(Process::open_selected(&reused, false).unwrap().is_none());
+        }
+    }
+
+    const HELD_CHILD: &str = "HOI4REPLAY_TEST_HELD_CHILD";
+
+    /// The child of the test below: it waits for the event its parent names, then exits.
+    #[test]
+    fn a_held_child_waits_for_its_release() {
+        if let Some(name) = std::env::var_os(HELD_CHILD) {
+            let release = Event::open(&name.to_string_lossy()).unwrap();
+            assert!(release.handle.wait(INFINITE).unwrap());
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn a_suspended_process_is_frozen_until_resumed_and_exiting_once_it_ends() {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            CONTEXT, CONTEXT_CONTROL_AMD64, GetThreadContext,
+        };
+        // Never named hoi4.exe: a recorder on this machine would take it for the game.
+        let unique = format!(
+            "hoi4replay-state-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let image = format!("{unique}.exe");
+        let copy = std::env::temp_dir().join(&image);
+        std::fs::copy(std::env::current_exe().unwrap(), &copy).unwrap();
+        let event_name = format!("Local\\{unique}");
+        let release = Event::new(&event_name).unwrap();
+        let mut child = std::process::Command::new(&copy)
+            .args([
+                "--exact",
+                "windows::tests::a_held_child_waits_for_its_release",
+                "--test-threads=1",
+            ])
+            .env(HELD_CHILD, &event_name)
+            .creation_flags(CREATE_SUSPENDED)
+            .spawn()
+            .unwrap();
+        let pid = child.id();
+        let state = || -> Vec<crate::games::ProcessState> {
+            game_processes_named(&image)
+                .unwrap()
+                .iter()
+                .filter(|game| game.pid == pid)
+                .map(|game| game.state)
+                .collect()
+        };
+
+        let snapshot =
+            Handle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }).unwrap();
+        let mut entry: THREADENTRY32 = unsafe { std::mem::zeroed() };
+        entry.dwSize = size_of::<THREADENTRY32>() as u32;
+        let mut found = unsafe { Thread32First(snapshot.0, &mut entry) };
+        while found != 0 && entry.th32OwnerProcessID != pid {
+            found = unsafe { Thread32Next(snapshot.0, &mut entry) };
+        }
+        assert_ne!(found, 0, "the suspended child has a thread");
+        let thread = Handle::new(unsafe {
+            OpenThread(
+                THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT,
+                0,
+                entry.th32ThreadID,
+            )
+        })
+        .unwrap();
+        #[repr(C, align(16))]
+        struct Aligned(CONTEXT);
+        let mut context: Aligned = unsafe { std::mem::zeroed() };
+        context.0.ContextFlags = CONTEXT_CONTROL_AMD64;
+        // Reading the context returns only once the thread's suspension has taken effect.
+        assert_ne!(unsafe { GetThreadContext(thread.0, &mut context.0) }, 0);
+        assert_eq!(state(), [crate::games::ProcessState::Frozen]);
+
+        assert_ne!(unsafe { ResumeThread(thread.0) }, u32::MAX);
+        assert_eq!(state(), [crate::games::ProcessState::Running]);
+
+        release.set().unwrap();
+        assert!(child.wait().unwrap().success());
+        assert!(matches!(
+            state().as_slice(),
+            [] | [crate::games::ProcessState::Exiting]
+        ));
+        drop((thread, child));
+        let _ = std::fs::remove_file(copy);
     }
 
     #[test]

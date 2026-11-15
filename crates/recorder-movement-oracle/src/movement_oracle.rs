@@ -26,6 +26,7 @@ use installed_content_core::{content::GatherOptions, content::gather, movement::
 use serde_json::{Value, json};
 
 use crate::windows::{self, Process, ProcessMemory};
+use recorder_platform::games::{Discovery, choose_game};
 
 pub const USAGE: &str =
     "recorder movement-oracle [--user-dir <directory>] [--report <file.json>] [--show <n>]";
@@ -54,13 +55,19 @@ pub fn command(args: Vec<OsString>) -> Result<(), String> {
             _ => return Err(USAGE.into()),
         }
     }
-    let pid = match windows::games()?.as_slice() {
-        [pid] => *pid,
-        [] => return Err("no hoi4.exe is running; load a save first".into()),
-        _ => return Err("two hoi4.exe processes are unsupported".into()),
-    };
     // Read-only rights: the oracle never writes to or injects into the game.
-    let process = Process::open(pid, false)?;
+    let process = loop {
+        let game = match choose_game(&windows::game_processes()?) {
+            Discovery::One(game) => game,
+            Discovery::None => return Err("no hoi4.exe is running; load a save first".into()),
+            Discovery::Several(several) => return Err(several.to_string()),
+        };
+        // `None`: its PID names another process now, so discovery looks again.
+        if let Some(process) = Process::open_selected(&game, false)? {
+            break process;
+        }
+    };
+    let pid = process.pid;
     engine_executable::executable_tables::initialize_executable(&process.path)
         .map_err(|error| format!("Cannot prepare game tables: {error}"))?;
     let file = fs::read(&process.path).map_err(|e| e.to_string())?;
